@@ -139,17 +139,22 @@ function workspaceStyle() {
   const reset = between("$effect(() => {\n  void selected?.id;", "/**\n * Runs a shell shortcut.");
   assert.match(reset, /void writingWebviewShown;/, "leaving the Writing pane ends the full screen");
   assert.match(reset, /untrack\(\(\) => exitWritingFullscreen\(\)\)/);
-  assert.match(functionBody("exitWritingFullscreen"), /writingFullscreenMessage\(false\)/, "the webview is told");
+  assert.match(functionBody("exitWritingFullscreen"), /endWritingFullscreen\(\)/, "the shell ends the full screen");
+  assert.match(
+    functionBody("endWritingFullscreen"),
+    /writingFullscreenMessage\(false\), instance\)/,
+    "the instance that was fullscreen is told, not the tab that is shown by then",
+  );
   const escape = between("const handleWritingFullscreenKey", 'window.addEventListener("resize"');
   assert.match(escape, /event\.key === "Escape"\)\s*exitWritingFullscreen\(\)/);
   const mount = between("function trackWritingMount()", "async function postWritingMessage(");
-  assert.match(mount, /writingFullscreen = false;/, "unmounting resets the full screen");
+  assert.match(mount, /endWritingFullscreen\(\);/, "unmounting and switching instances end the full screen");
   const ready = between('    case "ready":\n      if (!writingWebview.mounted) return;', '    case "draft":');
   assert.match(ready, /writingFullscreen = false;/, "a restarted webview starts out of full screen");
   const stateEvent = functionBody("handleWritingStateEvent");
   assert.match(
     stateEvent,
-    /case "fullscreen":[\s\S]*event\.entityId === selected\?\.id\)\s*writingFullscreen = event\.on;/,
+    /case "fullscreen":[\s\S]*event\.entityId === selected\?\.id\) \{\s*writingFullscreen = event\.on;\s*writingFullscreenInstance = event\.on \? shownWebviewInstance : null;/,
   );
 }
 

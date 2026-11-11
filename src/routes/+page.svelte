@@ -170,6 +170,21 @@ import HostView from "$lib/plugins/HostView.svelte";
 import SandboxView from "$lib/plugins/SandboxView.svelte";
 import { anyRectOverlaps } from "$lib/plugins/popover-overlap";
 import {
+  WEBVIEW_POOL_LIMIT,
+  emptyWebviewPool,
+  evicted,
+  findWebviewEntry,
+  markReady,
+  prunePlugins,
+  pruneTabs as pruneWebviewPoolTabs,
+  removeWebviews,
+  retainSet,
+  touch as touchWebviewPool,
+  webviewRefs,
+  type WebviewInstanceRef,
+  type WebviewPool,
+} from "$lib/plugins/webview-pool";
+import {
   capabilityDescription,
   capabilityLabel,
   installedAtLabel,
@@ -489,6 +504,19 @@ let writingReadyCount = $state(0);
  * every embedded webview, and this one needs the webview visible so it can fill the window.
  */
 let writingFullscreen = $state(false);
+/** The instance that reported `writingFullscreen`, so ending it reaches that instance even after the tab changed. */
+let writingFullscreenInstance: string | null = null;
+/**
+ * Embedded webviews the shell keeps alive (Writing only). The host owns what exists; this record decides which
+ * instances the next mount keeps (`retainSet`) and which are unmounted when their tab or plugin goes.
+ */
+let webviewPool = $state<WebviewPool>(emptyWebviewPool);
+/** The Writing instance whose host mount finished. The visibility effect shows no other Writing instance. */
+let writingHostedInstance = $state<string | null>(null);
+/** Whether the mounting instance was ready before its mount began. See `beginPooledWritingMount`. */
+let writingMountPriorReady = false;
+/** What the mount in progress keeps, so only those the host actually closed leave the pool. */
+let writingMountRetained: WebviewInstanceRef[] = [];
 /**
  * What the last `writing.load` was for (entity id and the shell's load counter), so an unchanged selection is
  * not reposted. Saving does not change it; a new entity or a reload from disk does.
@@ -1735,8 +1763,38 @@ $effect(() => {
   void languageWebview.ready;
   void writingWebview.ready;
   void shownWebviewInstance;
+  void writingHostedInstance;
   const visible = !modalOverlayOpen && !popoverOverlapsWebview;
-  for (const pluginId of embeddedPluginWebviewIds) void setPluginWebviewVisibleQuietly(pluginId, visible);
+  for (const pluginId of embeddedPluginWebviewIds) {
+    // A pooled Writing instance that a tab switch just made current may still be suspended. Its own mount sets
+    // its bounds and shows it; showing it earlier would draw its old rectangle over the tab being restored.
+    // Hiding is always allowed.
+    if (visible && pluginId === WRITING_PLUGIN_ID && writingHostedInstance !== shownWebviewInstance) continue;
+    void setPluginWebviewVisibleQuietly(pluginId, visible);
+  }
+});
+
+/** Ids of every open tab, joined. A string, so the prune effect reruns only when a tab opens or closes. */
+const liveTabIdKey = $derived(shellTabs.groups.flatMap((group) => group.tabs.map((tab) => tab.id)).join(","));
+
+$effect(() => {
+  // One place covers every way a pooled instance loses its owner: closing a tab (also close others, to the
+  // right, all, archive and a disabled plugin, which close tabs), and a project switch (fresh tabs). The tab's
+  // `SandboxView` only suspends when it is torn down, so the instance is unmounted here, never left suspended.
+  // Suspend and unmount can arrive in either order: suspend only hides, so neither order can bring it back.
+  const live = new Set(liveTabIdKey === "" ? [] : liveTabIdKey.split(","));
+  const enabled = new Set(modules.filter((module) => module.enabled).map((module) => module.id));
+  const modulesKnown = modules.length > 0;
+  untrack(() => {
+    let next = pruneWebviewPoolTabs(webviewPool, live);
+    // A project that is still loading has no module list; that is not "every plugin is disabled".
+    if (modulesKnown) next = prunePlugins(next, enabled);
+    if (next === webviewPool) return;
+    const dropped = evicted(webviewPool, webviewRefs(next));
+    webviewPool = next;
+    for (const instance of dropped)
+      void project.unmountPluginWebview(instance.pluginId, instance.instanceId).catch(() => undefined);
+  });
 });
 
 /**
@@ -1865,23 +1923,91 @@ let writingMountGeneration = 0;
 /** Attachment for the Writing content pane: tracks whether the pane element is in the document. */
 function trackWritingMount() {
   const generation = ++writingMountGeneration;
+  // The outgoing instance may be fullscreen inside its own webview: end that before the state resets.
+  endWritingFullscreen();
   writingWebview.mounted = true;
   writingWebview.ready = false;
+  writingHostedInstance = null;
   writingLoadKey = null;
   writingLoad = null;
   writingEditablePosted = null;
-  writingFullscreen = false;
   writingFlush.releaseAll();
   return () => {
     if (generation !== writingMountGeneration) return;
+    endWritingFullscreen();
     writingWebview.mounted = false;
     writingWebview.ready = false;
+    writingHostedInstance = null;
     writingLoadKey = null;
     writingLoad = null;
     writingEditablePosted = null;
-    writingFullscreen = false;
     writingFlush.releaseAll();
   };
+}
+
+const writingRef = (instanceId: string): WebviewInstanceRef => ({ pluginId: WRITING_PLUGIN_ID, instanceId });
+
+/**
+ * Called by the pooled Writing `SandboxView` right before the host mount. Records the instance as used and not
+ * ready (the mount decides below whether a ready document is adopted), and returns the instances to keep: this one
+ * plus the most recently used others, `WEBVIEW_POOL_LIMIT` in all. The host closes every other embedded webview.
+ *
+ * The entry exists before the host can create the webview, so its `ready` report is never lost. Readiness the
+ * entry had before is kept aside: `writingMounted` restores it only if the host reused the webview.
+ *
+ * Reuse is asked for only when the pool already knew this instance with the same mount key. A closed tab's entry is
+ * pruned at once, but its unmount may still be in flight when the reopened tab (same id) mounts; adopting that
+ * label would show a document whose `ready` report the shell never recorded, and Writing would wait forever.
+ */
+function beginPooledWritingMount(
+  self: WebviewInstanceRef,
+  mountKey: string,
+): { retain: WebviewInstanceRef[]; reuse: boolean } {
+  const before = findWebviewEntry(webviewPool, self);
+  const known = Boolean(before && before.mountKey === mountKey);
+  writingMountPriorReady = known && Boolean(before?.ready);
+  webviewPool = markReady(touchWebviewPool(webviewPool, self, mountKey, Date.now()), self, false);
+  writingMountRetained = retainSet(webviewPool, self, WEBVIEW_POOL_LIMIT);
+  return { retain: writingMountRetained, reuse: known };
+}
+
+/**
+ * Called by every unpooled embedded `SandboxView` (Language, the graph, Chronology, other sandbox views) right before
+ * its host mount. The mounting webview counts toward the pool limit, so the most recently used pooled instances
+ * that fit beside it survive and the rest close. Without this, visiting Lore would close every hidden Writing.
+ */
+function prepareUnpooledMount(self: WebviewInstanceRef): { retain: WebviewInstanceRef[]; reuse: boolean } {
+  const retain = retainSet(webviewPool, self, WEBVIEW_POOL_LIMIT);
+  webviewPool = removeWebviews(webviewPool, evicted(webviewPool, retain));
+  return { retain, reuse: false };
+}
+
+/** The host finished mounting the pooled Writing instance (`self` is the one on screen). */
+function writingMounted(outcome: "reused" | "created", self: WebviewInstanceRef) {
+  // The host closed every embedded webview outside the retain list; forget those.
+  webviewPool = removeWebviews(webviewPool, evicted(webviewPool, writingMountRetained));
+  if (self.instanceId !== shownWebviewInstance || !findWebviewEntry(webviewPool, self)) return;
+  if (outcome === "reused" && writingMountPriorReady) webviewPool = markReady(webviewPool, self, true);
+  writingMountPriorReady = false;
+  writingHostedInstance = self.instanceId;
+  // A reused webview already loaded its document and will not report ready again. A webview that is still
+  // loading reports it later, through the state event. `writing.load` is posted by the load effect, as for a
+  // new webview: the tracker above left `writingLoad` and `writingLoadKey` empty.
+  if (outcome === "reused" && findWebviewEntry(webviewPool, self)?.ready) {
+    writingWebview.ready = true;
+    writingReadyCount += 1;
+  }
+}
+
+/**
+ * A `ready` report from an instance the shell is not showing. The shell ignores such events, but the pool must know
+ * that instance's document loaded, or a later reuse would wait for a report that already came.
+ */
+function noteHiddenWritingReady(payload: unknown) {
+  const instanceId = (payload as { instanceId?: unknown } | null)?.instanceId;
+  if (typeof instanceId !== "string") return;
+  if (parseWritingStateEvent(payload)?.kind === "ready")
+    webviewPool = markReady(webviewPool, writingRef(instanceId), true);
 }
 
 async function postWritingMessage(message: unknown, instanceId = shownWebviewInstance): Promise<boolean> {
@@ -2054,8 +2180,18 @@ function handleWritingConflictAction(event: Extract<WritingStateEvent, { kind: "
 /** Ends the Writing webview's full screen from the shell's side, and tells the webview to leave its own. */
 function exitWritingFullscreen() {
   if (!writingFullscreen) return;
+  endWritingFullscreen();
+}
+
+/**
+ * Ends the full screen and tells the instance that reported it, which is not always the one on screen: the effect
+ * below runs after a tab switch has already changed `shownWebviewInstance`.
+ */
+function endWritingFullscreen() {
+  const instance = writingFullscreenInstance;
   writingFullscreen = false;
-  if (writingWebview.ready) void postWritingMessage(writingFullscreenMessage(false));
+  writingFullscreenInstance = null;
+  if (instance) void postWritingMessage(writingFullscreenMessage(false), instance);
 }
 
 // The full screen belongs to the entry on screen: choosing another entry, or leaving the Writing pane, ends it.
@@ -2140,8 +2276,10 @@ function handleWritingStateEvent(event: WritingStateEvent) {
       writingLoad = null;
       writingEditablePosted = null;
       writingFullscreen = false;
+      writingFullscreenInstance = null;
       writingFlush.releaseAll();
       writingWebview.ready = true;
+      webviewPool = markReady(webviewPool, writingRef(shownWebviewInstance), true);
       writingReadyCount += 1;
       return;
     case "draft":
@@ -2167,7 +2305,10 @@ function handleWritingStateEvent(event: WritingStateEvent) {
       return;
     case "fullscreen":
       // Only the entry on screen can change the full screen; a message for any other entry is stale.
-      if (writingWebview.mounted && event.entityId === selected?.id) writingFullscreen = event.on;
+      if (writingWebview.mounted && event.entityId === selected?.id) {
+        writingFullscreen = event.on;
+        writingFullscreenInstance = event.on ? shownWebviewInstance : null;
+      }
       return;
     case "shortcut":
       if (writingWebview.mounted) runShellShortcut(event.shortcut);
@@ -7832,6 +7973,9 @@ function resetProjectSessionState() {
   closeAiRewrite();
   clearSelection();
   shellTabs = freshShellTabs();
+  // Callers close every plugin webview (`leavePluginView({ closeWebviews: true })`) before this runs.
+  webviewPool = emptyWebviewPool;
+  writingMountRetained = [];
   shellNavigationBusy = false;
   collectionScrollBySection = {};
   pendingCollectionScroll = null;
@@ -8251,7 +8395,10 @@ onMount(() => {
     .catch(() => {});
   let unlistenWritingState: (() => void) | undefined;
   void listen<unknown>("writing-state", (event) => {
-    if (foreignWebviewInstance(event.payload)) return;
+    if (foreignWebviewInstance(event.payload)) {
+      noteHiddenWritingReady(event.payload);
+      return;
+    }
     const message = parseWritingStateEvent(event.payload);
     if (message) handleWritingStateEvent(message);
   })
@@ -9365,7 +9512,8 @@ onMount(() => {
                 pluginId={projection.pluginId}
                 instanceId={shownWebviewInstance}
                 holdMount={shellNavigationBusy}
-                title={projection.title} />
+                title={projection.title}
+                prepareMount={prepareUnpooledMount} />
             {/key}
           {/key}
         </section>
@@ -9383,7 +9531,8 @@ onMount(() => {
               instanceId={shownWebviewInstance}
               holdMount={shellNavigationBusy}
               viewId={sandboxView.view?.id}
-              title={sandboxView.plugin.name} />
+              title={sandboxView.plugin.name}
+              prepareMount={prepareUnpooledMount} />
           {/key}
         {/key}
       </SpecializedSurface>
@@ -9898,7 +10047,8 @@ onMount(() => {
                   viewId="language-workspace"
                   title="Language"
                   entityId={selected?.id}
-                  moduleState={{ pane: languagePane }} />
+                  moduleState={{ pane: languagePane }}
+                  prepareMount={prepareUnpooledMount} />
               </div>
             {/key}
           {/key}
@@ -9925,7 +10075,10 @@ onMount(() => {
                   instanceId={shownWebviewInstance}
                   holdMount={shellNavigationBusy}
                   viewId="writing-workspace"
-                  title="Writing" />
+                  title="Writing"
+                  pooled
+                  prepareMount={beginPooledWritingMount}
+                  onmounted={writingMounted} />
               </div>
             {/key}
           </div>

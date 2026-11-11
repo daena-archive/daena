@@ -59,6 +59,7 @@ assert.doesNotMatch(frame, /srcdoc|sandbox=/, "main webview must not host plugin
 assert.match(frame, /mountPluginWebview/);
 assert.match(frame, /resizePluginWebview/);
 assert.match(frame, /unmountPluginWebview/);
+assert.match(frame, /suspendPluginWebview/);
 assert.doesNotMatch(
   plugin,
   /__TAURI_INTERNALS__|@tauri-apps/,
@@ -150,6 +151,7 @@ assert.doesNotMatch(
   "plugin isolation script must neutralize Tauri internals fail-soft",
 );
 assert.match(tauriSource, /plugin_unmount_webview/);
+assert.match(tauriSource, /plugin_suspend_webview/);
 assert.match(tauriSource, /use_https_scheme\(true\)/);
 assert.match(tauriSource, /register_uri_scheme_protocol\("plugin"/);
 assert.doesNotMatch(
@@ -254,7 +256,7 @@ assert.match(route, /<WorkspaceTopbar/);
 assert.match(route, /\{:else if projectionSandboxKey\(\)\}/);
 assert.match(
   route,
-  /<SandboxView\s+pluginId=\{projection\.pluginId\}\s+instanceId=\{shownWebviewInstance\}\s+holdMount=\{shellNavigationBusy\}\s+title=\{projection\.title\}\s*\/>/,
+  /<SandboxView\s+pluginId=\{projection\.pluginId\}\s+instanceId=\{shownWebviewInstance\}\s+holdMount=\{shellNavigationBusy\}\s+title=\{projection\.title\}\s+prepareMount=\{prepareUnpooledMount\}\s*\/>/,
   "the World graph and Chronology mount one SandboxView with their table entry",
 );
 assert.match(
@@ -320,7 +322,7 @@ assert.match(tauriSource, /\("daena\.writing", "\/dist\/ui\/writing\.css"\)/);
 // kept mounted across selections. It is the only editor for them; there is no flag for the old path.
 assert.match(
   route,
-  /<SandboxView\s+pluginId="daena\.writing"\s+instanceId=\{shownWebviewInstance\}\s+holdMount=\{shellNavigationBusy\}\s+viewId="writing-workspace"\s+title="Writing"\s*\/>/,
+  /<SandboxView\s+pluginId="daena\.writing"\s+instanceId=\{shownWebviewInstance\}\s+holdMount=\{shellNavigationBusy\}\s+viewId="writing-workspace"\s+title="Writing"\s+pooled\s+prepareMount=\{beginPooledWritingMount\}\s+onmounted=\{writingMounted\}\s*\/>/,
   "the Writing content pane must mount the isolated daena.writing webview",
 );
 assert.doesNotMatch(

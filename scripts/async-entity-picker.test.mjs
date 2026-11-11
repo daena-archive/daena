@@ -163,7 +163,7 @@ assert.match(shell, /newInManuscript/);
 assert.match(shell, /toShellSortField/);
 assert.match(shell, /resolveSelectedEntities/);
 assert.match(shell, /Promise\.all/);
-assert.match(shell, /collectionRefreshEpoch/);
+assert.match(locationStore, /collectionRefreshEpoch/);
 assert.match(shell, /refreshAfterEntityMutation/);
 assert.match(
   locationStore,
@@ -181,7 +181,7 @@ assert.doesNotMatch(
   "stale selected.revision must not be reused for relationship OCC",
 );
 assert.match(shell, /bumpCollectionRefresh/);
-assert.match(shell, /queueCollectionScroll/);
+assert.match(locationStore, /queueCollectionScroll/);
 assert.match(shell, /searchEntities=\{searchEntitiesPaged\(\)\}/);
 assert.doesNotMatch(shell, /RelationshipPicker[\s\S]{0,120}\{entities\}/);
 

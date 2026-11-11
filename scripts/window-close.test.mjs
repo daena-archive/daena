@@ -21,6 +21,7 @@ const between = (source, start, end) => {
 };
 
 const page = await read("src/routes/+page.svelte");
+const store = await read("src/lib/location/location-store.svelte.ts");
 const handler = between(page, "onCloseRequested(async (event) => {", ".then((cleanup) => {");
 
 const preventIndex = handler.indexOf("event.preventDefault();");
@@ -49,7 +50,7 @@ const branches = [
   ],
   [
     "plugin view guard refuses",
-    /if \(!\(await leavePluginView\(\{ closeWebviews: true \}\)\)\) \{\s*await keepWindowOpen\(\);\s*return;\s*\}/,
+    /if \(!\(await loc\.leavePluginView\(\{ closeWebviews: true \}\)\)\) \{\s*await keepWindowOpen\(\);\s*return;\s*\}/,
   ],
   ["every check passed", /await project\.appCloseConfirm\(\);\s*\} catch \(cause\)/],
   ["exception", /\} catch \(cause\) \{[\s\S]*?await keepWindowOpen\(\);\s*\} finally/],
@@ -60,10 +61,10 @@ for (const [name, pattern] of branches) {
 
 // Pooled Writing webviews outlive their view, so quit and project close must still destroy every one.
 // The close handler leaves through `leavePluginView({ closeWebviews: true })`, which sweeps every `plugin:` label.
-const leave = between(page, "async function leavePluginView(", "\n}\n");
+const leave = between(store, "async leavePluginView(", "\n  }\n");
 assert.match(
   leave,
-  /options\.closeWebviews\) await closeNativePluginWebviews\(\)/,
+  /options\.closeWebviews\) await this\.ctx\.closeNativePluginWebviews\(\)/,
   "closeWebviews sweeps the plugin webviews",
 );
 assert.match(

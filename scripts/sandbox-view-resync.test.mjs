@@ -63,17 +63,23 @@ assert.match(mounting, /lastBoundsKey = boundsKey\(bounds\);/, "the bounds sent 
 assert.match(mounting, /lastBoundsKey = null;/, "a mount starts with no bounds recorded");
 
 const shell = await read("src/routes/+page.svelte");
+const store = await read("src/lib/location/location-store.svelte.ts");
+const projections = await read("src/lib/location/projection-sandboxes.ts");
 for (const pluginId of ["daena.lore", "daena.timeline"]) {
-  assert.match(shell, new RegExp(`pluginId: "${pluginId.replace(".", "\\.")}"`), `${pluginId} is a projection sandbox`);
+  assert.match(
+    projections,
+    new RegExp(`pluginId: "${pluginId.replace(".", "\\.")}"`),
+    `${pluginId} is a projection sandbox`,
+  );
 }
-const projectionKey = between(shell, "function projectionSandboxKey()", "/** True while");
+const projectionKey = between(store, "projectionSandboxKey(): ProjectionSandboxKey", "/** True while");
 assert.match(projectionKey, /sandboxView\.renderer !== "webview"/, "projection sandboxes are sandboxView webviews");
-const opener = between(shell, "async function openProjection()", "\n}\n");
+const opener = between(store, "async openProjection()", "\n  }\n");
 assert.match(opener, /renderer: "webview"/, "openProjection opens the projection as a webview sandbox view");
 const embedded = between(shell, "const embeddedPluginWebviewIds", "async function setPluginWebviewVisibleQuietly");
 assert.match(
   embedded,
-  /sandboxView\?\.renderer === "webview"\) ids\.add\(sandboxView\.plugin\.id\)/,
+  /sandboxView\?\.renderer === "webview"\) ids\.add\(loc\.sandboxView\.plugin\.id\)/,
   "the open sandbox view's plugin, which is a projection while one is open, is in the hidden set",
 );
 

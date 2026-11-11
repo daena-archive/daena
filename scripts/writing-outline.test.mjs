@@ -151,9 +151,10 @@ const pane = readFileSync(join(root, "src/lib/shell/CollectionPane.svelte"), "ut
 assert.match(pane, /groupedAriaLabel/);
 assert.match(pane, /Grouped by type/);
 const shell = readFileSync(join(root, "src/routes/+page.svelte"), "utf8");
+const locationStore = readFileSync(join(root, "src/lib/location/location-store.svelte.ts"), "utf8");
 assert.match(shell, /manuscriptStructureMode/);
 assert.match(shell, /Grouped by structure/);
-assert.match(shell, /listManuscriptOutlineSummaries/);
+assert.match(locationStore, /listManuscriptOutlineSummaries/);
 assert.match(shell, /outlineRoleLabel/);
 assert.match(shell, /manuscriptPathLabels/);
 assert.doesNotMatch(shell, /showManuscriptOutline/);

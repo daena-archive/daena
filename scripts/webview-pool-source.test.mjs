@@ -181,7 +181,7 @@ assert.match(languageMountedSource, /if \(!settled\.ready\) return;/, "only a re
 assert.match(languageMountedSource, /languageWebview\.ready = true;/);
 assert.match(
   languageMountedSource,
-  /postLanguageMessage\(languageResumeMessage\(entityId, languagePane\), self\.instanceId\)/,
+  /postLanguageMessage\(languageResumeMessage\(entityId, loc\.languagePane\), self\.instanceId\)/,
   "language.resume carries the selected language and the shell's pane",
 );
 assert.match(languageMountedSource, /languageHostedInstance = self\.instanceId;/);

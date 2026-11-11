@@ -5,7 +5,8 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { appVersion, appVersionSyncFallback } from "$lib/appVersion";
 const logoUrl = "/branding/logo.png";
 import { revokeAllResolvedAssetUrls } from "$lib/assets/resolve";
-import { LocationStore, isRevisionConflict } from "$lib/location/location-store.svelte";
+import { LocationStore, isRevisionConflict, type PluginNavigationItem } from "$lib/location/location-store.svelte";
+import { PROJECTION_SANDBOXES, type ProjectionSandboxKey } from "$lib/location/projection-sandboxes";
 import { installShellEditorHost, setShellEntityOpener, shellEditorHost } from "$lib/editor/shell-host";
 import {
   project,
@@ -48,13 +49,9 @@ import {
   manifestOwningRelationshipType,
 } from "$lib/modules/contributed-fields";
 import {
-  buildManuscriptOutline,
   collectOutlineIds,
-  collectPartOfEdges,
-  defaultExpandedOutlineIds,
   isManuscriptType,
   MANUSCRIPT_OUTLINE_CAP,
-  outlinePathIds,
   outlineRoleLabel,
   paginateOutlineRoots,
   WRITING_FEATURES,
@@ -63,12 +60,10 @@ import {
 import {
   emptyShellNavigationHistory,
   recordShellLocation,
-  sameShellLocation,
   shellHistoryBack,
   shellHistoryForward,
   type ShellLocation,
   type ShellNavigationHistory,
-  type WorkspaceLocationView,
 } from "$lib/navigation/history";
 import { openIntent, type OpenIntent } from "$lib/navigation/open-intent";
 import { isTabShortcut, tabShortcutForKey, type TabShortcut } from "$lib/navigation/tab-shortcuts";
@@ -101,16 +96,12 @@ import {
   type TabIcon,
 } from "$lib/navigation/tabs";
 import {
-  collectionEntityTypes,
-  collectionTabForEntityType,
   presentCollectionPage,
   type LanguagePane,
-  type TimelineView,
   type WorkspaceSection,
   type ProjectSection,
   type SettingsSection,
   type CollectionResult,
-  type WritingView,
   workspaceCollectionTabs,
   workspaceSectionDescription,
   workspaceSectionViewNav,
@@ -123,7 +114,6 @@ import {
   viewRenderer,
   workspaceDescription,
   workspaceSectionLabel,
-  type NavigationRenderer,
 } from "$lib/modules/workspace-presentation";
 import {
   collectionPaneMax,
@@ -251,8 +241,8 @@ import {
   readUpdateChannelPreference,
   type UpdateChannelPreference,
 } from "$lib/appUpdate.ts";
-import { formatHouseMemberSummary, houseMemberSummaries } from "$lib/houses/fetch.ts";
-import { treeHistoryKey, sameTreeSession, HOUSE_TYPE, PERSON_TYPE, type TreeSession } from "$lib/houses/model.ts";
+import { formatHouseMemberSummary } from "$lib/houses/fetch.ts";
+import { treeHistoryKey, sameTreeSession, HOUSE_TYPE, PERSON_TYPE } from "$lib/houses/model.ts";
 import TreeSurface from "$lib/houses/TreeSurface.svelte";
 import EntityAvatar from "$lib/EntityAvatar.svelte";
 import EntityArchiveAction from "$lib/entity-lifecycle/EntityArchiveAction.svelte";
@@ -295,7 +285,6 @@ import {
 import {
   LANGUAGE_PLUGIN_ID,
   LanguageLeaveTracker,
-  isLanguagePane,
   languageResumeMessage,
   openableLinkHref,
   parseLanguageStateEvent,
@@ -311,7 +300,6 @@ import {
   writingLoadMessage,
   writingMessageCurrent,
   writingTitleMessage,
-  writingWebviewHandles,
   type WritingBridgeDraft,
   type WritingBridgeShortcut,
   type WritingLoad,
@@ -387,14 +375,9 @@ type WorkspaceNavigationItem = {
   renderer: "workspace" | "maps";
   view?: PluginAdminEntry["views"][number];
 };
-type PluginNavigationItem = {
-  kind: "plugin";
-  plugin: PluginAdminEntry;
-  view: PluginAdminEntry["views"][number];
-  key: string;
-  renderer: Exclude<NavigationRenderer, "workspace">;
-};
 type NavigationItem = WorkspaceNavigationItem | PluginNavigationItem;
+/** The icon each projection sandbox shows in its topbar. The table itself lives with the location store. */
+const PROJECTION_ICONS: Record<ProjectionSandboxKey, typeof Network> = { lore: Network, timeline: CalendarRange };
 
 const recentProjectsKey = "daena.recent-projects";
 let settingsMigrated = false;
@@ -419,7 +402,6 @@ let ready = $state(false);
 let error = $state("");
 let projectTransitionBusy = $state(false);
 let projectTransitionMessage = $state("");
-let projectHomeOpen = $state(true);
 function homeNewTab(): NewTab {
   return { id: crypto.randomUUID(), location: { kind: "home" }, title: "Home", icon: { kind: "home" } };
 }
@@ -440,12 +422,6 @@ $effect(() => {
 });
 let shellNavigationBusy = $state(false);
 let shellNavigationRestoring = false;
-let section = $state<WorkspaceSection>("lore");
-let writingView = $state<WritingView>("manuscripts");
-let timelineView = $state<TimelineView>("events");
-let loreGuideHint = $state(0);
-let timelineGuideHint = $state(0);
-let languagePane = $state<LanguagePane>("overview");
 /** Mount state of the Language webview: `mounted` while its content pane element exists, `ready` after it reports ready. */
 let languageWebview = $state({ mounted: false, ready: false });
 /** Can-leave requests to the Language webview, resolved by its leave-pending/leave-reply/ready messages. */
@@ -505,7 +481,6 @@ const writingFlush = createWritingFlushBroker({
 let writingDraftQueue: Promise<unknown> = Promise.resolve();
 /** The last `writing.editable` value the webview was told, so only changes are posted. */
 let writingEditablePosted: boolean | null = null;
-let housesView = $state<WorkspaceLocationView>("houses");
 let calendarDefinitions = $state<Record<string, CalendarDefinition>>({});
 /** Bounded calendar entity list from paged queries — avoids scanning the full entity cache. */
 let calendarEntities = $state<Entity[]>([]);
@@ -528,20 +503,20 @@ const loc: LocationStore = new LocationStore({
   get calendarDefinitions() {
     return calendarDefinitions;
   },
-  get section() {
-    return section;
-  },
-  get writingView() {
-    return writingView;
-  },
   get ready() {
     return ready;
   },
   get projectInfo() {
     return projectInfo;
   },
-  get sandboxView() {
-    return sandboxView;
+  get adminPlugins() {
+    return adminPlugins;
+  },
+  get moduleCount() {
+    return modules.length;
+  },
+  get workspaceSectionOrder() {
+    return workspaceSectionOrder;
   },
   confirmDialog: (options) => confirmDialog(options),
   setError: (message) => {
@@ -553,11 +528,36 @@ const loc: LocationStore = new LocationStore({
     showCreateForm = false;
   },
   canLeaveLanguageSection: () => canLeaveLanguageSection(),
-  leavePluginView: () => leavePluginView(),
   flushWritingWebview: () => flushWritingWebview(),
-  currentShellLocation: () => currentShellLocation(),
   recordShellDeparture: (location) => recordShellDeparture(location),
-  applyCollectionTabForEntityType: (entityType) => applyCollectionTabForEntityType(entityType),
+  setShellNavigationRestoring: (restoring) => {
+    shellNavigationRestoring = restoring;
+  },
+  closeNativePluginWebviews: () => closeNativePluginWebviews(),
+  resolveDirtyMapSession: () => resolveDirtyMapSession(),
+  currentMapId: () => currentMapId(),
+  setMapsEditorMode: (mode) => {
+    mapsEditorMode = mode;
+  },
+  setMapsEditorKey: (key) => {
+    mapsEditorKey = key;
+  },
+  clearMapFocus: () => {
+    mapFocusLinkId = null;
+    mapFocusFeatureId = null;
+  },
+  dismissSettings: () => dismissSettings(),
+  openSettings: (nextSection) => openSettings(nextSection),
+  openProjectCenter: (nextSection) => openProjectCenter(nextSection),
+  requestLanguagePane: (pane) => requestLanguagePane(pane),
+  clearGlobalQuery: () => {
+    globalQuery = "";
+  },
+  refreshAdmin: () => refreshAdmin(),
+  pluginNavigationItemByKey: (key) => pluginNavigationItemByKey(key),
+  appendEntityToCache: (entity) => {
+    entities = [...entities, entity];
+  },
   closeAiFieldFill: () => closeAiFieldFill(),
   closeAiRewrite: () => closeAiRewrite(),
   contextFor: (target) => contextFor(target),
@@ -571,7 +571,16 @@ const loc: LocationStore = new LocationStore({
   mapsEnabled: () => mapsEnabled(),
   sectionEntityTypes: () => sectionEntityTypes(),
   activeTabEntityTypes: () => activeTabEntityTypes(),
-  specializedSurfaceKey: () => specializedSurfaceKey(),
+  manifestForWorkspaceSection: (target) => manifestForWorkspaceSection(target),
+  collectionTabsFor: (target) => collectionTabsFor(target),
+  enabledWorkspaceSections: () => enabledWorkspaceSections(),
+  allEntityTypesForSection: (target) => allEntityTypesForSection(target),
+  sectionForEntityType: (entityType) => sectionForEntityType(entityType),
+  collectionResult: () => collectionResult(),
+  housesModuleContext: () =>
+    buildModuleContext(housesManifestJson as unknown as ModuleManifest, projectInfo?.root ?? "", {
+      availableServices: enabledServices(),
+    }),
   upsertEntityInCache: (entity) => upsertEntityInCache(entity),
   refreshAfterEntityMutation: (options) => refreshAfterEntityMutation(options),
   loadEraContexts: (eraIds) => loadEraContexts(eraIds),
@@ -611,10 +620,6 @@ let mapPickPending = $state<
 let mapReconcileNotice = $state("");
 let mapPickNotice = $state("");
 let projectDiagnostics = $state<string[]>([]);
-let showSettings = $state(false);
-let settingsSurface = $state<"application" | "project">("application");
-let settingsSection = $state<SettingsSection>("general");
-let projectSection = $state<ProjectSection>("overview");
 let archivedCount = $state(0);
 let statusCenterOpen = $state(false);
 let tabStripPopoverOpen = $state(false);
@@ -785,17 +790,6 @@ let aiSourceEntityId = $state<string | null>(null);
 let aiFieldFillEntityId = $state<string | null>(null);
 let aiFieldFillLastSequence = $state(-1);
 let adminPlugins = $state<PluginAdminEntry[] | null>(null);
-let hostView = $state<{ plugin: PluginAdminEntry; view: PluginAdminEntry["views"][number] } | null>(null);
-let sandboxView = $state<{
-  plugin: PluginAdminEntry;
-  view: PluginAdminEntry["views"][number] | null;
-  renderer: "maps" | "webview";
-} | null>(null);
-let treeRootId = $state<string | null>(null);
-let treeSession = $state<TreeSession | null>(null);
-let treeRestoreNonce = $state(0);
-let loreWikiOpen = $state(false);
-let loreWikiEntityId = $state<string | null>(null);
 let adminBusy = $state(false);
 let pluginActionId = $state<string | null>(null);
 let installing = $state(false);
@@ -937,29 +931,29 @@ $effect(() => {
 });
 
 const activeModuleId = () =>
-  section === "lore"
+  loc.section === "lore"
     ? "daena.lore"
-    : section === "timeline"
+    : loc.section === "timeline"
       ? "daena.timeline"
-      : section === "writing"
+      : loc.section === "writing"
         ? "daena.writing"
-        : section === "language"
+        : loc.section === "language"
           ? "daena.language"
-          : section === "houses"
+          : loc.section === "houses"
             ? "daena.houses"
             : "daena.maps";
 const activeManifest = () => {
   const fromProject = modules.find((module) => module.id === activeModuleId());
   if (fromProject) return fromProject as unknown as ModuleManifest;
-  return (section === "lore"
+  return (loc.section === "lore"
     ? loreManifestJson
-    : section === "timeline"
+    : loc.section === "timeline"
       ? timelineManifestJson
-      : section === "writing"
+      : loc.section === "writing"
         ? writingManifestJson
-        : section === "language"
+        : loc.section === "language"
           ? languageManifestJson
-          : section === "houses"
+          : loc.section === "houses"
             ? housesManifestJson
             : null) as unknown as ModuleManifest | null;
 };
@@ -985,20 +979,13 @@ function sectionEntityTypeDefs(target: WorkspaceSection) {
 function collectionTabsFor(target: WorkspaceSection) {
   return workspaceCollectionTabs(target, sectionEntityTypeDefs(target));
 }
-function activeCollectionTab(target: WorkspaceSection = section) {
+function activeCollectionTab(target: WorkspaceSection = loc.section) {
   const tabs = collectionTabsFor(target);
-  const id = target === "timeline" ? timelineView : target === "writing" ? writingView : null;
+  const id = target === "timeline" ? loc.timelineView : target === "writing" ? loc.writingView : null;
   return (id ? tabs.find((tab) => tab.id === id) : undefined) ?? tabs[0];
 }
-function applyCollectionTabForEntityType(entityType: string | null) {
-  const owner = sectionForEntityType(entityType) ?? section;
-  const tab = collectionTabForEntityType(collectionTabsFor(owner), entityType);
-  if (!tab) return;
-  if (owner === "writing") writingView = tab.id;
-  if (owner === "timeline") timelineView = tab.id;
-}
 function workspaceViewNavItems() {
-  return workspaceSectionViewNav(section, sectionEntityTypeDefs(section));
+  return workspaceSectionViewNav(loc.section, sectionEntityTypeDefs(loc.section));
 }
 function enabledWorkspaceSections() {
   return workspaceSectionOrder.filter((target) =>
@@ -1182,7 +1169,7 @@ function editTypeWarning(): string | null {
 const definitions = () => {
   const entityType =
     loc.selected?.entity_type ??
-    (section === "timeline" || section === "writing" ? activeCollectionTab()?.entityTypes[0] : undefined);
+    (loc.section === "timeline" || loc.section === "writing" ? activeCollectionTab()?.entityTypes[0] : undefined);
   const active = activeManifest();
   if (!active) return [];
   return contributedRelationshipFields<FieldDefinition>(
@@ -1238,8 +1225,9 @@ function selectedCreateOption() {
   return createOptions().find((option) => option.key === selectedCreateKey) ?? null;
 }
 function defaultCreateOption(options: CreateOption[]) {
-  const moduleId = workspaceModuleId(section);
-  const tabTypes = section === "timeline" || section === "writing" ? (activeCollectionTab()?.entityTypes ?? []) : null;
+  const moduleId = workspaceModuleId(loc.section);
+  const tabTypes =
+    loc.section === "timeline" || loc.section === "writing" ? (activeCollectionTab()?.entityTypes ?? []) : null;
   return (
     options.find(
       (option) => option.module.id === moduleId && (tabTypes ? tabTypes.includes(option.template.entityType) : true),
@@ -1371,7 +1359,7 @@ function clearCreateDateField(key: string) {
   createDateCalendarByField = next;
 }
 
-function contextFor(currentSection = section): ModuleContext {
+function contextFor(currentSection = loc.section): ModuleContext {
   if (!projectInfo?.root) throw new Error("No project is open");
   const moduleId =
     currentSection === "lore"
@@ -1417,7 +1405,7 @@ async function closeNativePluginWebviews() {
 
 async function resolveDirtyMapSession(): Promise<boolean> {
   const mapId = currentMapId();
-  if (!mapId || sandboxView?.renderer !== "maps" || mapSaveStates[mapId]?.status !== "dirty") return true;
+  if (!mapId || loc.sandboxView?.renderer !== "maps" || mapSaveStates[mapId]?.status !== "dirty") return true;
   if (mapsEditorMode === "physical") return true;
   if (
     await confirmDialog({
@@ -1442,113 +1430,32 @@ async function resolveDirtyMapSession(): Promise<boolean> {
   });
 }
 
-/**
- * Leaves whatever plugin surface is open. Native plugin webviews are only closed when a
- * full-surface plugin view (host or sandbox) was open, or when the caller asks for it.
- * The Language content pane is not one of those: its SandboxView owns its webview and
- * closes it when it unmounts, so closing every webview here would blank a pane that stays.
- */
-async function leavePluginView(options: { closeWebviews?: boolean } = {}): Promise<boolean> {
-  if (!(await resolveDirtyMapSession())) return false;
-  const fullSurfaceOpen = hostView !== null || sandboxView !== null;
-  loc.editorFullscreen = false;
-  hostView = null;
-  sandboxView = null;
-  if (fullSurfaceOpen || options.closeWebviews) await closeNativePluginWebviews();
-  return true;
-}
-
-type ProjectionSandboxKey = "lore" | "timeline";
-
-/**
- * Projections drawn as isolated plugin webviews in the content column: the Lore World graph and
- * Chronology. Each webview mounts its package entrypoint, so `viewId` is a shell-only id that the
- * manifests do not declare (validate_plugin_view rejects unlisted ids). That is why SandboxView is
- * mounted without a viewId for these surfaces.
- */
-const PROJECTION_SANDBOXES: Record<
-  ProjectionSandboxKey,
-  {
-    moduleName: string;
-    pluginId: string;
-    viewId: string;
-    title: string;
-    subtitle: string;
-    icon: typeof Network;
-    surfaceKey: string;
-  }
-> = {
-  lore: {
-    moduleName: "Lore",
-    pluginId: "daena.lore",
-    viewId: "graph",
-    title: "World graph",
-    subtitle: "Explore entities and their connections",
-    icon: Network,
-    surfaceKey: "workspace:lore:graph",
-  },
-  timeline: {
-    moduleName: "Timeline",
-    pluginId: "daena.timeline",
-    viewId: "chronology",
-    title: "Chronology",
-    subtitle: "Explore your world across time",
-    icon: CalendarRange,
-    surfaceKey: "workspace:timeline:timeline",
-  },
-};
-
-/** The projection whose sandbox webview is the open full surface, if any. */
-function projectionSandboxKey(): ProjectionSandboxKey | null {
-  if (!sandboxView || sandboxView.renderer !== "webview" || !sandboxView.view) return null;
-  const pluginId = sandboxView.plugin.id;
-  const viewId = sandboxView.view.id;
-  const keys = Object.keys(PROJECTION_SANDBOXES) as ProjectionSandboxKey[];
-  return (
-    keys.find(
-      (key) => PROJECTION_SANDBOXES[key].pluginId === pluginId && PROJECTION_SANDBOXES[key].viewId === viewId,
-    ) ?? null
-  );
-}
-
-/** True while the given projection is open, or any projection when `key` is omitted. */
-function projectionSandboxOpen(key?: ProjectionSandboxKey): boolean {
-  const open = projectionSandboxKey();
-  return open !== null && (key === undefined || open === key);
-}
-
 /** The Language workspace is an isolated webview drawn in the content column of the Languages section. */
 const languagePaneShown = $derived(
   ready &&
-    section === "language" &&
+    loc.section === "language" &&
     loc.workbenchPaneVisibility.content &&
-    !projectHomeOpen &&
-    !showSettings &&
-    !hostView &&
-    !sandboxView &&
-    !loreWikiOpen &&
+    !loc.projectHomeOpen &&
+    !loc.showSettings &&
+    !loc.hostView &&
+    !loc.sandboxView &&
+    !loc.loreWikiOpen &&
     enabledWorkspaceSections().includes("language"),
 );
 
-/**
- * A manuscript or reference page is selected in the Writing section. The Writing webview is the only editor for it:
- * the shell editor never renders for such an entry, even in states where the webview is not shown (see
- * `writingWebviewShown`), so a second editor can never take typing next to the webview's drafts.
- */
-const writingEntrySelected = $derived(section === "writing" && writingWebviewHandles(loc.selected?.entity_type));
 /**
  * The Writing webview is the content column's editor for manuscripts and reference pages. It stays mounted while the
  * selection moves between them.
  */
 const writingWebviewShown = $derived(
-  writingEntrySelected &&
+  loc.writingEntrySelected &&
     ready &&
     loc.workbenchPaneVisibility.content &&
-    !projectHomeOpen &&
-    !showSettings &&
-    !hostView &&
-    !sandboxView &&
-    !loreWikiOpen &&
+    !loc.projectHomeOpen &&
+    !loc.showSettings &&
+    !loc.hostView &&
+    !loc.sandboxView &&
+    !loc.loreWikiOpen &&
     enabledWorkspaceSections().includes("writing"),
 );
 /** The content column fills the window while the Writing webview is in full screen (see `writingFullscreen`). */
@@ -1556,11 +1463,11 @@ const writingFullscreenShown = $derived(writingWebviewShown && writingFullscreen
 /** Same gate the standalone view row used: Lore, Timeline, Writing, and Houses, not a full plugin sandbox. */
 const workspaceViewNavShown = $derived(
   ready &&
-    !showSettings &&
-    !projectHomeOpen &&
-    !hostView &&
-    (!sandboxView || projectionSandboxOpen()) &&
-    (section === "lore" || section === "timeline" || section === "writing" || section === "houses"),
+    !loc.showSettings &&
+    !loc.projectHomeOpen &&
+    !loc.hostView &&
+    (!loc.sandboxView || loc.projectionSandboxOpen()) &&
+    (loc.section === "lore" || loc.section === "timeline" || loc.section === "writing" || loc.section === "houses"),
 );
 
 /**
@@ -1622,8 +1529,8 @@ const embeddedPluginWebviewIds = $derived.by(() => {
   const ids = new Set<string>();
   if (languageWebview.mounted) ids.add(LANGUAGE_PLUGIN_ID);
   if (writingWebview.mounted) ids.add(WRITING_PLUGIN_ID);
-  const sandboxShown = ready && !showSettings && !projectHomeOpen && !hostView && !loreWikiOpen;
-  if (sandboxShown && sandboxView?.renderer === "webview") ids.add(sandboxView.plugin.id);
+  const sandboxShown = ready && !loc.showSettings && !loc.projectHomeOpen && !loc.hostView && !loc.loreWikiOpen;
+  if (sandboxShown && loc.sandboxView?.renderer === "webview") ids.add(loc.sandboxView.plugin.id);
   return [...ids];
 });
 
@@ -1752,8 +1659,8 @@ async function postLanguageMessage(message: unknown, instanceId = shownWebviewIn
  * reads `languagePane`.
  */
 function requestLanguagePane(next: LanguagePane) {
-  if (languagePane === next) return;
-  languagePane = next;
+  if (loc.languagePane === next) return;
+  loc.languagePane = next;
   if (!languageWebview.mounted || !languageWebview.ready) {
     languagePaneRequest = null;
     return;
@@ -1766,7 +1673,7 @@ function requestLanguagePane(next: LanguagePane) {
 
 /** Asks the Language webview whether it may be torn down. Resolves true when it is not mounted or ready. */
 async function canLeaveLanguageSection(): Promise<boolean> {
-  if (section !== "language" || !languageWebview.mounted || !languageWebview.ready) return true;
+  if (loc.section !== "language" || !languageWebview.mounted || !languageWebview.ready) return true;
   // Captured before the await. `switchToTab` and `applyTabsChange` call this
   // before they change `shellTabs`, so this is the outgoing tab.
   const instanceId = shownWebviewInstance;
@@ -1786,24 +1693,24 @@ function handleLanguageStateEvent(event: LanguageStateEvent) {
       languagePaneRequest = null;
       languageLeave.releaseAll();
       // The webview mounted with the pane it was given; if the shell moved on meanwhile, the shell wins.
-      if (event.pane !== null && event.pane !== languagePane)
-        void postLanguageMessage({ type: "language.pane", pane: languagePane });
+      if (event.pane !== null && event.pane !== loc.languagePane)
+        void postLanguageMessage({ type: "language.pane", pane: loc.languagePane });
       return;
     }
     case "pane": {
       if (!languageWebview.mounted) return;
-      if (event.pane === languagePane) {
+      if (event.pane === loc.languagePane) {
         languagePaneRequest = null;
         return;
       }
       if (languagePaneRequest !== null) {
         // Answer to a shell request that the webview refused: revert without a history entry.
         languagePaneRequest = null;
-        languagePane = event.pane;
+        loc.languagePane = event.pane;
         return;
       }
-      recordShellDeparture(currentShellLocation());
-      languagePane = event.pane;
+      recordShellDeparture(loc.currentShellLocation());
+      loc.languagePane = event.pane;
       return;
     }
     case "leave-pending":
@@ -1956,7 +1863,7 @@ function writingMounted(outcome: "reused" | "created", self: WebviewInstanceRef)
 function languageMountState(instanceId: string): { pane: LanguagePane } {
   const created = languageCreatedState.get(instanceId);
   const pooled = Boolean(findWebviewEntry(webviewPool, languageRef(instanceId)));
-  return { pane: created && pooled && created.entityId === loc.selected?.id ? created.pane : languagePane };
+  return { pane: created && pooled && created.entityId === loc.selected?.id ? created.pane : loc.languagePane };
 }
 
 /** Called by the pooled Language `SandboxView` right before the host mount. See `beginPooledMount`. */
@@ -1989,7 +1896,7 @@ function languageMounted(outcome: "reused" | "created", self: WebviewInstanceRef
   languagePaneRequest = null;
   languageLeave.releaseAll();
   const entityId = loc.selected?.id;
-  if (entityId) void postLanguageMessage(languageResumeMessage(entityId, languagePane), self.instanceId);
+  if (entityId) void postLanguageMessage(languageResumeMessage(entityId, loc.languagePane), self.instanceId);
 }
 
 /**
@@ -2198,7 +2105,7 @@ $effect(() => {
 /** Moves among the tabs of the active group. A missing index does nothing. One tab does not cycle. */
 function runTabShortcut(shortcut: TabShortcut) {
   if (shortcut === "tab-new") {
-    void openInNewTab(openProjectHome, { position: "end" });
+    void openInNewTab(loc.openProjectHome, { position: "end" });
     return;
   }
   if (shortcut === "tab-close") {
@@ -2330,61 +2237,34 @@ function pluginViewLabel(item: PluginNavigationItem) {
 }
 
 function workspaceNavigationActive(target: WorkspaceSection) {
-  if (projectHomeOpen) return false;
+  if (loc.projectHomeOpen) return false;
   if (target === "maps") {
-    return section === "maps" && !hostView && (!sandboxView || sandboxView.plugin.id === workspaceModuleId(target));
+    return (
+      loc.section === "maps" &&
+      !loc.hostView &&
+      (!loc.sandboxView || loc.sandboxView.plugin.id === workspaceModuleId(target))
+    );
   }
-  return !hostView && !sandboxView && section === target;
+  return !loc.hostView && !loc.sandboxView && loc.section === target;
 }
 
 function pluginNavigationActive(item: PluginNavigationItem) {
   if (item.renderer === "host") {
-    return hostView?.plugin.id === item.plugin.id && hostView.view.id === item.view.id;
+    return loc.hostView?.plugin.id === item.plugin.id && loc.hostView.view.id === item.view.id;
   }
-  return sandboxView?.plugin.id === item.plugin.id && sandboxView.view?.id === item.view.id;
+  return loc.sandboxView?.plugin.id === item.plugin.id && loc.sandboxView.view?.id === item.view.id;
 }
 
 function navigationActive(item: NavigationItem) {
   return item.kind === "workspace" ? workspaceNavigationActive(item.section) : pluginNavigationActive(item);
 }
 
-function currentWorkspaceLocationView(): WorkspaceLocationView {
-  if (section === "lore") {
-    if (loreWikiOpen) return "wiki";
-    if (projectionSandboxOpen("lore")) return "graph";
-    return "library";
-  }
-  if (section === "timeline") {
-    if (projectionSandboxOpen("timeline")) return "timeline";
-    return timelineView;
-  }
-  if (section === "writing") return writingView;
-  if (section === "houses") return housesView;
-  return "default";
-}
-
-function currentModuleState(): Record<string, unknown> | null {
-  if (section === "language") return { pane: languagePane };
-  if (section === "houses" && housesView === "tree") return (treeSession as Record<string, unknown> | null) ?? null;
-  return null;
-}
-
-function restoreModuleState(section: WorkspaceSection, state: Record<string, unknown> | null | undefined) {
-  if (section === "language") {
-    requestLanguagePane(state && isLanguagePane(state.pane) ? state.pane : "overview");
-    return;
-  }
-  if (section === "houses") {
-    treeSession = (state as TreeSession | null) ?? null;
-  }
-}
-
 function workbenchSupportsInspector() {
-  return section !== "language" && (section !== "maps" || sandboxView?.renderer !== "maps");
+  return loc.section !== "language" && (loc.section !== "maps" || loc.sandboxView?.renderer !== "maps");
 }
 
 function workspaceGridStyle() {
-  if (mapSurfaceOpen) return undefined;
+  if (loc.mapSurfaceOpen) return undefined;
   // Full screen hides the other panes, so the content column is the only track.
   if (writingFullscreenShown) return "grid-template-columns: minmax(0, 1fr)";
   const panes = loc.activePaneDimensions();
@@ -2405,58 +2285,9 @@ function workspaceGridStyle() {
   return `grid-template-columns: ${columns.length ? columns.join(" ") : "minmax(0, 1fr)"}`;
 }
 
-function specializedSurfaceKey(): string | null {
-  if (hostView) return `plugin:${hostView.plugin.id}:${hostView.view.id}`;
-  const projection = projectionSandboxKey();
-  if (projection) return PROJECTION_SANDBOXES[projection].surfaceKey;
-  if (sandboxView?.view && sandboxView.renderer !== "maps") {
-    return `plugin:${sandboxView.plugin.id}:${sandboxView.view.id}`;
-  }
-  if (loreWikiOpen) return "workspace:lore:wiki";
-  if (section === "houses" && housesView === "tree") return "workspace:houses:tree";
-  return null;
-}
-
-function currentShellLocation(): ShellLocation {
-  if (showSettings && settingsSurface === "project") return { kind: "project", section: projectSection };
-  if (showSettings) return { kind: "settings", section: settingsSection };
-  if (projectHomeOpen) return { kind: "home" };
-  if (hostView) {
-    return {
-      kind: "plugin",
-      key: `${hostView.plugin.id}:${hostView.view.id}`,
-      section,
-      entityId: loc.selected?.id ?? null,
-      surfaceScrollTop: loc.currentSpecializedSurfaceScrollTop(),
-    };
-  }
-  if (sandboxView?.view && !projectionSandboxOpen()) {
-    return {
-      kind: "plugin",
-      key: `${sandboxView.plugin.id}:${sandboxView.view.id}`,
-      section,
-      entityId: loc.selected?.id ?? null,
-      surfaceScrollTop: loc.currentSpecializedSurfaceScrollTop(),
-      moduleState: null,
-    };
-  }
-  return {
-    kind: "workspace",
-    section,
-    view: currentWorkspaceLocationView(),
-    entityId: section === "houses" && housesView === "tree" ? treeRootId : (loc.selected?.id ?? null),
-    writingView,
-    timelineView,
-    collection: loc.currentWorkspaceCollectionLocation(),
-    panes: loc.currentWorkspacePaneDimensions(),
-    surfaceScrollTop: loc.currentSpecializedSurfaceScrollTop(),
-    moduleState: currentModuleState(),
-  };
-}
-
 function recordCurrentShellLocation() {
   if (!ready || shellNavigationRestoring) return;
-  setShellNavigationHistory(recordShellLocation(shellNavigationHistory, currentShellLocation()));
+  setShellNavigationHistory(recordShellLocation(shellNavigationHistory, loc.currentShellLocation()));
 }
 
 function recordShellDeparture(location: ShellLocation) {
@@ -2477,23 +2308,11 @@ async function openTreePerson(entityId: string) {
   }
   if (!entity || entity.deleted) return;
   if (!(await loc.flushAutoSave())) return;
-  if (!(await leavePluginView())) return;
-  section = "lore";
-  projectHomeOpen = false;
-  loreWikiOpen = false;
+  if (!(await loc.leavePluginView())) return;
+  loc.section = "lore";
+  loc.projectHomeOpen = false;
+  loc.loreWikiOpen = false;
   await loc.selectEntity(entity);
-}
-
-async function openHostView(
-  plugin: PluginAdminEntry,
-  view: PluginAdminEntry["views"][number],
-  departure = currentShellLocation(),
-) {
-  if (!(await dismissSettings())) return;
-  if (!(await leavePluginView())) return;
-  recordShellDeparture(departure);
-  projectHomeOpen = false;
-  hostView = { plugin, view };
 }
 
 function pluginViews(): PluginNavigationItem[] {
@@ -2549,10 +2368,10 @@ function pluginNavigationItemByKey(key: string): PluginNavigationItem | null {
 
 async function openNavigationItem(item: NavigationItem) {
   if (item.kind === "workspace") {
-    await switchSection(item.section);
+    await loc.switchSection(item.section);
     return;
   }
-  await openPluginView(item);
+  await loc.openPluginView(item);
 }
 
 function mostRecentPluginTab(state: ShellTabsState, key: string): ShellTab | null {
@@ -2586,7 +2405,7 @@ function openSidebarNavigationItem(key: string, intent: OpenIntent = "current") 
 
 function openHomeWithIntent(intent: OpenIntent) {
   if (intent === "new-tab") {
-    void openInNewTab(() => openProjectHome());
+    void openInNewTab(() => loc.openProjectHome());
     return;
   }
   const state = snapshotActiveTab();
@@ -2595,7 +2414,7 @@ function openHomeWithIntent(intent: OpenIntent) {
     void switchToTab(home.id);
     return;
   }
-  void openProjectHome();
+  void loc.openProjectHome();
 }
 
 function updateRailCollapsed(collapsed: boolean) {
@@ -2603,62 +2422,19 @@ function updateRailCollapsed(collapsed: boolean) {
   localStorage.setItem("daena:rail-collapsed", String(collapsed));
 }
 
-async function openPluginView(item: PluginNavigationItem, departure = currentShellLocation()) {
-  if (!(await loc.flushAutoSave())) return;
-  if (section === "language" && !(await canLeaveLanguageSection())) return;
-  if (item.renderer === "maps") {
-    if (!(await dismissSettings())) return;
-    const mapId = currentMapId();
-    if (sandboxView?.renderer === "maps") {
-      const mapsWelcome = sandboxView.view === null;
-      if ((mapId === null && mapsWelcome) || (mapId !== null && !mapsWelcome)) return;
-    }
-    if (mapId) {
-      const mapField = (await project.listFields(mapId)).find(
-        (field) => field.namespace === "maps" && field.key === "map",
-      );
-      const descriptor = mapField?.value as { provider?: { id?: string } } | undefined;
-      mapsEditorMode = "vector";
-    }
-    mapFocusLinkId = null;
-    mapFocusFeatureId = null;
-    if (!(await leavePluginView())) return;
-    recordShellDeparture(departure);
-    projectHomeOpen = false;
-    loreWikiOpen = false;
-    section = "maps";
-    sandboxView = mapId
-      ? { plugin: item.plugin, view: item.view, renderer: "maps" }
-      : { plugin: item.plugin, view: null, renderer: "maps" };
-    if (mapId) mapsEditorKey = mapId;
-    else if (!sandboxView.view) mapsEditorKey = "welcome";
-    return;
-  }
-  if (item.renderer === "host") {
-    await openHostView(item.plugin, item.view, departure);
-    return;
-  }
-  if (!(await dismissSettings())) return;
-  if (!(await leavePluginView())) return;
-  recordShellDeparture(departure);
-  projectHomeOpen = false;
-  sandboxView = { plugin: item.plugin, view: item.view, renderer: "webview" };
-}
-
 let mapsEditorMode = $state<"vector" | "physical">("vector");
 let mapsVectorStart = $state<"import" | "geojson">("geojson");
 let mapProviderMenuOpen = $state<"header" | "empty" | null>(null);
-const mapSurfaceOpen = $derived(section === "maps" && sandboxView?.renderer === "maps" && Boolean(sandboxView?.view));
 async function createMap(provider: "image" | "vector" | "physical" = "physical") {
   if (projectDiagnostics.length > 0) return;
   try {
     if (!(await loc.flushAutoSave())) return;
-    const departure = currentShellLocation();
+    const departure = loc.currentShellLocation();
     mapProviderMenuOpen = null;
     const mapView = mapsNavigationItem();
     if (!mapView) throw new Error("The Maps plugin view is not available");
     if (!(await dismissSettings())) return;
-    if (!(await leavePluginView())) return;
+    if (!(await loc.leavePluginView())) return;
     recordShellDeparture(departure);
     loc.selected = null;
     loc.fields = {};
@@ -2667,14 +2443,14 @@ async function createMap(provider: "image" | "vector" | "physical" = "physical")
     loc.mapLocations = [];
     mapFocusLinkId = null;
     mapFocusFeatureId = null;
-    projectHomeOpen = false;
-    loreWikiOpen = false;
-    section = "maps";
+    loc.projectHomeOpen = false;
+    loc.loreWikiOpen = false;
+    loc.section = "maps";
     // Draft editor: no map entity until the native editor accepts/creates one.
     mapsEditorMode = provider === "physical" ? "physical" : "vector";
     mapsVectorStart = provider === "image" ? "import" : "geojson";
     mapsEditorKey = `draft-${Date.now()}`;
-    sandboxView = { plugin: mapView.plugin, view: mapView.view, renderer: "maps" };
+    loc.sandboxView = { plugin: mapView.plugin, view: mapView.view, renderer: "maps" };
   } catch (cause) {
     error = friendlyError(cause);
   }
@@ -2699,7 +2475,7 @@ type SavedMapEntry = Entity & { size: number };
 let savedMapsCache = $state<SavedMapEntry[] | null>(null);
 let savedMapsRequest = 0;
 $effect(() => {
-  const mapsWorkspaceOpen = section === "maps";
+  const mapsWorkspaceOpen = loc.section === "maps";
   void entities;
   if (!ready || !mapsWorkspaceOpen) {
     savedMapsCache = null;
@@ -2757,19 +2533,6 @@ $effect(() => {
   })();
 });
 
-let languageListRefreshed = false;
-$effect(() => {
-  if (!ready || section !== "language") {
-    languageListRefreshed = false;
-    return;
-  }
-  if (languageListRefreshed) return;
-  languageListRefreshed = true;
-  loc.bumpCollectionRefresh();
-  if (!loc.selected && collectionResult().entities.length > 0)
-    void loc.selectEntity(collectionResult().entities[0], false);
-});
-
 function savedMaps() {
   return savedMapsCache ?? [];
 }
@@ -2816,58 +2579,13 @@ function mapConflictDetail(detail: unknown): { path?: string } {
 }
 
 function sectionEntityTypes(): string[] {
-  return manifestForWorkspaceSection(section)?.schemas.flatMap(schemaEntityTypeIds) ?? [];
+  return manifestForWorkspaceSection(loc.section)?.schemas.flatMap(schemaEntityTypeIds) ?? [];
 }
 
 function activeTabEntityTypes(): string[] | undefined {
-  if (section !== "writing" && section !== "timeline") return undefined;
+  if (loc.section !== "writing" && loc.section !== "timeline") return undefined;
   return activeCollectionTab()?.entityTypes ?? [];
 }
-
-$effect(() => {
-  if (!modules.length) return;
-  const timelineTabs = collectionTabsFor("timeline");
-  if (timelineTabs.length > 0 && !timelineTabs.some((tab) => tab.id === timelineView)) {
-    timelineView = timelineTabs[0].id;
-  }
-  const writingTabs = collectionTabsFor("writing");
-  if (writingTabs.length > 0 && !writingTabs.some((tab) => tab.id === writingView)) {
-    writingView = writingTabs[0].id;
-  }
-});
-
-$effect(() => {
-  const housesSection = ready && section === "houses" && housesView === "houses";
-  const ids = loc.collectionPage.items
-    .filter((entity) => {
-      const type = entity.entity_type ?? "";
-      return type === HOUSE_TYPE || type.endsWith(":house");
-    })
-    .map((entity) => entity.id);
-  void loc.collectionRefreshEpoch;
-  if (!housesSection || ids.length === 0) {
-    if (!housesSection) loc.houseCollectionSummaries = new Map();
-    loc.houseSummariesPending = false;
-    return;
-  }
-  const request = ++loc.houseSummaryRequest;
-  loc.houseSummariesPending = true;
-  const context = buildModuleContext(housesManifestJson as unknown as ModuleManifest, projectInfo?.root ?? "", {
-    availableServices: enabledServices(),
-  });
-  void houseMemberSummaries(context, ids)
-    .then((summaries) => {
-      if (request !== loc.houseSummaryRequest) return;
-      loc.houseCollectionSummaries = summaries;
-    })
-    .catch(() => {
-      if (request !== loc.houseSummaryRequest) return;
-      loc.houseCollectionSummaries = new Map();
-    })
-    .finally(() => {
-      if (request === loc.houseSummaryRequest) loc.houseSummariesPending = false;
-    });
-});
 
 function relationshipRowTitle(relationship: Relationship, definition: FieldDefinition) {
   const otherId = relationshipOtherId(definition, relationship);
@@ -2876,149 +2594,6 @@ function relationshipRowTitle(relationship: Relationship, definition: FieldDefin
   }
   return relationshipTargetName(relationship, definition);
 }
-
-$effect(() => {
-  const onManuscripts = ready && Boolean(projectInfo) && section === "writing" && writingView === "manuscripts";
-  const search = loc.collectionQuery.textSearch.trim();
-  const grouped = loc.collectionQuery.viewMode === "grouped";
-  const entityTypes = collectionEntityTypes({
-    entityTypes: new Set(sectionEntityTypes()),
-    tabEntityTypes: activeTabEntityTypes(),
-  });
-  const excludedEntityTypes = [...loc.collectionQuery.excludedTypes];
-  const sortField = loc.collectionQuery.sortField;
-  const sortDirection = loc.collectionQuery.sortDir;
-  const pageItems = loc.collectionPage.items;
-  void loc.collectionRefreshEpoch;
-  if (!onManuscripts) {
-    if (section !== "writing" || writingView !== "manuscripts") {
-      loc.manuscriptOutline = [];
-      loc.manuscriptOutlineEntities = [];
-      loc.manuscriptOutlineTruncated = false;
-      loc.manuscriptOutlineLibraryKey = "";
-      loc.manuscriptPathLabels = {};
-      loc.manuscriptOutlineLoading = false;
-    }
-    return;
-  }
-  const request = ++loc.manuscriptOutlineRequest;
-  if (search) {
-    loc.manuscriptOutline = [];
-    loc.manuscriptOutlineTruncated = false;
-    loc.manuscriptOutlineLoading = false;
-    const seed = pageItems.map((entity) => entity.id);
-    if (seed.length === 0) {
-      loc.manuscriptPathLabels = {};
-      return;
-    }
-    void (async () => {
-      try {
-        const labels = await loc.manuscriptContainmentLabels(seed);
-        if (request !== loc.manuscriptOutlineRequest) return;
-        loc.manuscriptPathLabels = labels;
-      } catch {
-        if (request !== loc.manuscriptOutlineRequest) return;
-        loc.manuscriptPathLabels = {};
-      }
-    })();
-    return;
-  }
-  loc.manuscriptPathLabels = {};
-  if (!grouped) {
-    loc.manuscriptOutline = [];
-    loc.manuscriptOutlineEntities = [];
-    loc.manuscriptOutlineTruncated = false;
-    loc.manuscriptOutlineLoading = false;
-    return;
-  }
-  if (entityTypes.length === 0) {
-    loc.manuscriptOutline = [];
-    loc.manuscriptOutlineEntities = [];
-    loc.manuscriptOutlineTruncated = false;
-    loc.manuscriptOutlineLoading = false;
-    return;
-  }
-  loc.manuscriptOutlineLoading = true;
-  void (async () => {
-    try {
-      const { items, truncated } = await loc.listManuscriptOutlineSummaries(
-        entityTypes,
-        excludedEntityTypes,
-        sortField,
-        sortDirection,
-      );
-      if (request !== loc.manuscriptOutlineRequest) return;
-      const edges = await collectPartOfEdges(
-        items.map((entity) => entity.id),
-        loc.queryWritingPartOf,
-      );
-      if (request !== loc.manuscriptOutlineRequest) return;
-      const roots = buildManuscriptOutline(items, [], edges);
-      const libraryKey = roots.map((node) => node.id).join("\0");
-      if (libraryKey !== loc.manuscriptOutlineLibraryKey) {
-        loc.manuscriptOutlineLibraryKey = libraryKey;
-        loc.manuscriptExpanded = defaultExpandedOutlineIds(roots);
-      } else {
-        const allowed = collectOutlineIds(roots);
-        loc.manuscriptExpanded = new Set([...loc.manuscriptExpanded].filter((id) => allowed.has(id)));
-      }
-      const lastPage = Math.max(0, Math.ceil(roots.length / Math.max(1, loc.collectionQuery.pageSize)) - 1);
-      if (loc.collectionQuery.page > lastPage) loc.collectionQuery.page = lastPage;
-      loc.manuscriptOutlineEntities = items;
-      loc.manuscriptOutlineTruncated = truncated;
-      loc.manuscriptOutline = roots;
-      for (const entity of items) upsertEntityInCache(entity);
-    } catch {
-      if (request !== loc.manuscriptOutlineRequest) return;
-      loc.manuscriptOutline = [];
-      loc.manuscriptOutlineEntities = [];
-      loc.manuscriptOutlineTruncated = false;
-    } finally {
-      if (request === loc.manuscriptOutlineRequest) loc.manuscriptOutlineLoading = false;
-    }
-  })();
-});
-
-$effect(() => {
-  const id = loc.selected?.id;
-  if (!id || loc.manuscriptOutline.length === 0) return;
-  const path = outlinePathIds(loc.manuscriptOutline, id);
-  if (!path || path.length < 2) return;
-  const next = new Set(loc.manuscriptExpanded);
-  let changed = false;
-  for (const ancestor of path.slice(0, -1)) {
-    if (!next.has(ancestor)) {
-      next.add(ancestor);
-      changed = true;
-    }
-  }
-  if (changed) loc.manuscriptExpanded = next;
-});
-
-$effect(() => {
-  const pending = loc.pendingCollectionScroll;
-  void loc.collectionPage.items;
-  void loc.manuscriptOutline;
-  if (
-    !pending ||
-    loc.collectionLoading ||
-    loc.manuscriptOutlineLoading ||
-    loc.collectionQuery.section !== pending.section ||
-    section !== pending.section ||
-    projectHomeOpen ||
-    showSettings ||
-    hostView ||
-    sandboxView ||
-    loreWikiOpen
-  )
-    return;
-  loc.pendingCollectionScroll = null;
-  void tick().then(() => {
-    if (!loc.collectionListElement || section !== pending.section) return;
-    loc.collectionListElement.scrollTop = pending.scrollTop;
-    loc.collectionScrollBySection[pending.section] = loc.collectionListElement.scrollTop;
-  });
-});
 
 function toggleTypeFilter(type: string) {
   const idx = loc.collectionQuery.excludedTypes.indexOf(type);
@@ -3051,8 +2626,8 @@ function entityFromOutlineNode(node: OutlineNode): Entity {
 
 function manuscriptStructureMode() {
   return (
-    section === "writing" &&
-    writingView === "manuscripts" &&
+    loc.section === "writing" &&
+    loc.writingView === "manuscripts" &&
     loc.collectionQuery.viewMode === "grouped" &&
     !loc.collectionQuery.textSearch.trim()
   );
@@ -3076,140 +2651,18 @@ function collectionHeadingCount() {
 
 function collectionRowSubtitle(entity: Entity) {
   if (
-    section === "houses" &&
+    loc.section === "houses" &&
     ((entity.entity_type ?? "") === HOUSE_TYPE || (entity.entity_type ?? "").endsWith(":house"))
   ) {
     return formatHouseMemberSummary(loc.houseCollectionSummaries.get(entity.id), {
       pending: loc.houseSummariesPending && !loc.houseCollectionSummaries.has(entity.id),
     });
   }
-  if (section === "writing" && writingView === "manuscripts" && loc.manuscriptPathLabels[entity.id]) {
+  if (loc.section === "writing" && loc.writingView === "manuscripts" && loc.manuscriptPathLabels[entity.id]) {
     const path = loc.manuscriptPathLabels[entity.id];
     if (path && path !== entity.name) return path;
   }
   return entityTypeLabel(entity.entity_type);
-}
-
-async function selectSearchResult(entity: Entity) {
-  if (!(await loc.flushAutoSave())) return;
-  const owner = workspaceSectionOrder.find((target) =>
-    manifestForWorkspaceSection(target)?.schemas.some((schema) =>
-      schemaEntityTypeIds(schema).includes(entity.entity_type ?? ""),
-    ),
-  );
-  const nextSection: WorkspaceSection = owner && owner !== "maps" ? owner : "lore";
-  if (section === "language" && nextSection !== "language" && !(await canLeaveLanguageSection())) return;
-  const departure = currentShellLocation();
-  if (!(await leavePluginView())) return;
-  recordShellDeparture(departure);
-  section = nextSection;
-  applyCollectionTabForEntityType(entity.entity_type);
-  projectHomeOpen = false;
-  globalQuery = "";
-  loc.collectionQuery.textSearch = "";
-  await loc.selectEntity(entity, false);
-}
-
-async function switchSection(next: WorkspaceSection) {
-  if (!(await loc.flushAutoSave())) return;
-  if (section === next && !projectHomeOpen && (next !== "maps" || sandboxView?.renderer === "maps") && !showSettings)
-    return;
-  if (section === "language" && next !== "language" && !(await canLeaveLanguageSection())) return;
-  const departure = currentShellLocation();
-  if (!(await dismissSettings())) return;
-  if (!(await leavePluginView())) return;
-  recordShellDeparture(departure);
-  const sectionChanged = section !== next;
-  section = next;
-  loc.queueCollectionScroll(next, loc.collectionScrollBySection[next] ?? 0);
-  projectHomeOpen = false;
-  if (sectionChanged) {
-    loc.clearSelection();
-    loc.collectionQuery.textSearch = "";
-  }
-}
-
-async function openProjectHome() {
-  if (!ready || (projectHomeOpen && !showSettings && !hostView && !sandboxView)) return;
-  if (!(await loc.flushAutoSave())) return;
-  if (section === "language" && !(await canLeaveLanguageSection())) return;
-  const departure = currentShellLocation();
-  if (!(await dismissSettings())) return;
-  if (!(await leavePluginView())) return;
-  recordShellDeparture(departure);
-  projectHomeOpen = true;
-  globalQuery = "";
-}
-
-async function reconcileWorkspaceSection() {
-  if (enabledWorkspaceSections().includes(section)) return;
-  if (!(await loc.flushAutoSave())) return;
-  if (!(await leavePluginView())) return;
-  section = enabledWorkspaceSections()[0] ?? "lore";
-  loc.clearSelection();
-  loc.collectionQuery.textSearch = "";
-  loc.editorFullscreen = false;
-}
-
-async function switchWritingView(next: WritingView) {
-  const tabs = collectionTabsFor("writing");
-  const resolved = tabs.some((tab) => tab.id === next) ? next : (tabs[0]?.id ?? next);
-  if (!(await loc.flushAutoSave())) return;
-  if (writingView === resolved && !projectHomeOpen) return;
-  const departure = currentShellLocation();
-  if (!(await leavePluginView())) return;
-  recordShellDeparture(departure);
-  projectHomeOpen = false;
-  writingView = resolved;
-  loc.clearSelection();
-  loc.collectionQuery.textSearch = "";
-}
-
-async function switchTimelineView(next: TimelineView) {
-  const tabs = collectionTabsFor("timeline");
-  const resolved = tabs.some((tab) => tab.id === next) ? next : (tabs[0]?.id ?? next);
-  if (!(await loc.flushAutoSave())) return;
-  if (timelineView === resolved && !projectHomeOpen && !projectionSandboxOpen()) return;
-  const departure = currentShellLocation();
-  if (!(await leavePluginView())) return;
-  recordShellDeparture(departure);
-  projectHomeOpen = false;
-  timelineView = resolved;
-  loc.clearSelection();
-  loc.collectionQuery.textSearch = "";
-}
-
-async function switchHousesView(next: WorkspaceLocationView) {
-  const allowed: WorkspaceLocationView[] = ["houses", "tree"];
-  const resolved = allowed.includes(next) ? next : "houses";
-  if (!(await loc.flushAutoSave())) return;
-  if (section === "houses" && housesView === resolved && !projectHomeOpen) {
-    if (resolved === "tree" && treeRootId) {
-      recordShellDeparture(currentShellLocation());
-      treeRootId = null;
-      treeSession = null;
-    }
-    return;
-  }
-  const departure = currentShellLocation();
-  if (!(await leavePluginView())) return;
-  recordShellDeparture(departure);
-  projectHomeOpen = false;
-  if (section !== "houses") section = "houses";
-  housesView = resolved;
-}
-
-async function switchLanguagePane(next: LanguagePane) {
-  if (!(await loc.flushAutoSave())) return;
-  if (languagePane === next && !projectHomeOpen && section === "language") return;
-  const departure = currentShellLocation();
-  // The Language pane stays mounted across pane switches, so only a full-surface view needs closing here.
-  if (hostView || sandboxView) {
-    if (!(await leavePluginView())) return;
-  }
-  recordShellDeparture(departure);
-  projectHomeOpen = false;
-  requestLanguagePane(next);
 }
 
 function dismissTransientMenus(): boolean {
@@ -3243,27 +2696,27 @@ function dismissTransientMenus(): boolean {
 }
 
 function sectionLabel() {
-  if (showSettings) {
-    if (settingsSurface === "application") return "Settings";
-    if (projectSection === "data") return "Project · Data & recovery";
-    if (projectSection === "extensions") return "Project · Extensions";
-    if (projectSection === "fields") return "Project · Fields & Types";
-    if (projectSection === "ai") return "Project · AI";
-    if (projectSection === "snapshots") return "Project · Snapshots";
-    if (projectSection === "archive") return "Project · Archive";
-    if (projectSection === "advanced") return "Project · Advanced";
+  if (loc.showSettings) {
+    if (loc.settingsSurface === "application") return "Settings";
+    if (loc.projectSection === "data") return "Project · Data & recovery";
+    if (loc.projectSection === "extensions") return "Project · Extensions";
+    if (loc.projectSection === "fields") return "Project · Fields & Types";
+    if (loc.projectSection === "ai") return "Project · AI";
+    if (loc.projectSection === "snapshots") return "Project · Snapshots";
+    if (loc.projectSection === "archive") return "Project · Archive";
+    if (loc.projectSection === "advanced") return "Project · Advanced";
     return "Project";
   }
-  if (projectHomeOpen) return "Home";
-  return section === "lore"
+  if (loc.projectHomeOpen) return "Home";
+  return loc.section === "lore"
     ? "Lore library"
-    : section === "timeline"
+    : loc.section === "timeline"
       ? "Timeline"
-      : section === "writing"
+      : loc.section === "writing"
         ? "Writing Studio"
-        : section === "language"
+        : loc.section === "language"
           ? "Languages"
-          : section === "houses"
+          : loc.section === "houses"
             ? "Houses"
             : "Maps";
 }
@@ -3272,21 +2725,21 @@ function currentTabPresentation(): { title: string; tooltip: string; icon: TabIc
   const tab = activeCollectionTab();
   const tabLabel = tab ? (tab.id === "reference" ? "Reference pages" : tab.label) : null;
   const owner = loc.selected ? sectionForEntityType(loc.selected.entity_type) : null;
-  const entityBelongs = Boolean(loc.selected) && (!owner || owner === section);
+  const entityBelongs = Boolean(loc.selected) && (!owner || owner === loc.section);
   const plugin =
-    hostView ??
-    (sandboxView?.view && sandboxView.renderer !== "maps" && !projectionSandboxOpen()
-      ? { plugin: sandboxView.plugin, view: sandboxView.view }
+    loc.hostView ??
+    (loc.sandboxView?.view && loc.sandboxView.renderer !== "maps" && !loc.projectionSandboxOpen()
+      ? { plugin: loc.sandboxView.plugin, view: loc.sandboxView.view }
       : null);
   const entityName =
-    entityBelongs && !projectHomeOpen && !showSettings && !plugin ? (loc.selected?.name ?? null) : null;
+    entityBelongs && !loc.projectHomeOpen && !loc.showSettings && !plugin ? (loc.selected?.name ?? null) : null;
   const specs = shellBreadcrumbs({
-    home: projectHomeOpen && !showSettings,
-    settingsLabel: showSettings ? sectionLabel() : null,
-    sectionLabel: workspaceSectionLabel(section),
+    home: loc.projectHomeOpen && !loc.showSettings,
+    settingsLabel: loc.showSettings ? sectionLabel() : null,
+    sectionLabel: workspaceSectionLabel(loc.section),
     viewLabel: breadcrumbViewLabel({
-      section,
-      view: currentWorkspaceLocationView(),
+      section: loc.section,
+      view: loc.currentWorkspaceLocationView(),
       tabLabel,
     }),
     entityName,
@@ -3298,17 +2751,17 @@ function currentTabPresentation(): { title: string; tooltip: string; icon: TabIc
   });
   const { title, tooltip } = tabTitleFromBreadcrumbs(specs);
   const icon: TabIcon =
-    projectHomeOpen && !showSettings
+    loc.projectHomeOpen && !loc.showSettings
       ? { kind: "home" }
-      : showSettings && settingsSurface === "project"
+      : loc.showSettings && loc.settingsSurface === "project"
         ? { kind: "project" }
-        : showSettings
+        : loc.showSettings
           ? { kind: "settings" }
           : plugin
             ? { kind: "plugin", key: `${plugin.plugin.id}:${plugin.view.id}` }
             : entityName && loc.selected
-              ? { kind: "entity", section, entityType: loc.selected.entity_type ?? "" }
-              : { kind: "section", section };
+              ? { kind: "entity", section: loc.section, entityType: loc.selected.entity_type ?? "" }
+              : { kind: "section", section: loc.section };
   return { title, tooltip, icon };
 }
 
@@ -3320,26 +2773,26 @@ function inactiveTabTitle(tab: ShellTab): string {
 }
 
 function workspaceHeadingKicker() {
-  return section === "lore"
+  return loc.section === "lore"
     ? "WORLD BIBLE"
-    : section === "timeline"
+    : loc.section === "timeline"
       ? "CHRONOLOGY"
-      : section === "maps"
+      : loc.section === "maps"
         ? "MAP ATLAS"
-        : section === "houses"
+        : loc.section === "houses"
           ? "HOUSES"
-          : section === "language"
+          : loc.section === "language"
             ? "LANGUAGE WORKSHOP"
             : "DRAFTING DESK";
 }
 
 function workspaceHeadingDescription() {
-  if (section === "lore") return "A living reference for every person, place, and power.";
-  if (section === "maps") return "Keep every map beside its notes, links, and provider source.";
-  if (section === "houses") return "Manage Houses and explore kinship in the family tree.";
-  if (section === "language") return "Words, sounds, writing, and grammar for every language of your world.";
+  if (loc.section === "lore") return "A living reference for every person, place, and power.";
+  if (loc.section === "maps") return "Keep every map beside its notes, links, and provider source.";
+  if (loc.section === "houses") return "Manage Houses and explore kinship in the family tree.";
+  if (loc.section === "language") return "Words, sounds, writing, and grammar for every language of your world.";
   const tab = activeCollectionTab();
-  if (section === "timeline") {
+  if (loc.section === "timeline") {
     if (tab?.id === "calendars") return "Optional ways to name years, months, weeks, and seasons.";
     if (tab?.id === "events" || !tab) return "Events, eras, and the threads that connect them.";
     return `${tab.label} in the chronology of your world.`;
@@ -3352,10 +2805,10 @@ function workspaceHeadingDescription() {
 }
 
 function collectionLabel() {
-  if (section === "lore") return "entries";
-  if (section === "language") return "languages";
-  if (section === "maps") return "maps";
-  if (section === "houses") return "houses";
+  if (loc.section === "lore") return "entries";
+  if (loc.section === "language") return "languages";
+  if (loc.section === "maps") return "maps";
+  if (loc.section === "houses") return "houses";
   const tab = activeCollectionTab();
   if (!tab) return "entries";
   if (tab.id === "reference") return "reference pages";
@@ -3363,22 +2816,22 @@ function collectionLabel() {
 }
 
 function collectionKicker() {
-  if (section === "lore") return "LORE LIBRARY";
-  if (section === "maps") return "MAPS";
-  if (section === "houses") return "HOUSES";
-  if (section === "language") return "LANGUAGES";
+  if (loc.section === "lore") return "LORE LIBRARY";
+  if (loc.section === "maps") return "MAPS";
+  if (loc.section === "houses") return "HOUSES";
+  if (loc.section === "language") return "LANGUAGES";
   const tab = activeCollectionTab();
-  if (section === "timeline" && (tab?.id === "events" || !tab)) return "TIMELINE";
+  if (loc.section === "timeline" && (tab?.id === "events" || !tab)) return "TIMELINE";
   if (!tab) return "ENTRIES";
   if (tab.id === "reference") return "REFERENCE PAGES";
   return tab.label.toUpperCase();
 }
 
 function createLabel() {
-  if (section === "lore") return "entry";
-  if (section === "language") return "language";
-  if (section === "maps") return "map";
-  if (section === "houses") return "house";
+  if (loc.section === "lore") return "entry";
+  if (loc.section === "language") return "language";
+  if (loc.section === "maps") return "map";
+  if (loc.section === "houses") return "house";
   const tab = activeCollectionTab();
   if (!tab) return "entry";
   if (tab.id === "events") return "event";
@@ -3389,9 +2842,9 @@ function createLabel() {
 }
 
 function emptyEditorKicker() {
-  if (section === "lore") return "LORE ENTRY";
-  if (section === "maps") return "MAP";
-  if (section === "houses") return "HOUSE";
+  if (loc.section === "lore") return "LORE ENTRY";
+  if (loc.section === "maps") return "MAP";
+  if (loc.section === "houses") return "HOUSE";
   const tab = activeCollectionTab();
   if (!tab) return "ENTRY";
   if (tab.id === "events") return "TIMELINE EVENT";
@@ -3406,202 +2859,24 @@ function entityTypeLabel(entityType: string | null) {
   return entityTypePresentation(entityType)?.definition.name ?? entityType;
 }
 
-/** Opens the projection for the current section: Chronology in Timeline, otherwise the Lore World graph. */
-async function openProjection() {
-  if (!(await loc.flushAutoSave())) return;
-  const key: ProjectionSandboxKey = section === "timeline" ? "timeline" : "lore";
-  const surface = PROJECTION_SANDBOXES[key];
-  if (!projectHomeOpen && !showSettings && projectionSandboxOpen(key)) return;
-  const departure = currentShellLocation();
-  if (!(await leavePluginView())) return;
-  recordShellDeparture(departure);
-  projectHomeOpen = false;
-  loreWikiOpen = false;
-  loreWikiEntityId = null;
-  if (!adminPlugins) await refreshAdmin();
-  const plugin = adminPlugins?.find((entry) => entry.id === surface.pluginId && entry.enabled) ?? null;
-  if (!plugin) {
-    error = `${surface.moduleName} is disabled, so ${surface.title} cannot open.`;
-    return;
-  }
-  sandboxView = {
-    plugin,
-    // Shell-only id. The webview mounts the package entrypoint with no view
-    // id: validate_plugin_view rejects ids that manifest.views does not list.
-    view: { id: surface.viewId, title: surface.title, renderer: { type: "sandboxed" } },
-    renderer: "webview",
-  };
-}
-
-async function openLoreLibrary() {
-  if (!(await loc.flushAutoSave())) return;
-  if (!projectHomeOpen && !showSettings && !loreWikiOpen && !hostView && !sandboxView) return;
-  const departure = currentShellLocation();
-  if (!(await dismissSettings())) return;
-  if (!(await leavePluginView())) return;
-  recordShellDeparture(departure);
-  projectHomeOpen = false;
-  loreWikiOpen = false;
-  loreWikiEntityId = null;
-}
-
-async function openLoreWiki(entityId?: string) {
-  if (!(await loc.flushAutoSave())) return;
-  const showingWiki = !projectHomeOpen && !showSettings && loreWikiOpen && !hostView && !sandboxView;
-  if (showingWiki && entityId === undefined) return;
-  const departure = currentShellLocation();
-  if (!(await leavePluginView())) return;
-  recordShellDeparture(departure);
-  projectHomeOpen = false;
-  if (entityId === undefined) {
-    loreWikiEntityId =
-      loc.selected?.entity_type && allEntityTypesForSection("lore").has(loc.selected.entity_type)
-        ? loc.selected.id
-        : null;
-  } else {
-    const entity = await restoreShellEntity(entityId);
-    loreWikiEntityId = entity ? entityId : null;
-  }
-  // Remount so an already-open wiki takes the entry this call names.
-  if (loreWikiOpen) {
-    loreWikiOpen = false;
-    await tick();
-  }
-  loreWikiOpen = true;
-}
-
 function allEntityTypesForSection(target: WorkspaceSection) {
   return new Set(manifestForWorkspaceSection(target)?.schemas.flatMap(schemaEntityTypeIds) ?? []);
 }
 
-async function closeLoreWiki() {
-  if (!(await loc.flushAutoSave())) return;
-  const departure = currentShellLocation();
-  recordShellDeparture(departure);
-  loreWikiOpen = false;
-  loreWikiEntityId = null;
-}
-
-async function closeProjectionView() {
-  if (!(await loc.flushAutoSave())) return;
-  const departure = currentShellLocation();
-  recordShellDeparture(departure);
-  if (projectionSandboxOpen()) sandboxView = null;
-}
-
-async function closePluginView() {
-  if (!(await loc.flushAutoSave())) return;
-  const departure = currentShellLocation();
-  if (!(await leavePluginView())) return;
-  recordShellDeparture(departure);
-}
-
-async function openWorkspaceView(view: WorkspaceLocationView) {
-  if (view === "library") return openLoreLibrary();
-  if (view === "wiki") return openLoreWiki();
-  if (view === "graph" || view === "timeline") return openProjection();
-  if (view === "houses" || view === "tree") return switchHousesView(view);
-  if (section === "timeline" && collectionTabsFor("timeline").some((tab) => tab.id === view)) {
-    return switchTimelineView(view);
-  }
-  if (section === "writing" && collectionTabsFor("writing").some((tab) => tab.id === view)) {
-    return switchWritingView(view);
-  }
-  if (section === "houses") return switchHousesView(view);
-}
-
 async function handleLoreGuidePrimary(step: GuideStep) {
-  if (step.action === "library") await openLoreLibrary();
-  if (step.action === "wiki") await openLoreWiki();
-  if (step.action === "graph") await openProjection();
+  if (step.action === "library") await loc.openLoreLibrary();
+  if (step.action === "wiki") await loc.openLoreWiki();
+  if (step.action === "graph") await loc.openProjection();
   if (step.action === "inspector") {
-    await openLoreLibrary();
+    await loc.openLoreLibrary();
     if (!loc.workbenchPaneVisibility.inspector) void loc.toggleWorkbenchPane("inspector");
   }
 }
 
 async function handleTimelineGuidePrimary(step: GuideStep) {
-  if (step.action === "events") await switchTimelineView("events");
-  if (step.action === "calendars") await switchTimelineView("calendars");
-  if (step.action === "timeline") await openWorkspaceView("timeline");
-}
-
-async function restoreShellEntity(entityId: string | null) {
-  if (!entityId) {
-    if (loc.selected) loc.clearSelection();
-    return null;
-  }
-  let entity = entities.find((candidate) => candidate.id === entityId) ?? null;
-  if (!entity) {
-    try {
-      const loaded = await project.getEntity(entityId);
-      entity = loaded;
-      if (loaded && !entities.some((candidate) => candidate.id === loaded.id)) entities = [...entities, loaded];
-    } catch {
-      entity = null;
-    }
-  }
-  if (!entity || entity.deleted) {
-    if (loc.selected) loc.clearSelection();
-    return null;
-  }
-  await loc.selectEntity(entity, false);
-  return entity;
-}
-
-async function restoreShellLocation(target: ShellLocation): Promise<boolean> {
-  const pluginItem = target.kind === "plugin" ? pluginNavigationItemByKey(target.key) : null;
-  if (target.kind === "plugin" && !pluginItem) return false;
-  shellNavigationRestoring = true;
-  try {
-    if (target.kind === "home") {
-      await openProjectHome();
-    } else if (target.kind === "settings") {
-      await openSettings(target.section);
-    } else if (target.kind === "project") {
-      await openProjectCenter(target.section);
-    } else if (target.kind === "plugin") {
-      await switchSection(target.section);
-      await restoreShellEntity(target.entityId);
-      await openPluginView(pluginItem!);
-      await loc.restoreSpecializedSurfaceScroll(target);
-    } else {
-      await switchSection(target.section);
-      if (target.section === "lore") {
-        await openLoreLibrary();
-      } else if (target.section === "timeline") {
-        await switchTimelineView(target.timelineView);
-      } else if (target.section === "writing") {
-        await switchWritingView(target.writingView);
-      } else if (target.section === "houses") {
-        if (target.view === "tree") {
-          treeRootId = target.entityId;
-          treeRestoreNonce += 1;
-        }
-        restoreModuleState(target.section, target.moduleState);
-        await switchHousesView(target.view);
-      } else if (target.section === "language") {
-        restoreModuleState(target.section, target.moduleState);
-      }
-      await tick();
-      await loc.applyWorkspaceCollectionLocation(target.collection);
-      const restoredEntity =
-        target.section === "houses" && target.view === "tree" ? null : await restoreShellEntity(target.entityId);
-      if (target.view === "wiki" || target.view === "graph" || target.view === "timeline") {
-        await openWorkspaceView(target.view);
-      }
-      await loc.restoreWorkspacePaneDimensions(target.panes);
-      await loc.restoreSpecializedSurfaceScroll(target);
-      const expected =
-        (target.section === "houses" && target.view === "tree") || restoredEntity || !target.entityId
-          ? target
-          : { ...target, entityId: null };
-      return sameShellLocation(currentShellLocation(), expected);
-    }
-    return sameShellLocation(currentShellLocation(), target);
-  } finally {
-    shellNavigationRestoring = false;
-  }
+  if (step.action === "events") await loc.switchTimelineView("events");
+  if (step.action === "calendars") await loc.switchTimelineView("calendars");
+  if (step.action === "timeline") await loc.openWorkspaceView("timeline");
 }
 
 function shellLocationAvailable(target: ShellLocation) {
@@ -3613,7 +2888,7 @@ function shellLocationAvailable(target: ShellLocation) {
 async function navigateShellHistory(direction: "back" | "forward") {
   if (shellNavigationBusy) return;
   if (dismissTransientMenus()) return;
-  const current = currentShellLocation();
+  const current = loc.currentShellLocation();
   let history = shellNavigationHistory;
   let transition = direction === "back" ? shellHistoryBack(history, current) : shellHistoryForward(history, current);
   while (transition && !shellLocationAvailable(transition.target)) {
@@ -3629,7 +2904,7 @@ async function navigateShellHistory(direction: "back" | "forward") {
   if (current.kind === "workspace" && current.section === "language" && !(await canLeaveLanguageSection())) return;
   shellNavigationBusy = true;
   try {
-    if (await restoreShellLocation(transition.target)) setShellNavigationHistory(transition.history);
+    if (await loc.restoreShellLocation(transition.target)) setShellNavigationHistory(transition.history);
   } finally {
     shellNavigationBusy = false;
   }
@@ -3638,7 +2913,7 @@ async function navigateShellHistory(direction: "back" | "forward") {
 function snapshotActiveTab(state: ShellTabsState = shellTabs): ShellTabsState {
   const presentation = currentTabPresentation();
   return updateTab(state, activeTab(state).id, {
-    location: currentShellLocation(),
+    location: loc.currentShellLocation(),
     title: presentation.title,
     icon: presentation.icon,
   });
@@ -3681,7 +2956,7 @@ async function switchToTab(tabId: string): Promise<boolean> {
   if (found.group.id === shellTabs.activeGroupId && found.tab.id === activeTab(shellTabs).id) return true;
   dismissTransientMenus();
   if (!(await loc.flushAutoSave())) return false;
-  const current = currentShellLocation();
+  const current = loc.currentShellLocation();
   if (current.kind === "workspace" && current.section === "language" && !(await canLeaveLanguageSection()))
     return false;
   if (!shellLocationAvailable(found.tab.location)) {
@@ -3693,7 +2968,7 @@ async function switchToTab(tabId: string): Promise<boolean> {
   shellTabs = activateTab(snapshotActiveTab(), tabId, Date.now());
   shellNavigationBusy = true;
   try {
-    await restoreShellLocation(target);
+    await loc.restoreShellLocation(target);
   } finally {
     shellTabs = snapshotActiveTab();
     shellNavigationBusy = false;
@@ -3715,19 +2990,19 @@ async function openInNewTab(
   if (!ready || shellNavigationBusy) return;
   dismissTransientMenus();
   if (!(await loc.flushAutoSave())) return;
-  const current = currentShellLocation();
+  const current = loc.currentShellLocation();
   if (current.kind === "workspace" && current.section === "language" && !(await canLeaveLanguageSection())) return;
   const id = crypto.randomUUID();
   // Where the tab this was opened from stands. Opening that same place in a new tab is a deliberate copy, so
   // the duplicate check below is skipped for it, however many tabs already show it; any other place that is
   // open in another tab still switches there.
   const originId = activeTab(shellTabs).id;
-  const originIdentity = tabIdentity(currentShellLocation());
+  const originIdentity = tabIdentity(loc.currentShellLocation());
   shellNavigationBusy = true;
   try {
     shellTabs = openTab(
       snapshotActiveTab(),
-      { id, location: currentShellLocation(), title: "", icon: currentTabPresentation().icon },
+      { id, location: loc.currentShellLocation(), title: "", icon: currentTabPresentation().icon },
       Date.now(),
       { position: options.position },
     );
@@ -3739,7 +3014,7 @@ async function openInNewTab(
     } finally {
       setShellNavigationHistory(emptyShellNavigationHistory());
     }
-    const identity = tabIdentity(currentShellLocation());
+    const identity = tabIdentity(loc.currentShellLocation());
     const existing =
       options.dedupe === false
         ? null
@@ -3750,7 +3025,7 @@ async function openInNewTab(
       const location = existing.location;
       shellTabs = activateTab(discardTab(shellTabs, id), existing.id, Date.now());
       try {
-        await restoreShellLocation(location);
+        await loc.restoreShellLocation(location);
       } finally {
         shellTabs = snapshotActiveTab();
       }
@@ -3774,13 +3049,13 @@ async function applyTabsChange(change: (state: ShellTabsState) => ShellTabsState
   }
   dismissTransientMenus();
   if (!(await loc.flushAutoSave())) return false;
-  const current = currentShellLocation();
+  const current = loc.currentShellLocation();
   if (current.kind === "workspace" && current.section === "language" && !(await canLeaveLanguageSection()))
     return false;
   shellTabs = change(snapshotActiveTab());
   shellNavigationBusy = true;
   try {
-    await restoreShellLocation(activeTab(shellTabs).location);
+    await loc.restoreShellLocation(activeTab(shellTabs).location);
   } finally {
     shellTabs = snapshotActiveTab();
     shellNavigationBusy = false;
@@ -3844,7 +3119,7 @@ function closeTabsForEntity(entityId: string) {
 }
 
 async function openSettingsTab(nextSection?: SettingsSection) {
-  if (!ready || currentShellLocation().kind === "settings") {
+  if (!ready || loc.currentShellLocation().kind === "settings") {
     await openSettings(nextSection ?? "general");
     return;
   }
@@ -3858,7 +3133,7 @@ async function openSettingsTab(nextSection?: SettingsSection) {
 }
 
 async function openProjectCenterTab(nextSection?: ProjectSection) {
-  if (currentShellLocation().kind === "project") {
+  if (loc.currentShellLocation().kind === "project") {
     await openProjectCenter(nextSection ?? "overview");
     return;
   }
@@ -3870,14 +3145,6 @@ async function openProjectCenterTab(nextSection?: ProjectSection) {
   }
   await openInNewTab(() => openProjectCenter(nextSection ?? "overview"));
 }
-
-$effect(() => {
-  void section;
-  if (section !== "lore" && loreWikiOpen) {
-    loreWikiOpen = false;
-    loreWikiEntityId = null;
-  }
-});
 
 function selectedCalendarId(key: string): string {
   return calendarIdForStoredDate(loc.dateForField(key), loc.dateCalendarByField[key]);
@@ -5037,7 +4304,7 @@ async function finishOpening(info?: ProjectInfo) {
       error = friendlyError(cause);
     }
   }
-  await reconcileWorkspaceSection();
+  await loc.reconcileWorkspaceSection();
   rememberProject(projectInfo);
   await loadEntities();
   await ensureCalendarCache();
@@ -5045,13 +4312,13 @@ async function finishOpening(info?: ProjectInfo) {
   await refreshGit();
   await refreshAdmin();
   shellTabs = projectInfo ? loadShellTabs(projectInfo) : freshShellTabs();
-  projectHomeOpen = true;
+  loc.projectHomeOpen = true;
   ready = true;
   const restoredTab = activeTab(shellTabs);
   if (restoredTab.location.kind !== "home") {
     shellNavigationBusy = true;
     try {
-      await restoreShellLocation(restoredTab.location);
+      await loc.restoreShellLocation(restoredTab.location);
     } finally {
       shellTabs = snapshotActiveTab();
       shellNavigationBusy = false;
@@ -5094,7 +4361,7 @@ async function pickAndOpenProject(intent: "create" | "open") {
     if (!(await canLeaveLanguageSection())) return;
     await runProjectTransition(intent === "create" ? "Creating project…" : "Opening project…", async () => {
       if (!(await loc.flushAutoSave())) return;
-      if (!(await leavePluginView({ closeWebviews: true }))) return;
+      if (!(await loc.leavePluginView({ closeWebviews: true }))) return;
       persistShellTabs();
       resetProjectSessionState();
       await project.close();
@@ -5119,7 +4386,7 @@ async function openRecentProject(path: string) {
   if (!(await canLeaveLanguageSection())) return;
   await runProjectTransition("Opening project…", async () => {
     if (!(await loc.flushAutoSave())) return;
-    if (!(await leavePluginView({ closeWebviews: true }))) return;
+    if (!(await loc.leavePluginView({ closeWebviews: true }))) return;
     persistShellTabs();
     resetProjectSessionState();
     await project.close();
@@ -5133,7 +4400,7 @@ async function closeProject() {
   if (!(await canLeaveLanguageSection())) return;
   await runProjectTransition("Closing project…", async () => {
     if (!(await loc.flushAutoSave())) return;
-    if (!(await leavePluginView({ closeWebviews: true }))) return;
+    if (!(await loc.leavePluginView({ closeWebviews: true }))) return;
     persistShellTabs();
     resetProjectSessionState();
     await project.close();
@@ -5156,7 +4423,7 @@ async function openMapLocation(location: MapLocation) {
 }
 
 async function ensureMapEditorOpen(mapEntityId: string) {
-  const departure = currentShellLocation();
+  const departure = loc.currentShellLocation();
   const map = entities.find((entity) => entity.id === mapEntityId) ?? (await project.getEntity(mapEntityId));
   if (!map) throw new Error("map-unavailable: choose a saved map first");
   if (!(await loc.flushAutoSave())) throw new Error("Save the current draft before opening the map editor.");
@@ -5164,7 +4431,7 @@ async function ensureMapEditorOpen(mapEntityId: string) {
   loc.selected = map;
   mapsEditorKey = map.id;
   await loc.loadSelectedState(map);
-  if (mapsView) await openPluginView(mapsView, departure);
+  if (mapsView) await loc.openPluginView(mapsView, departure);
 }
 
 async function beginMapPick(pending: NonNullable<typeof mapPickPending>) {
@@ -5196,10 +4463,10 @@ async function applyMapPick(anchor: unknown) {
         validity: { from: null, to: null },
       };
       await project.upsertMapLocation(entity.id, location);
-      const departure = currentShellLocation();
-      if (!(await leavePluginView())) return;
+      const departure = loc.currentShellLocation();
+      if (!(await loc.leavePluginView())) return;
       recordShellDeparture(departure);
-      section =
+      loc.section =
         entity.entity_type === "daena.timeline:event" ||
         entity.entity_type === "daena.timeline:encounter" ||
         entity.entity_type === "daena.timeline:era" ||
@@ -5213,10 +4480,10 @@ async function applyMapPick(anchor: unknown) {
       const entity =
         entities.find((candidate) => candidate.id === pending.entityId) ?? (await project.getEntity(pending.entityId));
       if (entity) {
-        const departure = currentShellLocation();
-        if (!(await leavePluginView())) return;
+        const departure = loc.currentShellLocation();
+        if (!(await loc.leavePluginView())) return;
         recordShellDeparture(departure);
-        section =
+        loc.section =
           entity.entity_type === "daena.timeline:event" ||
           entity.entity_type === "daena.timeline:encounter" ||
           entity.entity_type === "daena.timeline:era" ||
@@ -5251,10 +4518,10 @@ async function openMapEntityFromLink(entityId: string) {
             entity.entity_type === "daena.timeline:calendar"
           ? "timeline"
           : "lore";
-    const departure = currentShellLocation();
-    if (!(await leavePluginView())) return;
+    const departure = loc.currentShellLocation();
+    if (!(await loc.leavePluginView())) return;
     recordShellDeparture(departure);
-    section = target;
+    loc.section = target;
     await loc.selectEntity(entity, false);
   } catch (cause) {
     error = friendlyError(cause);
@@ -5332,8 +4599,8 @@ async function openEntityById(entityId: string) {
   if (!entity || entity.deleted) return;
   const target: Entity = entity;
   if (!entities.some((candidate) => candidate.id === target.id)) entities = [...entities, target];
-  if (section === "language") {
-    await selectSearchResult(target);
+  if (loc.section === "language") {
+    await loc.selectSearchResult(target);
     return;
   }
   await loc.selectEntity(target);
@@ -5350,7 +4617,7 @@ async function openSelectedMapEditor() {
     mapsEditorKey = loc.selected.id;
     mapFocusLinkId = null;
     mapFocusFeatureId = null;
-    await openPluginView(mapsView);
+    await loc.openPluginView(mapsView);
   } catch (cause) {
     error = friendlyError(cause);
   }
@@ -5370,7 +4637,7 @@ async function createWithOption(
   openingDocument: string,
 ) {
   if (projectDiagnostics.length > 0 || createBusy || !requestedName.trim() || !option.module.enabled) return false;
-  const departure = currentShellLocation();
+  const departure = loc.currentShellLocation();
   createBusy = true;
   try {
     // The new entry changes the section and the selection, so unsent text in the open entry is saved first.
@@ -5433,7 +4700,7 @@ async function createWithOption(
     const isHouse = createdType === HOUSE_TYPE || createdType === "house" || createdType.endsWith(":house");
     const isPerson = createdType === PERSON_TYPE || createdType.endsWith(":person");
     const fromTree = departure.kind === "workspace" && departure.section === "houses" && departure.view === "tree";
-    projectHomeOpen = false;
+    loc.projectHomeOpen = false;
     name = "";
     showCreateForm = false;
     createDialogView = "templates";
@@ -5442,26 +4709,26 @@ async function createWithOption(
     resetCreateFields(null);
     await refreshAfterEntityMutation({ entityId: created.id });
     if (fromTree && (isHouse || isPerson)) {
-      section = "houses";
-      housesView = "tree";
-      treeRootId = created.id;
-      treeSession = {
+      loc.section = "houses";
+      loc.housesView = "tree";
+      loc.treeRootId = created.id;
+      loc.treeSession = {
         expansions: [],
         selectedPersonId: null,
         selectedRelationshipId: null,
         viewport: null,
         houseId: isHouse ? created.id : null,
       };
-      treeRestoreNonce += 1;
+      loc.treeRestoreNonce += 1;
       loc.clearSelection();
     } else {
-      section =
+      loc.section =
         workspaceSectionOrder.find((target) =>
           manifestForWorkspaceSection(target)?.schemas.some((schema) =>
             schemaEntityTypeIds(schema).includes(option.template.entityType),
           ),
-        ) ?? section;
-      applyCollectionTabForEntityType(option.template.entityType);
+        ) ?? loc.section;
+      loc.applyCollectionTabForEntityType(option.template.entityType);
       await loc.selectEntity(
         {
           id: created.id,
@@ -5597,7 +4864,7 @@ function openCreationMenu() {
 }
 
 function openContextualCreate() {
-  if (section === "houses" && housesView === "tree") {
+  if (loc.section === "houses" && loc.housesView === "tree") {
     openNewPerson();
     return;
   }
@@ -5788,7 +5055,7 @@ async function selectQuickOpenItem(item: QuickOpenItem, intent: OpenIntent = "cu
   await tick();
   const run = async () => {
     if (action.kind === "entity") {
-      if (matchedEntity) await selectSearchResult(matchedEntity);
+      if (matchedEntity) await loc.selectSearchResult(matchedEntity);
       return;
     }
     if (action.kind === "map-feature") {
@@ -5800,7 +5067,7 @@ async function selectQuickOpenItem(item: QuickOpenItem, intent: OpenIntent = "cu
       return;
     }
     if (action.kind === "destination") {
-      if (action.destination === "home") await openProjectHome();
+      if (action.destination === "home") await loc.openProjectHome();
       else if (action.destination.startsWith("navigation:")) {
         const key = action.destination.slice("navigation:".length);
         const navItem = [...workspaceNavigationItems(), ...pluginViews()].find((candidate) => candidate.key === key);
@@ -5901,8 +5168,8 @@ async function saveEntityEditDialog() {
   await refreshAfterEntityMutation({ entityId: updated.id });
   if (typeChanged) {
     const newSection = sectionForEntityType(updated.entity_type);
-    if (newSection && newSection !== section) section = newSection;
-    applyCollectionTabForEntityType(updated.entity_type);
+    if (newSection && newSection !== loc.section) loc.section = newSection;
+    loc.applyCollectionTabForEntityType(updated.entity_type);
     await loc.loadSelectedState(updated);
   } else {
     await loc.loadSelectedState(updated).catch(() => {});
@@ -5989,21 +5256,21 @@ async function reloadEntityEditFromServer() {
 async function openHouseTree(entity: Entity) {
   if (entity.entity_type !== HOUSE_TYPE) return;
   if (!(await loc.flushAutoSave())) return;
-  const departure = currentShellLocation();
-  if (!(await leavePluginView())) return;
+  const departure = loc.currentShellLocation();
+  if (!(await loc.leavePluginView())) return;
   recordShellDeparture(departure);
-  projectHomeOpen = false;
-  section = "houses";
-  housesView = "tree";
-  treeRootId = entity.id;
-  treeSession = {
+  loc.projectHomeOpen = false;
+  loc.section = "houses";
+  loc.housesView = "tree";
+  loc.treeRootId = entity.id;
+  loc.treeSession = {
     expansions: [],
     selectedPersonId: null,
     selectedRelationshipId: null,
     viewport: null,
     houseId: entity.id,
   };
-  treeRestoreNonce += 1;
+  loc.treeRestoreNonce += 1;
   loc.clearSelection();
 }
 function selectedRelationshipIds(definition: FieldDefinition) {
@@ -6234,7 +5501,7 @@ async function createRelationshipTarget(definition: FieldDefinition, name: strin
   }
 }
 function canWriteAssets() {
-  return section === "lore" && (activeManifest()?.capabilities.includes("asset.write:self") ?? false);
+  return loc.section === "lore" && (activeManifest()?.capabilities.includes("asset.write:self") ?? false);
 }
 async function toggleModule(id: ModuleId) {
   const installed = modules.find((module) => module.id === id);
@@ -6248,7 +5515,7 @@ async function toggleModule(id: ModuleId) {
         await project.enableModule(id, granted);
         modules = await project.listModuleManifests();
         await loc.refreshSelectedMapLocations();
-        await reconcileWorkspaceSection();
+        await loc.reconcileWorkspaceSection();
         await refreshAdmin();
       },
       installed.capabilities,
@@ -6260,7 +5527,7 @@ async function toggleModule(id: ModuleId) {
     await project.disableModule(id);
     modules = await project.listModuleManifests();
     await loc.refreshSelectedMapLocations();
-    await reconcileWorkspaceSection();
+    await loc.reconcileWorkspaceSection();
     await refreshAdmin();
     if (!selectedCreateOption()) selectedCreateKey = "";
     if (showCreateForm && !selectedCreateOption()) closeCreateForm();
@@ -6307,32 +5574,32 @@ function setAdminPluginEnabled(id: string, enabled: boolean) {
 }
 async function openSettings(nextSection: SettingsSection = "general") {
   if (!(await loc.flushAutoSave())) return;
-  if (showSettings && settingsSurface === "application" && settingsSection === nextSection) return;
-  if (!showSettings && section === "language" && !(await canLeaveLanguageSection())) return;
-  const departure = currentShellLocation();
-  if (showSettings && !(await beforeAdministrationNavigate())) return;
-  if (!(await leavePluginView())) return;
+  if (loc.showSettings && loc.settingsSurface === "application" && loc.settingsSection === nextSection) return;
+  if (!loc.showSettings && loc.section === "language" && !(await canLeaveLanguageSection())) return;
+  const departure = loc.currentShellLocation();
+  if (loc.showSettings && !(await beforeAdministrationNavigate())) return;
+  if (!(await loc.leavePluginView())) return;
   recordShellDeparture(departure);
-  showSettings = true;
-  settingsSurface = "application";
-  settingsSection = nextSection;
+  loc.showSettings = true;
+  loc.settingsSurface = "application";
+  loc.settingsSection = nextSection;
   installSummary = null;
   deleteBackupPath = "";
   showProjectMenu = false;
 }
 async function openProjectCenter(nextSection: ProjectSection = "overview") {
   if (!ready || !(await loc.flushAutoSave())) return;
-  if (showSettings && settingsSurface === "project" && projectSection === nextSection) return;
-  if (!showSettings && section === "language" && !(await canLeaveLanguageSection())) return;
-  const departure = currentShellLocation();
+  if (loc.showSettings && loc.settingsSurface === "project" && loc.projectSection === nextSection) return;
+  if (!loc.showSettings && loc.section === "language" && !(await canLeaveLanguageSection())) return;
+  const departure = loc.currentShellLocation();
   const wasEditingFields =
-    showSettings && settingsSurface === "project" && projectSection === "fields" && !!schemaPluginId;
-  if (showSettings && !(await beforeAdministrationNavigate(nextSection))) return;
-  if (!(await leavePluginView())) return;
+    loc.showSettings && loc.settingsSurface === "project" && loc.projectSection === "fields" && !!schemaPluginId;
+  if (loc.showSettings && !(await beforeAdministrationNavigate(nextSection))) return;
+  if (!(await loc.leavePluginView())) return;
   recordShellDeparture(departure);
-  showSettings = true;
-  settingsSurface = "project";
-  projectSection = nextSection;
+  loc.showSettings = true;
+  loc.settingsSurface = "project";
+  loc.projectSection = nextSection;
   installSummary = null;
   deleteBackupPath = "";
   showProjectMenu = false;
@@ -6358,14 +5625,14 @@ async function openProjectCenter(nextSection: ProjectSection = "overview") {
 }
 function closeSettings() {
   recordCurrentShellLocation();
-  showSettings = false;
-  settingsSurface = "application";
-  settingsSection = "general";
-  projectSection = "overview";
+  loc.showSettings = false;
+  loc.settingsSurface = "application";
+  loc.settingsSection = "general";
+  loc.projectSection = "overview";
   statusCenterOpen = false;
 }
 function closeAdministrationTab() {
-  const kind = currentShellLocation().kind;
+  const kind = loc.currentShellLocation().kind;
   const openCount = shellTabs.groups.reduce((count, group) => count + group.tabs.length, 0);
   if (openCount > 1 && (kind === "settings" || kind === "project")) {
     void closeShellTab(activeTab(shellTabs).id);
@@ -6377,16 +5644,16 @@ function setSchemaEditorDirty(dirty: boolean) {
   schemaEditorDirty = dirty;
 }
 async function beforeSettingsNavigate(next: SettingsSection | null): Promise<boolean> {
-  if (next && next !== settingsSection) recordCurrentShellLocation();
+  if (next && next !== loc.settingsSection) recordCurrentShellLocation();
   return true;
 }
 async function beforeProjectNavigate(next: ProjectSection | null): Promise<boolean> {
-  if (projectSection === "fields" && next === "fields") return true;
-  if (projectSection === "fields") {
+  if (loc.projectSection === "fields" && next === "fields") return true;
+  if (loc.projectSection === "fields") {
     if (!(await allowLeaveSchemaEditor())) return false;
     schemaEditorDirty = false;
   }
-  if (next && next !== projectSection) recordCurrentShellLocation();
+  if (next && next !== loc.projectSection) recordCurrentShellLocation();
   return true;
 }
 async function beforeVisibleSettingsNavigate(next: SettingsSection | null): Promise<boolean> {
@@ -6396,13 +5663,13 @@ async function beforeVisibleProjectNavigate(next: ProjectSection | null): Promis
   return beforeProjectNavigate(next);
 }
 async function beforeAdministrationNavigate(nextProjectSection: ProjectSection | null = null): Promise<boolean> {
-  if (!showSettings || settingsSurface === "application") return true;
+  if (!loc.showSettings || loc.settingsSurface === "application") return true;
   return beforeProjectNavigate(nextProjectSection);
 }
 /** Close settings from outside SettingsView (rail, plugin open, etc.). */
 async function dismissSettings(): Promise<boolean> {
   if (!(await beforeAdministrationNavigate())) return false;
-  showSettings = false;
+  loc.showSettings = false;
   return true;
 }
 async function refreshModuleSchemaEditor(moduleId: string) {
@@ -6574,7 +5841,7 @@ async function saveModuleSchemaOverlay(overlay: ModuleSchemaOverlay, options?: {
   }
 }
 $effect(() => {
-  if (!showSettings || settingsSurface !== "project" || projectSection !== "extensions" || !ready) return;
+  if (!loc.showSettings || loc.settingsSurface !== "project" || loc.projectSection !== "extensions" || !ready) return;
   void refreshAdmin();
 });
 async function installFromPicker() {
@@ -6765,7 +6032,7 @@ async function retryPlugin(plugin: PluginAdminEntry) {
   try {
     await project.retryPlugin(plugin.id);
     modules = await project.listModuleManifests();
-    await reconcileWorkspaceSection();
+    await loc.reconcileWorkspaceSection();
     await refreshAdmin();
     error = `Retried ${plugin.name}.`;
   } catch (cause) {
@@ -6804,7 +6071,7 @@ async function togglePluginEnabled(plugin: PluginAdminEntry) {
           await project.enableModule(plugin.id, granted);
           modules = await project.listModuleManifests();
           await loc.refreshSelectedMapLocations();
-          await reconcileWorkspaceSection();
+          await loc.reconcileWorkspaceSection();
           await refreshAdmin();
         } finally {
           pluginActionId = null;
@@ -6820,11 +6087,11 @@ async function togglePluginEnabled(plugin: PluginAdminEntry) {
     await project.disableModule(plugin.id);
     modules = await project.listModuleManifests();
     await loc.refreshSelectedMapLocations();
-    await reconcileWorkspaceSection();
+    await loc.reconcileWorkspaceSection();
     setAdminPluginEnabled(plugin.id, false);
     await refreshAdmin();
-    if (hostView?.plugin.id === plugin.id) hostView = null;
-    if (sandboxView?.plugin.id === plugin.id) sandboxView = null;
+    if (loc.hostView?.plugin.id === plugin.id) loc.hostView = null;
+    if (loc.sandboxView?.plugin.id === plugin.id) loc.sandboxView = null;
     pruneUnavailableShellTabs();
   } catch (cause) {
     error = friendlyError(cause);
@@ -6871,15 +6138,15 @@ function resetProjectSessionState() {
   loc.collectionScrollBySection = {};
   loc.pendingCollectionScroll = null;
   loc.collectionQueryRestoring = false;
-  projectHomeOpen = true;
+  loc.projectHomeOpen = true;
   showExternalImport = false;
   projectInfo = null;
   rememberProjectTheme(null);
   projectStatusEpoch += 1;
   modules = [];
   adminPlugins = null;
-  hostView = null;
-  sandboxView = null;
+  loc.hostView = null;
+  loc.sandboxView = null;
   gitStatus = null;
   mapSaveStates = {};
   mapsEditorKey = "welcome";
@@ -6896,10 +6163,10 @@ function resetProjectSessionState() {
   quickOpenOpen = false;
   quickOpenSearchLoading = false;
   loc.collectionQuery.textSearch = "";
-  showSettings = false;
-  settingsSurface = "application";
-  settingsSection = "general";
-  projectSection = "overview";
+  loc.showSettings = false;
+  loc.settingsSurface = "application";
+  loc.settingsSection = "general";
+  loc.projectSection = "overview";
   statusCenterOpen = false;
   showCreateForm = false;
   createDialogView = "templates";
@@ -6955,7 +6222,7 @@ async function importPortableCheckpoint() {
   if (!(await canLeaveLanguageSection())) return;
   await runProjectTransition("Importing checkpoint…", async () => {
     if (!(await loc.flushAutoSave())) return;
-    if (!(await leavePluginView({ closeWebviews: true }))) return;
+    if (!(await loc.leavePluginView({ closeWebviews: true }))) return;
     await project.importCheckpoint();
     persistShellTabs();
     resetProjectSessionState();
@@ -6992,7 +6259,7 @@ async function restoreRecoveryBackup(path: string) {
   if (!(await canLeaveLanguageSection())) return;
   await runProjectTransition("Restoring recovery backup…", async () => {
     if (!(await loc.flushAutoSave())) return;
-    if (!(await leavePluginView({ closeWebviews: true }))) return;
+    if (!(await loc.leavePluginView({ closeWebviews: true }))) return;
     await project.restoreRecoveryBackup(path);
     persistShellTabs();
     resetProjectSessionState();
@@ -7126,7 +6393,7 @@ onMount(() => {
           await keepWindowOpen();
           return;
         }
-        if (!(await leavePluginView({ closeWebviews: true }))) {
+        if (!(await loc.leavePluginView({ closeWebviews: true }))) {
           await keepWindowOpen();
           return;
         }
@@ -7173,12 +6440,12 @@ onMount(() => {
       if (!map || !item) throw new Error("map-unavailable: enable the Maps module to open this location");
       if (!(await loc.flushAutoSave())) return;
       if (!(await canLeaveLanguageSection())) return;
-      const departure = currentShellLocation();
-      if (!(await leavePluginView())) return;
+      const departure = loc.currentShellLocation();
+      if (!(await loc.leavePluginView())) return;
       loc.selected = map;
       mapsEditorKey = map.id;
       await loc.loadSelectedState(map);
-      await openPluginView(item, departure);
+      await loc.openPluginView(item, departure);
       const linkId = event.payload.linkId ?? null;
       // openPluginView clears focus; also re-assert when already on the same map so
       // the vector editor retries focus after pins load.
@@ -7205,7 +6472,7 @@ onMount(() => {
     }
     if (status === "back") {
       loc.editorFullscreen = false;
-      void closePluginView();
+      void loc.closePluginView();
       return;
     }
     if (mapEntityId) mapSaveStates[mapEntityId] = { status, detail };
@@ -7367,10 +6634,10 @@ onMount(() => {
       ariaLabel: `Open ${item.plugin.name}: ${item.view.title}`,
       active: navigationActive(item),
     }))}
-    homeActive={projectHomeOpen && !showSettings}
+    homeActive={loc.projectHomeOpen && !loc.showSettings}
     createOpen={showCreateForm}
-    projectCenterActive={showSettings && settingsSurface === "project"}
-    settingsActive={showSettings && settingsSurface === "application"}
+    projectCenterActive={loc.showSettings && loc.settingsSurface === "project"}
+    settingsActive={loc.showSettings && loc.settingsSurface === "application"}
     version={displayVersion}
     onCreateProject={createProjectDirectory}
     onOpenProject={openProjectDirectory}
@@ -7391,8 +6658,8 @@ onMount(() => {
     id="shell-tabpanel"
     role="tabpanel"
     aria-labelledby={`shell-tab-${activeTab(shellTabs).id}`}
-    class:sandbox-active={Boolean(sandboxView)}
-    class:map-surface-open={mapSurfaceOpen}
+    class:sandbox-active={Boolean(loc.sandboxView)}
+    class:map-surface-open={loc.mapSurfaceOpen}
     class:language-surface={languagePaneShown}
     class:writing-surface={writingWebviewShown}
     class="app-main">
@@ -7433,7 +6700,7 @@ onMount(() => {
         bind:popoverOpen={tabStripPopoverOpen}
         onActivate={(id) => void switchToTab(id)}
         onClose={(id) => void closeShellTab(id)}
-        onNew={() => void openInNewTab(openProjectHome, { position: "end" })}
+        onNew={() => void openInNewTab(loc.openProjectHome, { position: "end" })}
         onPin={(id, pinned) => void pinShellTab(id, pinned)}
         onMove={(id, toIndex) => void moveShellTab(id, toIndex)}
         onCloseOthers={(id) => void closeOtherShellTabs(id)}
@@ -7815,14 +7082,14 @@ onMount(() => {
     {/if}
     {#snippet workspaceViewSwitcher()}
       <WorkspaceViewNav
-        label={`${section} views`}
+        label={`${loc.section} views`}
         views={workspaceViewNavItems()}
-        activeView={currentWorkspaceLocationView()}
-        onSelect={(view) => void openWorkspaceView(view)} />
+        activeView={loc.currentWorkspaceLocationView()}
+        onSelect={(view) => void loc.openWorkspaceView(view)} />
     {/snippet}
-    {#if showSettings && settingsSurface === "application"}
+    {#if loc.showSettings && loc.settingsSurface === "application"}
       <SettingsView
-        bind:section={settingsSection}
+        bind:section={loc.settingsSection}
         version={displayVersion}
         {recentProjects}
         {themePreference}
@@ -7840,9 +7107,9 @@ onMount(() => {
         onRemoveRecent={removeRecentProject}
         onClose={closeAdministrationTab}
         onBeforeNavigate={beforeVisibleSettingsNavigate} />
-    {:else if showSettings && projectInfo}
+    {:else if loc.showSettings && projectInfo}
       <ProjectCenter
-        bind:section={projectSection}
+        bind:section={loc.projectSection}
         summary={{
           name: projectInfo.name,
           root: projectInfo.root,
@@ -8231,7 +7498,7 @@ onMount(() => {
             >Fragments · 12</small>
         </div>
       </section>
-    {:else if projectHomeOpen}
+    {:else if loc.projectHomeOpen}
       <ProjectHome
         projectName={projectInfo?.name ?? "Your world"}
         activeEntityCount={entities.filter((entity) => !entity.deleted).length}
@@ -8257,22 +7524,23 @@ onMount(() => {
         onSnapshots={() => void openProjectCenterTab("snapshots")}
         onProjectCenter={() => void openProjectCenterTab()}
         onExtensions={() => void openProjectCenterTab("extensions")}
-        onOpenWorkspace={(target) => void switchSection(target)}
-        onOpenEntity={(entity) => void selectSearchResult(entity)} />
-    {:else if hostView}
+        onOpenWorkspace={(target) => void loc.switchSection(target)}
+        onOpenEntity={(entity) => void loc.selectSearchResult(entity)} />
+    {:else if loc.hostView}
       <SpecializedSurface
-        restoreKey={specializedSurfaceKey() ?? "host"}
+        restoreKey={loc.specializedSurfaceKey() ?? "host"}
         restoreScrollTop={loc.currentSpecializedSurfaceScrollTop()}
         bind:element={loc.specializedSurfaceElement}
         onScroll={loc.rememberSpecializedSurfaceScroll}>
         <div class="host-view-shell">
-          <button class="quiet-button host-view-back" onclick={() => void closePluginView()}>Back to workspace</button
-          ><HostView plugin={hostView.plugin} view={hostView.view} />
+          <button class="quiet-button host-view-back" onclick={() => void loc.closePluginView()}
+            >Back to workspace</button
+          ><HostView plugin={loc.hostView.plugin} view={loc.hostView.view} />
         </div>
       </SpecializedSurface>
-    {:else if loreWikiOpen}
+    {:else if loc.loreWikiOpen}
       <SpecializedSurface
-        restoreKey={specializedSurfaceKey() ?? "wiki"}
+        restoreKey={loc.specializedSurfaceKey() ?? "wiki"}
         restoreScrollTop={loc.currentSpecializedSurfaceScrollTop()}
         bind:element={loc.specializedSurfaceElement}
         onScroll={loc.rememberSpecializedSurfaceScroll}>
@@ -8280,26 +7548,26 @@ onMount(() => {
           isMac={isMac()}
           manifest={manifestForWorkspaceSection("lore")!}
           enabledManifests={modules.filter((module) => module.enabled)}
-          initialEntityId={loreWikiEntityId}
+          initialEntityId={loc.loreWikiEntityId}
           projectId={projectInfo?.root ?? ""}
           aiEnabled={projectInfo?.aiEnabled ?? false}
           imageProvider={aiSettings.imageProvider}
           textProvider={aiProvider}
           promptTemplates={aiPromptTemplates}
-          onClose={() => void closeLoreWiki()}
+          onClose={() => void loc.closeLoreWiki()}
           onSelectEntity={(id) => {
             const ent = entities.find((e) => e.id === id);
             if (ent) void loc.selectEntity(ent);
           }}
-          onOpenEntityInNewTab={(id) => void openInNewTab(() => openLoreWiki(id))}
+          onOpenEntityInNewTab={(id) => void openInNewTab(() => loc.openLoreWiki(id))}
           nav={workspaceViewNavShown ? workspaceViewSwitcher : undefined} />
       </SpecializedSurface>
-    {:else if section === "houses" && housesView === "tree"}
+    {:else if loc.section === "houses" && loc.housesView === "tree"}
       {#snippet treeAvatar(entityId: string, name: string)}
         <EntityAvatar {entityId} {name} />
       {/snippet}
       <SpecializedSurface
-        restoreKey={specializedSurfaceKey() ?? "workspace:houses:tree"}
+        restoreKey={loc.specializedSurfaceKey() ?? "workspace:houses:tree"}
         restoreScrollTop={loc.currentSpecializedSurfaceScrollTop()}
         bind:element={loc.specializedSurfaceElement}
         onScroll={loc.rememberSpecializedSurfaceScroll}>
@@ -8308,9 +7576,9 @@ onMount(() => {
             availableServices: enabledServices(),
           })}
           projectId={projectInfo?.root ?? ""}
-          initialRootId={treeRootId}
-          initialSession={treeSession}
-          restoreNonce={treeRestoreNonce}
+          initialRootId={loc.treeRootId}
+          initialSession={loc.treeSession}
+          restoreNonce={loc.treeRestoreNonce}
           kinshipRefreshEpoch={loc.kinshipRefreshEpoch}
           avatar={treeAvatar}
           nav={workspaceViewNavShown ? workspaceViewSwitcher : undefined}
@@ -8321,10 +7589,10 @@ onMount(() => {
               const entity = await project.getEntity(houseId);
               if (!entity) return;
               upsertEntityInCache(entity);
-              section = "houses";
-              housesView = "houses";
-              treeRootId = null;
-              treeSession = null;
+              loc.section = "houses";
+              loc.housesView = "houses";
+              loc.treeRootId = null;
+              loc.treeSession = null;
               await loc.selectEntity(entity);
             })();
           }}
@@ -8333,8 +7601,8 @@ onMount(() => {
               const entity = entities.find((item) => item.id === houseId) ?? (await project.getEntity(houseId));
               if (!entity) return;
               await archiveEntity(entity, { skipConfirm: true });
-              treeRootId = null;
-              treeSession = null;
+              loc.treeRootId = null;
+              loc.treeSession = null;
             })();
           }}
           onRenameHouse={async (houseId, name) => {
@@ -8347,18 +7615,18 @@ onMount(() => {
             await refreshAfterEntityMutation({ entityId: updated.id });
           }}
           onRootChange={(id) => {
-            if (id === treeRootId) return;
-            recordShellDeparture(currentShellLocation());
-            treeRootId = id;
-            treeSession = null;
+            if (id === loc.treeRootId) return;
+            recordShellDeparture(loc.currentShellLocation());
+            loc.treeRootId = id;
+            loc.treeSession = null;
           }}
           onSessionChange={(session) => {
-            if (sameTreeSession(treeSession, session)) return;
-            const historyChanged = treeHistoryKey(treeSession) !== treeHistoryKey(session);
-            if (historyChanged && treeRootId && treeSession) {
-              recordShellDeparture(currentShellLocation());
+            if (sameTreeSession(loc.treeSession, session)) return;
+            const historyChanged = treeHistoryKey(loc.treeSession) !== treeHistoryKey(session);
+            if (historyChanged && loc.treeRootId && loc.treeSession) {
+              recordShellDeparture(loc.currentShellLocation());
             }
-            treeSession = session;
+            loc.treeSession = session;
           }}
           onOpenEntity={(entityId) => void openTreePerson(entityId)}
           onMembershipChanged={() => loc.bumpCollectionRefresh()}
@@ -8379,21 +7647,21 @@ onMount(() => {
             })();
           }}
           onBack={() => {
-            const current = currentShellLocation();
+            const current = loc.currentShellLocation();
             const transition = shellHistoryBack(shellNavigationHistory, current);
             if (transition && shellLocationAvailable(transition.target)) {
               void navigateShellHistory("back");
               return;
             }
-            treeRootId = null;
-            treeSession = null;
-            treeRestoreNonce += 1;
+            loc.treeRootId = null;
+            loc.treeSession = null;
+            loc.treeRestoreNonce += 1;
           }} />
       </SpecializedSurface>
-    {:else if projectionSandboxKey()}
-      {@const projection = PROJECTION_SANDBOXES[projectionSandboxKey()!]}
+    {:else if loc.projectionSandboxKey()}
+      {@const projection = PROJECTION_SANDBOXES[loc.projectionSandboxKey()!]}
       <SpecializedSurface
-        restoreKey={specializedSurfaceKey() ?? projection.surfaceKey}
+        restoreKey={loc.specializedSurfaceKey() ?? projection.surfaceKey}
         restoreScrollTop={loc.currentSpecializedSurfaceScrollTop()}
         bind:element={loc.specializedSurfaceElement}
         onScroll={loc.rememberSpecializedSurfaceScroll}>
@@ -8401,9 +7669,9 @@ onMount(() => {
           <WorkspaceTopbar
             title={projection.title}
             subtitle={projection.subtitle}
-            icon={projection.icon}
+            icon={PROJECTION_ICONS[loc.projectionSandboxKey()!]}
             nav={workspaceViewNavShown ? workspaceViewSwitcher : undefined}
-            onBack={() => void closeProjectionView()} />
+            onBack={() => void loc.closeProjectionView()} />
           {#key `${projection.pluginId}:${projection.viewId}`}
             {#key shownWebviewInstance}
               <SandboxView
@@ -8416,20 +7684,20 @@ onMount(() => {
           {/key}
         </section>
       </SpecializedSurface>
-    {:else if sandboxView && sandboxView.renderer !== "maps"}
+    {:else if loc.sandboxView && loc.sandboxView.renderer !== "maps"}
       <SpecializedSurface
-        restoreKey={specializedSurfaceKey() ?? "sandbox"}
+        restoreKey={loc.specializedSurfaceKey() ?? "sandbox"}
         restoreScrollTop={loc.currentSpecializedSurfaceScrollTop()}
         bind:element={loc.specializedSurfaceElement}
         onScroll={loc.rememberSpecializedSurfaceScroll}>
-        {#key `${sandboxView.plugin.id}:${sandboxView.view?.id ?? "default"}`}
+        {#key `${loc.sandboxView.plugin.id}:${loc.sandboxView.view?.id ?? "default"}`}
           {#key shownWebviewInstance}
             <SandboxView
-              pluginId={sandboxView.plugin.id}
+              pluginId={loc.sandboxView.plugin.id}
               instanceId={shownWebviewInstance}
               holdMount={shellNavigationBusy}
-              viewId={sandboxView.view?.id}
-              title={sandboxView.plugin.name}
+              viewId={loc.sandboxView.view?.id}
+              title={loc.sandboxView.plugin.name}
               prepareMount={prepareUnpooledMount} />
           {/key}
         {/key}
@@ -8451,9 +7719,9 @@ onMount(() => {
             class="quiet-button"
             onclick={() => void importPortableCheckpoint()}>Import checkpoint</button>
         </div>{/if}
-      {#if !mapSurfaceOpen}
+      {#if !loc.mapSurfaceOpen}
         {#snippet workspaceHeaderActions()}
-          {#if section === "maps"}<div class="map-provider-create">
+          {#if loc.section === "maps"}<div class="map-provider-create">
               <button
                 class="primary-button"
                 type="button"
@@ -8494,7 +7762,7 @@ onMount(() => {
                   </div>
                 </div>{/if}
             </div>
-          {:else if section === "writing" && writingView === "manuscripts"}
+          {:else if loc.section === "writing" && loc.writingView === "manuscripts"}
             <div class="heading-create-group" role="group" aria-label="Create">
               <button
                 class="primary-button"
@@ -8512,7 +7780,7 @@ onMount(() => {
                   onclick={openNewManuscriptInSelected}>{ENTITY_ACTIONS.newInManuscript}</button>
               {/if}
             </div>
-          {:else if section === "houses"}
+          {:else if loc.section === "houses"}
             <div class="heading-create-group" role="group" aria-label="Create">
               <button class="primary-button" type="button" aria-label={ENTITY_ACTIONS.newHouse} onclick={openNewHouse}
                 >{ENTITY_ACTIONS.newHouse}</button>
@@ -8563,21 +7831,21 @@ onMount(() => {
           nav={workspaceViewNavShown ? workspaceViewSwitcher : undefined}
           layout={workbenchPaneToggles}
           actions={workspaceHeaderActions}
-          onGuide={section === "lore"
-            ? () => (loreGuideHint += 1)
-            : section === "timeline"
-              ? () => (timelineGuideHint += 1)
+          onGuide={loc.section === "lore"
+            ? () => (loc.loreGuideHint += 1)
+            : loc.section === "timeline"
+              ? () => (loc.timelineGuideHint += 1)
               : undefined}
-          guideLabel={section === "lore"
+          guideLabel={loc.section === "lore"
             ? "Show lore guide"
-            : section === "timeline"
+            : loc.section === "timeline"
               ? "Show timeline guide"
               : "Show guide"} />
       {/if}
       <section
-        class:maps-workspace={section === "maps" && sandboxView?.renderer === "maps"}
-        class:map-surface-expanded={mapSurfaceOpen}
-        class:workspace-grid-no-inspector={section === "language"}
+        class:maps-workspace={loc.section === "maps" && loc.sandboxView?.renderer === "maps"}
+        class:map-surface-expanded={loc.mapSurfaceOpen}
+        class:workspace-grid-no-inspector={loc.section === "language"}
         class:language-surface={languagePaneShown}
         class:writing-surface={writingWebviewShown}
         class="workspace-grid"
@@ -8668,7 +7936,7 @@ onMount(() => {
               role="status">
               Loading {collectionLabel()}…
             </div>{:else if collectionIsEmpty()}
-            {#if section === "maps"}
+            {#if loc.section === "maps"}
               <EntityEmptyState
                 title={loc.collectionQuery.textSearch
                   ? `No ${collectionLabel()} match that search.`
@@ -8834,7 +8102,7 @@ onMount(() => {
                       </button>
                       <EntityRowActions
                         entityName={entity.name}
-                        openTree={section === "houses" && entity.entity_type === HOUSE_TYPE}
+                        openTree={loc.section === "houses" && entity.entity_type === HOUSE_TYPE}
                         onOpen={() => void loc.selectEntity(entity)}
                         onOpenInNewTab={() => openEntityWithIntent(entity, "new-tab")}
                         onEditIdentity={() => void openEntityEditDialog(entity)}
@@ -8866,7 +8134,7 @@ onMount(() => {
                 </button>
                 <EntityRowActions
                   entityName={entity.name}
-                  openTree={section === "houses" && entity.entity_type === HOUSE_TYPE}
+                  openTree={loc.section === "houses" && entity.entity_type === HOUSE_TYPE}
                   onOpen={() => void loc.selectEntity(entity)}
                   onOpenInNewTab={() => openEntityWithIntent(entity, "new-tab")}
                   onEditIdentity={() => void openEntityEditDialog(entity)}
@@ -8915,19 +8183,19 @@ onMount(() => {
             count={collectionHeadingCount()}
             label={collectionLabel()}
             viewMode={loc.collectionQuery.viewMode}
-            groupedAriaLabel={section === "writing" && writingView === "manuscripts"
+            groupedAriaLabel={loc.section === "writing" && loc.writingView === "manuscripts"
               ? "Grouped by structure"
               : "Grouped by type"}
             allowOverflow={collectionIsEmpty()}
             controls={collectionControls}
             children={collectionItems}
             footer={collectionFooter}
-            hidden={mapSurfaceOpen}
+            hidden={loc.mapSurfaceOpen}
             bind:element={loc.collectionPaneElement}
             bind:listElement={loc.collectionListElement}
             onViewModeChange={(mode) => (loc.collectionQuery.viewMode = mode)}
             onScroll={loc.rememberCollectionScroll} />{/if}
-        {#if !mapSurfaceOpen && loc.workbenchPaneVisibility.collection && loc.workbenchPaneVisibility.content}<PaneResizeHandle
+        {#if !loc.mapSurfaceOpen && loc.workbenchPaneVisibility.collection && loc.workbenchPaneVisibility.content}<PaneResizeHandle
             label="Resize collection pane"
             value={loc.activePaneDimensions().collectionWidth}
             min={collectionPaneMin}
@@ -8983,10 +8251,10 @@ onMount(() => {
               </div>
             {/key}
           </div>
-        {:else if loc.workbenchPaneVisibility.content && !writingEntrySelected}
+        {:else if loc.workbenchPaneVisibility.content && !loc.writingEntrySelected}
           <!-- A manuscript or reference page never gets the shell editor: it is the webview's, or nothing (see `writingEntrySelected`). -->
           {#snippet contentPaneBody()}
-            {#if section === "maps" && sandboxView?.renderer === "maps" && sandboxView.view}
+            {#if loc.section === "maps" && loc.sandboxView?.renderer === "maps" && loc.sandboxView.view}
               {@const mapId = loc.selected?.entity_type === "daena.maps:world-map" ? loc.selected.id : null}
               {@const mapState = mapId ? (mapSaveStates[mapId] ?? null) : null}
               {@const mapDetail = mapConflictDetail(mapState?.detail)}
@@ -9030,7 +8298,7 @@ onMount(() => {
                           await loc.loadSelectedState(map);
                         }}
                         oncancel={() => {
-                          void leavePluginView();
+                          void loc.leavePluginView();
                         }} />
                     {/key}
                   {:else if mapsEditorMode === "vector"}
@@ -9053,7 +8321,7 @@ onMount(() => {
                             return;
                           }
                           if (status === "back") {
-                            void leavePluginView();
+                            void loc.leavePluginView();
                             return;
                           }
                           if (!mapId) return;
@@ -9068,7 +8336,7 @@ onMount(() => {
                           await loc.loadSelectedState(map);
                         }}
                         oncancel={() => {
-                          void leavePluginView();
+                          void loc.leavePluginView();
                         }} />
                     {/key}
                   {/if}
@@ -9088,7 +8356,7 @@ onMount(() => {
                       }}
                       title={loc.selected ? "Double-click to edit" : undefined}
                       style={loc.selected ? "cursor:text" : undefined}>
-                      {loc.selected?.name ?? (section === "maps" ? "Choose a map" : "Choose an entry")}
+                      {loc.selected?.name ?? (loc.section === "maps" ? "Choose a map" : "Choose an entry")}
                     </h2>
                     {#if loc.selected}
                       <div class="editor-title-actions">
@@ -9099,7 +8367,7 @@ onMount(() => {
                           title={ENTITY_ACTIONS.editIdentity}
                           onclick={() => void openEntityEditDialog()}
                           ><Pencil size={15} strokeWidth={1.8} aria-hidden="true" /></button>
-                        {#if section === "houses" && loc.selected.entity_type === HOUSE_TYPE}
+                        {#if loc.section === "houses" && loc.selected.entity_type === HOUSE_TYPE}
                           {@const houseEntity = loc.selected}
                           <button
                             class="quiet-button editor-title-icon"
@@ -9114,7 +8382,7 @@ onMount(() => {
                   </div>
                 </div>
                 {#snippet editorStatusActions()}
-                  {#if section === "maps"}<button
+                  {#if loc.section === "maps"}<button
                       class="quiet-button"
                       type="button"
                       onclick={() => void openSelectedMapEditor()}>Open map editor</button
@@ -9302,9 +8570,9 @@ onMount(() => {
                         onAiRequest={openAiAction}
                         onSaveRequest={() => void loc.flushAutoSave()}
                         onFullscreenChange={loc.setEditorFullscreen}
-                        placeholder={section === "writing"
+                        placeholder={loc.section === "writing"
                           ? `Write this ${createLabel()}…`
-                          : section === "maps"
+                          : loc.section === "maps"
                             ? "Describe this map and the world it contains…"
                             : "Write the canonical story of this entry…"} />
                     {/key}
@@ -9333,16 +8601,16 @@ onMount(() => {
               {:else}
                 <WorkbenchState
                   kind="empty"
-                  title={section === "maps"
+                  title={loc.section === "maps"
                     ? "Your map notes are waiting."
-                    : section === "writing"
-                      ? writingView === "manuscripts"
+                    : loc.section === "writing"
+                      ? loc.writingView === "manuscripts"
                         ? "Your draft is waiting."
-                        : writingView === "reference"
+                        : loc.writingView === "reference"
                           ? "Your reference desk is waiting."
                           : "Your canvas is waiting."
                       : "Your canvas is waiting."}
-                  message={section === "maps"
+                  message={loc.section === "maps"
                     ? "Select a map from the atlas, or create one with a map integration."
                     : "Select an entry from the collection, or create something new to begin writing."} />
               {/if}
@@ -9350,12 +8618,14 @@ onMount(() => {
           {/snippet}
           <ContentPane
             fullscreen={loc.editorFullscreen}
-            mapEditorActive={section === "maps" && sandboxView?.renderer === "maps" && Boolean(sandboxView.view)}
+            mapEditorActive={loc.section === "maps" &&
+              loc.sandboxView?.renderer === "maps" &&
+              Boolean(loc.sandboxView.view)}
             bind:element={loc.contentPaneElement}
             children={contentPaneBody} />
         {/if}
 
-        {#if !mapSurfaceOpen && loc.workbenchPaneVisibility.content && loc.workbenchPaneVisibility.inspector && workbenchSupportsInspector()}<PaneResizeHandle
+        {#if !loc.mapSurfaceOpen && loc.workbenchPaneVisibility.content && loc.workbenchPaneVisibility.inspector && workbenchSupportsInspector()}<PaneResizeHandle
             label="Resize inspector pane"
             value={loc.activePaneDimensions().inspectorWidth}
             min={inspectorPaneMin}
@@ -9862,26 +9132,26 @@ onMount(() => {
 {#if ready}
   <HostGuide
     guideId={LORE_GUIDE_ID}
-    active={section === "lore" && !showSettings && !projectHomeOpen}
+    active={loc.section === "lore" && !loc.showSettings && !loc.projectHomeOpen}
     resumeToken={loc.selected?.id ?? ""}
-    hintNonce={loreGuideHint}
+    hintNonce={loc.loreGuideHint}
     stepsFor={(mode) =>
       loreGuideSteps({
         hasCollection: !collectionIsEmpty(),
         hasSelection: Boolean(loc.selected),
-        view: currentWorkspaceLocationView(),
+        view: loc.currentWorkspaceLocationView(),
         mode,
       })}
     onPrimary={handleLoreGuidePrimary} />
   <HostGuide
     guideId={TIMELINE_GUIDE_ID}
-    active={section === "timeline" && !showSettings && !projectHomeOpen}
+    active={loc.section === "timeline" && !loc.showSettings && !loc.projectHomeOpen}
     resumeToken={loc.selected?.id ?? ""}
-    hintNonce={timelineGuideHint}
+    hintNonce={loc.timelineGuideHint}
     stepsFor={(mode) =>
       timelineGuideSteps({
         hasCollection: !collectionIsEmpty(),
-        view: currentWorkspaceLocationView(),
+        view: loc.currentWorkspaceLocationView(),
         mode,
       })}
     onPrimary={handleTimelineGuidePrimary} />

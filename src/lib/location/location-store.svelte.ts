@@ -2,29 +2,57 @@
  * Everything the shell keeps per location: which entry is open, its document, field drafts, revisions, dirty
  * tracking, the autosave timer and the save queue, and the conflict state; and the collection beside it: its query,
  * fetched page, open groups, manuscript outline, scroll positions and pane layout, with the effects that reload and
- * fetch them (they run in the store's own `$effect.root` and key off `ctx.section`).
+ * fetch them, and which surface the location shows (section, views, wiki, projection or plugin surface, home,
+ * settings) with the functions that switch, capture and restore it. The effects run in the store's own
+ * `$effect.root` and key off `section`.
  *
  * `+page.svelte` builds exactly one store today (side-by-side will build one per visible group). The store never
  * imports the page. Shell-global state (the project, the entity cache, modules, dialogs, toasts) and page functions
  * that have not moved yet reach it through the `LocationContext` the page passes in.
  */
 import { tick } from "svelte";
-import type { Asset, Entity, EntityPage, MapLocation, ProjectInfo, Relationship, project } from "$lib/project/client";
+import type {
+  Asset,
+  Entity,
+  EntityPage,
+  MapLocation,
+  PluginAdminEntry,
+  ProjectInfo,
+  Relationship,
+  project,
+} from "$lib/project/client";
 import type { FieldDefinition, ModuleContext, ModuleManifest, UUID } from "../../../packages/module-api/src/index";
 import type { CalendarDefinition } from "../../../packages/modules/timeline/src/calendar";
 import type { confirmDialog } from "$lib/dialogs.svelte";
 import type { EntityFieldsTabId } from "$lib/shell/entityFields";
 import type { EraContext } from "$lib/modules/chronology";
-import type { ShellLocation, WorkspaceCollectionLocation, WorkspacePaneDimensions } from "$lib/navigation/history";
+import {
+  sameShellLocation,
+  type ShellLocation,
+  type WorkspaceCollectionLocation,
+  type WorkspaceLocationView,
+  type WorkspacePaneDimensions,
+} from "$lib/navigation/history";
 import {
   collectionEntityTypes,
+  collectionTabForEntityType,
   DEFAULT_COLLECTION_QUERY,
   type CollectionQuery,
+  type CollectionResult,
+  type LanguagePane,
+  type ProjectSection,
+  type SettingsSection,
   type SortDirection,
   type SortField,
+  type TimelineView,
+  type WorkspaceCollectionTab,
   type WorkspaceSection,
   type WritingView,
 } from "$lib/modules/workspace";
+import type { NavigationRenderer } from "$lib/modules/workspace-presentation";
+import { isLanguagePane } from "$lib/modules/language-bridge";
+import { writingWebviewHandles } from "$lib/modules/writing-bridge";
+import { PROJECTION_SANDBOXES, type ProjectionSandboxKey } from "$lib/location/projection-sandboxes";
 import {
   collectionPaneDefault,
   collectionPaneMax,
@@ -39,16 +67,21 @@ import {
 } from "$lib/shell/workbench-persistence";
 import {
   appearanceLabel,
+  buildManuscriptOutline,
+  collectOutlineIds,
   collectPartOfEdges,
   containmentNames,
+  defaultExpandedOutlineIds,
   MANUSCRIPT_OUTLINE_CAP,
+  outlinePathIds,
   parentByChild,
   partOfEdgesFromRelationships,
   WRITING_FEATURES,
   WRITING_PART_OF,
   type OutlineNode,
 } from "$lib/writing/outline";
-import type { HouseMemberSummary } from "$lib/houses/model.ts";
+import { houseMemberSummaries } from "$lib/houses/fetch.ts";
+import { HOUSE_TYPE, type HouseMemberSummary, type TreeSession } from "$lib/houses/model.ts";
 import { GREGORIAN_CALENDAR_ID, isGregorianCalendarId, parseCalendarDate, serializeCalendarDate } from "$lib/date";
 import {
   hasMeaningfulDateValue,
@@ -78,6 +111,15 @@ import { isKinshipRelationshipType } from "$lib/houses/model";
 import { createMutationController } from "$lib/entity-lifecycle/mutationState";
 import type { MutationSnapshot } from "$lib/entity-lifecycle/mutationState";
 
+/** A plugin view the sidebar offers: a host surface, a sandboxed webview or the maps editor. */
+export type PluginNavigationItem = {
+  kind: "plugin";
+  plugin: PluginAdminEntry;
+  view: PluginAdminEntry["views"][number];
+  key: string;
+  renderer: Exclude<NavigationRenderer, "workspace">;
+};
+
 type ProjectClient = typeof project;
 type ConfirmOptions = Parameters<typeof confirmDialog>[0];
 
@@ -93,15 +135,15 @@ export interface LocationContext {
   /** Non-empty while the project has diagnostics; blocks saving and edits. */
   readonly projectDiagnostics: string[];
   readonly calendarDefinitions: Record<string, CalendarDefinition>;
-  /** The workspace section this location is in. */
-  readonly section: WorkspaceSection;
-  /** The Writing tab this location shows. Only the collection fetch reads it, to tell the manuscript outline apart. */
-  readonly writingView: WritingView;
   /** True once a project has finished opening. */
   readonly ready: boolean;
   readonly projectInfo: ProjectInfo | null;
-  /** The plugin surface open in this location, if any. Only the renderer matters here. */
-  readonly sandboxView: { readonly renderer: "maps" | "webview" } | null;
+  /** The installed plugins the admin view lists, or null before they are loaded. */
+  readonly adminPlugins: PluginAdminEntry[] | null;
+  /** How many modules are installed. The Writing and Timeline tab clamp waits until there are some. */
+  readonly moduleCount: number;
+  /** Every workspace section, in navigation order. */
+  readonly workspaceSectionOrder: WorkspaceSection[];
 
   confirmDialog(options: ConfirmOptions): Promise<boolean>;
   /** The shell's single error line. */
@@ -111,11 +153,31 @@ export interface LocationContext {
 
   // Leave guards and shell navigation.
   canLeaveLanguageSection(): Promise<boolean>;
-  leavePluginView(): Promise<boolean>;
   flushWritingWebview(): Promise<boolean>;
-  currentShellLocation(): ShellLocation;
   recordShellDeparture(location: ShellLocation): void;
-  applyCollectionTabForEntityType(entityType: string | null): void;
+  /** The tab and history work around a restore: `restoreShellLocation` marks it so no departure is recorded. */
+  setShellNavigationRestoring(restoring: boolean): void;
+  /** Closes every native plugin webview. Best effort. */
+  closeNativePluginWebviews(): Promise<void>;
+  /** The map editor's own leave guard: asks to save a dirty map. Map editor state moves in a later step. */
+  resolveDirtyMapSession(): Promise<boolean>;
+  /** The id of the map open in the editor, if the selection is a map. */
+  currentMapId(): string | null;
+  setMapsEditorMode(mode: "vector" | "physical"): void;
+  setMapsEditorKey(key: string): void;
+  clearMapFocus(): void;
+  /** Closes the settings or project surface; false if the administration view refuses to leave. */
+  dismissSettings(): Promise<boolean>;
+  openSettings(section: SettingsSection): Promise<void>;
+  openProjectCenter(section: ProjectSection): Promise<void>;
+  /** The Language webview bridge: asks the mounted Language webview to show a pane. */
+  requestLanguagePane(pane: LanguagePane): void;
+  /** Clears the shell's global search box. */
+  clearGlobalQuery(): void;
+  refreshAdmin(): Promise<void>;
+  pluginNavigationItemByKey(key: string): PluginNavigationItem | null;
+  /** Adds an entity the shell has not cached yet. */
+  appendEntityToCache(entity: Entity): void;
 
   // Selection AI dialogs.
   closeAiFieldFill(): void;
@@ -134,8 +196,20 @@ export interface LocationContext {
   /** Entity types the section lists, and the active tab's own types where the section has tabs. */
   sectionEntityTypes(): string[];
   activeTabEntityTypes(): string[] | undefined;
-  /** Scroll-restore key of the full surface open in this location, if any. */
-  specializedSurfaceKey(): string | null;
+  /** The module manifest the section is installed from, if the module is installed. */
+  manifestForWorkspaceSection(section: WorkspaceSection): ModuleManifest | null;
+  /** The collection tabs the section shows (Writing and Timeline have several). */
+  collectionTabsFor(section: WorkspaceSection): WorkspaceCollectionTab[];
+  /** The workspace sections whose modules are enabled. */
+  enabledWorkspaceSections(): WorkspaceSection[];
+  /** Every entity type the section's schemas declare. */
+  allEntityTypesForSection(section: WorkspaceSection): Set<string>;
+  /** The section whose module owns an entity type. */
+  sectionForEntityType(entityType: string | null): WorkspaceSection | null;
+  /** The visible collection page as the list shows it. */
+  collectionResult(): CollectionResult;
+  /** The module context the Houses collection summaries read through. */
+  housesModuleContext(): ModuleContext;
 
   // Shell refreshes.
   upsertEntityInCache(entity: Entity): void;
@@ -182,6 +256,33 @@ export function specializedSurfaceKeyForLocation(location: ShellLocation): strin
 export class LocationStore {
   readonly ctx: LocationContext;
   private readonly stopEffects: () => void;
+
+  // Which surface is open: the workspace section and its views, the home page, settings, or a plugin surface.
+  projectHomeOpen = $state(true);
+  section = $state<WorkspaceSection>("lore");
+  writingView = $state<WritingView>("manuscripts");
+  timelineView = $state<TimelineView>("events");
+  loreGuideHint = $state(0);
+  timelineGuideHint = $state(0);
+  languagePane = $state<LanguagePane>("overview");
+  housesView = $state<WorkspaceLocationView>("houses");
+  showSettings = $state(false);
+  settingsSurface = $state<"application" | "project">("application");
+  settingsSection = $state<SettingsSection>("general");
+  projectSection = $state<ProjectSection>("overview");
+  hostView = $state<{ plugin: PluginAdminEntry; view: PluginAdminEntry["views"][number] } | null>(null);
+  sandboxView = $state<{
+    plugin: PluginAdminEntry;
+    view: PluginAdminEntry["views"][number] | null;
+    renderer: "maps" | "webview";
+  } | null>(null);
+  treeRootId = $state<string | null>(null);
+  treeSession = $state<TreeSession | null>(null);
+  treeRestoreNonce = $state(0);
+  loreWikiOpen = $state(false);
+  loreWikiEntityId = $state<string | null>(null);
+  /** Plain: set once the Language section has refreshed its list, so the effect does it once per visit. */
+  languageListRefreshed = false;
 
   // Selection and load.
   selected = $state<Entity | null>(null);
@@ -314,10 +415,22 @@ export class LocationStore {
     ),
   );
 
+  /**
+   * A manuscript or reference page is selected in the Writing section. The Writing webview is the only editor for it:
+   * the shell editor never renders for such an entry, even in states where the webview is not shown (see
+   * `writingWebviewShown` on the page), so a second editor can never take typing next to the webview's drafts.
+   */
+  readonly writingEntrySelected = $derived(
+    this.section === "writing" && writingWebviewHandles(this.selected?.entity_type),
+  );
+  readonly mapSurfaceOpen = $derived(
+    this.section === "maps" && this.sandboxView?.renderer === "maps" && Boolean(this.sandboxView?.view),
+  );
+
   constructor(ctx: LocationContext) {
     this.ctx = ctx;
     // Effects belong in here, not in the page's init scope: step 5.4 creates and destroys stores at runtime.
-    // They key off the location's section, read through `ctx.section` until the section itself moves in 5.1c.
+    // They key off the location's own `section`.
     this.stopEffects = $effect.root(() => {
       // Persists the collection query under its section's key.
       $effect(() => {
@@ -331,7 +444,7 @@ export class LocationStore {
       // Reloads the stored query for the section whenever it changes.
       $effect(() => {
         this.collectionQueryRestoring = true;
-        this.collectionQuery = loadCollectionQuery(this.ctx.section);
+        this.collectionQuery = loadCollectionQuery(this.section);
         this.expandedGroups = new Set();
         void tick().then(() => {
           this.collectionQueryRestoring = false;
@@ -340,7 +453,7 @@ export class LocationStore {
 
       // Reloads the section's pane layout whenever the section changes.
       $effect(() => {
-        const layout = loadWorkbenchLayout(this.ctx.section);
+        const layout = loadWorkbenchLayout(this.section);
         this.workbenchPaneVisibility = layout.visibility;
         this.workbenchPaneWidths = {
           collection: layout.collectionWidth,
@@ -356,7 +469,7 @@ export class LocationStore {
           tabEntityTypes: this.ctx.activeTabEntityTypes(),
         });
         const scopeKey = JSON.stringify([
-          this.ctx.section,
+          this.section,
           entityTypes,
           this.collectionQuery.textSearch.trim(),
           this.collectionQuery.sortField,
@@ -388,8 +501,8 @@ export class LocationStore {
         const request = ++this.collectionRequest;
         this.collectionError = "";
         const structureOutline =
-          this.ctx.section === "writing" &&
-          this.ctx.writingView === "manuscripts" &&
+          this.section === "writing" &&
+          this.writingView === "manuscripts" &&
           this.collectionQuery.viewMode === "grouped" &&
           !this.collectionQuery.textSearch.trim();
         if (!active) {
@@ -435,6 +548,223 @@ export class LocationStore {
           query ? 180 : 0,
         );
         return () => window.clearTimeout(timer);
+      });
+
+      // Refreshes the Language list once per visit and opens its first entry when nothing is selected.
+      $effect(() => {
+        if (!this.ctx.ready || this.section !== "language") {
+          this.languageListRefreshed = false;
+          return;
+        }
+        if (this.languageListRefreshed) return;
+        this.languageListRefreshed = true;
+        this.bumpCollectionRefresh();
+        if (!this.selected && this.ctx.collectionResult().entities.length > 0)
+          void this.selectEntity(this.ctx.collectionResult().entities[0], false);
+      });
+
+      // Keeps the Timeline and Writing tabs on a tab that exists.
+      $effect(() => {
+        if (!this.ctx.moduleCount) return;
+        const timelineTabs = this.ctx.collectionTabsFor("timeline");
+        if (timelineTabs.length > 0 && !timelineTabs.some((tab) => tab.id === this.timelineView)) {
+          this.timelineView = timelineTabs[0].id;
+        }
+        const writingTabs = this.ctx.collectionTabsFor("writing");
+        if (writingTabs.length > 0 && !writingTabs.some((tab) => tab.id === this.writingView)) {
+          this.writingView = writingTabs[0].id;
+        }
+      });
+
+      // Loads the member summaries of the Houses collection page.
+      $effect(() => {
+        const housesSection = this.ctx.ready && this.section === "houses" && this.housesView === "houses";
+        const ids = this.collectionPage.items
+          .filter((entity) => {
+            const type = entity.entity_type ?? "";
+            return type === HOUSE_TYPE || type.endsWith(":house");
+          })
+          .map((entity) => entity.id);
+        void this.collectionRefreshEpoch;
+        if (!housesSection || ids.length === 0) {
+          if (!housesSection) this.houseCollectionSummaries = new Map();
+          this.houseSummariesPending = false;
+          return;
+        }
+        const request = ++this.houseSummaryRequest;
+        this.houseSummariesPending = true;
+        const context = this.ctx.housesModuleContext();
+        void houseMemberSummaries(context, ids)
+          .then((summaries) => {
+            if (request !== this.houseSummaryRequest) return;
+            this.houseCollectionSummaries = summaries;
+          })
+          .catch(() => {
+            if (request !== this.houseSummaryRequest) return;
+            this.houseCollectionSummaries = new Map();
+          })
+          .finally(() => {
+            if (request === this.houseSummaryRequest) this.houseSummariesPending = false;
+          });
+      });
+
+      // Loads the Writing manuscript outline, or the containment labels of search results.
+      $effect(() => {
+        const onManuscripts =
+          this.ctx.ready &&
+          Boolean(this.ctx.projectInfo) &&
+          this.section === "writing" &&
+          this.writingView === "manuscripts";
+        const search = this.collectionQuery.textSearch.trim();
+        const grouped = this.collectionQuery.viewMode === "grouped";
+        const entityTypes = collectionEntityTypes({
+          entityTypes: new Set(this.ctx.sectionEntityTypes()),
+          tabEntityTypes: this.ctx.activeTabEntityTypes(),
+        });
+        const excludedEntityTypes = [...this.collectionQuery.excludedTypes];
+        const sortField = this.collectionQuery.sortField;
+        const sortDirection = this.collectionQuery.sortDir;
+        const pageItems = this.collectionPage.items;
+        void this.collectionRefreshEpoch;
+        if (!onManuscripts) {
+          if (this.section !== "writing" || this.writingView !== "manuscripts") {
+            this.manuscriptOutline = [];
+            this.manuscriptOutlineEntities = [];
+            this.manuscriptOutlineTruncated = false;
+            this.manuscriptOutlineLibraryKey = "";
+            this.manuscriptPathLabels = {};
+            this.manuscriptOutlineLoading = false;
+          }
+          return;
+        }
+        const request = ++this.manuscriptOutlineRequest;
+        if (search) {
+          this.manuscriptOutline = [];
+          this.manuscriptOutlineTruncated = false;
+          this.manuscriptOutlineLoading = false;
+          const seed = pageItems.map((entity) => entity.id);
+          if (seed.length === 0) {
+            this.manuscriptPathLabels = {};
+            return;
+          }
+          void (async () => {
+            try {
+              const labels = await this.manuscriptContainmentLabels(seed);
+              if (request !== this.manuscriptOutlineRequest) return;
+              this.manuscriptPathLabels = labels;
+            } catch {
+              if (request !== this.manuscriptOutlineRequest) return;
+              this.manuscriptPathLabels = {};
+            }
+          })();
+          return;
+        }
+        this.manuscriptPathLabels = {};
+        if (!grouped) {
+          this.manuscriptOutline = [];
+          this.manuscriptOutlineEntities = [];
+          this.manuscriptOutlineTruncated = false;
+          this.manuscriptOutlineLoading = false;
+          return;
+        }
+        if (entityTypes.length === 0) {
+          this.manuscriptOutline = [];
+          this.manuscriptOutlineEntities = [];
+          this.manuscriptOutlineTruncated = false;
+          this.manuscriptOutlineLoading = false;
+          return;
+        }
+        this.manuscriptOutlineLoading = true;
+        void (async () => {
+          try {
+            const { items, truncated } = await this.listManuscriptOutlineSummaries(
+              entityTypes,
+              excludedEntityTypes,
+              sortField,
+              sortDirection,
+            );
+            if (request !== this.manuscriptOutlineRequest) return;
+            const edges = await collectPartOfEdges(
+              items.map((entity) => entity.id),
+              this.queryWritingPartOf,
+            );
+            if (request !== this.manuscriptOutlineRequest) return;
+            const roots = buildManuscriptOutline(items, [], edges);
+            const libraryKey = roots.map((node) => node.id).join("\0");
+            if (libraryKey !== this.manuscriptOutlineLibraryKey) {
+              this.manuscriptOutlineLibraryKey = libraryKey;
+              this.manuscriptExpanded = defaultExpandedOutlineIds(roots);
+            } else {
+              const allowed = collectOutlineIds(roots);
+              this.manuscriptExpanded = new Set([...this.manuscriptExpanded].filter((id) => allowed.has(id)));
+            }
+            const lastPage = Math.max(0, Math.ceil(roots.length / Math.max(1, this.collectionQuery.pageSize)) - 1);
+            if (this.collectionQuery.page > lastPage) this.collectionQuery.page = lastPage;
+            this.manuscriptOutlineEntities = items;
+            this.manuscriptOutlineTruncated = truncated;
+            this.manuscriptOutline = roots;
+            for (const entity of items) this.ctx.upsertEntityInCache(entity);
+          } catch {
+            if (request !== this.manuscriptOutlineRequest) return;
+            this.manuscriptOutline = [];
+            this.manuscriptOutlineEntities = [];
+            this.manuscriptOutlineTruncated = false;
+          } finally {
+            if (request === this.manuscriptOutlineRequest) this.manuscriptOutlineLoading = false;
+          }
+        })();
+      });
+
+      // Opens the ancestors of the selected entry in the manuscript outline.
+      $effect(() => {
+        const id = this.selected?.id;
+        if (!id || this.manuscriptOutline.length === 0) return;
+        const path = outlinePathIds(this.manuscriptOutline, id);
+        if (!path || path.length < 2) return;
+        const next = new Set(this.manuscriptExpanded);
+        let changed = false;
+        for (const ancestor of path.slice(0, -1)) {
+          if (!next.has(ancestor)) {
+            next.add(ancestor);
+            changed = true;
+          }
+        }
+        if (changed) this.manuscriptExpanded = next;
+      });
+
+      // Applies a queued collection scroll once the list it belongs to is on screen.
+      $effect(() => {
+        const pending = this.pendingCollectionScroll;
+        void this.collectionPage.items;
+        void this.manuscriptOutline;
+        if (
+          !pending ||
+          this.collectionLoading ||
+          this.manuscriptOutlineLoading ||
+          this.collectionQuery.section !== pending.section ||
+          this.section !== pending.section ||
+          this.projectHomeOpen ||
+          this.showSettings ||
+          this.hostView ||
+          this.sandboxView ||
+          this.loreWikiOpen
+        )
+          return;
+        this.pendingCollectionScroll = null;
+        void tick().then(() => {
+          if (!this.collectionListElement || this.section !== pending.section) return;
+          this.collectionListElement.scrollTop = pending.scrollTop;
+          this.collectionScrollBySection[pending.section] = this.collectionListElement.scrollTop;
+        });
+      });
+
+      // The wiki belongs to Lore: leaving the section closes it.
+      $effect(() => {
+        void this.section;
+        if (this.section !== "lore" && this.loreWikiOpen) {
+          this.loreWikiOpen = false;
+          this.loreWikiEntityId = null;
+        }
       });
     });
   }
@@ -756,14 +1086,13 @@ export class LocationStore {
   async selectEntity(entity: Entity, recordHistory = true) {
     if (this.selected?.id === entity.id) return;
     if (!(await this.flushAutoSave())) return;
-    if (this.ctx.section === "language" && !(await this.ctx.canLeaveLanguageSection())) return;
-    const departure = this.ctx.currentShellLocation();
-    if (this.ctx.section === "maps" && this.ctx.sandboxView?.renderer === "maps" && !(await this.ctx.leavePluginView()))
-      return;
+    if (this.section === "language" && !(await this.ctx.canLeaveLanguageSection())) return;
+    const departure = this.currentShellLocation();
+    if (this.section === "maps" && this.sandboxView?.renderer === "maps" && !(await this.leavePluginView())) return;
     if (recordHistory) this.ctx.recordShellDeparture(departure);
     this.editorFullscreen = false;
     this.selected = entity;
-    this.ctx.applyCollectionTabForEntityType(entity.entity_type);
+    this.applyCollectionTabForEntityType(entity.entity_type);
     this.hasUnsavedChanges = false;
     this.documentConflict = null;
     this.documentRevision = 0;
@@ -1177,7 +1506,7 @@ export class LocationStore {
   // ---- Collection, scroll and panes --------------------------------------------------------------------------
 
   bumpCollectionRefresh() {
-    if (this.collectionListElement) this.queueCollectionScroll(this.ctx.section, this.collectionListElement.scrollTop);
+    if (this.collectionListElement) this.queueCollectionScroll(this.section, this.collectionListElement.scrollTop);
     this.collectionRefreshEpoch += 1;
   }
 
@@ -1208,7 +1537,7 @@ export class LocationStore {
   }
 
   currentWorkspaceCollectionLocation(): WorkspaceCollectionLocation {
-    const section = this.ctx.section;
+    const section = this.section;
     const pendingScrollTop =
       this.pendingCollectionScroll?.section === section ? this.pendingCollectionScroll.scrollTop : null;
     return {
@@ -1230,19 +1559,19 @@ export class LocationStore {
   async applyWorkspaceCollectionLocation(location: WorkspaceCollectionLocation) {
     this.collectionQueryRestoring = true;
     this.collectionQuery = {
-      section: this.ctx.section,
+      section: this.section,
       ...location.query,
       excludedTypes: [...location.query.excludedTypes],
     };
     this.expandedGroups = new Set(location.expandedGroups);
-    this.queueCollectionScroll(this.ctx.section, location.scrollTop);
+    this.queueCollectionScroll(this.section, location.scrollTop);
     await tick();
     this.collectionQueryRestoring = false;
   }
 
   rememberCollectionScroll = () => {
     if (!this.collectionListElement) return;
-    this.collectionScrollBySection[this.ctx.section] = this.collectionListElement.scrollTop;
+    this.collectionScrollBySection[this.section] = this.collectionListElement.scrollTop;
   };
 
   queueCollectionScroll(target: WorkspaceSection, scrollTop: number) {
@@ -1268,7 +1597,7 @@ export class LocationStore {
   }
 
   persistWorkbenchLayout() {
-    saveWorkbenchLayout(this.ctx.section, {
+    saveWorkbenchLayout(this.section, {
       visibility: this.workbenchPaneVisibility,
       collectionWidth: this.workbenchPaneWidths.collection,
       inspectorWidth: this.workbenchPaneWidths.inspector,
@@ -1322,7 +1651,7 @@ export class LocationStore {
   }
 
   currentSpecializedSurfaceScrollTop() {
-    const key = this.ctx.specializedSurfaceKey();
+    const key = this.specializedSurfaceKey();
     if (!key) return 0;
     return this.pendingSpecializedSurfaceScroll?.key === key
       ? this.pendingSpecializedSurfaceScroll.scrollTop
@@ -1330,7 +1659,7 @@ export class LocationStore {
   }
 
   rememberSpecializedSurfaceScroll = (scrollTop: number) => {
-    const key = this.ctx.specializedSurfaceKey();
+    const key = this.specializedSurfaceKey();
     if (!key) return;
     this.specializedSurfaceScrollByKey[key] = scrollTop;
     if (this.pendingSpecializedSurfaceScroll?.key === key) this.pendingSpecializedSurfaceScroll = null;
@@ -1344,7 +1673,7 @@ export class LocationStore {
     this.specializedSurfaceScrollByKey[key] = location.surfaceScrollTop;
     await tick();
     await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
-    if (this.ctx.specializedSurfaceKey() !== key || !this.specializedSurfaceElement) return;
+    if (this.specializedSurfaceKey() !== key || !this.specializedSurfaceElement) return;
     this.specializedSurfaceElement.scrollTop = location.surfaceScrollTop;
     this.specializedSurfaceScrollByKey[key] = this.specializedSurfaceElement.scrollTop;
     this.pendingSpecializedSurfaceScroll = null;
@@ -1482,6 +1811,495 @@ export class LocationStore {
     if (next.has(id)) next.delete(id);
     else next.add(id);
     this.manuscriptExpanded = next;
+  }
+
+  // ---- Which surface is open ---------------------------------------------------------------------------------
+
+  /**
+   * Leaves whatever plugin surface is open. Native plugin webviews are only closed when a
+   * full-surface plugin view (host or sandbox) was open, or when the caller asks for it.
+   * The Language content pane is not one of those: its SandboxView owns its webview and
+   * closes it when it unmounts, so closing every webview here would blank a pane that stays.
+   */
+  async leavePluginView(options: { closeWebviews?: boolean } = {}): Promise<boolean> {
+    if (!(await this.ctx.resolveDirtyMapSession())) return false;
+    const fullSurfaceOpen = this.hostView !== null || this.sandboxView !== null;
+    this.editorFullscreen = false;
+    this.hostView = null;
+    this.sandboxView = null;
+    if (fullSurfaceOpen || options.closeWebviews) await this.ctx.closeNativePluginWebviews();
+    return true;
+  }
+
+  /** The projection whose sandbox webview is the open full surface, if any. */
+  projectionSandboxKey(): ProjectionSandboxKey | null {
+    if (!this.sandboxView || this.sandboxView.renderer !== "webview" || !this.sandboxView.view) return null;
+    const pluginId = this.sandboxView.plugin.id;
+    const viewId = this.sandboxView.view.id;
+    const keys = Object.keys(PROJECTION_SANDBOXES) as ProjectionSandboxKey[];
+    return (
+      keys.find(
+        (key) => PROJECTION_SANDBOXES[key].pluginId === pluginId && PROJECTION_SANDBOXES[key].viewId === viewId,
+      ) ?? null
+    );
+  }
+
+  /** True while the given projection is open, or any projection when `key` is omitted. */
+  projectionSandboxOpen(key?: ProjectionSandboxKey): boolean {
+    const open = this.projectionSandboxKey();
+    return open !== null && (key === undefined || open === key);
+  }
+
+  applyCollectionTabForEntityType(entityType: string | null) {
+    const owner = this.ctx.sectionForEntityType(entityType) ?? this.section;
+    const tab = collectionTabForEntityType(this.ctx.collectionTabsFor(owner), entityType);
+    if (!tab) return;
+    if (owner === "writing") this.writingView = tab.id;
+    if (owner === "timeline") this.timelineView = tab.id;
+  }
+
+  currentWorkspaceLocationView(): WorkspaceLocationView {
+    if (this.section === "lore") {
+      if (this.loreWikiOpen) return "wiki";
+      if (this.projectionSandboxOpen("lore")) return "graph";
+      return "library";
+    }
+    if (this.section === "timeline") {
+      if (this.projectionSandboxOpen("timeline")) return "timeline";
+      return this.timelineView;
+    }
+    if (this.section === "writing") return this.writingView;
+    if (this.section === "houses") return this.housesView;
+    return "default";
+  }
+
+  currentModuleState(): Record<string, unknown> | null {
+    if (this.section === "language") return { pane: this.languagePane };
+    if (this.section === "houses" && this.housesView === "tree")
+      return (this.treeSession as Record<string, unknown> | null) ?? null;
+    return null;
+  }
+
+  restoreModuleState(section: WorkspaceSection, state: Record<string, unknown> | null | undefined) {
+    if (section === "language") {
+      this.ctx.requestLanguagePane(state && isLanguagePane(state.pane) ? state.pane : "overview");
+      return;
+    }
+    if (section === "houses") {
+      this.treeSession = (state as TreeSession | null) ?? null;
+    }
+  }
+
+  specializedSurfaceKey(): string | null {
+    if (this.hostView) return `plugin:${this.hostView.plugin.id}:${this.hostView.view.id}`;
+    const projection = this.projectionSandboxKey();
+    if (projection) return PROJECTION_SANDBOXES[projection].surfaceKey;
+    if (this.sandboxView?.view && this.sandboxView.renderer !== "maps") {
+      return `plugin:${this.sandboxView.plugin.id}:${this.sandboxView.view.id}`;
+    }
+    if (this.loreWikiOpen) return "workspace:lore:wiki";
+    if (this.section === "houses" && this.housesView === "tree") return "workspace:houses:tree";
+    return null;
+  }
+
+  currentShellLocation(): ShellLocation {
+    if (this.showSettings && this.settingsSurface === "project")
+      return { kind: "project", section: this.projectSection };
+    if (this.showSettings) return { kind: "settings", section: this.settingsSection };
+    if (this.projectHomeOpen) return { kind: "home" };
+    if (this.hostView) {
+      return {
+        kind: "plugin",
+        key: `${this.hostView.plugin.id}:${this.hostView.view.id}`,
+        section: this.section,
+        entityId: this.selected?.id ?? null,
+        surfaceScrollTop: this.currentSpecializedSurfaceScrollTop(),
+      };
+    }
+    if (this.sandboxView?.view && !this.projectionSandboxOpen()) {
+      return {
+        kind: "plugin",
+        key: `${this.sandboxView.plugin.id}:${this.sandboxView.view.id}`,
+        section: this.section,
+        entityId: this.selected?.id ?? null,
+        surfaceScrollTop: this.currentSpecializedSurfaceScrollTop(),
+        moduleState: null,
+      };
+    }
+    return {
+      kind: "workspace",
+      section: this.section,
+      view: this.currentWorkspaceLocationView(),
+      entityId: this.section === "houses" && this.housesView === "tree" ? this.treeRootId : (this.selected?.id ?? null),
+      writingView: this.writingView,
+      timelineView: this.timelineView,
+      collection: this.currentWorkspaceCollectionLocation(),
+      panes: this.currentWorkspacePaneDimensions(),
+      surfaceScrollTop: this.currentSpecializedSurfaceScrollTop(),
+      moduleState: this.currentModuleState(),
+    };
+  }
+
+  async openHostView(
+    plugin: PluginAdminEntry,
+    view: PluginAdminEntry["views"][number],
+    departure = this.currentShellLocation(),
+  ) {
+    if (!(await this.ctx.dismissSettings())) return;
+    if (!(await this.leavePluginView())) return;
+    this.ctx.recordShellDeparture(departure);
+    this.projectHomeOpen = false;
+    this.hostView = { plugin, view };
+  }
+
+  async openPluginView(item: PluginNavigationItem, departure = this.currentShellLocation()) {
+    if (!(await this.flushAutoSave())) return;
+    if (this.section === "language" && !(await this.ctx.canLeaveLanguageSection())) return;
+    if (item.renderer === "maps") {
+      if (!(await this.ctx.dismissSettings())) return;
+      const mapId = this.ctx.currentMapId();
+      if (this.sandboxView?.renderer === "maps") {
+        const mapsWelcome = this.sandboxView.view === null;
+        if ((mapId === null && mapsWelcome) || (mapId !== null && !mapsWelcome)) return;
+      }
+      if (mapId) {
+        const mapField = (await this.ctx.project.listFields(mapId)).find(
+          (field) => field.namespace === "maps" && field.key === "map",
+        );
+        const descriptor = mapField?.value as { provider?: { id?: string } } | undefined;
+        this.ctx.setMapsEditorMode("vector");
+      }
+      this.ctx.clearMapFocus();
+      if (!(await this.leavePluginView())) return;
+      this.ctx.recordShellDeparture(departure);
+      this.projectHomeOpen = false;
+      this.loreWikiOpen = false;
+      this.section = "maps";
+      this.sandboxView = mapId
+        ? { plugin: item.plugin, view: item.view, renderer: "maps" }
+        : { plugin: item.plugin, view: null, renderer: "maps" };
+      if (mapId) this.ctx.setMapsEditorKey(mapId);
+      else if (!this.sandboxView.view) this.ctx.setMapsEditorKey("welcome");
+      return;
+    }
+    if (item.renderer === "host") {
+      await this.openHostView(item.plugin, item.view, departure);
+      return;
+    }
+    if (!(await this.ctx.dismissSettings())) return;
+    if (!(await this.leavePluginView())) return;
+    this.ctx.recordShellDeparture(departure);
+    this.projectHomeOpen = false;
+    this.sandboxView = { plugin: item.plugin, view: item.view, renderer: "webview" };
+  }
+
+  async selectSearchResult(entity: Entity) {
+    if (!(await this.flushAutoSave())) return;
+    const owner = this.ctx.workspaceSectionOrder.find((target) =>
+      this.ctx
+        .manifestForWorkspaceSection(target)
+        ?.schemas.some((schema) => schemaEntityTypeIds(schema).includes(entity.entity_type ?? "")),
+    );
+    const nextSection: WorkspaceSection = owner && owner !== "maps" ? owner : "lore";
+    if (this.section === "language" && nextSection !== "language" && !(await this.ctx.canLeaveLanguageSection()))
+      return;
+    const departure = this.currentShellLocation();
+    if (!(await this.leavePluginView())) return;
+    this.ctx.recordShellDeparture(departure);
+    this.section = nextSection;
+    this.applyCollectionTabForEntityType(entity.entity_type);
+    this.projectHomeOpen = false;
+    this.ctx.clearGlobalQuery();
+    this.collectionQuery.textSearch = "";
+    await this.selectEntity(entity, false);
+  }
+
+  async switchSection(next: WorkspaceSection) {
+    if (!(await this.flushAutoSave())) return;
+    if (
+      this.section === next &&
+      !this.projectHomeOpen &&
+      (next !== "maps" || this.sandboxView?.renderer === "maps") &&
+      !this.showSettings
+    )
+      return;
+    if (this.section === "language" && next !== "language" && !(await this.ctx.canLeaveLanguageSection())) return;
+    const departure = this.currentShellLocation();
+    if (!(await this.ctx.dismissSettings())) return;
+    if (!(await this.leavePluginView())) return;
+    this.ctx.recordShellDeparture(departure);
+    const sectionChanged = this.section !== next;
+    this.section = next;
+    this.queueCollectionScroll(next, this.collectionScrollBySection[next] ?? 0);
+    this.projectHomeOpen = false;
+    if (sectionChanged) {
+      this.clearSelection();
+      this.collectionQuery.textSearch = "";
+    }
+  }
+
+  openProjectHome = async () => {
+    if (!this.ctx.ready || (this.projectHomeOpen && !this.showSettings && !this.hostView && !this.sandboxView)) return;
+    if (!(await this.flushAutoSave())) return;
+    if (this.section === "language" && !(await this.ctx.canLeaveLanguageSection())) return;
+    const departure = this.currentShellLocation();
+    if (!(await this.ctx.dismissSettings())) return;
+    if (!(await this.leavePluginView())) return;
+    this.ctx.recordShellDeparture(departure);
+    this.projectHomeOpen = true;
+    this.ctx.clearGlobalQuery();
+  };
+
+  async reconcileWorkspaceSection() {
+    if (this.ctx.enabledWorkspaceSections().includes(this.section)) return;
+    if (!(await this.flushAutoSave())) return;
+    if (!(await this.leavePluginView())) return;
+    this.section = this.ctx.enabledWorkspaceSections()[0] ?? "lore";
+    this.clearSelection();
+    this.collectionQuery.textSearch = "";
+    this.editorFullscreen = false;
+  }
+
+  async switchWritingView(next: WritingView) {
+    const tabs = this.ctx.collectionTabsFor("writing");
+    const resolved = tabs.some((tab) => tab.id === next) ? next : (tabs[0]?.id ?? next);
+    if (!(await this.flushAutoSave())) return;
+    if (this.writingView === resolved && !this.projectHomeOpen) return;
+    const departure = this.currentShellLocation();
+    if (!(await this.leavePluginView())) return;
+    this.ctx.recordShellDeparture(departure);
+    this.projectHomeOpen = false;
+    this.writingView = resolved;
+    this.clearSelection();
+    this.collectionQuery.textSearch = "";
+  }
+
+  async switchTimelineView(next: TimelineView) {
+    const tabs = this.ctx.collectionTabsFor("timeline");
+    const resolved = tabs.some((tab) => tab.id === next) ? next : (tabs[0]?.id ?? next);
+    if (!(await this.flushAutoSave())) return;
+    if (this.timelineView === resolved && !this.projectHomeOpen && !this.projectionSandboxOpen()) return;
+    const departure = this.currentShellLocation();
+    if (!(await this.leavePluginView())) return;
+    this.ctx.recordShellDeparture(departure);
+    this.projectHomeOpen = false;
+    this.timelineView = resolved;
+    this.clearSelection();
+    this.collectionQuery.textSearch = "";
+  }
+
+  async switchHousesView(next: WorkspaceLocationView) {
+    const allowed: WorkspaceLocationView[] = ["houses", "tree"];
+    const resolved = allowed.includes(next) ? next : "houses";
+    if (!(await this.flushAutoSave())) return;
+    if (this.section === "houses" && this.housesView === resolved && !this.projectHomeOpen) {
+      if (resolved === "tree" && this.treeRootId) {
+        this.ctx.recordShellDeparture(this.currentShellLocation());
+        this.treeRootId = null;
+        this.treeSession = null;
+      }
+      return;
+    }
+    const departure = this.currentShellLocation();
+    if (!(await this.leavePluginView())) return;
+    this.ctx.recordShellDeparture(departure);
+    this.projectHomeOpen = false;
+    if (this.section !== "houses") this.section = "houses";
+    this.housesView = resolved;
+  }
+
+  async switchLanguagePane(next: LanguagePane) {
+    if (!(await this.flushAutoSave())) return;
+    if (this.languagePane === next && !this.projectHomeOpen && this.section === "language") return;
+    const departure = this.currentShellLocation();
+    // The Language pane stays mounted across pane switches, so only a full-surface view needs closing here.
+    if (this.hostView || this.sandboxView) {
+      if (!(await this.leavePluginView())) return;
+    }
+    this.ctx.recordShellDeparture(departure);
+    this.projectHomeOpen = false;
+    this.ctx.requestLanguagePane(next);
+  }
+
+  /** Opens the projection for the current section: Chronology in Timeline, otherwise the Lore World graph. */
+  async openProjection() {
+    if (!(await this.flushAutoSave())) return;
+    const key: ProjectionSandboxKey = this.section === "timeline" ? "timeline" : "lore";
+    const surface = PROJECTION_SANDBOXES[key];
+    if (!this.projectHomeOpen && !this.showSettings && this.projectionSandboxOpen(key)) return;
+    const departure = this.currentShellLocation();
+    if (!(await this.leavePluginView())) return;
+    this.ctx.recordShellDeparture(departure);
+    this.projectHomeOpen = false;
+    this.loreWikiOpen = false;
+    this.loreWikiEntityId = null;
+    if (!this.ctx.adminPlugins) await this.ctx.refreshAdmin();
+    const plugin = this.ctx.adminPlugins?.find((entry) => entry.id === surface.pluginId && entry.enabled) ?? null;
+    if (!plugin) {
+      this.ctx.setError(`${surface.moduleName} is disabled, so ${surface.title} cannot open.`);
+      return;
+    }
+    this.sandboxView = {
+      plugin,
+      // Shell-only id. The webview mounts the package entrypoint with no view
+      // id: validate_plugin_view rejects ids that manifest.views does not list.
+      view: { id: surface.viewId, title: surface.title, renderer: { type: "sandboxed" } },
+      renderer: "webview",
+    };
+  }
+
+  async openLoreLibrary() {
+    if (!(await this.flushAutoSave())) return;
+    if (!this.projectHomeOpen && !this.showSettings && !this.loreWikiOpen && !this.hostView && !this.sandboxView)
+      return;
+    const departure = this.currentShellLocation();
+    if (!(await this.ctx.dismissSettings())) return;
+    if (!(await this.leavePluginView())) return;
+    this.ctx.recordShellDeparture(departure);
+    this.projectHomeOpen = false;
+    this.loreWikiOpen = false;
+    this.loreWikiEntityId = null;
+  }
+
+  async openLoreWiki(entityId?: string) {
+    if (!(await this.flushAutoSave())) return;
+    const showingWiki =
+      !this.projectHomeOpen && !this.showSettings && this.loreWikiOpen && !this.hostView && !this.sandboxView;
+    if (showingWiki && entityId === undefined) return;
+    const departure = this.currentShellLocation();
+    if (!(await this.leavePluginView())) return;
+    this.ctx.recordShellDeparture(departure);
+    this.projectHomeOpen = false;
+    if (entityId === undefined) {
+      this.loreWikiEntityId =
+        this.selected?.entity_type && this.ctx.allEntityTypesForSection("lore").has(this.selected.entity_type)
+          ? this.selected.id
+          : null;
+    } else {
+      const entity = await this.restoreShellEntity(entityId);
+      this.loreWikiEntityId = entity ? entityId : null;
+    }
+    // Remount so an already-open wiki takes the entry this call names.
+    if (this.loreWikiOpen) {
+      this.loreWikiOpen = false;
+      await tick();
+    }
+    this.loreWikiOpen = true;
+  }
+
+  async closeLoreWiki() {
+    if (!(await this.flushAutoSave())) return;
+    const departure = this.currentShellLocation();
+    this.ctx.recordShellDeparture(departure);
+    this.loreWikiOpen = false;
+    this.loreWikiEntityId = null;
+  }
+
+  async closeProjectionView() {
+    if (!(await this.flushAutoSave())) return;
+    const departure = this.currentShellLocation();
+    this.ctx.recordShellDeparture(departure);
+    if (this.projectionSandboxOpen()) this.sandboxView = null;
+  }
+
+  async closePluginView() {
+    if (!(await this.flushAutoSave())) return;
+    const departure = this.currentShellLocation();
+    if (!(await this.leavePluginView())) return;
+    this.ctx.recordShellDeparture(departure);
+  }
+
+  async openWorkspaceView(view: WorkspaceLocationView) {
+    if (view === "library") return this.openLoreLibrary();
+    if (view === "wiki") return this.openLoreWiki();
+    if (view === "graph" || view === "timeline") return this.openProjection();
+    if (view === "houses" || view === "tree") return this.switchHousesView(view);
+    if (this.section === "timeline" && this.ctx.collectionTabsFor("timeline").some((tab) => tab.id === view)) {
+      return this.switchTimelineView(view);
+    }
+    if (this.section === "writing" && this.ctx.collectionTabsFor("writing").some((tab) => tab.id === view)) {
+      return this.switchWritingView(view);
+    }
+    if (this.section === "houses") return this.switchHousesView(view);
+  }
+
+  async restoreShellEntity(entityId: string | null) {
+    if (!entityId) {
+      if (this.selected) this.clearSelection();
+      return null;
+    }
+    let entity = this.ctx.entities.find((candidate) => candidate.id === entityId) ?? null;
+    if (!entity) {
+      try {
+        const loaded = await this.ctx.project.getEntity(entityId);
+        entity = loaded;
+        if (loaded && !this.ctx.entities.some((candidate) => candidate.id === loaded.id))
+          this.ctx.appendEntityToCache(loaded);
+      } catch {
+        entity = null;
+      }
+    }
+    if (!entity || entity.deleted) {
+      if (this.selected) this.clearSelection();
+      return null;
+    }
+    await this.selectEntity(entity, false);
+    return entity;
+  }
+
+  async restoreShellLocation(target: ShellLocation): Promise<boolean> {
+    const pluginItem = target.kind === "plugin" ? this.ctx.pluginNavigationItemByKey(target.key) : null;
+    if (target.kind === "plugin" && !pluginItem) return false;
+    this.ctx.setShellNavigationRestoring(true);
+    try {
+      if (target.kind === "home") {
+        await this.openProjectHome();
+      } else if (target.kind === "settings") {
+        await this.ctx.openSettings(target.section);
+      } else if (target.kind === "project") {
+        await this.ctx.openProjectCenter(target.section);
+      } else if (target.kind === "plugin") {
+        await this.switchSection(target.section);
+        await this.restoreShellEntity(target.entityId);
+        await this.openPluginView(pluginItem!);
+        await this.restoreSpecializedSurfaceScroll(target);
+      } else {
+        await this.switchSection(target.section);
+        if (target.section === "lore") {
+          await this.openLoreLibrary();
+        } else if (target.section === "timeline") {
+          await this.switchTimelineView(target.timelineView);
+        } else if (target.section === "writing") {
+          await this.switchWritingView(target.writingView);
+        } else if (target.section === "houses") {
+          if (target.view === "tree") {
+            this.treeRootId = target.entityId;
+            this.treeRestoreNonce += 1;
+          }
+          this.restoreModuleState(target.section, target.moduleState);
+          await this.switchHousesView(target.view);
+        } else if (target.section === "language") {
+          this.restoreModuleState(target.section, target.moduleState);
+        }
+        await tick();
+        await this.applyWorkspaceCollectionLocation(target.collection);
+        const restoredEntity =
+          target.section === "houses" && target.view === "tree" ? null : await this.restoreShellEntity(target.entityId);
+        if (target.view === "wiki" || target.view === "graph" || target.view === "timeline") {
+          await this.openWorkspaceView(target.view);
+        }
+        await this.restoreWorkspacePaneDimensions(target.panes);
+        await this.restoreSpecializedSurfaceScroll(target);
+        const expected =
+          (target.section === "houses" && target.view === "tree") || restoredEntity || !target.entityId
+            ? target
+            : { ...target, entityId: null };
+        return sameShellLocation(this.currentShellLocation(), expected);
+      }
+      return sameShellLocation(this.currentShellLocation(), target);
+    } finally {
+      this.ctx.setShellNavigationRestoring(false);
+    }
   }
 
   // ---- Entity mutation chrome --------------------------------------------------------------------------------

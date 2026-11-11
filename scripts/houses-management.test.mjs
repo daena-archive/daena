@@ -63,7 +63,7 @@ assert.equal(TREE_LEGEND.disconnectedGroups(3), "3 family groups");
 
 assert.match(ENTITY_ACTION_CONFIRM.removeMembershipMessage, /remains in Lore/);
 
-assert.match(shell, /formatHouseMemberSummary\(houseCollectionSummaries/);
+assert.match(shell, /formatHouseMemberSummary\(loc\.houseCollectionSummaries/);
 assert.match(shell, /ENTITY_ACTIONS\.openTree/);
 assert.match(shell, /onOpenHouseEntry=/);
 assert.match(shell, /onArchiveHouse=/);
@@ -113,7 +113,7 @@ assert.equal(fields[0]?.key, "role");
 assert.deepEqual(defaultMembershipDraft({ role: "heir" }).role, "heir");
 
 assert.equal(formatHouseMemberSummary(null, { pending: true }), "Loading…");
-assert.match(shell, /onMembershipChanged=\{\(\) => bumpCollectionRefresh\(\)\}/);
+assert.match(shell, /onMembershipChanged=\{\(\) => loc\.bumpCollectionRefresh\(\)\}/);
 assert.match(shell, /onBack=\{/);
 assert.match(shell, /fromTree/);
 assert.match(shell, /houseSummariesPending/);

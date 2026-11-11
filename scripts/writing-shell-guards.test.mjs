@@ -45,26 +45,26 @@ const flushesBeforeNavigating = [
   ["applyTabsChange", /change\(snapshotActiveTab\(\)\)/],
   ["createWithOption", /entities\.create\(/],
   ["openTreePerson", /leavePluginView\(\)/],
-  ["openPluginView", /leavePluginView\(\)|openHostView\(|dismissSettings\(\)/],
-  ["switchSection", /dismissSettings\(\)|section = next/],
-  ["switchWritingView", /writingView = resolved/],
-  ["switchTimelineView", /timelineView = resolved/],
-  ["switchHousesView", /housesView = resolved/],
-  ["switchLanguagePane", /requestLanguagePane\(next\)/],
-  ["openProjectHome", /projectHomeOpen = true/],
+  ["openPluginView", /leavePluginView\(\)|openHostView\(|dismissSettings\(\)/, "store"],
+  ["switchSection", /dismissSettings\(\)|section = next/, "store"],
+  ["switchWritingView", /writingView = resolved/, "store"],
+  ["switchTimelineView", /timelineView = resolved/, "store"],
+  ["switchHousesView", /housesView = resolved/, "store"],
+  ["switchLanguagePane", /requestLanguagePane\(next\)/, "store"],
+  ["openProjectHome", /projectHomeOpen = true/, "store"],
   ["openSettings", /showSettings = true/],
   ["openProjectCenter", /showSettings = true/],
-  ["selectSearchResult", /leavePluginView\(\)|section = nextSection/],
+  ["selectSearchResult", /leavePluginView\(\)|section = nextSection/, "store"],
   ["selectEntity", /this\.selected = entity;/, "store"],
   // activateBreadcrumb is gone: the breadcrumb no longer navigates (tabs slice 3).
-  ["reconcileWorkspaceSection", /leavePluginView\(\)/],
+  ["reconcileWorkspaceSection", /leavePluginView\(\)/, "store"],
   ["openHouseTree", /leavePluginView\(\)/],
-  ["openLoreLibrary", /dismissSettings\(\)|leavePluginView\(\)/],
-  ["openLoreWiki", /leavePluginView\(\)/],
-  ["closeLoreWiki", /loreWikiOpen = false/],
-  ["closeProjectionView", /sandboxView = null/],
-  ["closePluginView", /leavePluginView\(\)/],
-  ["openProjection", /leavePluginView\(\)/],
+  ["openLoreLibrary", /dismissSettings\(\)|leavePluginView\(\)/, "store"],
+  ["openLoreWiki", /leavePluginView\(\)/, "store"],
+  ["closeLoreWiki", /loreWikiOpen = false/, "store"],
+  ["closeProjectionView", /sandboxView = null/, "store"],
+  ["closePluginView", /leavePluginView\(\)/, "store"],
+  ["openProjection", /leavePluginView\(\)/, "store"],
   ["createMap", /leavePluginView\(\)/],
   ["ensureMapEditorOpen", /loc\.selected = map;/],
   ["archiveEntity", /clearSelection\(\)|entities\.delete\(/],
@@ -217,7 +217,7 @@ function workspaceStyle() {
   assert.match(page, /\{#if error && !writingWebviewShown\}/, "the toast is left to the webview");
   const slot = between(
     "{:else if writingWebviewShown}",
-    "{:else if loc.workbenchPaneVisibility.content && !writingEntrySelected}",
+    "{:else if loc.workbenchPaneVisibility.content && !loc.writingEntrySelected}",
   );
   assert.match(slot, /class="writing-content"/);
   assert.match(
@@ -233,24 +233,24 @@ function workspaceStyle() {
 // overlay view open): a second editor would be a second writer next to the webview's drafts.
 {
   assert.match(
-    page,
-    /const writingEntrySelected = \$derived\(section === "writing" && writingWebviewHandles\(loc\.selected\?\.entity_type\)\);/,
+    store,
+    /readonly writingEntrySelected = \$derived\(\s*this\.section === "writing" && writingWebviewHandles\(this\.selected\?\.entity_type\),?\s*\);/,
     "one derived says a webview-handled Writing entry is selected",
   );
   const shown = between("const writingWebviewShown = $derived(", "\n);");
   assert.match(
     shown,
-    /^const writingWebviewShown = \$derived\(\s*writingEntrySelected &&/,
+    /^const writingWebviewShown = \$derived\(\s*loc\.writingEntrySelected &&/,
     "shown only for such an entry",
   );
   for (const gate of [
     "ready",
     "workbenchPaneVisibility.content",
-    "!projectHomeOpen",
-    "!showSettings",
-    "!hostView",
-    "!sandboxView",
-    "!loreWikiOpen",
+    "!loc.projectHomeOpen",
+    "!loc.showSettings",
+    "!loc.hostView",
+    "!loc.sandboxView",
+    "!loc.loreWikiOpen",
   ]) {
     assert.ok(shown.includes(gate), `the webview needs ${gate}`);
   }
@@ -262,14 +262,14 @@ function workspaceStyle() {
   const branches = [...chain.matchAll(/^ {8}\{(?:#|:else )if ([^}]+)\}/gm)].map((match) => match[1]);
   assert.deepEqual(
     branches,
-    ["writingWebviewShown", "loc.workbenchPaneVisibility.content && !writingEntrySelected"],
+    ["writingWebviewShown", "loc.workbenchPaneVisibility.content && !loc.writingEntrySelected"],
     "the shell editor branch excludes webview-handled Writing entries",
   );
   // The shell editor (RichTextEditor and the content pane body) renders only inside that last branch.
   assert.equal(page.match(/<RichTextEditor\b/g)?.length, 1, "one shell RichTextEditor");
   assert.ok(
     page.indexOf("<RichTextEditor") >
-      page.indexOf("{:else if loc.workbenchPaneVisibility.content && !writingEntrySelected}"),
+      page.indexOf("{:else if loc.workbenchPaneVisibility.content && !loc.writingEntrySelected}"),
     "the shell RichTextEditor sits behind the guard",
   );
   assert.equal(page.match(/\{#snippet contentPaneBody\(\)\}/g)?.length, 1);
@@ -277,7 +277,7 @@ function workspaceStyle() {
   // Lore, Maps and the Writing types the webview does not handle keep the shell editor.
   assert.match(
     page,
-    /placeholder=\{section === "writing"\s*\? `Write this \$\{createLabel\(\)\}…`\s*: section === "maps"/,
+    /placeholder=\{loc\.section === "writing"\s*\? `Write this \$\{createLabel\(\)\}…`\s*: loc\.section === "maps"/,
   );
   assert.match(page, /Write the canonical story of this entry…/);
 }

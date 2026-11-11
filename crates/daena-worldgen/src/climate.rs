@@ -17,8 +17,35 @@ pub const NH_WINTER_SOLSTICE: usize = 9;
 const MONTHS: usize = 12;
 const BANDS: usize = 32;
 const LON_BINS: usize = 64;
-const SPINUP_LIMIT: u32 = 40;
+/// Largest same-month change that keeps the old `converged` meaning, K.
 const SPINUP_TOLERANCE_K: f64 = 0.02;
+/// Published pass: 20 years. Step 2's annual-equilibrium k = 20 worst
+/// `t_rms` is 3.71 K; step 4's R3 sea-ice tail can outlast it, so this is a
+/// fixed schedule state, not convergence.
+const PUBLISHED_SPINUP_LIMIT: u32 = 20;
+/// Published pass: 0.005 K RMS. Step 2's Earthlike drift reaches it at years
+/// 23-42; with the 20-year cap this is a guard, not the usual stop.
+const PUBLISHED_STOP_RMS_K: f64 = 0.005;
+/// Published pass: 0.5 K largest change. Step 2's first max < 0.5 K is years
+/// 6-31 on the warm worlds; this bounds flicker without the 0.02 K meaning.
+const PUBLISHED_STOP_MAX_K: f64 = 0.5;
+/// Published pass: 12 warm-up months. Step 2's worst land-rain error is
+/// 2.33 % at 12 months against 6.27 % at 6.
+const PUBLISHED_MOISTURE_WARMUP_MONTHS: usize = 12;
+/// Erosion pass: 10 years. Step 2's annual k = 10 worst `t_rms` is 4.66 K;
+/// erosion weights need the annual pattern, not the long tail.
+const EROSION_SPINUP_LIMIT: u32 = 10;
+/// Erosion pass: 0.01 K RMS. Step 2's Earthlike first crossing is years
+/// 19-36 on most seeds; conservative for erosion weights.
+const EROSION_STOP_RMS_K: f64 = 0.01;
+/// Erosion pass: 0.5 K largest change, the same flicker bound as published.
+const EROSION_STOP_MAX_K: f64 = 0.5;
+/// Erosion pass: 12 warm-up months. Shorter warm-ups bias erosion rain wet
+/// with start-up vapour that has not rained out yet.
+const EROSION_MOISTURE_WARMUP_MONTHS: usize = 12;
+/// Sea-ice albedo from the 3x3 cover mean. Step 4's R3 keeps Earthlike sea
+/// ice at 19.9 M km2 against 20.7 for R0 and halves the tail.
+const SEA_ICE_ALBEDO_SMOOTHED: bool = true;
 /// Time step for the annual-equilibrium solve. The heat-capacity term is
 /// `C / dt`, so about 30,000 years removes it to the rounding of `B + gamma`.
 const EQUILIBRIUM_DT_S: f64 = 1.0e12;
@@ -33,6 +60,10 @@ const OCEAN_DIFFUSION: f64 = 0.12;
 const TRANSPORT_SWEEPS: usize = 3;
 /// Share of the ocean's extra heat capacity hidden by full sea-ice cover.
 const SEA_ICE_INSULATION: f64 = 0.7;
+/// Sea-ice cover ramp: 0 at the start, 1 at the end. The start is fixed; the
+/// end is a study option.
+const SEA_ICE_RAMP_START_C: f64 = -1.8;
+const SEA_ICE_RAMP_END_C: f64 = -8.0;
 /// Zonal mixing inside a latitude band, W/m²/K. Not an upwind coupling.
 /// Zonal flow crosses a continent in days, so land and sea in one band
 /// exchange heat about as strongly as they radiate (`B`). At 1 W/m²/K polar
@@ -48,8 +79,6 @@ const COVER_STEP: f64 = 0.5;
 const THERMAL_SCALE: f64 = 3.0e5;
 const THERMAL_CAP_MS: f64 = 5.0;
 const MOISTURE_SWEEPS: usize = 48;
-/// Discarded moisture months before the published year.
-const MOISTURE_WARMUP_MONTHS: usize = MONTHS;
 const STEP_SECONDS: f64 = 6.0 * 3600.0;
 const FU_W: f64 = 2.6;
 const PDD_SIGMA_K: f64 = 4.5;
@@ -117,7 +146,9 @@ pub struct ClimateField {
     pub spinup_years: u32,
     /// Largest same-month change on the last raw spin-up year, K.
     pub spinup_residual_k: f64,
-    /// True when that change fell below `0.02 K`.
+    /// Area-weighted RMS same-month change on the last raw spin-up year, K.
+    pub spinup_rms_k: f64,
+    /// True when the largest change fell below `0.02 K`.
     pub converged: bool,
     /// Raw previous-year then last-year temperature, only when the run did not
     /// converge. Empty after a converged spin-up. Test-only.
@@ -243,6 +274,7 @@ struct Spinup {
     s_ocean: Vec<f64>,
     years: u32,
     delta_k: f64,
+    rms_k: f64,
     converged: bool,
     #[cfg(test)]
     pair_t: Vec<f32>,
@@ -272,72 +304,73 @@ struct MoistureCell {
 /// Temperature state the seasonal spin-up starts from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SpinupStart {
-    /// 15 °C everywhere, no snow, sea ice or glacier.
+    /// 15 °C everywhere, no snow, sea ice or glacier. Studies still use it.
+    #[cfg_attr(not(test), allow(dead_code))]
     Uniform,
     /// Annual-mean energy balance from the same warm start.
     AnnualEquilibrium,
 }
 
-/// How perennial land ice is determined.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) enum LandIceRule {
-    /// Relax glacier each month toward the warmest-month target (today's rule).
-    Prognostic,
-    /// Diagnose glacier once from the ice-free summer, then hold it fixed.
-    #[allow(dead_code)]
-    Diagnosed {
-        /// Warmest-month threshold, °C. The ramp runs 4 K below this.
-        threshold_c: f64,
-        /// Seasonal years with glacier held at 0 before the diagnosis.
-        stage1_years: u32,
-    },
-}
-
-/// Tunables for one coarse climate pass. Defaults reproduce the shipping run.
+/// Tunables for one coarse climate pass.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ClimateOptions {
     /// State the seasonal spin-up starts from.
     pub start: SpinupStart,
     /// Maximum seasonal spin-up years.
     pub spinup_limit: u32,
-    /// Largest same-month change that ends the seasonal spin-up, K.
-    pub spinup_tolerance_k: f64,
+    /// Area-weighted RMS same-month change that ends a year, K.
+    pub stop_rms_k: f64,
+    /// Largest same-month change that ends a year, K.
+    pub stop_max_k: f64,
     /// Discarded moisture months before the published year.
     pub moisture_warmup_months: usize,
-    /// When false, glacier is held at 0 and has no radiative effect.
-    pub glacier_albedo_active: bool,
-    /// Perennial land-ice rule.
-    pub land_ice: LandIceRule,
+    /// Sea-ice cover reaches 1 at this temperature, °C. The start stays −1.8.
+    pub sea_ice_ramp_end_c: f64,
+    /// Use the 3×3 neighbourhood mean of sea-ice cover for its albedo.
+    pub sea_ice_albedo_smoothed: bool,
 }
 
-impl Default for ClimateOptions {
-    fn default() -> Self {
+impl ClimateOptions {
+    /// Final published pass. Annual equilibrium start from step 2 cuts the
+    /// worst low-k `t_rms` from 13.65 to 5.63 K; step 4's R3 smoothing keeps
+    /// the ice and roughly halves the tail.
+    pub(crate) fn published() -> Self {
         Self {
-            start: SpinupStart::Uniform,
-            spinup_limit: SPINUP_LIMIT,
-            spinup_tolerance_k: SPINUP_TOLERANCE_K,
-            moisture_warmup_months: MOISTURE_WARMUP_MONTHS,
-            glacier_albedo_active: true,
-            land_ice: LandIceRule::Prognostic,
+            start: SpinupStart::AnnualEquilibrium,
+            spinup_limit: PUBLISHED_SPINUP_LIMIT,
+            stop_rms_k: PUBLISHED_STOP_RMS_K,
+            stop_max_k: PUBLISHED_STOP_MAX_K,
+            moisture_warmup_months: PUBLISHED_MOISTURE_WARMUP_MONTHS,
+            sea_ice_ramp_end_c: SEA_ICE_RAMP_END_C,
+            sea_ice_albedo_smoothed: SEA_ICE_ALBEDO_SMOOTHED,
+        }
+    }
+
+    /// Climate passes inside erosion. Shorter and coarser than published:
+    /// erosion needs the annual pattern and wetness, not the settled state.
+    pub(crate) fn erosion() -> Self {
+        Self {
+            start: SpinupStart::AnnualEquilibrium,
+            spinup_limit: EROSION_SPINUP_LIMIT,
+            stop_rms_k: EROSION_STOP_RMS_K,
+            stop_max_k: EROSION_STOP_MAX_K,
+            moisture_warmup_months: EROSION_MOISTURE_WARMUP_MONTHS,
+            sea_ice_ramp_end_c: SEA_ICE_RAMP_END_C,
+            sea_ice_albedo_smoothed: SEA_ICE_ALBEDO_SMOOTHED,
         }
     }
 }
 
-/// Coarse monthly climate. `n_c = min(N, 64)`.
-///
-/// Every pass spins up from 15 °C with no snow or sea ice. Cold planets can be
-/// bistable, so a shared warm start keeps the branch independent of how the
-/// terrain was built.
-pub(crate) fn coarse(
-    fine: &CubeSphere,
-    elevation: &[f32],
-    ocean: &[u8],
-    planet: &PlanetSettings,
-) -> Result<ClimateField, WorldError> {
-    coarse_with(fine, elevation, ocean, planet, &ClimateOptions::default())
+impl Default for ClimateOptions {
+    fn default() -> Self {
+        Self::published()
+    }
 }
 
 /// Coarse climate with explicit spin-up and moisture options.
+///
+/// The annual-equilibrium start is solved from 15 °C with no snow or sea ice,
+/// so a cold bistable world does not inherit its branch from the terrain.
 pub(crate) fn coarse_with(
     fine: &CubeSphere,
     elevation: &[f32],
@@ -402,6 +435,7 @@ pub(crate) fn coarse_with(
         phi_f_deg: rotation.phi_f_deg,
         spinup_years: spin.years,
         spinup_residual_k: spin.delta_k,
+        spinup_rms_k: spin.rms_k,
         converged: spin.converged,
         #[cfg(test)]
         spinup_pair_t: spin.pair_t,
@@ -448,7 +482,7 @@ pub(crate) fn spin_up_on_land(
         &capacity,
         &insolation,
         &rotation,
-        &ClimateOptions::default(),
+        &ClimateOptions::published(),
     )
     .temperature
 }
@@ -754,25 +788,6 @@ fn rotation_of(hours: f64) -> Rotation {
     }
 }
 
-/// Set glacier once from the ice-free summer, then let its albedo act without
-/// feeding back on its own extent. The threshold sits above today's 0 to −4 °C
-/// ramp because an ice-free summer is warmer than an iced one.
-fn diagnose_glacier(land: &[CoarseLand], regional: &[f64], glacier: &mut [f64], threshold_c: f64) {
-    let n = land.len();
-    for cell in 0..n {
-        if land[cell].land_frac <= 0.0 {
-            glacier[cell] = 0.0;
-            continue;
-        }
-        let mut warm = f64::MIN;
-        for month in 0..MONTHS {
-            warm = warm.max(regional[month * n + cell]);
-        }
-        let t_warm = warm - LAPSE_K_PER_M * land[cell].elev_mean;
-        glacier[cell] = smoothstep(threshold_c, threshold_c - 4.0, t_warm);
-    }
-}
-
 fn spin_up(
     planet: &PlanetSettings,
     geo: &[Geo],
@@ -788,6 +803,7 @@ fn spin_up(
     let mut state = vec![15.0; n];
     let mut snow = vec![0.0; n];
     let mut ice = vec![0.0; n];
+    let mut ice_albedo = vec![0.0; n];
     let mut glacier = vec![0.0; n];
     // Neighbourhood temperature of the last twelve months, a rolling window.
     let mut regional = vec![15.0; MONTHS * n];
@@ -804,7 +820,6 @@ fn spin_up(
     let mut drift = Vec::with_capacity(options.spinup_limit as usize);
     #[cfg(test)]
     let mut eq_iters = 0u32;
-    #[cfg(test)]
     let area_sum = {
         let mut sum = 0.0;
         for place in geo {
@@ -812,10 +827,6 @@ fn spin_up(
         }
         sum
     };
-    let prognostic_glacier = matches!(options.land_ice, LandIceRule::Prognostic);
-    let update_glacier = prognostic_glacier && options.glacier_albedo_active;
-    let force_glacier_zero = !options.glacier_albedo_active;
-
     if options.start == SpinupStart::AnnualEquilibrium {
         // Annual insolation per cell, summed in month order.
         let annual: Vec<f64> = (0..n)
@@ -830,6 +841,12 @@ fn spin_up(
             .collect();
         let mut iterations = 0u32;
         loop {
+            let smoothed = if options.sea_ice_albedo_smoothed {
+                smooth_ice_cover(geo, &ice, &mut ice_albedo);
+                Some(ice_albedo.as_slice())
+            } else {
+                None
+            };
             step_temperature(
                 &EnergyIn {
                     geo,
@@ -847,6 +864,7 @@ fn spin_up(
                 &band_geo,
                 &mut scratch,
                 &mut next,
+                smoothed,
             );
             // Cover reaches the same targets as the monthly rule, from the
             // 3×3 neighbourhood mean of the new temperature. Glacier stays 0:
@@ -862,7 +880,11 @@ fn spin_up(
                     let regional_now = neighbourhood_mean(&place.neighbors, &next, cell);
                     let t_elev = regional_now - LAPSE_K_PER_M * land_cell.elev_mean;
                     let land_target = smoothstep(-2.0, LAND_SNOW_RAMP_C, t_elev);
-                    let ocean_target = smoothstep(-1.8, -8.0, regional_now);
+                    let ocean_target = smoothstep(
+                        SEA_ICE_RAMP_START_C,
+                        options.sea_ice_ramp_end_c,
+                        regional_now,
+                    );
                     *snow_slot += COVER_STEP * (land_target - *snow_slot);
                     *ice_slot += COVER_STEP * (ocean_target - *ice_slot);
                     (*new_t - state[cell]).abs()
@@ -894,23 +916,20 @@ fn spin_up(
         previous_t.copy_from_slice(&temperature);
     }
 
-    if let LandIceRule::Diagnosed {
-        threshold_c,
-        stage1_years,
-    } = options.land_ice
-    {
-        if options.glacier_albedo_active && stage1_years == 0 {
-            diagnose_glacier(land, &regional, &mut glacier, threshold_c);
-        }
-    }
-
     let mut years = 0;
     let mut delta_k = f64::MAX;
+    let mut rms_k = f64::MAX;
     let mut converged = false;
     for year in 1..=options.spinup_limit {
         years = year;
         let mut max_change = 0.0f64;
         for month in 0..MONTHS {
+            let smoothed = if options.sea_ice_albedo_smoothed {
+                smooth_ice_cover(geo, &ice, &mut ice_albedo);
+                Some(ice_albedo.as_slice())
+            } else {
+                None
+            };
             step_temperature(
                 &EnergyIn {
                     geo,
@@ -928,6 +947,7 @@ fn spin_up(
                 &band_geo,
                 &mut scratch,
                 &mut next,
+                smoothed,
             );
             let base = month * n;
             // One pass after the temperature step: the neighbourhood
@@ -973,30 +993,28 @@ fn spin_up(
                         *regional_slot = regional_now;
                         let t_elev = regional_now - LAPSE_K_PER_M * land_cell.elev_mean;
                         let land_target = smoothstep(-2.0, LAND_SNOW_RAMP_C, t_elev);
-                        let ocean_target = smoothstep(-1.8, -8.0, regional_now);
+                        let ocean_target = smoothstep(
+                            SEA_ICE_RAMP_START_C,
+                            options.sea_ice_ramp_end_c,
+                            regional_now,
+                        );
                         *snow_slot += COVER_STEP * (land_target - *snow_slot);
                         *ice_slot += COVER_STEP * (ocean_target - *ice_slot);
-                        // Diagnosed: glacier is fixed by `diagnose_glacier`
-                        // and must not feed back on its own extent.
-                        if force_glacier_zero {
+                        if land_cell.land_frac <= 0.0 {
                             *glacier_slot = 0.0;
-                        } else if update_glacier {
-                            if land_cell.land_frac <= 0.0 {
-                                *glacier_slot = 0.0;
-                            } else {
-                                let mut warm = f64::MIN;
-                                for other in 0..MONTHS {
-                                    let value = if other == month {
-                                        regional_now
-                                    } else {
-                                        regional[other * n + cell]
-                                    };
-                                    warm = warm.max(value);
-                                }
-                                let t_warm = warm - LAPSE_K_PER_M * land_cell.elev_mean;
-                                let target = smoothstep(0.0, -4.0, t_warm);
-                                *glacier_slot += COVER_STEP * (target - *glacier_slot);
+                        } else {
+                            let mut warm = f64::MIN;
+                            for other in 0..MONTHS {
+                                let value = if other == month {
+                                    regional_now
+                                } else {
+                                    regional[other * n + cell]
+                                };
+                                warm = warm.max(value);
                             }
+                            let t_warm = warm - LAPSE_K_PER_M * land_cell.elev_mean;
+                            let target = smoothstep(0.0, -4.0, t_warm);
+                            *glacier_slot += COVER_STEP * (target - *glacier_slot);
                         }
                         *t_slot = next[cell];
                         *s_land_slot = *snow_slot;
@@ -1009,29 +1027,25 @@ fn spin_up(
             regional[base..base + n].copy_from_slice(&regional_next);
             std::mem::swap(&mut state, &mut next);
         }
-        if let LandIceRule::Diagnosed {
-            threshold_c,
-            stage1_years,
-        } = options.land_ice
-        {
-            if options.glacier_albedo_active && year == stage1_years {
-                diagnose_glacier(land, &regional, &mut glacier, threshold_c);
+        let mut sum_sq = 0.0;
+        for month in 0..MONTHS {
+            let base = month * n;
+            for cell in 0..n {
+                let change = temperature[base + cell] - previous_t[base + cell];
+                sum_sq += geo[cell].area * change * change;
             }
         }
+        let denom = area_sum * MONTHS as f64;
+        let rms_change = (sum_sq / denom).sqrt();
         #[cfg(test)]
         {
-            let mut sum_sq = 0.0;
             let mut sum_t = 0.0;
             for month in 0..MONTHS {
                 let base = month * n;
                 for cell in 0..n {
-                    let change = temperature[base + cell] - previous_t[base + cell];
-                    let area = geo[cell].area;
-                    sum_sq += area * change * change;
-                    sum_t += area * temperature[base + cell];
+                    sum_t += geo[cell].area * temperature[base + cell];
                 }
             }
-            let denom = area_sum * MONTHS as f64;
             let mut glacier_area = 0.0;
             let mut snow_area = 0.0;
             let mut ice_area = 0.0;
@@ -1055,7 +1069,7 @@ fn spin_up(
             let area_scale = 1.0e-12;
             drift.push([
                 max_change,
-                (sum_sq / denom).sqrt(),
+                rms_change,
                 sum_t / denom,
                 glacier_area * area_scale,
                 snow_area * area_scale,
@@ -1063,11 +1077,10 @@ fn spin_up(
             ]);
         }
         delta_k = max_change;
-        if max_change < options.spinup_tolerance_k {
-            converged = true;
-            break;
-        }
-        if year == options.spinup_limit {
+        rms_k = rms_change;
+        let stop = rms_change < options.stop_rms_k && max_change < options.stop_max_k;
+        if stop || year == options.spinup_limit {
+            converged = max_change < SPINUP_TOLERANCE_K;
             break;
         }
         previous_t.copy_from_slice(&temperature);
@@ -1079,6 +1092,7 @@ fn spin_up(
         s_ocean,
         years,
         delta_k,
+        rms_k,
         converged,
         #[cfg(test)]
         pair_t: published.pair_t,
@@ -1144,6 +1158,14 @@ fn neighbourhood_mean(neighbors: &[u32; 8], field: &[f64], cell: usize) -> f64 {
     sum / count
 }
 
+/// 3×3 neighbourhood mean of sea-ice cover. Computed before the temperature
+/// step so no cell reads a value written in the same pass.
+fn smooth_ice_cover(geo: &[Geo], ice: &[f64], out: &mut [f64]) {
+    out.par_iter_mut().enumerate().for_each(|(cell, slot)| {
+        *slot = neighbourhood_mean(&geo[cell].neighbors, ice, cell);
+    });
+}
+
 struct EnergyIn<'a> {
     geo: &'a [Geo],
     land: &'a [CoarseLand],
@@ -1180,6 +1202,7 @@ fn step_temperature(
     band_geo: &BandGeo,
     scratch: &mut StepScratch,
     out: &mut [f64],
+    smoothed_ice: Option<&[f64]>,
 ) {
     // Meridional transport reaches every cell as the same flux per unit area,
     // solved implicitly together with the local balance. A uniform temperature
@@ -1207,12 +1230,8 @@ fn step_temperature(
         .for_each(|(cell, (slot, term))| {
             let place = &input.geo[cell];
             let land_frac = input.land[cell].land_frac;
-            let albedo = cover_albedo(
-                land_frac,
-                input.snow[cell],
-                input.ice[cell],
-                input.glacier[cell],
-            );
+            let ice_albedo = smoothed_ice.map_or(input.ice[cell], |values| values[cell]);
+            let albedo = cover_albedo(land_frac, input.snow[cell], ice_albedo, input.glacier[cell]);
             let band_mean = sample_band_delta(place.pos[2], &t_bar);
             let item = local_balance(
                 insulated_capacity(input.capacity[cell], land_frac, input.ice[cell]),

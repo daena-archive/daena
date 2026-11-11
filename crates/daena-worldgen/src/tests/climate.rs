@@ -1,6 +1,6 @@
 use crate::climate::{
     coarse_with, daily_insolation, declination, diffuse_meridional, distance_factor,
-    land_fractions, spin_up_on_land, ClimateOptions, LandIceRule, SpinupStart,
+    land_fractions, spin_up_on_land, ClimateOptions, SpinupStart,
 };
 use crate::grid::CubeSphere;
 use crate::{
@@ -344,7 +344,8 @@ fn earthlike_n64_climate_is_in_range() {
         stats.p_subtropical_land_mm
     );
     assert_spinup(&world);
-    assert!(stats.spinup_years <= 40, "years {}", stats.spinup_years);
+    // Published schedule caps the seasonal spin-up at 20 years.
+    assert!(stats.spinup_years <= 20, "years {}", stats.spinup_years);
     assert!(
         (stats.phi_h_deg - 30.0).abs() < 1e-9,
         "phi_h {}",
@@ -400,7 +401,8 @@ fn assert_spinup(world: &World) {
         assert!(field.spinup_pair_t.is_empty());
         return;
     }
-    assert_eq!(field.spinup_years, 40, "unconverged years");
+    // The published schedule stops at 20 years even when cells still flicker.
+    assert_eq!(field.spinup_years, 20, "unconverged years");
     assert_pair_mean(&field.t_c, &field.spinup_pair_t, "temperature");
 }
 
@@ -1108,8 +1110,10 @@ fn climate_spinup_study() {
         let reference_options = ClimateOptions {
             start: SpinupStart::Uniform,
             spinup_limit: 200,
-            spinup_tolerance_k: 0.02,
+            stop_rms_k: f64::INFINITY,
+            stop_max_k: 0.02,
             moisture_warmup_months: 36,
+            sea_ice_albedo_smoothed: false,
             ..ClimateOptions::default()
         };
         let (reference_field, reference_ms) = run_coarse(&world, &reference_options);
@@ -1132,8 +1136,10 @@ fn climate_spinup_study() {
                 let options = ClimateOptions {
                     start,
                     spinup_limit: k,
-                    spinup_tolerance_k: 0.0,
+                    stop_rms_k: 0.0,
+                    stop_max_k: 0.0,
                     moisture_warmup_months: 12,
+                    sea_ice_albedo_smoothed: false,
                     ..ClimateOptions::default()
                 };
                 let (field, ms) = run_coarse(&world, &options);
@@ -1149,8 +1155,10 @@ fn climate_spinup_study() {
             let options = ClimateOptions {
                 start: SpinupStart::Uniform,
                 spinup_limit: 200,
-                spinup_tolerance_k: 0.02,
+                stop_rms_k: f64::INFINITY,
+                stop_max_k: 0.02,
                 moisture_warmup_months: warmup,
+                sea_ice_albedo_smoothed: false,
                 ..ClimateOptions::default()
             };
             let (field, ms) = run_coarse(&world, &options);
@@ -1172,8 +1180,10 @@ fn climate_spinup_study() {
             let options = ClimateOptions {
                 start,
                 spinup_limit: 60,
-                spinup_tolerance_k: 0.0,
+                stop_rms_k: 0.0,
+                stop_max_k: 0.0,
                 moisture_warmup_months: 12,
+                sea_ice_albedo_smoothed: false,
                 ..ClimateOptions::default()
             };
             let (field, _ms) = run_coarse(&world, &options);
@@ -1211,196 +1221,240 @@ fn climate_spinup_study() {
     }
 }
 
-fn check_drift_entry(label: &str, entry: &[f64; 6]) {
-    for (index, value) in entry.iter().enumerate() {
-        assert!(
-            value.is_finite(),
-            "{label} drift component {index} is {value}"
-        );
-    }
-}
-
-fn first_year_after(
-    drift: &[[f64; 6]],
-    stage1_years: u32,
-    column: usize,
-    limit: f64,
-) -> Option<u32> {
-    drift
-        .iter()
-        .enumerate()
-        .map(|(index, entry)| (index as u32 + 1, entry))
-        .find(|(year, entry)| *year > stage1_years && entry[column] < limit)
-        .map(|(year, _)| year)
-}
-
 fn year_or_none(year: Option<u32>) -> String {
     year.map(|value| value.to_string())
         .unwrap_or_else(|| "none".to_string())
 }
 
-fn creep_diagnosis(label: &str, world: &World, rows: &mut Vec<String>) {
-    for active in [true, false] {
-        let options = ClimateOptions {
-            start: SpinupStart::Uniform,
-            spinup_limit: 200,
-            spinup_tolerance_k: 0.0,
-            moisture_warmup_months: 12,
-            glacier_albedo_active: active,
-            land_ice: LandIceRule::Prognostic,
-        };
-        let (field, _ms) = run_coarse(world, &options);
-        for (index, entry) in field.spinup_drift.iter().enumerate() {
-            let year = index as u32 + 1;
-            if year % 5 != 0 {
-                continue;
+fn first_year_from_start(drift: &[[f64; 6]], column: usize, limit: f64) -> Option<u32> {
+    drift
+        .iter()
+        .enumerate()
+        .find(|(_, entry)| entry[column] < limit)
+        .map(|(index, _)| index as u32 + 1)
+}
+
+fn drift_at(field: &ClimateField, year: u32) -> Option<&[f64; 6]> {
+    field.spinup_drift.get(year as usize - 1)
+}
+
+fn annual_ice_area(field: &ClimateField, weights: &Weights) -> f64 {
+    let n = field.grid.cell_count();
+    let mut sum = 0.0;
+    for cell in 0..n {
+        let area = weights.areas[cell] * (1.0 - weights.land[cell]);
+        let mut ice = 0.0;
+        for month in 0..12 {
+            ice += f64::from(field.s_ocean[month * n + cell]);
+        }
+        sum += area * ice / 12.0;
+    }
+    sum * 1.0e-12
+}
+
+fn perennial_seasonal(field: &ClimateField, weights: &Weights) -> (f64, f64) {
+    let n = field.grid.cell_count();
+    let mut perennial = 0.0;
+    let mut seasonal = 0.0;
+    for cell in 0..n {
+        let mut months = 0u8;
+        for month in 0..12 {
+            if field.s_ocean[month * n + cell] >= 0.5 {
+                months += 1;
             }
-            check_drift_entry(label, entry);
-            rows.push(format!(
-                "{}\t{}\t{}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{:.6}",
-                label, active, year, entry[2], entry[3], entry[4], entry[5], entry[0], entry[1],
-            ));
         }
+        let area = weights.areas[cell] * (1.0 - weights.land[cell]);
+        if months >= 11 {
+            perennial += area;
+        } else if (4..=10).contains(&months) {
+            seasonal += area;
+        }
+    }
+    (perennial * 1.0e-12, seasonal * 1.0e-12)
+}
+
+fn polar_temperature(field: &ClimateField, weights: &Weights) -> f64 {
+    let n = field.grid.cell_count();
+    let mut sum = 0.0;
+    let mut area = 0.0;
+    for cell in 0..n {
+        let lat = field.grid.lat_lon(cell as u32).0.to_degrees().abs();
+        if lat > 70.0 {
+            let cell_area = weights.areas[cell];
+            for month in 0..12 {
+                sum += cell_area * f64::from(field.t_c[month * n + cell]);
+            }
+            area += cell_area * 12.0;
+        }
+    }
+    if area > 0.0 {
+        sum / area
+    } else {
+        0.0
     }
 }
 
-fn creep_prototype(label: &str, world: &World, rows: &mut Vec<String>) {
-    let default_options = ClimateOptions {
+fn front_crossings(world: &World, field: &ClimateField) -> usize {
+    let n = field.grid.cell_count();
+    let mut extra = 0usize;
+    for step in 0..72 {
+        let lon = -180.0 + 5.0 * f64::from(step);
+        for sign in [1.0, -1.0] {
+            let mut previous: Option<bool> = None;
+            let mut toggles = 0usize;
+            for k in 0..180 {
+                let lat = sign * (40.0 + 0.25 * f64::from(k));
+                let point = crate::direction_from_lat_lon(lat, lon);
+                if world.ocean[world.grid.cell_at(point) as usize] != 1 {
+                    previous = None;
+                    continue;
+                }
+                let cell = field.grid.cell_at(point) as usize;
+                let cover: f32 = (0..12).map(|month| field.s_ocean[month * n + cell]).sum();
+                let cover = cover / 12.0;
+                let icy = if cover > 0.6 {
+                    true
+                } else if cover < 0.4 {
+                    false
+                } else {
+                    match previous {
+                        Some(state) => state,
+                        None => continue,
+                    }
+                };
+                if previous.is_some_and(|old| old != icy) {
+                    toggles += 1;
+                }
+                previous = Some(icy);
+            }
+            extra += toggles.max(1) - 1;
+        }
+    }
+    extra
+}
+
+const SEA_ICE_RULES: [(&str, f64, bool); 5] = [
+    ("R0", -8.0, false),
+    ("R1", -15.0, false),
+    ("R2", -20.0, false),
+    ("R3", -8.0, true),
+    ("R4", -15.0, true),
+];
+
+fn sea_ice_options(ramp_end_c: f64, smoothed: bool, limit: u32) -> ClimateOptions {
+    ClimateOptions {
         start: SpinupStart::Uniform,
-        spinup_limit: 40,
-        spinup_tolerance_k: 0.02,
-        moisture_warmup_months: 12,
-        glacier_albedo_active: true,
-        land_ice: LandIceRule::Prognostic,
-    };
-    let (default_field, _ms) = run_coarse(world, &default_options);
-    let weights = study_weights(world, &default_field);
-    let default_t = global_temperature(&default_field, &weights);
-    let default_last = default_field
-        .spinup_drift
-        .last()
-        .copied()
-        .unwrap_or([0.0; 6]);
-    check_drift_entry(label, &default_last);
-    assert!(default_t.is_finite(), "{label} default T {default_t}");
-
-    for threshold in [0.0, 2.0, 4.0, 6.0] {
-        for stage1 in [10u32, 20] {
-            let options = ClimateOptions {
-                start: SpinupStart::AnnualEquilibrium,
-                spinup_limit: 60,
-                spinup_tolerance_k: 0.0,
-                moisture_warmup_months: 12,
-                glacier_albedo_active: true,
-                land_ice: LandIceRule::Diagnosed {
-                    threshold_c: threshold,
-                    stage1_years: stage1,
-                },
-            };
-            let (field, ms) = run_coarse(world, &options);
-            let last = field.spinup_drift.last().copied().unwrap_or([0.0; 6]);
-            check_drift_entry(label, &last);
-            let final_t = global_temperature(&field, &weights);
-            assert!(
-                final_t.is_finite(),
-                "{label} threshold {threshold} stage1 {stage1} final T {final_t}"
-            );
-            let rms01 = first_year_after(&field.spinup_drift, stage1, 1, 0.01);
-            let rms005 = first_year_after(&field.spinup_drift, stage1, 1, 0.005);
-            let max05 = first_year_after(&field.spinup_drift, stage1, 0, 0.5);
-            rows.push(format!(
-                "{}\t{:.0}\t{}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{}\t{}\t{}\t{:.6}\t{:.6}\t{:+.6}\t{:+.6}\t{:+.6}\t{:+.6}\t{:.3}",
-                label,
-                threshold,
-                stage1,
-                final_t,
-                last[3],
-                last[4],
-                last[5],
-                year_or_none(rms01),
-                year_or_none(rms005),
-                year_or_none(max05),
-                last[0],
-                last[1],
-                final_t - default_t,
-                last[3] - default_last[3],
-                last[4] - default_last[4],
-                last[5] - default_last[5],
-                ms,
-            ));
-        }
+        spinup_limit: limit,
+        stop_rms_k: 0.0,
+        stop_max_k: 0.0,
+        sea_ice_ramp_end_c: ramp_end_c,
+        sea_ice_albedo_smoothed: smoothed,
+        ..ClimateOptions::default()
     }
 }
 
-fn creep_long(label: &str, world: &World, rows: &mut Vec<String>) {
-    let options = ClimateOptions {
-        start: SpinupStart::AnnualEquilibrium,
-        spinup_limit: 200,
-        spinup_tolerance_k: 0.0,
-        moisture_warmup_months: 12,
-        glacier_albedo_active: true,
-        land_ice: LandIceRule::Diagnosed {
-            threshold_c: 2.0,
-            stage1_years: 10,
-        },
-    };
-    let (field, _ms) = run_coarse(world, &options);
-    for (index, entry) in field.spinup_drift.iter().enumerate() {
-        let year = index as u32 + 1;
-        if year % 10 != 0 {
-            continue;
-        }
-        check_drift_entry(label, entry);
-        rows.push(format!(
-            "{}\t{}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{:.6}",
-            label, year, entry[2], entry[3], entry[4], entry[5], entry[0], entry[1],
-        ));
+fn sea_ice_row(
+    label: &str,
+    rule: &str,
+    world: &World,
+    field: &ClimateField,
+    weights: &Weights,
+    ms: f64,
+) -> String {
+    let at40 = drift_at(field, 40).copied().unwrap_or([0.0; 6]);
+    let at200 = drift_at(field, 200).copied().unwrap_or([0.0; 6]);
+    let rms01 = first_year_from_start(&field.spinup_drift, 1, 0.01);
+    let rms005 = first_year_from_start(&field.spinup_drift, 1, 0.005);
+    let max05 = first_year_from_start(&field.spinup_drift, 0, 0.5);
+    let (perennial, seasonal) = perennial_seasonal(field, weights);
+    let polar = polar_temperature(field, weights);
+    let front = front_crossings(world, field);
+    let values = [
+        at40[0], at40[1], at40[2], at40[3], at40[4], at40[5], at200[0], at200[1], at200[2],
+        at200[3], at200[4], at200[5], perennial, seasonal, polar,
+    ];
+    for value in values {
+        assert!(value.is_finite(), "{label} {rule} metric is {value}");
     }
+    format!(
+        "{}\t{}\t{}\t{}\t{}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{}\t{:.3}",
+        rule,
+        label,
+        year_or_none(rms01),
+        year_or_none(rms005),
+        year_or_none(max05),
+        at40[1],
+        at40[0],
+        at40[2],
+        at40[5],
+        at40[3],
+        at40[4],
+        at200[1],
+        at200[0],
+        at200[2],
+        at200[5],
+        at200[3],
+        at200[4],
+        perennial,
+        seasonal,
+        polar,
+        front,
+        ms,
+    )
 }
 
 #[test]
 #[ignore]
-fn climate_creep_study() {
-    let diagnosis_worlds = [
-        "earthlike-seed2",
-        "earthlike-seed5",
-        "earthlike-seed6",
-        "earthlike-seed7",
-        "frozen-seed7",
-    ];
-    let long_worlds = [
-        "earthlike-seed2",
-        "earthlike-seed5",
-        "earthlike-seed6",
-        "frozen-seed7",
-    ];
-    let mut diagnosis = Vec::new();
-    let mut prototype = Vec::new();
-    let mut long = Vec::new();
+fn climate_sea_ice_study() {
+    let mut rows = Vec::new();
+    let mut change_rows = Vec::new();
     for (label, preset, seed) in study_specs() {
         let world = study_world(preset, seed);
-        if diagnosis_worlds.contains(&label.as_str()) {
-            creep_diagnosis(&label, &world, &mut diagnosis);
+        let mut rule_values = Vec::new();
+        for (rule, ramp_end_c, smoothed) in SEA_ICE_RULES {
+            let options = sea_ice_options(ramp_end_c, smoothed, 200);
+            let (field, ms) = run_coarse(&world, &options);
+            let weights = study_weights(&world, &field);
+            rows.push(sea_ice_row(&label, rule, &world, &field, &weights, ms));
+            if label == "earthlike-seed7" || label == "frozen-seed7" {
+                let options40 = sea_ice_options(ramp_end_c, smoothed, 40);
+                let (field40, _ms40) = run_coarse(&world, &options40);
+                let weights40 = study_weights(&world, &field40);
+                let global = global_temperature(&field40, &weights40);
+                let polar = polar_temperature(&field40, &weights40);
+                let sea_ice = annual_ice_area(&field40, &weights40);
+                let (perennial, seasonal) = perennial_seasonal(&field40, &weights40);
+                for value in [global, polar, sea_ice, perennial, seasonal] {
+                    assert!(value.is_finite(), "{label} {rule} year-40 value is {value}");
+                }
+                rule_values.push((rule, global, polar, sea_ice, perennial, seasonal));
+            }
         }
-        creep_prototype(&label, &world, &mut prototype);
-        if long_worlds.contains(&label.as_str()) {
-            creep_long(&label, &world, &mut long);
+        if label == "earthlike-seed7" || label == "frozen-seed7" {
+            let (_, r0_global, r0_polar, r0_sea_ice, r0_perennial, r0_seasonal) = rule_values[0];
+            for (rule, global, polar, sea_ice, perennial, seasonal) in rule_values {
+                change_rows.push(format!(
+                    "{}\t{}\t{:+.3}\t{:+.3}\t{:+.3}\t{:+.3}\t{:+.3}",
+                    rule,
+                    label,
+                    global - r0_global,
+                    polar - r0_polar,
+                    sea_ice - r0_sea_ice,
+                    perennial - r0_perennial,
+                    seasonal - r0_seasonal,
+                ));
+            }
         }
     }
 
-    println!("DIAGNOSIS");
-    println!("world\tactive\tyear\tt_global\tglacier\tsnow\tsea_ice\tmax\trms");
-    for row in &diagnosis {
+    println!("SEAICE");
+    println!("rule\tworld\tfirst_rms01\tfirst_rms005\tfirst_max05\trms40\tmax40\tglobal40\tseaice40\tglacier40\tsnow40\trms200\tmax200\tglobal200\tseaice200\tglacier200\tsnow200\tperennial\tseasonal\tpolar\tfront\tms");
+    for row in &rows {
         println!("{row}");
     }
-    println!("PROTOTYPE");
-    println!("world\tthreshold\tstage1\tfinal_t\tglacier\tsnow\tsea_ice\trms01\trms005\tmax05\tlast_max\tlast_rms\tdt\tdglacier\tdsnow\tdsea_ice\tms");
-    for row in &prototype {
-        println!("{row}");
-    }
-    println!("LONG");
-    println!("world\tyear\tt_global\tglacier\tsnow\tsea_ice\tmax\trms");
-    for row in &long {
+    println!("R0CHANGE");
+    println!("rule\tworld\td_globalT\td_polarT\td_seaice\td_perennial\td_seasonal");
+    for row in &change_rows {
         println!("{row}");
     }
 }

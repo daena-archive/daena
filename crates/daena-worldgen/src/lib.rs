@@ -395,6 +395,8 @@ pub struct ClimatePass {
     pub converged: bool,
     /// Largest same-month change on the last raw year, K.
     pub residual_k: f64,
+    /// Area-weighted RMS same-month change on the last raw year, K.
+    pub rms_k: f64,
     /// Wall time for the coarse spin-up, milliseconds.
     pub wall_ms: f64,
 }
@@ -652,7 +654,13 @@ pub fn generate(
     }
     progress.report(Stage::Climate, 0, 1);
     let t_coarse = Instant::now();
-    let climate_field = climate::coarse(&fields.grid, &elevation, &sea.ocean, &settings.planet)?;
+    let climate_field = climate::coarse_with(
+        &fields.grid,
+        &elevation,
+        &sea.ocean,
+        &settings.planet,
+        &climate::ClimateOptions::published(),
+    )?;
     let coarse_ms = elapsed_ms(t_coarse);
     timings.push(("climate_coarse", coarse_ms));
     let mut climate_passes = evolved.passes;
@@ -662,6 +670,7 @@ pub fn generate(
         spinup_years: climate_field.spinup_years,
         converged: climate_field.converged,
         residual_k: climate_field.spinup_residual_k,
+        rms_k: climate_field.spinup_rms_k,
         wall_ms: coarse_ms,
     });
     let t_down = Instant::now();

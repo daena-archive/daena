@@ -212,6 +212,34 @@ rain, 0–27 M km² perennial and 6–23 M km² seasonal sea ice. Every run is
 
 Open gaps are listed under "Remaining work".
 
+### Spin-up and sea-ice creep (2026-11-11)
+
+The climate passes no longer run to an attractor. Some worlds' sea ice keeps
+spreading for more than a century: Earthlike seed 5 grows from about 30 M km²
+of annual-mean sea ice at year 40 to 50 at year 200 (Earth is about 22), and
+Frozen and some Earthlike seeds behave the same. The cause is the cover
+feedback. A cell is restored locally by `B + gamma` (about 5 W/m²/K), while a
+full ice cover raises albedo by about 0.34, worth about 11 K at polar
+insolation over the 6.2 K cover ramp. The 3×3 cover target is therefore
+bistable and the feedback has no local heat diffusion to stop it. Land ice is
+not the driver: turning its albedo off changes the 200-year temperature by at
+most 0.8 K, and sea ice still grows.
+
+Five cover rules were tested: ramp ends −8, −15 and −20 °C without smoothing,
+and −8 and −15 °C with albedo from the 3×3 mean of cover. The wider ramps
+settle but leave Earthlike at 2.2–4.5 M km² of annual sea ice and little or no
+perennial ice; −20 °C warms the Earthlike median by about 1.3 K. Smoothing
+the −8 °C rule (R3) keeps Earthlike at 19.9 M km² (20.7 before) and roughly
+halves the tail, but does not remove it. R3 is now the cover rule.
+
+The published state is defined by the schedule, not the attractor: the
+annual-mean equilibrium start, the published 20-year pass (erosion 10 years,
+12-month moisture warm-up), and the RMS/max stop rule above. A saved world
+rebuilds the same climate from its surface and settings. The remaining slow
+sea-ice drift on some worlds is a known limitation; the proper fix is local
+heat diffusion between cells, which is a larger physics change and costs more
+per month than this step.
+
 ## Remaining work (2026-11-09)
 
 Phases A–C are built. These items of theirs are open, in priority order;
@@ -222,17 +250,17 @@ phase D (hazards) and phase E (integration) follow.
 
    | Level | Time | Target | Peak memory | Target |
    | --- | --- | --- | --- | --- |
-   | `n = 512` | 3.0 s | 1.5 s | 490 MB | 200 MB |
-   | `n = 1024` | 5.9 s | 6 s | 1.71 GB | 700 MB |
+   | `n = 256` | 1.52 s | 0.5 s | 191 MB | 64 MB |
+   | `n = 512` | 2.27 s | 1.5 s | 512 MB | 200 MB |
+   | `n = 1024` | 5.01 s | 6 s | 1.80 GB | 700 MB |
 
-   Phase A alone met the `n = 512` time (0.86 s). At `n = 512` the climate is
-   now about 1.7 s of the 3.0 s: three passes on the 64-cell climate grid
-   (0.28 s at level 64, 0.66 s at level 256, 0.63 s on the final surface)
-   plus 0.13 s of downscaling, mostly the 40-year temperature spin-up, the
-   discarded moisture year and the alternating transport solves. Erosion
-   levels take about 0.8 s and tectonics 0.2 s. Memory was over target at
-   `n = 1024` in phase A (per-root basin records, buffer growth), and phase B
-   more than doubled it (full-resolution climate and hydrology fields).
+   Phase A alone met the `n = 512` time (0.86 s). At `n = 512` the three
+   climate passes now take 0.90 s (0.19 s at level 64, 0.31 s at level 256,
+   0.41 s on the final surface), and downscaling 0.11 s. The 0.8 s
+   three-pass target is missed by about 0.10 s. Erosion and the remaining
+   stages take about 1.25 s. Memory is still over target: phase A left the
+   `n = 1024` basin records and buffer growth, and phase B added the
+   full-resolution climate and hydrology fields.
 2. **Sea level from a water inventory** (planned for phase C). Sea level is
    still solved from a target land fraction, so presets set land share
    directly instead of it following from how much water the planet has.
@@ -399,18 +427,25 @@ windward/leeward corrections.
   axial tilt (daily-mean insolation formula with solar declination).
 - **Temperature**: a seasonal energy-balance model (Budyko–Sellers outgoing
   radiation `A + B·T`, diffusive meridional transport on equal-area bands,
-  zonal mixing within a band), stepped over 12 months until periodic.
-  Transport reaches each cell as the same flux per unit area, solved
-  implicitly with the local balance. The atmosphere's diffusivity scales with
-  moisture (Clausius–Clapeyron); a second, ocean channel moves heat between
-  bands only as far as their shared sea reaches and deposits it on ocean.
-  Sea ice insulates the ocean below it. Ocean has a mixed-layer heat
-  capacity, land a small one, so continents get strong seasons. Albedo by
-  surface (ocean, land, snow and ice below a threshold temperature; cover
-  follows the 3×3 neighbourhood temperature, and land whose warmest month
-  stays below freezing becomes ice sheet), which gives ice–albedo feedback:
-  cold presets can run away toward a snowball.
-  Greenhouse strength shifts `A`. Lapse rate −6.5 K/km on downscaling.
+  zonal mixing within a band). Each pass starts from an annual-mean
+  energy-balance equilibrium, then steps 12 months per year on a fixed
+  schedule: the published pass runs at most 20 years (erosion 10), with a
+  12-month moisture warm-up in both, and stops when the area-weighted RMS
+  same-month change is below 0.005 K (0.01 for erosion) and the largest
+  change below 0.5 K. `converged` still means the largest change below
+  0.02 K; a run that stops with flickering cells publishes the two-year
+  mean. Transport reaches each cell as the same flux
+  per unit area, solved implicitly with the local balance. The atmosphere's
+  diffusivity scales with moisture (Clausius–Clapeyron); a second, ocean
+  channel moves heat between bands only as far as their shared sea reaches
+  and deposits it on ocean. Sea ice insulates the ocean below it. Ocean has a
+  mixed-layer heat capacity, land a small one, so continents get strong
+  seasons. Albedo by surface (ocean, land, snow and ice below a threshold
+  temperature; cover follows the 3×3 neighbourhood temperature, sea-ice
+  albedo uses the 3×3 mean of cover, and land whose warmest month stays below
+  freezing becomes ice sheet), which gives ice–albedo feedback: cold presets
+  can run away toward a snowball. Greenhouse strength shifts `A`. Lapse rate
+  −6.5 K/km on downscaling.
 - **Circulation**: Hadley cell edge from rotation rate (Held–Hou scaling,
   ~30° for Earth, wider for slow rotators), giving trade winds, westerlies and
   polar easterlies; the ITCZ follows the monthly thermal equator, which pulls

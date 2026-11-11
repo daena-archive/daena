@@ -12,7 +12,7 @@ use std::time::Instant;
 
 use rayon::prelude::*;
 
-use crate::climate::{self, SurfaceWater};
+use crate::climate::{self, ClimateOptions, SurfaceWater};
 use crate::grid::{resample, CubeSphere};
 use crate::noise::{
     derive_seed, derive_seed_salt, fbm, fbm_fixed_norm, noise_on_sphere, SeedDomain,
@@ -165,7 +165,13 @@ pub(crate) fn evolve(
                 &source.domain,
                 settings.land_fraction,
             );
-            let field = climate::coarse(&source.grid, &frame, &ocean, &settings.planet)?;
+            let field = climate::coarse_with(
+                &source.grid,
+                &frame,
+                &ocean,
+                &settings.planet,
+                &ClimateOptions::erosion(),
+            )?;
             let wall_ms = elapsed_ms(started_c);
             timings.push((climate_timing_name(n), wall_ms));
             passes.push(ClimatePass {
@@ -174,6 +180,7 @@ pub(crate) fn evolve(
                 spinup_years: field.spinup_years,
                 converged: field.converged,
                 residual_k: field.spinup_residual_k,
+                rms_k: field.spinup_rms_k,
                 wall_ms,
             });
             driving = Some(field);

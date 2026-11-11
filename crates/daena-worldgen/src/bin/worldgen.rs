@@ -549,6 +549,8 @@ fn report_json(world: &World, preset: Option<Preset>) -> String {
         out.push(',');
         push_f64(&mut out, "residual_k", pass.residual_k);
         out.push(',');
+        push_f64(&mut out, "rms_k", pass.rms_k);
+        out.push(',');
         push_f64(&mut out, "wall_ms", pass.wall_ms);
         out.push('}');
     }

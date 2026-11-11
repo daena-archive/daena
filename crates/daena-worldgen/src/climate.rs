@@ -19,6 +19,12 @@ const BANDS: usize = 32;
 const LON_BINS: usize = 64;
 const SPINUP_LIMIT: u32 = 40;
 const SPINUP_TOLERANCE_K: f64 = 0.02;
+/// Time step for the annual-equilibrium solve. The heat-capacity term is
+/// `C / dt`, so about 30,000 years removes it to the rounding of `B + gamma`.
+const EQUILIBRIUM_DT_S: f64 = 1.0e12;
+/// Largest cell change that ends the annual-equilibrium solve, K.
+const EQUILIBRIUM_TOLERANCE_K: f64 = 0.01;
+const EQUILIBRIUM_LIMIT: u32 = 60;
 const B_FEEDBACK: f64 = 2.09;
 /// Ocean heat transport between bands, W/m²/K in `sin φ` units like the
 /// atmospheric diffusivity, scaled by the sea the two bands share.
@@ -42,8 +48,8 @@ const COVER_STEP: f64 = 0.5;
 const THERMAL_SCALE: f64 = 3.0e5;
 const THERMAL_CAP_MS: f64 = 5.0;
 const MOISTURE_SWEEPS: usize = 48;
-/// Discarded moisture years before the published one.
-const MOISTURE_WARMUP_YEARS: usize = 1;
+/// Discarded moisture months before the published year.
+const MOISTURE_WARMUP_MONTHS: usize = MONTHS;
 const STEP_SECONDS: f64 = 6.0 * 3600.0;
 const FU_W: f64 = 2.6;
 const PDD_SIGMA_K: f64 = 4.5;
@@ -117,6 +123,14 @@ pub struct ClimateField {
     /// converge. Empty after a converged spin-up. Test-only.
     #[cfg(test)]
     pub(crate) spinup_pair_t: Vec<f32>,
+    /// Per spin-up year `[largest, area-weighted RMS same-month change,
+    /// global annual mean, glacier, land snow, sea ice]`. The last three are
+    /// million km². Test-only.
+    #[cfg(test)]
+    pub(crate) spinup_drift: Vec<[f64; 6]>,
+    /// Annual-equilibrium iterations before the seasonal spin-up. Test-only.
+    #[cfg(test)]
+    pub(crate) spinup_eq_iters: u32,
     /// Smoothed ITCZ latitude, degrees, twelve months by 64 longitude bins.
     pub itcz_lat_deg: Vec<f32>,
     /// Land snow cover after each month of the final spin-up year, in `[0, 1]`.
@@ -232,6 +246,10 @@ struct Spinup {
     converged: bool,
     #[cfg(test)]
     pair_t: Vec<f32>,
+    #[cfg(test)]
+    drift: Vec<[f64; 6]>,
+    #[cfg(test)]
+    eq_iters: u32,
 }
 
 struct MoistureCell {
@@ -251,6 +269,60 @@ struct MoistureCell {
     w_sat_barrier: f64,
 }
 
+/// Temperature state the seasonal spin-up starts from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SpinupStart {
+    /// 15 °C everywhere, no snow, sea ice or glacier.
+    Uniform,
+    /// Annual-mean energy balance from the same warm start.
+    AnnualEquilibrium,
+}
+
+/// How perennial land ice is determined.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum LandIceRule {
+    /// Relax glacier each month toward the warmest-month target (today's rule).
+    Prognostic,
+    /// Diagnose glacier once from the ice-free summer, then hold it fixed.
+    #[allow(dead_code)]
+    Diagnosed {
+        /// Warmest-month threshold, °C. The ramp runs 4 K below this.
+        threshold_c: f64,
+        /// Seasonal years with glacier held at 0 before the diagnosis.
+        stage1_years: u32,
+    },
+}
+
+/// Tunables for one coarse climate pass. Defaults reproduce the shipping run.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ClimateOptions {
+    /// State the seasonal spin-up starts from.
+    pub start: SpinupStart,
+    /// Maximum seasonal spin-up years.
+    pub spinup_limit: u32,
+    /// Largest same-month change that ends the seasonal spin-up, K.
+    pub spinup_tolerance_k: f64,
+    /// Discarded moisture months before the published year.
+    pub moisture_warmup_months: usize,
+    /// When false, glacier is held at 0 and has no radiative effect.
+    pub glacier_albedo_active: bool,
+    /// Perennial land-ice rule.
+    pub land_ice: LandIceRule,
+}
+
+impl Default for ClimateOptions {
+    fn default() -> Self {
+        Self {
+            start: SpinupStart::Uniform,
+            spinup_limit: SPINUP_LIMIT,
+            spinup_tolerance_k: SPINUP_TOLERANCE_K,
+            moisture_warmup_months: MOISTURE_WARMUP_MONTHS,
+            glacier_albedo_active: true,
+            land_ice: LandIceRule::Prognostic,
+        }
+    }
+}
+
 /// Coarse monthly climate. `n_c = min(N, 64)`.
 ///
 /// Every pass spins up from 15 °C with no snow or sea ice. Cold planets can be
@@ -261,6 +333,17 @@ pub(crate) fn coarse(
     elevation: &[f32],
     ocean: &[u8],
     planet: &PlanetSettings,
+) -> Result<ClimateField, WorldError> {
+    coarse_with(fine, elevation, ocean, planet, &ClimateOptions::default())
+}
+
+/// Coarse climate with explicit spin-up and moisture options.
+pub(crate) fn coarse_with(
+    fine: &CubeSphere,
+    elevation: &[f32],
+    ocean: &[u8],
+    planet: &PlanetSettings,
+    options: &ClimateOptions,
 ) -> Result<ClimateField, WorldError> {
     if elevation.len() != fine.cell_count() || ocean.len() != fine.cell_count() {
         return Err(WorldError::Internal(
@@ -280,7 +363,15 @@ pub(crate) fn coarse(
         .map(|(cell, maritime)| heat_capacity(cell.land_frac, *maritime))
         .collect();
     let insolation = monthly_insolation(&geo, planet);
-    let spin = spin_up(planet, &geo, &land, &capacity, &insolation, &rotation);
+    let spin = spin_up(
+        planet,
+        &geo,
+        &land,
+        &capacity,
+        &insolation,
+        &rotation,
+        options,
+    );
     let (wind, itcz) = diagnose_circulation(
         &grid,
         &geo,
@@ -299,6 +390,7 @@ pub(crate) fn coarse(
         itcz: &itcz,
         phi_h_deg: rotation.phi_h_deg,
         phi_f_deg: rotation.phi_f_deg,
+        warmup_months: options.moisture_warmup_months,
     });
     Ok(ClimateField {
         grid: grid.clone(),
@@ -313,6 +405,10 @@ pub(crate) fn coarse(
         converged: spin.converged,
         #[cfg(test)]
         spinup_pair_t: spin.pair_t,
+        #[cfg(test)]
+        spinup_drift: spin.drift,
+        #[cfg(test)]
+        spinup_eq_iters: spin.eq_iters,
         itcz_lat_deg: itcz_to_f32(&itcz),
         s_land: to_f32(&spin.s_land),
         s_ocean: to_f32(&spin.s_ocean),
@@ -345,7 +441,16 @@ pub(crate) fn spin_up_on_land(
         .map(|(cell, maritime)| heat_capacity(cell.land_frac, *maritime))
         .collect();
     let insolation = monthly_insolation(&geo, planet);
-    spin_up(planet, &geo, &land, &capacity, &insolation, &rotation).temperature
+    spin_up(
+        planet,
+        &geo,
+        &land,
+        &capacity,
+        &insolation,
+        &rotation,
+        &ClimateOptions::default(),
+    )
+    .temperature
 }
 
 /// Runoff, net lake evaporation and ice balance on `fine`, using `field`.
@@ -547,6 +652,21 @@ fn aggregate(
         .collect())
 }
 
+/// Test-only: land fraction of each coarse climate cell. Keeps [`CoarseLand`]
+/// private while the spin-up study needs the same aggregation the pass uses.
+#[cfg(test)]
+pub(crate) fn land_fractions(
+    fine: &CubeSphere,
+    elevation: &[f32],
+    ocean: &[u8],
+    coarse: &CubeSphere,
+) -> Result<Vec<f64>, WorldError> {
+    Ok(aggregate(fine, elevation, ocean, coarse)?
+        .into_iter()
+        .map(|cell| cell.land_frac)
+        .collect())
+}
+
 fn coarse_land(
     fine: &CubeSphere,
     elevation: &[f32],
@@ -634,6 +754,25 @@ fn rotation_of(hours: f64) -> Rotation {
     }
 }
 
+/// Set glacier once from the ice-free summer, then let its albedo act without
+/// feeding back on its own extent. The threshold sits above today's 0 to −4 °C
+/// ramp because an ice-free summer is warmer than an iced one.
+fn diagnose_glacier(land: &[CoarseLand], regional: &[f64], glacier: &mut [f64], threshold_c: f64) {
+    let n = land.len();
+    for cell in 0..n {
+        if land[cell].land_frac <= 0.0 {
+            glacier[cell] = 0.0;
+            continue;
+        }
+        let mut warm = f64::MIN;
+        for month in 0..MONTHS {
+            warm = warm.max(regional[month * n + cell]);
+        }
+        let t_warm = warm - LAPSE_K_PER_M * land[cell].elev_mean;
+        glacier[cell] = smoothstep(threshold_c, threshold_c - 4.0, t_warm);
+    }
+}
+
 fn spin_up(
     planet: &PlanetSettings,
     geo: &[Geo],
@@ -641,6 +780,7 @@ fn spin_up(
     capacity: &[f64],
     insolation: &[f64],
     rotation: &Rotation,
+    options: &ClimateOptions,
 ) -> Spinup {
     let n = geo.len();
     let dt = planet.month_seconds();
@@ -660,10 +800,114 @@ fn spin_up(
     let mut scratch = StepScratch::new(n);
     let mut next = vec![0.0; n];
     let mut regional_next = vec![0.0; n];
+    #[cfg(test)]
+    let mut drift = Vec::with_capacity(options.spinup_limit as usize);
+    #[cfg(test)]
+    let mut eq_iters = 0u32;
+    #[cfg(test)]
+    let area_sum = {
+        let mut sum = 0.0;
+        for place in geo {
+            sum += place.area;
+        }
+        sum
+    };
+    let prognostic_glacier = matches!(options.land_ice, LandIceRule::Prognostic);
+    let update_glacier = prognostic_glacier && options.glacier_albedo_active;
+    let force_glacier_zero = !options.glacier_albedo_active;
+
+    if options.start == SpinupStart::AnnualEquilibrium {
+        // Annual insolation per cell, summed in month order.
+        let annual: Vec<f64> = (0..n)
+            .into_par_iter()
+            .map(|cell| {
+                let mut sum = 0.0;
+                for month in 0..MONTHS {
+                    sum += insolation[month * n + cell];
+                }
+                sum / MONTHS as f64
+            })
+            .collect();
+        let mut iterations = 0u32;
+        loop {
+            step_temperature(
+                &EnergyIn {
+                    geo,
+                    land,
+                    capacity,
+                    temperature: &state,
+                    snow: &snow,
+                    ice: &ice,
+                    glacier: &glacier,
+                    insolation: &annual,
+                    dt: EQUILIBRIUM_DT_S,
+                    a_coeff,
+                    diffusion: rotation.diffusion,
+                },
+                &band_geo,
+                &mut scratch,
+                &mut next,
+            );
+            // Cover reaches the same targets as the monthly rule, from the
+            // 3×3 neighbourhood mean of the new temperature. Glacier stays 0:
+            // its rule needs the warmest of twelve months.
+            let max_change = next
+                .par_iter()
+                .zip(snow.par_iter_mut())
+                .zip(ice.par_iter_mut())
+                .enumerate()
+                .map(|(cell, ((new_t, snow_slot), ice_slot))| {
+                    let place = &geo[cell];
+                    let land_cell = &land[cell];
+                    let regional_now = neighbourhood_mean(&place.neighbors, &next, cell);
+                    let t_elev = regional_now - LAPSE_K_PER_M * land_cell.elev_mean;
+                    let land_target = smoothstep(-2.0, LAND_SNOW_RAMP_C, t_elev);
+                    let ocean_target = smoothstep(-1.8, -8.0, regional_now);
+                    *snow_slot += COVER_STEP * (land_target - *snow_slot);
+                    *ice_slot += COVER_STEP * (ocean_target - *ice_slot);
+                    (*new_t - state[cell]).abs()
+                })
+                .reduce(|| 0.0, f64::max);
+            std::mem::swap(&mut state, &mut next);
+            iterations += 1;
+            if max_change < EQUILIBRIUM_TOLERANCE_K || iterations >= EQUILIBRIUM_LIMIT {
+                break;
+            }
+        }
+        #[cfg(test)]
+        {
+            eq_iters = iterations;
+        }
+        // Seasonal years start from the equilibrium temperature. Month 0 is the
+        // spring equinox, where the annual mean is a fair start.
+        regional_next
+            .par_iter_mut()
+            .enumerate()
+            .for_each(|(cell, slot)| {
+                *slot = neighbourhood_mean(&geo[cell].neighbors, &state, cell);
+            });
+        for month in 0..MONTHS {
+            let base = month * n;
+            temperature[base..base + n].copy_from_slice(&state);
+            regional[base..base + n].copy_from_slice(&regional_next);
+        }
+        previous_t.copy_from_slice(&temperature);
+    }
+
+    if let LandIceRule::Diagnosed {
+        threshold_c,
+        stage1_years,
+    } = options.land_ice
+    {
+        if options.glacier_albedo_active && stage1_years == 0 {
+            diagnose_glacier(land, &regional, &mut glacier, threshold_c);
+        }
+    }
+
     let mut years = 0;
     let mut delta_k = f64::MAX;
     let mut converged = false;
-    for year in 1..=SPINUP_LIMIT {
+    for year in 1..=options.spinup_limit {
         years = year;
         let mut max_change = 0.0f64;
         for month in 0..MONTHS {
@@ -732,21 +976,27 @@ fn spin_up(
                         let ocean_target = smoothstep(-1.8, -8.0, regional_now);
                         *snow_slot += COVER_STEP * (land_target - *snow_slot);
                         *ice_slot += COVER_STEP * (ocean_target - *ice_slot);
-                        if land_cell.land_frac <= 0.0 {
+                        // Diagnosed: glacier is fixed by `diagnose_glacier`
+                        // and must not feed back on its own extent.
+                        if force_glacier_zero {
                             *glacier_slot = 0.0;
-                        } else {
-                            let mut warm = f64::MIN;
-                            for other in 0..MONTHS {
-                                let value = if other == month {
-                                    regional_now
-                                } else {
-                                    regional[other * n + cell]
-                                };
-                                warm = warm.max(value);
+                        } else if update_glacier {
+                            if land_cell.land_frac <= 0.0 {
+                                *glacier_slot = 0.0;
+                            } else {
+                                let mut warm = f64::MIN;
+                                for other in 0..MONTHS {
+                                    let value = if other == month {
+                                        regional_now
+                                    } else {
+                                        regional[other * n + cell]
+                                    };
+                                    warm = warm.max(value);
+                                }
+                                let t_warm = warm - LAPSE_K_PER_M * land_cell.elev_mean;
+                                let target = smoothstep(0.0, -4.0, t_warm);
+                                *glacier_slot += COVER_STEP * (target - *glacier_slot);
                             }
-                            let t_warm = warm - LAPSE_K_PER_M * land_cell.elev_mean;
-                            let target = smoothstep(0.0, -4.0, t_warm);
-                            *glacier_slot += COVER_STEP * (target - *glacier_slot);
                         }
                         *t_slot = next[cell];
                         *s_land_slot = *snow_slot;
@@ -759,12 +1009,65 @@ fn spin_up(
             regional[base..base + n].copy_from_slice(&regional_next);
             std::mem::swap(&mut state, &mut next);
         }
+        if let LandIceRule::Diagnosed {
+            threshold_c,
+            stage1_years,
+        } = options.land_ice
+        {
+            if options.glacier_albedo_active && year == stage1_years {
+                diagnose_glacier(land, &regional, &mut glacier, threshold_c);
+            }
+        }
+        #[cfg(test)]
+        {
+            let mut sum_sq = 0.0;
+            let mut sum_t = 0.0;
+            for month in 0..MONTHS {
+                let base = month * n;
+                for cell in 0..n {
+                    let change = temperature[base + cell] - previous_t[base + cell];
+                    let area = geo[cell].area;
+                    sum_sq += area * change * change;
+                    sum_t += area * temperature[base + cell];
+                }
+            }
+            let denom = area_sum * MONTHS as f64;
+            let mut glacier_area = 0.0;
+            let mut snow_area = 0.0;
+            let mut ice_area = 0.0;
+            for cell in 0..n {
+                let area = geo[cell].area;
+                let land_frac = land[cell].land_frac;
+                let mut snow_sum = 0.0;
+                let mut ice_sum = 0.0;
+                for month in 0..MONTHS {
+                    let index = month * n + cell;
+                    snow_sum += s_land[index];
+                    ice_sum += s_ocean[index];
+                }
+                let snow_mean = snow_sum / MONTHS as f64;
+                let ice_mean = ice_sum / MONTHS as f64;
+                glacier_area += area * land_frac * glacier[cell];
+                snow_area += area * land_frac * snow_mean;
+                ice_area += area * (1.0 - land_frac) * ice_mean;
+            }
+            // 1 million km² = 1e12 m².
+            let area_scale = 1.0e-12;
+            drift.push([
+                max_change,
+                (sum_sq / denom).sqrt(),
+                sum_t / denom,
+                glacier_area * area_scale,
+                snow_area * area_scale,
+                ice_area * area_scale,
+            ]);
+        }
         delta_k = max_change;
-        if max_change < SPINUP_TOLERANCE_K {
+        if max_change < options.spinup_tolerance_k {
             converged = true;
             break;
         }
-        if year == SPINUP_LIMIT {
+        if year == options.spinup_limit {
             break;
         }
         previous_t.copy_from_slice(&temperature);
@@ -779,6 +1082,10 @@ fn spin_up(
         converged,
         #[cfg(test)]
         pair_t: published.pair_t,
+        #[cfg(test)]
+        drift,
+        #[cfg(test)]
+        eq_iters,
     }
 }
 
@@ -1582,6 +1889,7 @@ struct PrecipIn<'a> {
     itcz: &'a [[f64; LON_BINS]; MONTHS],
     phi_h_deg: f64,
     phi_f_deg: f64,
+    warmup_months: usize,
 }
 
 fn precipitate(input: &PrecipIn<'_>) -> Vec<f64> {
@@ -1596,6 +1904,7 @@ fn precipitate(input: &PrecipIn<'_>) -> Vec<f64> {
         itcz,
         phi_h_deg,
         phi_f_deg,
+        warmup_months,
     } = *input;
     let n = geo.len();
     let steps = planet.month_seconds() / STEP_SECONDS;
@@ -1603,9 +1912,10 @@ fn precipitate(input: &PrecipIn<'_>) -> Vec<f64> {
     // Vapour and soil water carry from month to month. Restarting each month
     // at half saturation left that start-up vapour still raining out in the
     // dry belt after 48 sweeps, a floor of about 200 mm a year that the
-    // evaporation supply could not lower. Warm-up years from the last month's
+    // evaporation supply could not lower. Warm-up months from the last month's
     // saturation are discarded; each published month is the mean rain of its
-    // sweeps.
+    // sweeps. The month of a step is `(step - warmup) mod 12`, so 12 warm-up
+    // months reproduce the old discarded year exactly.
     let last = &temperature[(MONTHS - 1) * n..];
     let mut column: Vec<f64> = last
         .iter()
@@ -1616,57 +1926,56 @@ fn precipitate(input: &PrecipIn<'_>) -> Vec<f64> {
     let mut p_mean = vec![0.0; n];
     let mut column_next = vec![0.0; n];
     let mut rain = vec![0.0; n];
-    for year in 0..=MOISTURE_WARMUP_YEARS {
-        for month in 0..MONTHS {
-            let prep = moisture_prep(
-                &MoistureCtx {
-                    grid,
-                    itcz: &itcz[month],
-                    phi_h_deg,
-                    phi_f_deg,
-                    precip_scale: planet.precipitation_scale,
-                },
-                geo,
-                land,
-                &temperature[month * n..(month + 1) * n],
-                &insolation[month * n..(month + 1) * n],
-                wind,
-                month,
-            );
-            rain.fill(0.0);
-            for _ in 0..MOISTURE_SWEEPS {
-                // One pass reads the old column and writes the next one, so the
-                // upwind samples all see the same sweep. Each cell updates only
-                // its own rain and soil-water slots.
-                column_next
-                    .par_iter_mut()
-                    .zip(rain.par_iter_mut())
-                    .zip(p_mean.par_iter_mut())
-                    .enumerate()
-                    .for_each(|(cell, ((slot, rain), pm))| {
-                        let item = &prep[cell];
-                        let w_up = if item.calm {
-                            column[cell]
-                        } else {
-                            grid.sample_chart_at(
-                                &column,
-                                item.upwind_face,
-                                item.upwind_fx,
-                                item.upwind_fy,
-                            )
-                            .max(0.0)
-                        };
-                        let (w, p) = column_step(item, w_up, *pm);
-                        *slot = w;
-                        *rain += p;
-                        *pm = 0.8 * *pm + 0.2 * p;
-                    });
-                std::mem::swap(&mut column, &mut column_next);
-            }
-            if year == MOISTURE_WARMUP_YEARS {
-                for cell in 0..n {
-                    monthly[month * n + cell] = rain[cell] / MOISTURE_SWEEPS as f64 * steps;
-                }
+    for step in 0..warmup_months + MONTHS {
+        let month = (step as isize - warmup_months as isize).rem_euclid(MONTHS as isize) as usize;
+        let prep = moisture_prep(
+            &MoistureCtx {
+                grid,
+                itcz: &itcz[month],
+                phi_h_deg,
+                phi_f_deg,
+                precip_scale: planet.precipitation_scale,
+            },
+            geo,
+            land,
+            &temperature[month * n..(month + 1) * n],
+            &insolation[month * n..(month + 1) * n],
+            wind,
+            month,
+        );
+        rain.fill(0.0);
+        for _ in 0..MOISTURE_SWEEPS {
+            // One pass reads the old column and writes the next one, so the
+            // upwind samples all see the same sweep. Each cell updates only
+            // its own rain and soil-water slots.
+            column_next
+                .par_iter_mut()
+                .zip(rain.par_iter_mut())
+                .zip(p_mean.par_iter_mut())
+                .enumerate()
+                .for_each(|(cell, ((slot, rain), pm))| {
+                    let item = &prep[cell];
+                    let w_up = if item.calm {
+                        column[cell]
+                    } else {
+                        grid.sample_chart_at(
+                            &column,
+                            item.upwind_face,
+                            item.upwind_fx,
+                            item.upwind_fy,
+                        )
+                        .max(0.0)
+                    };
+                    let (w, p) = column_step(item, w_up, *pm);
+                    *slot = w;
+                    *rain += p;
+                    *pm = 0.8 * *pm + 0.2 * p;
+                });
+            std::mem::swap(&mut column, &mut column_next);
+        }
+        if step >= warmup_months {
+            for cell in 0..n {
+                monthly[month * n + cell] = rain[cell] / MOISTURE_SWEEPS as f64 * steps;
             }
         }
     }

@@ -690,20 +690,1150 @@ more storms), as the current hazard tests do.
 - Events are not materialized here. Tsunami, tornado, landslide and avalanche
   fields from the original brief remain future work.
 
-### Integration (phase E, after review)
+### Integration design (phase E)
 
-- A new physical source version that stores the cube-sphere elevation and
-  causes natively (≈ 25 MB of `i32` elevation at `n = 1024`, within the
-  128 MB source bound), with the old version rejected per ADR 0004.
-- Event sampling (earthquake, eruption, storm, flood) reads the phase D
-  fields; events already materialized stay authored history.
-- `daena-physical` generation calls the engine; climate, hydrology, hazards,
-  Find Place, routing and landmass selection read engine fields through
-  lat/lon sampling instead of the equirectangular grid.
-- Later, once the canonical cells are fine enough: Atlas may run the same
-  landscape-evolution solver on regional patches, with the global solution as
-  boundary condition, instead of synthesizing ridges and valleys.
-- ADR 0004 and `MAPS.md` budgets are updated with the measured envelopes.
+This section replaces the earlier integration sketch. It is the E1 design;
+E2–E8 implement it. It records the fourteen decisions below without reopening
+them, and marks what was read in code, what is inferred, and what is an
+estimate.
+
+Verification for this section: the engine `World`, `generate_inner`,
+`WorldSettings`, `Schedule`, `ErosionParams`, `Stage`, `Progress`,
+`evolution.rs`, `sealevel.rs`, `planet.rs`, `preset.rs`, the public climate
+types and `coarse_with`/`downscale`/`surface_water`, `hydrology.rs`, the
+hazard types and storm tracer, and the public biome ids were read. On the
+product side, `daena-physical/src/lib.rs`, `planetary.rs`, `history.rs`,
+`events.rs`, `find_place.rs` (query and filters), `routing.rs` (query and
+cost inputs), `hydro_claim.rs`, `landmass_claim.rs`, `region.rs`,
+`derived_cache.rs`, the source codec, `physical_commands.rs`,
+`physical_jobs.rs`, `daena-core/src/maps/physical.rs`,
+`crates/daena-atlas/src/lib.rs` (inputs, not internals), and the frontend
+physical/Atlas types and controls were read. Atlas style internals and every
+Svelte view were not read line by line; exact presentation details that
+depend on them are unverified. Every byte count and timing in this section is
+an estimate unless it is a source-size calculation.
+
+#### Decisions
+
+1. **Hard cut.** Maps is beta. `DAENAPW1` sources are rejected with
+   `physical.source.unsupported-version`; no source is migrated or
+   reinterpreted. Events already materialized in projects are authored history
+   and are never regenerated or rewritten.
+2. **One product-facing crate.** `daena-physical` is the only crate the
+   product calls, and the only crate that depends on `daena-worldgen`.
+   `daena-worldgen` stays serde-free. Conversions to product types live in
+   `daena-physical`. Generator code that nothing calls is deleted in E8.
+3. **Source `DAENAPW2`.** It stores the resolved settings that reproduce the
+   causes (preset tag, planet, seed, `n`, every `WorldSettings` field), the
+   engine version, the final elevation per cube cell as `i32` millimetres
+   relative to sea level, a hash of the regenerated tectonics, and the
+   generation hashes. Tectonics is regenerated on load (about 0.21 s at the
+   tectonic level); a hash mismatch is `physical.source.invalid`. Decode
+   followed by derive must reproduce the climate, hydrology, biome and hazard
+   generation hashes exactly. Any change to engine output bumps
+   `WORLD_ENGINE_VERSION`, and older sources then fail as unsupported. That
+   is the ADR 0004 contract; while Maps is in beta it is accepted that an
+   engine fix retires saved worlds.
+4. **Canonical elevation.** Generation rounds every elevation to whole
+   millimetres immediately after the sea-level threshold is applied and before
+   the ocean flood, routing and climate. The stored `i32` therefore maps back
+   to the exact `f32` bits used downstream. This is an approved output change
+   and sets a new baseline; engine golden tests are regenerated in E2.
+5. **Derive from the surface.** The engine gains one path that rebuilds every
+   post-erosion product from settings, tectonics and stored elevation: ocean
+   mask, final routing, final climate pass, downscale, hydrology, biomes and
+   hazards. Generation calls the same downstream path after erosion, so the
+   two cannot drift. The final climate pass was confirmed to depend only on
+   the grid, elevation, ocean mask, planet and options; it does not read the
+   erosion domain. The ocean flood needs only `domain = base_m > 0` on the
+   final grid, which is rebuilt from settings, tectonics and the same detail
+   noise without running erosion. The ocean flood is then a function of
+   elevation and that domain.
+6. **Resolution.** `n = 512` is the product default and `n = 1024` the high
+   setting. The engine still accepts any power-of-two `n` in `32..=2048` for
+   tests and the CLI; the product accepts only 512 and 1024 at acceptance.
+7. **No fabricated fields.** Every product field is either computed from
+   engine data or removed with all of its consumers and UI. The removals are
+   listed in "Removal list". The product must never fill a missing field with
+   a zero or a legacy placeholder.
+8. **Raster access.** Raster consumers (previews, coastlines, contours,
+   GeoJSON, Atlas input) read an explicit equirectangular resample of the
+   engine fields. Point consumers (Find Place candidates, routes, claims,
+   event placement, Atlas inspection, landmass selection) sample or address
+   canonical cube cells by latitude/longitude. The consumer table marks each
+   one.
+9. **Epochs** keep the product's forcing math in `history.rs`. The reference
+   water inventory is the ocean volume below the reference sea level,
+   computed on the cube grid with exact cell areas. An epoch's sea level is
+   the hypsometric solve for that inventory minus land ice plus thermal
+   expansion. The engine climate reruns on the epoch surface with the epoch
+   temperature offset; hydrology, biomes and hazards are then rederived.
+   Target: at most 1.5 s per epoch at `n = 512`. The epoch cache key gains the
+   engine and source versions. The earlier branch's water-inventory sea level
+   does not exist here and is not used.
+10. **Hazards and events** use the phase D1 fields. Unit conversions are
+    explicit tested functions. The engine quake rate is M ≥ 5 per km² per
+    year; the product samples M ≥ 4 with Gutenberg–Richter `b = 0.9`, so
+    `rate(M ≥ 4) = rate(M ≥ 5) · 10^0.9` per km², multiplied by the canonical
+    cell area. Volcanic source ids are the engine's `u64` ids; the product
+    type is widened rather than truncated. The inline storm tracer becomes one
+    reusable function from `(genesis cell, month)` to a track, with identical
+    output in E2. Floods read each lake's spill cell from the engine. Bump
+    `HAZARD_DERIVATION_VERSION`, `VOLCANIC_SOURCE_DERIVATION_VERSION` and the
+    event materialization versions whose meaning changes.
+11. **Atlas** consumes an equirectangular view built from the engine. Its
+    coarse-to-detail transform, styles and tile cache are not reworked. Golden
+    tests that pin old-world values are regenerated, each with a written
+    reason. Removing a field that Atlas styles used (humidity, currents) is a
+    removal, not a new Atlas algorithm.
+12. **Budgets.** `GENERATION_TIME_BUDGET_MS`, `WORKING_MEMORY_BUDGET_BYTES`,
+    `MAX_SOURCE_BYTES`, the production resolution constants and the GeoJSON
+    limits are set from measured envelopes in E8. ADR 0004's decision history
+    and `MAPS.md` change in the same commit. The current 128 MB working-memory
+    budget is below the engine's measured `n = 512` peak and must not be
+    carried forward unchanged.
+13. **Progress and cancellation.** The engine `Stage` maps to
+    `ProgressPhase` as listed below. `Progress::cancelled` is checked inside
+    the climate spin-up year loop, moisture sweeps, erosion iterations,
+    hydrology flood/settle loops and hazard loops, so the command path meets
+    `CANCELLATION_LATENCY_BUDGET_MS` (100 ms), with a test.
+14. **Storage** follows `STORAGE.md`. The accepted source is in the portable
+    checkpoint; derived caches under `.daena/` are disposable; a project
+    rebuilds after `.daena/` is deleted. Storage work is verified by canonical
+    round trip, checkpoint import, and recovery after deleting `.daena/`.
+
+Additions the code showed:
+
+- The source needs `reference_water_inventory_m3` and a public engine
+  inventory solver. Epochs cannot use the product's old equirectangular
+  `ocean_volume_curve`.
+- The engine needs public generation hashes (tectonics and hazards included),
+  a public engine-version constant, and a public tectonic builder.
+- The climate summary needs solstice temperature and solstice precipitation
+  fields; the product publishes both and the engine currently only publishes
+  the annual, warmest and coldest values.
+- `Lake` needs `spill_cell` and `minimum_cell`; flood materialization and
+  claims use them and cannot reconstruct them from the public fields today.
+- `StormClimatology` needs the monthly genesis weights so an event can choose
+  a genesis month and call the shared tracer.
+- Product claims must key canonical cube cells, not equirect view cells, or
+  the same feature changes id when a raster view size changes.
+
+#### Source format `DAENAPW2`
+
+One little-endian record. There is no padding. `f64` values are stored as
+their raw IEEE-754 bits (`u64` little-endian), so decoding is bit-exact; the
+engine remains serde-free and the codec is manual. `u16`, `u32`, `u64` and
+`i32` are little-endian.
+
+Fixed header and settings, with offsets at the default six-row schedule:
+
+| Offset | Field | Type | Encoding |
+| ---: | --- | --- | --- |
+| 0 | `magic` | `[u8; 8]` | `DAENAPW2` |
+| 8 | `format_version` | `u16` | `2` |
+| 10 | `header_bytes` | `u16` | `348` at six schedule rows; decoder must read it |
+| 12 | `engine_version` | `u32` | `WORLD_ENGINE_VERSION` |
+| 16 | `preset` | `u8` | `0` custom, `1` earthlike, `2` frozen, `3` hothouse, `4` desert, `5` archipelago, `6` water-world, `7` pangea, `8` shattered |
+| 17 | `continent_layout` | `u8` | `0` mixed, `1` pangea, `2` few, `3` many |
+| 18 | `flags` | `u16` | `0`; reserved, must be zero |
+| 20 | `resolution` | `u32` | `WorldSettings::resolution`; product accepts 512 or 1024 |
+| 24 | `cell_count` | `u32` | must equal `6 · resolution²` |
+| 28 | `seed` | `u64` | `WorldSettings::seed` |
+| 36 | `radius_m` | `f64` | `WorldSettings::radius_m` raw bits |
+| 44 | `land_fraction` | `f64` | `WorldSettings::land_fraction` raw bits |
+| 52 | `plate_count` | `u32` | `WorldSettings::plate_count` |
+| 56 | `tectonic_activity` | `f64` | `WorldSettings::tectonic_activity` raw bits |
+| 64 | `schedule_count` | `u32` | number of `ScheduleStep` rows, normally 6 |
+| 68 | `schedule[]` | rows | each row: `max_n: u32`, `iterations: u32`, `dt_yr: f64` (16 bytes) |
+| 68 + 16·s | `erosion.m` | `f64` | raw bits |
+| 68 + 16·s + 8 | `erosion.k` | `f64` | raw bits |
+| 68 + 16·s + 16 | `erosion.s_c` | `f64` | raw bits |
+| 68 + 16·s + 24 | `erosion.kappa` | `f64` | raw bits |
+| 68 + 16·s + 32 | `erosion.max_elevation_m` | `f64` | raw bits |
+| 68 + 16·s + 40 | `planet.star_luminosity` | `f64` | raw bits |
+| 68 + 16·s + 48 | `planet.star_mass` | `f64` | raw bits |
+| 68 + 16·s + 56 | `planet.orbit_au` | `f64` | raw bits |
+| 68 + 16·s + 64 | `planet.eccentricity` | `f64` | raw bits |
+| 68 + 16·s + 72 | `planet.perihelion_deg` | `f64` | raw bits |
+| 68 + 16·s + 80 | `planet.axial_tilt_deg` | `f64` | raw bits |
+| 68 + 16·s + 88 | `planet.rotation_hours` | `f64` | raw bits |
+| 68 + 16·s + 96 | `planet.greenhouse_wm2` | `f64` | raw bits |
+| 68 + 16·s + 104 | `planet.temperature_offset_c` | `f64` | raw bits; the authored offset, not an epoch offset |
+| 68 + 16·s + 112 | `planet.precipitation_scale` | `f64` | raw bits |
+| 68 + 16·s + 120 | `river_min_m3s` | `f64` | raw bits |
+| 68 + 16·s + 128 | `reference_water_inventory_m3` | `u64` | ocean volume below reference sea level, rounded |
+| 68 + 16·s + 136 | `elevation_hash` | `u64` | FNV-1a over every `i32` elevation in cell order |
+| 68 + 16·s + 144 | `tectonics_hash` | `u64` | FNV-1a over the regenerated tectonic fields |
+| 68 + 16·s + 152 | `climate_hash` | `u64` | `ClimateSummary::hash_bits` |
+| 68 + 16·s + 160 | `hydrology_hash` | `u64` | `Hydrology::hash_bits` |
+| 68 + 16·s + 168 | `biome_hash` | `u64` | FNV-1a over biome ids |
+| 68 + 16·s + 176 | `hazard_hash` | `u64` | FNV-1a over hazard fields and sources |
+| `header_bytes` | `elevation[]` | `i32 × cell_count` | metres × 1000, relative to sea level, cell id order |
+
+For `s` schedule rows the header is `252 + 16·s` bytes, so the default six
+rows give `header_bytes = 348`. The named offsets are: `erosion.m` 164, `erosion.k` 172, `erosion.s_c` 180,
+`erosion.kappa` 188, `erosion.max_elevation_m` 196, `star_luminosity` 204,
+`star_mass` 212, `orbit_au` 220, `eccentricity` 228, `perihelion_deg` 236,
+`axial_tilt_deg` 244, `rotation_hours` 252, `greenhouse_wm2` 260,
+`temperature_offset_c` 268, `precipitation_scale` 276, `river_min_m3s` 284,
+`reference_water_inventory_m3` 292, `elevation_hash` 300,
+`tectonics_hash` 308, `climate_hash` 316, `hydrology_hash` 324,
+`biome_hash` 332, `hazard_hash` 340, `elevation[]` 348.
+
+Cell order is `face · n² + j · n + i`, faces `+X, −X, +Y, −Y, +Z, −Z`.
+Every `WorldSettings` field is encoded:
+
+| `WorldSettings` field | Encoding |
+| --- | --- |
+| `seed` | `u64` at 28 |
+| `resolution` | `u32` at 20 |
+| `radius_m` | `f64` raw bits at 36 |
+| `land_fraction` | `f64` raw bits at 44 |
+| `plate_count` | `u32` at 52 |
+| `continent_layout` | `u8` at 17 |
+| `tectonic_activity` | `f64` raw bits at 56 |
+| `schedule.steps[]` | `schedule_count` plus 16-byte rows at 68 |
+| `erosion.m`, `k`, `s_c`, `kappa`, `max_elevation_m` | five `f64` raw-bit fields |
+| `planet` | ten `f64` raw-bit fields, in `PlanetSettings` declaration order |
+| `river_min_m3s` | `f64` raw bits |
+
+`preset` is display/metadata only: generation and decode use the resolved
+settings above. It is range-checked and recorded for provenance; it is not
+read back through `Preset::settings` and may not match after an advanced
+override. Only the resolved fields reproduce the causes.
+
+Size at the default schedule:
+
+| `n` | Cells | Elevation bytes | Header | Total bytes | MiB |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 512 | 1,572,864 | 6,291,456 | 348 | 6,291,804 | 6.000332 |
+| 1024 | 6,291,456 | 25,165,824 | 348 | 25,166,172 | 24.000332 |
+
+Both are inside the 128 MB source bound; `n = 1024` leaves about 5.3×
+headroom. The product never writes `n = 2048` sources even though the record
+would fit.
+
+Decode order:
+
+1. Read the fixed header; reject a wrong magic or `format_version != 2` with
+   the unsupported-version error. Reject a wrong `engine_version` the same
+   way.
+2. Validate `resolution`, `cell_count == 6 · n²`, the schedule, every
+   settings range, and the exact record length
+   `header_bytes + 4 · cell_count`; trailing bytes are invalid.
+3. Decode elevation `i32` values in cell order and check
+   `elevation_hash`.
+4. Rebuild `Tectonics` with `generate_tectonics(settings)` and compare
+   `tectonics_hash`.
+5. Recompute `reference_water_inventory_m3` on the cube grid and compare it.
+6. Decode stops here; it does not run a full derive only to validate.
+   Whenever a derive runs (accept, reload without a cache, cache rebuild),
+   its `climate_hash`, `hydrology_hash`, `biome_hash` and `hazard_hash` are
+   compared with the stored ones before any product is published or cached.
+   Derived caches record the hashes they were built from.
+7. Any mismatch is `physical.source.invalid`. Old magic or version is
+   `physical.source.unsupported-version`. Nothing is repaired or migrated.
+
+`Tectonics::hash_bits` is FNV-1a over: `n`, resolved layout, crust fraction,
+every plate in order (site, axis, omega, subduction rank, Voronoi weight,
+crust majority), every boundary record in order, every hotspot and trail point
+in order, every per-cell field in declaration order, and
+`fragments_reassigned`. No map iteration order reaches it. `hazard_hash` is
+`Hazards::hash_bits`, which already covers the fields in declaration order and
+sources in id order; it becomes public in E2. `ClimateSummary::hash_bits`
+gains the new solstice temperature and precipitation fields in declaration
+order, so the source validates the fields the product publishes.
+
+#### Consumer crosswalk
+
+| Consumer | Reads today (verified) | Reads after the cut | Access | Step |
+| --- | --- | --- | --- | --- |
+| `src-tauri/src/physical_commands.rs` | `GeneratedWorld.field: PhysicalField`, `tectonics: TectonicWorld`, `climate: ClimateField`, `evolution: EvolutionField`, `hydrology: HydrologyField`, `source`, `derived_geojson`, `report`; commands for generate, preview, accept, derived climate/evolution/hydrology, epochs, events, Find Place, routes, regions | engine `World` through `daena_physical::engine::Products`; source v2; no evolution; hazards added; event and epoch commands use `World` + derived products | mixed: raster for preview/GeoJSON, point for tools | E3–E6 |
+| `src-tauri/src/physical_jobs.rs` | `PhysicalJobResult` carries source, generation JSON, derived GeoJSON, `ClimateField`, `EvolutionField`, `HydrologyField`; progress goes through `ProgressSink` | source, generation JSON, derived GeoJSON, climate, hydrology, hazards; no evolution; `Stage` maps to `ProgressPhase` | mixed | E3, E4 |
+| `crates/daena-physical/src/lib.rs` and its generator modules | `GeneratedWorld` of `PhysicalField`, `TectonicWorld`, `ClimateField`, `EvolutionField`, `HydrologyField`; `generate_world_with_evolution`; old source codec; `PhysicalIdentityManifestV1` inputs | source codec v2, engine facade, product adapters; old generator modules deleted in E8 | mixed | E3, E4, E8 |
+| `src-tauri/src/atlas_studio.rs` | `hydro_claim::claim_at`, `landmass_claim::claim_at`, `hydro_claim::overflowing_at`, `region::propose_region` over `HydrologyField`; surface sample fields | same operations over engine hydrology/claims through the adapter; no humidity/current sample fields | point | E5, E7 |
+| `src-tauri/src/atlas_jobs.rs` | source bytes, identity, generation forcing; no direct physical types | unchanged contract; source v2 and identity v2 | – | E3, E5 |
+| `crates/daena-atlas/src` | `decode_source`, `validate_field_report`, `TectonicWorld`, `PhysicalField`, `ClimateField`, `HydrologyField`, `HistoricalWorld`, claim ids, basin/lake fields | engine-backed product view from `PhysicalField(width,height)`; same coarse-to-detail transform, styles and tile cache; humidity/current inputs removed | raster plus point inspect | E5, E7 |
+| `crates/daena-core/src/maps.rs`, `maps/physical.rs` | `SOURCE_MAGIC DAENAPW1`, `SOURCE_VERSION 1`, `TectonicWorld`, `PhysicalIdentityManifestV1`, width/height, retry index, evolution preset, tectonic style | `DAENAPW2`, version 2, `PhysicalIdentityManifestV2` with resolution, engine version, source/elevation/tectonic hashes and reference inventory; old magic/version rejected | – | E3 |
+| `crates/daena-core/src/maps/atlas.rs` | `validate_source`, source bytes, generation forcing, `source_sha256`, cache keys | source v2 through `validate_source`; identity and forcing unchanged in meaning; Atlas cache keys include the new identity/engine version | raster | E3, E5 |
+| `crates/daena-core/src/maps/calendar.rs` | `history::MAX_HISTORICAL_OFFSET_YEARS`, calendar binding | unchanged; epoch offset range and calendar math stay | point | – |
+| `crates/daena-core/src/project/store_map_locations.rs` | `hydro_claim::is_valid_id`, `landmass_claim::is_valid_id`, `hydro_claim::resolve` over view hydrology | ids remain `lake:`, `river:`, `landmass:`, `flood:` but the number is a canonical cube cell; old ids are unresolved under the hard cut | point | E5 |
+| `src-tauri/src/tests.rs`, `crates/daena-core/src/project/tests.rs` | old generated fixtures, recovery, event and epoch expectations | v2 fixtures at small `n`; accept/reload, delete `.daena/` rebuild, old-source rejection, cancellation latency | mixed | E3, E4, E8 |
+| `daena-physical/src/find_place.rs` | `ClimateField` arrays, `HydrologyField` arrays, `HazardField`, full view-grid scan; humidity filter | engine canonical cells; engine climate summary, hydrology, hazards; no humidity criterion; candidates carry canonical cell ids | point | E5 |
+| `daena-physical/src/routing.rs` | `HydrologyField` water level/slope/lake/ice, `ClimateField` biome; view-grid Dijkstra | canonical cube cells; elevation-derived slope, engine lake/river/ice, engine biome cost; routes return canonical cell ids and coordinates | point | E5 |
+| `daena-physical/src/hydro_claim.rs`, `landmass_claim.rs` | view-grid cell ids, `BasinStatus`, `minimum_cell`, `island_id` | engine lake/landmass components by canonical cell; ids by lowest cube cell; no `BasinStatus` dependence where the engine has no equivalent | point | E5 |
+| `daena-physical/src/region.rs` | view hydrology `island_id`, `watershed_id`, polygons | engine landmass and receiver-root watersheds, polygonized on the requested view | raster for polygons, point for pick | E5 |
+| `daena-physical/src/contours.rs` | `PhysicalField` equirect elevation + sea level | equirect engine elevation view + epoch sea level | raster | E4, E5 |
+| `daena-physical/src/history.rs`, `derived_cache.rs` | `PhysicalField`, `ClimateField`, `DrainageField`, `HydrologyField`, old ocean volume curve, forcing math | engine `World`/`SurfaceContext`, cube inventory solver, product forcing math, engine-derived products; cache version dir gains engine/source versions | mixed | E4 |
+| `src/lib/maps/physical/*` | `PhysicalClimateProducts`, `PhysicalHydrologyProducts`, `PhysicalEvolutionProducts`, `PhysicalGenerationInput`, humidity/current/evolution views, terrain age, tectonic style | climate/hydrology/hazard products from engine; 26-class biome legend; preset + resolution; no humidity/current/evolution | mixed | E7 |
+| `src/lib/maps/atlas/*` | same climate/hydrology products via Atlas scene; humidity style and current arrows; studio surface humidity/current | engine-backed view; humidity style and current arrows removed; 26 classes grouped for the unchanged Atlas biome style | raster plus point inspect | E7 |
+| `src/lib/project/types.ts`, `client.ts` | old product shapes including evolution, humidity, currents, retry index | v2 shapes; removed fields gone; hazard and source metadata added | – | E7 |
+| `docs/maps/MAPS.md`, ADR 0004 | old source, climate and budget wording | v2 source, engine climate, measured budgets; updated in E8 in the same commit as the constants | – | E8 |
+
+#### Field mapping
+
+The product keeps the existing field names where the meaning is the same, but
+the arrays are views of engine fields at the chosen raster size. Continuous
+fields are bilinearly sampled; class and id fields use nearest cell. Point
+tools read canonical cells directly and do not go through the view.
+
+##### `ClimateField`
+
+| Product field | Engine source and formula | Status |
+| --- | --- | --- |
+| `grid` | requested equirect view `width × height`; the starting size is 1024×512, with 2048×1024 at `n = 1024` only if E4 measures the budget (open question 8) | kept |
+| `derivation_version` | new `CLIMATE_DERIVATION_VERSION` | kept |
+| `planetary` | product display configuration reconstructed from source `PlanetSettings`; display-only fields carry no physical effect | kept |
+| `temperature_centi_c` | `round(100 · ClimateSummary.t_annual_c)` | kept |
+| `temperature_nh_summer_centi_c` | new `ClimateSummary.t_nh_summer_c`, month 3, downscaled with the same lapse and orographic correction | kept; E2 addition |
+| `temperature_nh_winter_centi_c` | new `ClimateSummary.t_nh_winter_c`, month 9 | kept; E2 addition |
+| `moisture_mm_per_year` | no engine published column-moisture field and no consumer after the views are cut | removed |
+| `precipitation_mm_per_year` | `round(ClimateSummary.p_annual_mm)` | kept |
+| `runoff_mm_per_year` | `round(ClimateSummary.runoff_mm)` | kept |
+| `runoff_volume_m3_per_year` | `runoff_mm / 1000 · view_cell_area_m2`; area-weighted metrics use cube cell areas instead | kept |
+| `maritime_factor_ppm` | `round(1e6 · ClimateField.maritime)`, resampled | kept |
+| `wind_east_milli`, `wind_north_milli` | annual mean of the twelve `ClimateField.wind` tangent vectors, projected on local east/north, ×1000 | kept |
+| `wind_east_nh_summer_milli`, `wind_north_nh_summer_milli` | same projection at month 3 | kept |
+| `wind_east_nh_winter_milli`, `wind_north_nh_winter_milli` | same projection at month 9 | kept |
+| `wind_divergence_ppm` | finite-difference divergence of the coarse wind field on the climate grid, then resampled | kept, computed |
+| `wind_divergence_nh_summer_ppm`, `wind_divergence_nh_winter_ppm` | same at months 3 and 9 | kept, computed |
+| `wind_band`, `wind_band_nh_summer`, `wind_band_nh_winter` | latitude relative to `ClimateField.phi_h_deg` and `phi_f_deg`: `0` Hadley, `1` Ferrel, `2` polar | kept, computed |
+| `current_east_milli`, `current_north_milli` | no ocean-circulation model | removed with current layer, current arrows, studio current sample and current metrics |
+| `humidity_ppm` | no engine published relative humidity | removed with humidity view, Find Place filters, Atlas humidity style and studio humidity sample |
+| `aridity_ppm` | land: `round(1e6 · clamp(1 - P_annual / PET_annual, 0, 1))`; ocean: `0` | kept, computed |
+| `precipitation_nh_summer_mm` | new `ClimateSummary.p_nh_summer_mm`, month 3 | kept; E2 addition |
+| `precipitation_nh_winter_mm` | new `ClimateSummary.p_nh_winter_mm`, month 9 | kept; E2 addition |
+| `biome_class` | engine `Biome` discriminant `0..=25` | kept; legend and classes replaced |
+| `storm_suitability_ppm` | presentation index: `round(1e6 · genesis_km2 / max(genesis_km2))`; 0 when the maximum is 0 | kept, computed; physical rate stays in `Hazards.storms` |
+| `storm_track_ppm` | presentation index: `round(1e6 · track_km2 / max(track_km2))`; 0 when the maximum is 0 | kept, computed |
+| `storm_intensity_ppm` | `round(1e6 · intensity)`, engine intensity is `[0, 1]` | kept |
+| `metrics` | see below | partly kept |
+
+Climate metrics:
+
+- Kept and computed from engine fields: area means of annual temperature,
+  precipitation, runoff; min/max temperature; wettest cell, driest land cell;
+  seasonal range and seasonal min/max from `t_warm_c`/`t_cold_c`; permanent
+  and seasonal frozen land from `t_cold_c`/`t_warm_c` and sea ice; mean wind
+  speed and easterly/converging shares from the coarse wind; ITCZ from
+  `phi_h_deg`; land aridity from `1 - P/PET`; dominant land biome; storm
+  genesis/track/intensity means; expected storms per year from
+  `Σ genesis_km2 · coarse_cell_area`; drought/heat/extreme-rain means from
+  the engine hazard fields; growing/dry/wet season means from the monthly
+  precipitation and temperature fields.
+- Removed: `meanCurrentSpeedMilli`, `meanHumidityPpm`.
+- `transportIterations` is replaced by the engine spin-up year count; it is
+  not a product field with a physical meaning.
+
+##### `HydrologyField`
+
+| Product field | Engine source and formula | Status |
+| --- | --- | --- |
+| `grid` | requested view | kept |
+| `derivation_version` | new `HYDROLOGY_DERIVATION_VERSION` | kept |
+| `sea_level_mm` | `0` at the reference surface; epoch `S` on an epoch view | kept |
+| `water_level_mm` | lake cell: `round(1000 · lake.level_m)`; ocean: sea level; land: `max(elevation_mm, sea_level_mm)` | kept, computed |
+| `lake_level_mm` | lake cell: lake level; otherwise sea level | kept, computed |
+| `slope_ppm` | central-difference slope of the engine elevation view, same ppm convention as today | kept, computed |
+| `hillshade_ppm` | existing product hillshade formula applied to the engine elevation view | kept, computed |
+| `bathymetry_mm` | `max(0, sea_level_mm - elevation_mm)` for every cell, the existing product convention; consumers use the ocean/lake masks to interpret it | kept, computed |
+| `watershed_id` | root cell of the engine priority-flood `receiver` tree; each cell maps to its root, nearest-sampled to the view | kept, computed |
+| `basin_by_cell` | engine `lake_id` for lake cells; `u32::MAX` for ocean and non-lake land | kept; old dry-basin ids removed |
+| `lake_cells` | `lake_id != NONE` | kept |
+| `ice_cells` | engine `ice_cover != 0` | kept |
+| `ice_thickness_mm` | engine publishes ice class only, not thickness | removed with the studio ice-thickness row and the thickness metric |
+| `shelf_cells` | ocean cells where crust is continental, or where crust is absent and depth is at most 200,000 mm; matches today's rule and uses the engine crust field | kept, computed |
+| `island_id` | connected land components on the cube grid; ids assigned by lowest canonical cell; `u32::MAX` on ocean | kept; ids change meaning from discovery order to lowest-cell order |
+| `basins` | one record per engine `Lake`; see basin table | partly kept |
+| `rivers` | one record per engine `RiverSegment`; see river table | kept |
+| `river_coordinates` | canonical cell centres along each engine river segment | kept |
+| `coastline_segments` | product contour of the engine ocean mask at sea level | kept, computed |
+| `lake_polygons` | product polygonization of `lake_id` | kept, computed |
+| `watershed_polygons` | product polygonization of the receiver-root watershed | kept, computed |
+| `land_polygons` | product polygonization of `ocean == 0` | kept, computed |
+| `ocean_polygons` | product polygonization of `ocean == 1` | kept, computed |
+| `shelf_polygons` | product polygonization of `shelf_cells` | kept, computed |
+| `island_polygons` | product polygonization of `island_id` | kept, computed |
+| `ice_polygons` | product polygonization of `ice_cells` | kept, computed |
+| `bathymetry_contours` | product contour of `bathymetry_mm` | kept, computed |
+| `metrics` | counts and volumes computable from engine data; water-balance solver metrics have no engine equivalent | partly kept |
+
+Basins, one row per `Basin` field:
+
+| Product basin field | Engine source | Status |
+| --- | --- | --- |
+| `id` | engine lake id | kept |
+| `minimum_cell` | E2 `Lake.minimum_cell` | kept |
+| `minimum_elevation_mm` | engine elevation at `minimum_cell` | kept, computed |
+| `cell_count` | count of cells with that `lake_id` | kept, computed |
+| `spill_cell` | E2 `Lake.spill_cell` | kept |
+| `spill_elevation_mm` | `round(1000 · Lake.level_m)` for a fresh lake; `None` otherwise | kept |
+| `volume_to_spill_m3` | no product consumer after flood fill becomes a full-lake boolean | removed |
+| `parent_basin`, `children` | no engine basin tree and no product consumer | removed |
+| `destination` | no engine basin tree and no product consumer after claims/events use lake state | removed |
+| `water_level_mm` | `round(1000 · Lake.level_m)` | kept |
+| `water_volume_m3` | `Lake.volume_m3` | kept |
+| `inflow_m3_per_year` | `Lake.inflow_m3` | kept |
+| `direct_precipitation_m3_per_year` | no engine equivalent and no consumer | removed |
+| `evaporation_m3_per_year` | `Lake.evaporated_m3` | kept |
+| `outflow_m3_per_year` | `Lake.outflow_m3` | kept |
+| `status` | fresh with outflow: overflowing; fresh without outflow: active; saline: endorheic; salt flat: dry; no merged state | kept, derived |
+
+River fields:
+
+| Product river field | Engine source | Status |
+| --- | --- | --- |
+| `id` | engine river index | kept |
+| `source_cell` | first cell of `RiverSegment.cells` | kept |
+| `mouth_cell` | last cell of `RiverSegment.cells` | kept |
+| `strahler_order` | computed from the engine receiver donor counts and the river cells | kept, computed |
+| `destination` | `RiverEnd::Ocean` → ocean, `Lake` → basin, `Confluence` → junction | kept |
+| `spill_outlet` | river ends at a lake whose `Lake.outflow_m3 > 0` | kept, computed |
+| `coordinate_count` | `cells.len()` | kept |
+
+Hydrology metrics: keep lake, river, watershed, coastline, land/ocean polygon,
+shelf, bathymetry-contour and island counts computed from the view. Remove
+`totalWaterM3`, `oceanWaterM3`, `inlandWaterM3`, `landIceM3`,
+`balanceErrorM3`, `toleranceM3`, `fixedPointIterations` and `converged`; the
+engine hydrology is not a global water-balance fixed point, and epoch volumes
+live in `HistoricalMetrics`. Keeping those names with engine numbers would
+imply a conservation solver that does not exist.
+
+##### Hazards and volcanic sources
+
+| Product field | Engine source and formula | Status |
+| --- | --- | --- |
+| `earthquake_hazard_ppm` | `round(quake_hazard_u8 · 1_000_000 / 255)` | kept |
+| `volcanic_hazard_ppm` | `round(volcanic_hazard_u8 · 1_000_000 / 255)` | kept |
+| `earthquake_annual_rate_nano` | `round(quake_rate_km2 · cell_area_km2 · 10^0.9 · 1e9)`; `10^0.9` converts M ≥ 5 to M ≥ 4 | kept, explicit conversion |
+| `volcanic_annual_rate_nano` | sum `VolcanicSource.eruptions_per_yr` at each source cell, `round(rate · 1e9)`; several sources in one cell add | kept, explicit conversion |
+| `earthquake_rate_per_million_years_ppm` | `min(1e6, round(annual_rate_nano · 1e6 / 1e9))`, the existing bounded presentation formula | kept |
+| `eruption_rate_per_million_years_ppm` | same formula from the eruption rate field | kept |
+| `volcanic_sources` | engine `VolcanicSource` mapped one-to-one; `stable_id: u64`, `cell`, origin, activity, `eruptions_per_model_year_nano` | kept; product id type widened |
+| `metrics` | source counts, means/maxima and rate masses from the engine fields | kept, computed |
+
+The view fields are presentation products. Event sampling and `expected_lambda`
+read canonical cells, so their rate mass is the canonical sum, not the sum of
+view pixels. A view-cell annual rate uses the view cell area; it is never used
+to sample an event.
+
+`DerivedVolcanicSource` becomes:
+
+| Product field | Engine field |
+| --- | --- |
+| `stable_id: u64` | `VolcanicSource.id: u64` |
+| `cell` | `VolcanicSource.cell` |
+| `origin` | `VolcanicOrigin::{SubductionArc, Hotspot, Rift}` |
+| `activity_class` | `VolcanicActivity` |
+| `eruptions_per_model_year_nano` | `round(eruptions_per_yr · 1e9)` |
+
+##### `sample_events` and `expected_lambda`
+
+| Input today | After the cut |
+| --- | --- |
+| `world: &TectonicWorld` | engine `World`; canonical grid and source elevation |
+| `hazards: Option<&HazardField>` | engine `Hazards` |
+| `climate: Option<&ClimateField>` | engine `ClimateSummary` plus `ClimateField` for the storm tracer; product `ClimateField` is view-only |
+| `epoch_field: Option<&PhysicalField>` | epoch surface `(reference_elevation_mm, sea_level_mm)`; no equirect view for event logic |
+| `hydrology: Option<&HydrologyField>` | engine `Hydrology`; lake spill cells and fresh/closed state |
+| `request` | unchanged shape: kind, interval, `maxEvents`, `hazard_seed` |
+| `MaterializedEvent.sampled_center_id` | `Option<u64>`: the engine volcanic source id for eruptions; the canonical cube cell (widened) for storms and floods; `None` for earthquakes. JSON/TypeScript carry it as a decimal string because a `u64` can exceed `2^53` |
+
+Event rates:
+
+- Earthquake: `Λ = Σ_cells(rate_M4_per_year_nano) / 1e9 · interval_years`, then
+  the existing Poisson draw; magnitude remains Gutenberg–Richter `b = 0.9`
+  with `M ≥ 4`.
+- Eruption: `Λ = Σ_cells(eruption_rate_nano) / 1e9 · interval_years`; the
+  sampled cell is a volcanic source cell; `sampled_center_id` is the `u64`
+  source id.
+- Storm: genesis cell is drawn from `Σ genesis_km2 · coarse_cell_area`; month
+  is drawn from the engine's monthly genesis weights; the track is
+  `trace_storm(climate_field, ocean_fraction, genesis, month)`. The event
+  `track_cells` are the returned cells; `hazard_ppm` is the carried intensity
+  times 1e6. The product's `STORM_NOTABLE_PER_YEAR` policy may scale the rate;
+  its value is a product policy, not a physical field (open question).
+- Flood: every fresh engine lake with `outflow_m3 > 0` is an overflowing
+  basin at the interval midpoint; the event cell is `Lake.spill_cell` and the
+  stable center is `Lake.minimum_cell`; fill potential is 1e6 because a
+  spilling engine lake is at its spill level.
+
+`expected_lambda` takes the same engine hazards, climate and hydrology plus
+the request. Flood lambda is the count of fresh overflowing lakes; storm
+lambda is the notable policy applied to the engine genesis census; earthquake
+and eruption lambda are the rate masses above.
+
+##### Find Place filters
+
+| Query field | After the cut |
+| --- | --- |
+| `land_only` | engine ocean mask at the selected epoch |
+| `altitude_m_min/max` | engine elevation in metres, converted from millimetres |
+| `latitude_milli_deg_min/max` | canonical cell latitude |
+| `slope_ppm_min/max` | slope computed from engine elevation and true neighbour distances |
+| `temperature_centi_c_min/max` | engine annual temperature |
+| `precipitation_mm_min/max` | engine annual precipitation |
+| `humidity_ppm_min/max` | removed, with the UI fields and `humidity` soft key |
+| `aridity_ppm_min/max` | `1 - P/PET` computed on land |
+| `biome_class` | engine `Biome` id |
+| `island_id` | engine landmass component id (lowest canonical cell) |
+| `ice` | engine `ice_cover != 0` |
+| `coast_distance_km_min/max` | distance to the engine ocean mask on the cube grid |
+| `freshwater_distance_km_min/max` | distance to engine lake or river cells |
+| `earthquake_hazard_ppm_min/max` | engine `quake_hazard` scaled to ppm |
+| `volcanic_hazard_ppm_min/max` | engine `volcanic_hazard` scaled to ppm |
+| `storm_suitability_ppm_min/max` | engine genesis presentation index |
+| `soft`, `max_candidates`, `min_cells` | unchanged; soft keys that named removed fields are removed |
+| candidate `cells` | canonical cube cell ids, not view cells |
+| candidate `means.islandId` | engine landmass component id |
+
+##### Route inputs
+
+| Input | After the cut |
+| --- | --- |
+| start/end lat/lon | nearest canonical cube cell |
+| ocean mask | engine `ocean` |
+| elevation | engine elevation |
+| slope | computed from engine elevation and true neighbour distance |
+| river cells | engine `discharge_m3s >= river_min_m3s` and not lake |
+| lake cells | engine `lake_id != NONE` |
+| ice cells | engine `ice_cover != 0` |
+| biome cost | engine `Biome` grouped into the existing route-cost families; old 10-class ids are mapped in one adapter table |
+| existing authored routes | unchanged; rasterized on the view, then projected to canonical cells |
+
+##### Claim and feature ids
+
+| Claim | Id today | Id after the cut |
+| --- | --- | --- |
+| Lake | `lake:{equirect_cell}` | `lake:{canonical_cube_cell}` from `Lake.minimum_cell` |
+| River | `river:{equirect_cell}` | `river:{canonical_cube_cell}` from the first cell of `RiverSegment.cells` |
+| Flood | `flood:{equirect_cell}` | `flood:{canonical_cube_cell}` from `Lake.minimum_cell` |
+| Landmass | `landmass:{equirect_cell}` | `landmass:{canonical_cube_cell}` from the lowest cell of the land component |
+| Volcanic source | `u32` hash of product centers | engine `u64` `VolcanicSource.id`, serialized as a decimal string for JSON/TypeScript |
+| Orometry | Atlas id | unchanged |
+
+Ids are stable for one accepted source and `n`; they are not stable across
+`n`, view size or epoch (the feature itself can move). Old physical ids in
+existing projects are left unresolved and are shown as unresolved; there is
+no mapping from `DAENAPW1`. Authored overlays and materialized events keep
+their geometry and provenance.
+
+#### Settings mapping
+
+Product `GenerationSettings` after the cut:
+
+| Product field | Engine field | Conversion |
+| --- | --- | --- |
+| `resolution` | `WorldSettings.resolution` | product accepts 512 or 1024 |
+| `radius_metres` | `WorldSettings.radius_m` | metres; must equal `planetary.radius_metres` |
+| `target_land_fraction_ppm` | `WorldSettings.land_fraction` | `ppm / 1_000_000`; preset default unless an advanced/test override is supplied |
+| top-level `seed` | `WorldSettings.seed` | `u64`; the product UI may keep a 32-bit seed and zero-extend it |
+| `preset` | source metadata and `Preset` | selects the engine preset; resolved settings are what the source stores |
+| `width`, `height` | removed | replaced by `resolution` |
+| `retryIndex` | removed | one deterministic result per settings; seed and preset carry the identity |
+| `evolutionPreset` | removed | engine erosion is not a product control |
+| `tectonicStyle` | removed | the engine preset controls plate count, layout and activity |
+
+Product `PlanetaryConfiguration` to `PlanetSettings`:
+
+| Product field | Engine field | Conversion and note |
+| --- | --- | --- |
+| `star_luminosity_ppm` | `star_luminosity` | `/ 1_000_000` |
+| `star_mass_ppm` | `star_mass` | `/ 1_000_000`; sets year length |
+| `semi_major_axis_milli_au` | `orbit_au` | `/ 1_000` |
+| `eccentricity_ppm` | `eccentricity` | `/ 1_000_000` |
+| `axial_tilt_milli_deg` | `axial_tilt_deg` | `/ 1_000` |
+| `rotation_period_seconds` | `rotation_hours` | `/ 3_600` |
+| `retained_heat_centi_c` | `temperature_offset_c` | `(value - 1_400) / 100`; the Earth default is zero. Epoch offsets add to this value |
+| `radius_metres` | `WorldSettings.radius_m` | duplicate check against `GenerationSettings.radius_metres` |
+| `preset`, `version` | product metadata | reconstructed for display; not causes |
+| `bond_albedo_ppm` | none | proposed removal from generation and UI; the engine already derives surface albedo from surface type, snow, ice and greenhouse. Adding a second planetary albedo would double count |
+| `mean_density_kg_m3` | none | proposed display-only; it already only feeds `surfaceGravityMilliG` and has no climate or terrain effect |
+| absent | `perihelion_deg` | engine default `283.0`; the product has no control |
+| absent | `greenhouse_wm2` | set by the engine surface preset |
+| absent | `precipitation_scale` | set by the engine surface preset |
+
+If the product removes `bond_albedo_ppm` or `mean_density_kg_m3`, the product
+`PlanetaryConfiguration` version becomes 2; if they remain display-only, the
+version stays 1 and the source ignores them. A new engine setting is not
+needed for retained heat: the engine already has `temperature_offset_c`. If
+Claude wants bond albedo to affect climate, the
+only safe proposal is a new `PlanetSettings::bond_albedo` whose default is
+`0.0` (today's output unchanged at the default), plus a calibration change
+for Earthlike; that is a separate climate change, not part of E1. Recommended:
+keep it out of generation.
+
+Engine settings set by the surface preset (not independent product fields):
+
+| `WorldSettings` field | Source |
+| --- | --- |
+| `plate_count` | engine preset |
+| `continent_layout` | engine preset |
+| `tectonic_activity` | engine preset |
+| `schedule` | engine `Schedule::default()` |
+| `erosion` | engine `ErosionParams::default()` |
+| `river_min_m3s` | engine default `100.0` |
+| `greenhouse_wm2` | engine preset |
+| `precipitation_scale` | engine preset |
+| `land_fraction` | engine preset, unless the advanced `targetLandFractionPpm` override is set |
+
+Generation keeps the engine's target land-fraction sea-level solve. The water
+inventory is derived from the accepted surface and is used by epochs; it is
+not a second generation sea-level mode.
+
+Product presets and controls:
+
+- Replace the product's "Terrain age" control with a **World preset** control
+  that selects one of the eight engine `Preset` values. The preset sets land
+  fraction, plate count, layout, activity, greenhouse and precipitation scale.
+- Keep the seed control. "Reroll" picks a new seed; it no longer increments a
+  retry index.
+- Keep the planetary preset/advanced controls for star, orbit, tilt, rotation
+  and retained heat. They override the engine planet after the surface preset.
+  The surface preset owns greenhouse and precipitation; the planetary preset
+  does not.
+- Add a resolution control: 512 (default) or 1024 (high).
+- Remove "Continent layout" and "Terrain age"; the engine preset owns the
+  first and erosion owns the second.
+- `targetLandFractionPpm` stays in the command contract as an advanced/test
+  override; the UI uses the preset value. A hard cut may change the JSON shape,
+  but keeping this field avoids a second sea-level mode.
+
+#### Epochs
+
+The product forcing math stays in `history.rs`. The engine supplies the
+surface, climate, hydrology, biomes and hazards; `daena-physical` combines
+them with the history metrics.
+
+1. Normalize the offset. `T = temperature_offset_centi_c(t, forcing)`;
+   `T_lag = lagged_temperature_offset_centi_c(t, forcing)`. The lagged value
+   is used only for land ice, not for the climate run. For epoch zero, reuse
+   the accepted present products directly; no sea-level solve or climate
+   rerun is needed.
+2. `I_ref` is `World::reference_water_inventory_m3()`: for every cube cell,
+   `area_m2 · max(0, -elevation_mm) / 1000`, rounded to `u64`. This is the
+   product's existing inventory definition: all cells below sea level,
+   including dry depressions, not only the connected ocean. The source stores
+   the same value and decode checks it.
+3. Land ice and thermal expansion are changes relative to epoch zero, so
+   epoch zero is exactly the present world. The engine has no ice thickness,
+   so there is no climate-derived ice volume. The product's current solve
+   withholds a volume from its own ice-thickness model, which goes away
+   (decided 2026-11-11, open question 13):
+   - `I_eq(t) = land_ice_volume(I_ref, T_lag(t), forcing)`, the existing
+     `history.rs` logistic;
+   - `ΔI_ice = I_eq(t) − I_eq(0)`;
+   - `E(t) = thermal_expansion_volume(I_ref, T(t), forcing)`;
+   - `ΔE = E(t) − E(0)`.
+4. Solve the epoch sea level `S` on the cube grid for the target
+   `I_epoch = clamp(I_ref − ΔI_ice + ΔE, 0, maximum ocean volume)`:
+   `V(S) = Σ area_m2(cell) · max(0, (S − elevation_mm[cell]) / 1000)`. Choose
+   the candidate millimetre level nearest the target, with the same
+   tie-breaking as the product's current inventory solver. `V(0) = I_ref`,
+   so epoch zero gives `S = 0`. This replaces the old equirectangular
+   `ocean_volume_curve`. There is one solve and no coupled iteration with
+   lake volumes: lakes and dry depressions below sea level are inside the
+   hypsometric `V(S)`, as in `I_ref`.
+5. Build the surface `h_m = (elevation_mm − S) / 1000` and run the engine
+   climate, hydrology, biomes and hazards on it once.
+6. The erosion `domain` is unchanged across epochs; it is rebuilt from
+   settings and tectonics, not from the epoch sea level.
+7. The epoch temperature offset goes in
+   `PlanetSettings::temperature_offset_c` as
+   `authored_offset_c + (T(t) − T(0)) / 100.0`, so epoch zero adds nothing.
+   The lagged `T_lag` is not used in climate.
+8. Final routing is regenerated from the epoch surface for consistency, even
+   though hydrology has its own priority flood. If E4 measures it as a
+   material cost, the epoch path may skip only the returned `receiver`, and
+   must keep hydrology and hazards on the same code.
+9. Report `HistoricalMetrics` from the history math and the solve:
+   - `land_ice_equilibrium_m3 = I_eq(t)`;
+   - `land_ice_m3 = ΔI_ice`, signed in meaning, stored as the existing
+     field's type with the sign convention recorded in E4;
+   - `thermal_expansion_m3 = ΔE`;
+   - `effective_ocean_water_m3 = V(S)`;
+   - `sea_level_mm = S`;
+   - the conservation error `|V(S) − I_epoch|` from millimetre rounding.
+
+   The old fixed-point fields of the product hydrology are removed (see
+   "Removal list").
+10. The epoch cache key is
+    `(physical_identity, source_format, engine_version, forcing, normalized_epoch,
+    view_size)`. The cache directory/version string includes
+    `WORLD_ENGINE_VERSION`, `SOURCE_VERSION`, `CLIMATE_DERIVATION_VERSION`,
+    `HYDROLOGY_DERIVATION_VERSION` and `HAZARD_DERIVATION_VERSION`.
+11. Target: at most 1.5 s per epoch at `n = 512`. Estimate: about 0.65 s
+    for the climate pass and downscale, about 0.3 s for hydrology, biomes and
+    hazards, and about 0.2 s to rebuild the surface and routing, on the
+    current M4 Pro: one pass, about 1.15 s. This is an estimate, to be
+    measured in E4.
+
+The product view for an epoch keeps the existing convention: `PhysicalField`
+holds the reference elevation in `elevations_mm` and sets `sea_level_mm = S`.
+All other epoch products are derived from `h_epoch_m`. This preserves the
+meaning of every existing consumer that compares elevation with sea level and
+avoids shifting the canonical source.
+
+#### Progress and cancellation
+
+`ProgressPhase` mapping:
+
+| Engine `Stage` | Product `ProgressPhase` | Note |
+| --- | --- | --- |
+| `Tectonics` | `BuildingTectonicStructure` | 0/1, then 1/1 |
+| `Level(n)` | `ErodingLandscape` | one report per iteration at level `n` |
+| `SeaLevel` | `BuildingTerrain` | the final terrain datum; not a second geometry pass |
+| `FinalRouting` | `CalculatingWater` | routing on the finished surface |
+| `Climate` | `CalculatingClimate` | coarse spin-up and downscale |
+| `Hydrology` | `BuildingRiversAndLakes` | lakes, rivers and ice |
+| `Biomes` | `PreparingGeography` | class field |
+| `Hazards` | `ValidatingWorld` | hazards are the last pass |
+
+`Progress::report(stage, done, total)` maps to the phase and preserves
+`done/total`. The adapter must not emit the old product phases independently;
+the engine is the only source of stage progress. `Progress::cancelled` is
+checked at every stage boundary and inside the long loops named in decision
+13. E3 tests the command path with a cancellation flag set from a progress
+callback and asserts a `Cancelled` result within 100 ms.
+
+#### Engine additions for E2
+
+Signatures are the intended public or crate-visible API; exact visibility is
+settled in E2.
+
+```rust
+pub const WORLD_ENGINE_VERSION: u32 = 1;
+
+pub fn generate_tectonics(settings: &WorldSettings) -> Result<Tectonics, WorldError>;
+
+pub struct SurfaceContext {
+    pub grid: CubeSphere,
+    pub domain: Vec<u8>,
+    pub base_m: Vec<f32>,
+    pub uplift_m_yr: Vec<f32>,
+    pub k_rock: Vec<f32>,
+    pub plate: Vec<u8>,
+    pub crust: Vec<u8>,
+}
+
+pub fn prepare_surface(
+    settings: &WorldSettings,
+    tectonics: &Tectonics,
+) -> Result<SurfaceContext, WorldError>;
+
+pub fn derive_after_surface(
+    settings: &WorldSettings,
+    tectonics: &Tectonics,
+    surface: &SurfaceContext,
+    elevation_m: &[f32],
+    progress: &mut dyn Progress,
+) -> Result<World, WorldError>;
+
+pub fn derive_world(
+    settings: &WorldSettings,
+    tectonics: &Tectonics,
+    elevation_mm: &[i32],
+    progress: &mut dyn Progress,
+) -> Result<World, WorldError>;
+
+pub fn derive_epoch(
+    settings: &WorldSettings,
+    tectonics: &Tectonics,
+    reference_elevation_mm: &[i32],
+    epoch_sea_level_mm: i32,
+    temperature_offset_c: f64,
+    progress: &mut dyn Progress,
+) -> Result<World, WorldError>;
+```
+
+- `generate_inner` keeps erosion and the sea-level threshold, canonicalizes
+  elevation, builds `SurfaceContext` from the evolved fields, and calls
+  `derive_after_surface`. `derive_world` builds `SurfaceContext` from settings
+  and tectonics, converts `i32` millimetres to `f32`, and calls the same
+  function. There is one downstream implementation.
+- `derive_epoch` subtracts the epoch sea level from the reference elevation
+  and adds the temperature offset to the planet before calling
+  `derive_after_surface`.
+
+Canonical elevation:
+
+```rust
+pub fn elevation_mm_from_m(value_m: f32) -> i32; // round(value_m * 1000)
+pub fn elevation_m_from_mm(value_mm: i32) -> f32; // value_mm as f32 / 1000
+pub fn canonicalize_elevation_m(elevation: &mut [f32]);
+```
+
+Source data and hashes:
+
+```rust
+pub struct GenerationHashes {
+    pub elevation_mm: u64, // FNV-1a over the i32 millimetres, not the f32 bits
+    pub tectonics: u64,
+    pub climate: u64,
+    pub hydrology: u64,
+    pub biome: u64,
+    pub hazards: u64,
+}
+
+impl World {
+    pub fn source_elevation_mm(&self) -> Vec<i32>;
+    pub fn generation_hashes(&self) -> GenerationHashes;
+    pub fn reference_water_inventory_m3(&self) -> u64;
+    pub fn tectonics_hash(&self) -> u64;
+    pub fn hazard_hash(&self) -> u64;
+}
+
+impl Tectonics {
+    pub fn hash_bits(&self) -> u64;
+}
+
+pub struct OceanVolumeSample {
+    pub sea_level_mm: i32,
+    pub volume_m3: u64,
+}
+
+pub fn ocean_volume_curve(
+    grid: &CubeSphere,
+    elevation_mm: &[i32],
+) -> Result<Vec<OceanVolumeSample>, WorldError>;
+
+pub fn ocean_volume_at(
+    grid: &CubeSphere,
+    elevation_mm: &[i32],
+    sea_level_mm: i32,
+) -> Result<u64, WorldError>;
+
+pub fn sea_level_for_ocean_volume(
+    curve: &[OceanVolumeSample],
+    inventory_m3: u64,
+) -> Result<i32, WorldError>;
+```
+
+Cancellation:
+
+```rust
+pub fn check_cancelled(progress: &dyn Progress) -> Result<(), WorldError>;
+```
+
+`coarse_with` and `downscale` gain a cancellation callback; the spin-up year
+loop, each moisture month and each of the 48 sweeps call it. `Hydrology::build`
+checks before/after the priority flood and inside the settle/ice loops every
+fixed chunk. `Hazards::build` checks before each month, each boundary chunk and
+each source loop. The engine test uses a `Progress` that cancels after the
+first stage and asserts `WorldError::Cancelled` within 100 ms.
+
+Point sampling:
+
+```rust
+pub struct PointSample {
+    pub cell: u32,
+    pub elevation_m: f32,
+    pub ocean: bool,
+    pub biome: Biome,
+    pub climate: ClimatePoint,
+    pub hydrology: HydrologyPoint,
+    pub hazards: HazardPoint,
+}
+
+impl World {
+    pub fn sample_point(&self, lat_deg: f64, lon_deg: f64) -> PointSample;
+}
+```
+
+`ClimatePoint` carries annual, warmest, coldest, solstice temperatures,
+precipitation, PET, runoff, ice balance, sea-ice months, wind and aridity
+components. `HydrologyPoint` carries lake id, lake level, discharge, ice class
+and ocean mask. `HazardPoint` carries the four hazard potentials and the quake
+rate. Continuous values are bilinear on the cube grid; ids and classes use the
+containing cell.
+
+Equirectangular view:
+
+```rust
+pub struct EquirectView {
+    pub width: u32,
+    pub height: u32,
+    pub elevation_m: Vec<f32>,
+    pub ocean: Vec<u8>,
+    pub climate: ClimateSummary,
+    pub biome: Vec<u8>,
+    pub lake_id: Vec<u32>,
+    pub discharge_m3s: Vec<f32>,
+    pub ice_cover: Vec<u8>,
+    pub hazards: HazardView,
+}
+
+impl World {
+    pub fn equirect_view(&self, width: u32, height: u32) -> Result<EquirectView, WorldError>;
+}
+
+pub fn resample_equirect_f32(
+    grid: &CubeSphere,
+    field: &[f32],
+    width: u32,
+    height: u32,
+) -> Vec<f32>;
+pub fn resample_equirect_nearest_u8(
+    grid: &CubeSphere,
+    field: &[u8],
+    width: u32,
+    height: u32,
+) -> Vec<u8>;
+pub fn resample_equirect_nearest_u32(
+    grid: &CubeSphere,
+    field: &[u32],
+    width: u32,
+    height: u32,
+) -> Vec<u32>;
+```
+
+The view uses the equirectangular cell-centre convention already used by the
+product: longitude `-180 + 360·(col + 0.5)/width`, latitude
+`-90 + 180·(row + 0.5)/height`. Class and id fields use nearest sampling;
+continuous fields use bilinear sampling, with the engine's cross-face chart
+stencil at seams.
+
+Storm tracer:
+
+```rust
+pub struct StormStep {
+    pub cell: u32,
+    pub intensity: f32,
+}
+
+pub struct StormTrack {
+    pub genesis_cell: u32,
+    pub month: u32,
+    pub steps: Vec<StormStep>,
+}
+
+pub fn trace_storm(
+    climate_field: &ClimateField,
+    ocean_fraction: &[f32],
+    genesis_cell: u32,
+    month: u32,
+) -> Result<StormTrack, WorldError>;
+```
+
+`Hazards::storms` calls `trace_storm` and must produce the same cells and
+intensities as the current inline loop. `StormClimatology` gains
+`genesis_monthly_km2: Vec<f32>` in month-major order, so event sampling can
+choose a month from the engine's own monthly genesis weights. The new field
+is included in `Hazards::hash_bits` in declaration order.
+
+Lake spill cells and claim metadata:
+
+```rust
+impl Lake {
+    pub spill_cell: u32;
+    pub minimum_cell: u32;
+}
+```
+
+The values come from the priority-flood depression and the lowest lake cell.
+No product code reconstructs them from geometry.
+
+Epoch planet override:
+
+```rust
+impl PlanetSettings {
+    // Adds to the authored temperature offset; it does not replace it.
+    pub fn with_temperature_offset(self, offset_c: f64) -> Self;
+}
+```
+
+Anything else E3–E6 needs:
+
+- `Tectonics::hash_bits`, `World::generation_hashes`, `World::hazard_hash`
+  and public `Hazards::hash_bits`.
+- `World::source_elevation_mm` and the cube inventory solver above.
+- `Biome::ALL` or an equivalent ordered list for the 26-class legend.
+- `StormClimatology::genesis_monthly_km2`.
+- A public `World` constructor path (`derive_world`) that does not require a
+  product type.
+- No engine land-ice volume. Epochs use the `history.rs` land-ice change
+  relative to epoch zero (see "Epochs"), so the engine needs no thickness
+  state.
+- Product claims/regions use canonical cells, so the adapter exposes the
+  canonical `cell` for a lat/lon point and the canonical cell centre for a
+  claim; it does not expose view indices as ids.
+
+#### Removal list
+
+Every item is removed in E3–E8 as part of the hard cut; none is synthesized.
+
+- **Evolution.** `EvolutionField`, `EvolutionSettings`, `EvolutionPreset`,
+  `EvolutionMetrics`, `DrainageField` as a product field, all evolution
+  commands (`project_physical_evolution`,
+  `project_physical_derived_evolution`), the evolution job result, the terrain
+  age control, and every evolution JSON field (`beforeElevationsMm`,
+  `routingElevationMm`, `fillDepthMm`, `accumulationM3PerYear`, outlet/edge
+  and drainage/erosion metrics). The engine owns erosion and exposes no
+  editable before/after surface.
+- **Humidity.** `ClimateField.humidity_ppm`,
+  `ClimateMetrics.mean_humidity_ppm`, Find Place `humidityPpmMin/Max` and the
+  `humidity` soft key, the humidity raster overlay and legend, the Atlas
+  `daena-atlas-humidity` style, Atlas studio humidity sample, and the humidity
+  help text. The engine publishes no relative humidity; a value would be
+  fabricated. Atlas's humidity-driven vegetation-resistance term in
+  `crates/daena-atlas/src/erosion.rs` is replaced with engine precipitation
+  and aridity inputs, and its golden relief fixtures are regenerated with a
+  written reason.
+- **Ocean currents.** `ClimateField.current_east_milli`,
+  `current_north_milli`, `ClimateMetrics.mean_current_speed_milli`, the
+  `currents` reserved layer, current arrows and rasters, Atlas current
+  overlay/arrows and studio surface current. The engine has no ocean
+  circulation model.
+- **Ice thickness.** `HydrologyField.ice_thickness_mm`, its Atlas studio row
+  and any thickness metric. Ice classes remain; the engine does not model
+  thickness.
+- **Empty climate fields.** `ClimateField.moisture_mm_per_year` and
+  `ClimateMetrics.meanHumidityPpm`/`meanCurrentSpeedMilli` are removed
+  because no engine field or consumer supports them. `maritime_factor_ppm`
+  stays because the engine publishes `ClimateField.maritime`.
+- **Basin fields.** `volume_to_spill_m3`, `parent_basin`, `children`,
+  `destination`, `direct_precipitation_m3_per_year` and the `Merged` status
+  leave the product `Basin`. Flood fill becomes a full-lake boolean; Atlas
+  wet-basin checks use lake status/volume.
+- **Hydrology water-balance metrics.** `totalWaterM3`, `oceanWaterM3`,
+  `inlandWaterM3`, `landIceM3`, `balanceErrorM3`, `toleranceM3`,
+  `fixedPointIterations` and `converged` leave `HydrologyField.metrics`;
+  epoch conservation stays in `HistoricalMetrics`.
+- **Retry and repair.** `retryIndex` in the generation input, job, generation
+  JSON, source, identity manifest and `PhysicalField`; `retry_index` in
+  product seeds; `CODE_GENERATOR_RETRY_EXHAUSTED` and
+  `PhysicalErrorCode::GeneratorRetryExhausted`; retry-scoped
+  `SeedDomain`/`derive_subsystem_seed` use in generator code.
+  `HistoricalForcingParameters::default_for(seed, retry_index)` becomes
+  seed-only (retry fixed to zero); a generation JSON that already carries
+  explicit forcing keeps using it. One settings set produces one world.
+- **Tectonic style and terrain age controls.** `TectonicStyle` in the
+  generation input/JSON/UI and `EvolutionPreset` as above. The engine surface
+  preset replaces both; `TectonicStyle::Any` is not a physical cause.
+- **Old source and generator.** `DAENAPW1`, `TECTONIC_SOURCE_VERSION`,
+  `TECTONIC_SOURCE_HEADER_BYTES`, the old tectonic/crust/plate/boundary/hotspot
+  source payload, old `decode_source_v2`/`encode_source_v2`, old
+  `TectonicWorld` as canonical source, old `generate_field`,
+  `generate_world_with_evolution`, the old climate/hydrology/hazards/evolution
+  generator, `PRODUCTION_DEFAULT_WIDTH/HEIGHT`,
+  `PRODUCTION_MAX_WIDTH/HEIGHT`, `DEFAULT_WIDTH/HEIGHT`, `MAX_WIDTH/HEIGHT`
+  as production authority, and the 384×192 assumptions. A `Grid` type may
+  remain only as an equirect view descriptor.
+- **Planetary generation fields.** `bond_albedo_ppm` leaves generation and the
+  UI; `mean_density_kg_m3` stays only as display metadata for
+  `surfaceGravityMilliG` if Claude keeps it. Neither is a cause in the source.
+  This is an open question below.
+- **Old product climate classes.** The ten-class biome constants and legend
+  (`BIOME_OCEAN` … `BIOME_TROPICAL_FOREST`) are removed in favour of the
+  engine's 26 `Biome` ids and names. Atlas's existing style groups are fed by
+  an explicit grouping adapter, not by the old product classification.
+- **Old ids and caches.** Equirect cell ids in claims, old epoch cache keys,
+  old derived cache format, old Atlas golden fixtures, and old physical
+  identity manifests are not readable. Deleting `.daena/` must rebuild from
+  the new source.
+
+#### Steps E2–E8
+
+| Step | Content | Exit tests |
+| --- | --- | --- |
+| E2 | Engine additions: `generate_tectonics`, `SurfaceContext`, `prepare_surface`, `derive_after_surface`, `derive_world`, `derive_epoch`, canonical elevation, public hashes/version, cube inventory solver, cancellation callbacks, point sampling, equirect view/resamplers, shared storm tracer, lake spill/minimum cells, monthly storm weights, solstice climate summary fields, planet offset helper. Refactor `generate_inner` to call the shared downstream path. Regenerate the canonical-elevation baseline. | `cargo test -p daena-worldgen --locked --offline`; tests that generation and `derive_world` produce identical fields/hashes; canonical `f32`/`i32` round trip; every hash changes when its field changes; storm tracer equals the old inline trace cell-for-cell; cancellation ends within 100 ms; 1-thread/12-thread identity; point and equirect sampling seam tests. |
+| E3 | Source `DAENAPW2`, product generation path, accept and reload. `daena-physical` defines source magic/version, manual codec, `PhysicalIdentityManifestV2`, `GENERATOR_VERSION = 2`, validation and old-version rejection. Generation calls `generate`, encodes v2, creates the product view and generation JSON. Progress mapping and cancellation. `project_physical_generate/preview/accept/status/cancel` use the engine job. | Source round trip is byte-exact and length-strict; decode+derive reproduces all hashes; corrupt elevation, tectonic hash, settings, trailing bytes and old magic are rejected with the right codes; accept writes the source asset and descriptor atomically; reload after deleting `.daena/` rebuilds and validates; old source is `physical.source.unsupported-version`; cancellation latency under 100 ms end to end; materialized events untouched. |
+| E4 | Derived products and epochs. `daena_physical::engine::Products` adapters build product `ClimateField`, `HydrologyField`, `HazardField`, GeoJSON, contours and the equirect view; `derived_cache::StaticDerivedPhysics` stores the engine-backed products; `history.rs` epoch path solves the cube sea level from the land-ice and expansion changes relative to epoch zero, then calls `derive_epoch` once; cache version dir/key gains engine/source versions; remove evolution from job results and commands; bump `CLIMATE_DERIVATION_VERSION`, `HYDROLOGY_DERIVATION_VERSION`, `HISTORICAL_DERIVATION_VERSION`, `CACHE_FORMAT_VERSION`; hazard field versions may wait for E6 but the cache key includes them. | `cargo test -p daena-physical --locked --offline`; product field shapes and formulas; epoch 0 equals the present products; epoch sea level and `HistoricalMetrics` conservation; epoch at `n = 512` is at most 1.5 s (measured, estimate recorded); deleting `.daena/cache/physical-derived` rebuilds identical products; source-only rebuild after deleting `.daena/`; external checkpoint import validates; cache key changes with engine/source/epoch/view-size and planetary-token versions. |
+| E5 | Tools. Find Place, routes, claims, landmass/region, previews, coastlines, contours and Atlas input move to canonical cells and the equirect view. Claims use canonical cube ids; Atlas `prepare_from_source` builds the view at the explicit view size and keeps its transform/styles/tile cache; remove humidity/current Atlas inputs and styles. `project_physical_find_place`, `suggest_routes`, `propose_region`, and Atlas Studio claim/inspect use the adapter. | Find Place criteria map one-to-one (no humidity), candidates use canonical ids and point coordinates; route paths, slope, crossings, lake/ice cells match engine data; claim ids resolve at the reference and at epochs, and old ids are unresolved; region geometry closes and is epoch-aware; GeoJSON feature/byte limits hold at 1024×512 and 2048×1024; Atlas golden tests regenerated with a reason each; Atlas tile seams/cache deletion unchanged. |
+| E6 | Events and hazards. Build the product `HazardField` from engine fields with explicit unit functions; widen volcanic source ids and `MaterializedEvent.sampled_center_id` to `u64` and serialize them as decimal strings; use engine lake spill cells; replace the inline storm path with `trace_storm` and monthly genesis; bump `HAZARD_DERIVATION_VERSION = 2`, `VOLCANIC_SOURCE_DERIVATION_VERSION = 2`, earthquake/eruption materialization to 2, storm/flood materialization to 3, `EVENT_MATERIALIZATION_VERSION = 3`; keep already materialized events. | Unit tests for M ≥ 5 → M ≥ 4, area multiplication, nano/ppm conversions, u64 ids and JSON round trips beyond `2^53`, source ordering; event sampling deterministic and bounded; storm tracks match engine tracer; flood events use spill cells and fresh/overflowing lakes; expected lambda matches rate mass; materialized events keep authored provenance; version mismatches fail validation rather than mixing semantics. |
+| E7 | Frontend. Remove humidity, current, evolution, terrain-age and tectonic-style views/controls; add world preset and resolution; 26-class biome legend; hazard layers and source metadata; show engine-derived metrics; update Find Place, routes, claims and epoch UI; Atlas studio surface samples lose humidity/current/thickness; Atlas humidity style is not offered. | `npm run check` and the Maps/Atlas frontend tests; Tauri command tests for new input/result shapes; rendered desktop checks for preset/resolution, layer toggles, biome legend, no removed overlays, claim/epoch labels, Atlas studio inspection and detach; no UI reads a removed field. |
+| E8 | Clean-up and budgets. Delete uncalled old generator code, old source codec, old types and constants; measure full generation, memory, source size, epoch time, GeoJSON at 1024×512/2048×1024; set `GENERATION_TIME_BUDGET_MS`, `WORKING_MEMORY_BUDGET_BYTES`, `MAX_SOURCE_BYTES`, production resolution constants and GeoJSON limits from the measured envelopes; update ADR 0004 decision history and `MAPS.md` in the same commit; regenerate Atlas/engine golden fixtures with reasons. | Full `cargo test --workspace --locked --offline`; no reference to deleted generator/source symbols; measured budget table recorded; ADR/MAPS constants match code; clean checkpoint export, delete `.daena/`, rebuild, and compare physical identity/products; malformed source, external checkpoint edit and missing `.daena` recovery; packaged Tauri desktop lifecycle check for generate/accept/reload/export. |
+
+#### Open questions
+
+Decided 2026-11-11:
+
+1. Yes: apply the sea-level threshold, round to millimetres, then flood.
+2. Bond albedo leaves generation and the UI.
+3. Mean density stays as display metadata for surface gravity only. It is
+   kept in the map descriptor, not in the source.
+4. Humidity is removed.
+5. Ice thickness is removed.
+6. Storm events keep a notable-storm product policy. `λ = f · storms_per_yr ·
+   years`, where `f` is one product constant. Calibrate `f` so that Earthlike
+   seed 7 keeps the current product's expected storm events per year at the
+   same interval, and record the value. The physical census stays in
+   `Hazards.storms`.
+7. The 26 engine classes map onto the existing Atlas style groups in one
+   adapter table.
+8. The view is 1024×512 at both resolutions, until E4 measures 2048×1024 at
+   `n = 1024` inside the budgets.
+9. Epoch `PhysicalField` keeps the reference elevations and the epoch
+   `sea_level_mm`.
+10. `targetLandFractionPpm` stays as an advanced and test override.
+11. The source codec accepts any power-of-two `n`. The product accepts 512
+    and 1024. Tests use `n = 64`.
+12. Old claim ids are left unresolved, with no migration.
+13. Epoch land ice: neither option as proposed. The engine has no ice
+    volume, so the solve uses the `history.rs` land-ice change relative to
+    epoch zero, plus the expansion change, in one hypsometric solve, with no
+    lake-volume iteration. Epoch zero equals the present world. See
+    "Epochs".
+
+The questions as raised:
+
+1. **Canonicalization versus ocean flood order.** The design applies the
+   sea-level threshold, rounds elevation, then floods. The current
+   `sealevel::solve` floods inside the same function. Recommendation: adopt
+   the design order; otherwise source-only reproduction needs a stored ocean
+   mask or a pre-round elevation copy. Confirm this is the intended reading
+   of decision 4.
+2. **Bond albedo.** Recommendation: remove it from generation and the UI.
+   The engine already models surface albedo; a second planetary albedo would
+   double count. If it must stay, add `PlanetSettings::bond_albedo` with
+   default `0.0` and recalibrate Earthlike as a separate change.
+3. **Mean density.** Recommendation: keep it only as display metadata for
+   surface gravity, not in the source or generation. If the product must not
+   show a density that does not affect the world, remove the control too.
+4. **Humidity.** Recommendation: remove it. If Claude wants an honest humidity
+   view, add a published column-relative-humidity field to the engine climate
+   as a separate output contract; do not reconstruct it from temperature and
+   rain in the product.
+5. **Ice thickness.** Recommendation: remove it; the engine's ice cover is a
+   class. Add engine thickness later only if the ice model gains a thickness
+   state.
+6. **Storm event rate.** Recommendation: keep the product's notable-storm
+   policy as an explicit product constant applied to the engine genesis
+   census, so event volume stays useful; the physical census remains
+   `Hazards.storms`. Alternatively sample the full census and let
+   `maxEvents` cap. Confirm which semantics Maps wants.
+7. **Atlas biome style.** Recommendation: keep the existing ten Atlas style
+   groups and map the 26 engine classes to them in the adapter. A 26-class
+   Atlas style rewrite is presentation work outside E1.
+8. **Raster view size.** Recommendation: 1024×512 at both product
+   resolutions initially, with 2048×1024 at `n = 1024` only if E4 measures
+   memory and GeoJSON inside budget. The view size is explicit and never
+   canonical.
+9. **Epoch `PhysicalField` convention.** Recommendation: keep reference
+   elevations in `elevations_mm` and put the epoch level in `sea_level_mm`,
+   as today. This avoids rewriting every consumer and keeps source identity
+   separate from epoch state.
+10. **Land-fraction override.** Recommendation: keep
+    `targetLandFractionPpm` as an advanced/test override; the UI defaults to
+    the engine preset. There is no second sea-level mode in phase E.
+11. **Source fixture resolutions.** Recommendation: let the source codec
+    accept any engine power-of-two `n` for tests and CLI; let product
+    acceptance allow only 512/1024. This keeps E3 fixtures at `n = 64`
+    cheap.
+12. **Old claim ids.** Recommendation: do not migrate or reinterpret them.
+    They become unresolved; the UI offers repair. This follows the hard cut
+    and ADR 0004.
+13. **Epoch land-ice volume source.** This is the one place the code and a
+    literal reading of decision 9 differ: `history.rs` has the logistic
+    `land_ice_volume`, but the current sea-level solve withholds the
+    climate-derived land-ice volume from `hydrology.rs`, while the logistic
+    is only `land_ice_equilibrium_m3`. Recommendation: keep the
+    climate-derived volume in the solve (epoch zero stays equal to present)
+    and keep the history logistic as the equilibrium metric. If Claude wants
+    the logistic volume in the solve, epoch zero no longer equals present and
+    the epoch-zero shortcut must be redefined; that is a behavior change, not
+    a detail.
 
 ## Determinism
 

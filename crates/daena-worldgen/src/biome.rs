@@ -255,7 +255,7 @@ pub(crate) fn classify(
             "biome inputs do not match the terrain grid".to_string(),
         ));
     }
-    let chunk = BIOME_CHUNK;
+    let chunk = crate::scaled_chunk(BIOME_CHUNK);
     let mut slopes = Vec::with_capacity(n);
     for start in (0..n).step_by(chunk) {
         if cancelled() {

@@ -2,7 +2,9 @@ use std::collections::VecDeque;
 
 use crate::grid::{CubeSphere, NONE};
 use crate::noise::{derive_seed, hash_u01, noise_on_sphere, SeedDomain};
-use crate::routing::{route, validate_routing, BasinBalance, RoutingScratch};
+use crate::routing::{
+    route, route_with_cancel, validate_routing, BasinBalance, DomainIndex, RoutingScratch,
+};
 
 fn terrain(n: u32, seed: u64, ocean_fraction: f64) -> (CubeSphere, Vec<f32>, Vec<u8>) {
     let grid = CubeSphere::new(n, 6_371_000.0).unwrap();
@@ -245,6 +247,51 @@ fn bowl() -> (CubeSphere, Vec<f32>, Vec<u8>, u32) {
 }
 
 #[test]
+fn active_index_route_matches_full_route() {
+    let (grid, h, domain) = terrain(32, 11, 0.3);
+    let n = h.len();
+    let full_index = DomainIndex::full(n);
+    let mut full = RoutingScratch::with_index(&full_index);
+    route_with_cancel(
+        &grid,
+        &h,
+        &domain,
+        &full_index,
+        None,
+        &mut full,
+        None,
+        &|| false,
+    )
+    .unwrap();
+    let active_index = DomainIndex::active(&grid, &domain);
+    let active_elev: Vec<f32> = active_index
+        .cells()
+        .iter()
+        .map(|&cell| h[cell as usize])
+        .collect();
+    let mut active = RoutingScratch::with_index(&active_index);
+    route_with_cancel(
+        &grid,
+        &active_elev,
+        &domain,
+        &active_index,
+        None,
+        &mut active,
+        None,
+        &|| false,
+    )
+    .unwrap();
+    for (slot, &cell) in active_index.cells().iter().enumerate() {
+        let receiver = active_index.cell(active.receiver[slot] as usize);
+        assert_eq!(receiver, full.receiver[cell as usize], "receiver at {cell}");
+        assert_eq!(
+            active.area[slot], full.area[cell as usize],
+            "drainage at {cell}"
+        );
+    }
+}
+
+#[test]
 fn chunked_drainage_matches_whole_stack_order() {
     use crate::routing::accumulate_with_weight;
 
@@ -269,6 +316,7 @@ fn chunked_drainage_matches_whole_stack_order() {
     }
 
     assert!(scratch.chunks.len() > 1, "chunks {}", scratch.chunks.len());
-    accumulate_with_weight(&grid, &mut scratch, &vec![1.0f32; n]);
+    let index = crate::routing::DomainIndex::full(n);
+    accumulate_with_weight(&grid, &index, &mut scratch, &vec![1.0f32; n]);
     assert_eq!(scratch.area, expect);
 }

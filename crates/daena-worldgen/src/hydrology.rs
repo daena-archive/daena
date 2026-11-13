@@ -123,7 +123,7 @@ struct Depression {
     cells: Vec<u32>,
 }
 
-struct Flood {
+pub(crate) struct Flood {
     receiver: Vec<u32>,
     filled: Vec<f64>,
     pop_order: Vec<u32>,
@@ -137,6 +137,7 @@ pub(crate) fn build(
     ocean: &[u8],
     climate: &ClimateSummary,
     river_min_m3s: f64,
+    early: Option<Flood>,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<Hydrology, WorldError> {
     let n = grid.cell_count();
@@ -154,7 +155,10 @@ pub(crate) fn build(
     if cancelled() {
         return Err(WorldError::Cancelled);
     }
-    let flood = priority_flood(grid, elevation, ocean, cancelled)?;
+    let flood = match early {
+        Some(flood) => flood,
+        None => priority_flood(grid, elevation, ocean, cancelled)?,
+    };
     if cancelled() {
         return Err(WorldError::Cancelled);
     }
@@ -185,7 +189,7 @@ pub(crate) fn build(
     })
 }
 
-fn priority_flood(
+pub(crate) fn priority_flood(
     grid: &CubeSphere,
     elevation: &[f32],
     ocean: &[u8],

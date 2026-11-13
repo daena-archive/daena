@@ -1243,9 +1243,17 @@ fn extremes(input: &HazardIn<'_>) -> Result<ExtremeFields, WorldError> {
         }
     }
     let n = fine.cell_count();
-    let rows: Vec<_> = (0..n)
-        .into_par_iter()
-        .map(|cell| {
+    // Stream the three fields directly; a row tuple per cell would double the
+    // peak of this pass.
+    let mut drought = vec![0u8; n];
+    let mut heat_wave = vec![0u8; n];
+    let mut extreme_rain = vec![0u8; n];
+    drought
+        .par_iter_mut()
+        .zip(heat_wave.par_iter_mut())
+        .zip(extreme_rain.par_iter_mut())
+        .enumerate()
+        .for_each(|(cell, ((dry, heat), rain))| {
             let (face, i, j) = fine.decode(cell as u32);
             let fx = (f64::from(i) + 0.5) / f64::from(scale);
             let fy = (f64::from(j) + 0.5) / f64::from(scale);
@@ -1256,7 +1264,7 @@ fn extremes(input: &HazardIn<'_>) -> Result<ExtremeFields, WorldError> {
             let p_dry = f64::from(input.climate.p_dry_month_mm[cell]);
             let pet = f64::from(input.climate.pet_annual_mm[cell]);
             let ocean = input.ocean[cell] == 1;
-            let drought = if ocean || t_warm < 0.0 {
+            let drought_v = if ocean || t_warm < 0.0 {
                 0.0
             } else {
                 let aridity = if pet > 0.0 { p_annual / pet } else { 2.0 };
@@ -1265,12 +1273,12 @@ fn extremes(input: &HazardIn<'_>) -> Result<ExtremeFields, WorldError> {
                 // Weights sum to 1 so hyper-arid land with a dry season reads 1.
                 0.75 * (1.0 - smoothstep(0.1, 0.65, aridity)) + 0.25 * dry_months * wet_fade
             };
-            let mut heat =
+            let mut heat_v =
                 0.7 * smoothstep(22.0, 38.0, t_warm) + 0.3 * smoothstep(4.0, 25.0, t_warm - t_cold);
             if ocean {
-                heat *= 0.25;
+                heat_v *= 0.25;
             }
-            let rain = if t_warm < 0.0 && peak_estimate < 30.0 {
+            let rain_v = if t_warm < 0.0 && peak_estimate < 30.0 {
                 0.0
             } else {
                 let monsoon = if p_annual > 0.0 {
@@ -1281,17 +1289,10 @@ fn extremes(input: &HazardIn<'_>) -> Result<ExtremeFields, WorldError> {
                 smoothstep(80.0, 450.0, peak_estimate)
                     * (0.7 + 0.3 * smoothstep(0.15, 0.35, monsoon))
             };
-            (quantize(drought), quantize(heat), quantize(rain))
-        })
-        .collect();
-    let mut drought = Vec::with_capacity(n);
-    let mut heat_wave = Vec::with_capacity(n);
-    let mut extreme_rain = Vec::with_capacity(n);
-    for (dry, heat, rain) in rows {
-        drought.push(dry);
-        heat_wave.push(heat);
-        extreme_rain.push(rain);
-    }
+            *dry = quantize(drought_v);
+            *heat = quantize(heat_v);
+            *rain = quantize(rain_v);
+        });
     Ok((drought, heat_wave, extreme_rain))
 }
 

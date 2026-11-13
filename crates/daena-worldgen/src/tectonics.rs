@@ -307,19 +307,22 @@ pub fn build(
     if cancelled() {
         return Err(WorldError::Cancelled);
     }
-    let (d_boundary, boundary_record) = distance_on_plate(&grid, &plate, &boundaries);
-    if cancelled() {
-        return Err(WorldError::Cancelled);
-    }
-    let (d_ridge, d_edge) = ridge_and_edge(&grid, &crust, &boundaries);
-    if cancelled() {
-        return Err(WorldError::Cancelled);
-    }
-    let classes = class_fields(&grid, &plate, &boundaries);
-    if cancelled() {
-        return Err(WorldError::Cancelled);
-    }
-    let hotspots = make_hotspots(&grid, settings, &plates, &plate);
+    // The distance fields and hotspots read the same finished inputs and do
+    // not read each other, so they run side by side.
+    let ((d_boundary, boundary_record), ((d_ridge, d_edge), (classes, hotspots))) = rayon::join(
+        || distance_on_plate(&grid, &plate, &boundaries),
+        || {
+            rayon::join(
+                || ridge_and_edge(&grid, &crust, &boundaries),
+                || {
+                    rayon::join(
+                        || class_fields(&grid, &plate, &boundaries),
+                        || make_hotspots(&grid, settings, &plates, &plate),
+                    )
+                },
+            )
+        },
+    );
     if cancelled() {
         return Err(WorldError::Cancelled);
     }
@@ -348,7 +351,7 @@ pub fn build(
         xform_seed: derive_seed(seed, SeedDomain::TransformRidged),
         mod_seed: derive_seed(seed, SeedDomain::UpliftModulation),
     };
-    let chunk = FIELD_CHUNK;
+    let chunk = crate::scaled_chunk(FIELD_CHUNK);
     for start in (0..ncells).step_by(chunk) {
         if cancelled() {
             return Err(WorldError::Cancelled);
@@ -1079,13 +1082,25 @@ struct ClassFields {
 }
 
 fn class_fields(grid: &CubeSphere, plate: &[u8], boundaries: &[BoundaryRecord]) -> ClassFields {
-    let mut heap = BinaryHeap::new();
+    let run = |own_plate: bool, pred: fn(&BoundaryRecord) -> bool| {
+        let mut heap = BinaryHeap::new();
+        seed_distance(grid, plate, boundaries, &mut heap, own_plate, pred)
+    };
+    let ((collision, arc), (trench, (rift, transform))) = rayon::join(
+        || rayon::join(|| run(false, is_collision), || run(true, is_arc)),
+        || {
+            rayon::join(
+                || run(true, is_trench),
+                || rayon::join(|| run(false, is_rift), || run(false, is_transform)),
+            )
+        },
+    );
     ClassFields {
-        collision: seed_distance(grid, plate, boundaries, &mut heap, false, is_collision),
-        arc: seed_distance(grid, plate, boundaries, &mut heap, true, is_arc),
-        trench: seed_distance(grid, plate, boundaries, &mut heap, true, is_trench),
-        rift: seed_distance(grid, plate, boundaries, &mut heap, false, is_rift),
-        transform: seed_distance(grid, plate, boundaries, &mut heap, false, is_transform),
+        collision,
+        arc,
+        trench,
+        rift,
+        transform,
     }
 }
 

@@ -95,6 +95,39 @@ the peak.
 targets; the product budgets in ADR 0004 change only in phase E, with the
 measurements from this engine as the evidence.
 
+## Performance results (2026-11-13)
+
+Release build, Earthlike seed 7, engine `timings_ms.total`, median of three
+runs with the baseline, A and B binaries rotating order:
+
+| `n` | `65423b0` | A | B | B RSS with `MallocLargeCache=0` |
+| --- | --- | --- | --- | --- |
+| 256 | 1,334 ms / 192 MB | 1,126 / 143 | 1,083 / 144 | 112 MB |
+| 512 | 2,017 / 518 | 1,576 / 304 | 1,435 / 312 | 233 MB |
+| 1024 | 4,668 / 1,843 | 3,058 / 996 | 2,745 / 1,061 | 711 MB |
+
+A is Q1-Q7 from the performance review: a streamed downscale, parallel
+donor and stack builds, parallel grid tables with a tangent table, final
+routing and the lake flood beside the final coarse climate, parallel
+tectonic distance fields, tectonic field preparation beside the erosion
+climate passes, trimmed erosion buffers, and thread-scaled cancellation
+chunks. B adds R1, a compact active set for erosion and final routing. R1 is
+a speed gain, not a memory gain: A without the allocator cache is already at
+717 MB at `n = 1024` and 233 MB at `n = 512`.
+
+Peak RSS includes the macOS malloc cache, which keeps freed large blocks
+resident. The live heap is the `MallocLargeCache=0` column. At `n = 1024` the
+peak sits in the hazard stage, about 695 MB of live fields plus about 350 MB
+of cached erosion and routing buffers; at `n = 512` the live peak is 233 MB
+and the rest is cache. `malloc_zone_pressure_relief` does not release that
+cache on macOS 27.2 (it returns zero), so the engine does not call it.
+Windows retention is measured with the production envelopes in E8.
+
+`timings_ms.total` is engine time from after settings validation to the last
+hazard field. The CLI's wall time adds process startup and the serial JSON
+report, about 0.5 s at `n = 1024` and 0.13 s at `n = 512`, which the product
+does not pay.
+
 ## Phase A results (2026-11-08)
 
 `crates/daena-worldgen`: cube-sphere grid, tectonics, coarse-to-fine
@@ -1396,7 +1429,9 @@ avoids shifting the canonical source.
 the engine is the only source of stage progress. `Progress::cancelled` is
 checked at every stage boundary and inside the long loops named in decision
 13. E3 tests the command path with a cancellation flag set from a progress
-callback and asserts a `Cancelled` result within 100 ms.
+callback and asserts a `Cancelled` result within 100 ms. Final routing and the
+lake flood run beside the final coarse climate pass; their `timings_ms` spans
+overlap, and `total` is wall time rather than their sum.
 
 #### Engine additions for E2
 
@@ -1563,17 +1598,18 @@ cancellation without relying on wall-clock tests.
 The gap test measures the largest wall-clock gap between `cancelled()` calls
 and runs with `--ignored --test-threads=1` because parallel test load can
 deschedule the test thread. Release gaps on a 12-thread machine: at
-`n = 512`, 57-61 ms for generation and 51-53 ms for derive; at `n = 1024`,
-61-71 ms for warm generation (`depress` inside erosion routing at level 512)
-and 56-87 ms for derive (one downscale batch). The cold `n = 1024` gap is
-183 ms. It ends at the first check in `prepare_fields`, and it covers
-`CubeSphere::new(1024)`, which builds the cached grid tables once per process;
-later runs reuse them. The gap tests build in the test profile, which also
-runs the debug-only routing validation, so the `n = 1024` test reports its
-gaps without asserting. E3 adds checks inside `depress`, sizes parallel chunks
-per thread so the budget holds on machines with fewer cores, and asserts the
-100 ms budget end to end. An end-to-end deadline test cancels inside the final
-climate stage.
+`n = 512`, about 57 ms for generation (Tectonics) and 41 ms for derive
+(Climate); at `n = 1024`, 58 ms for cold generation (Tectonics), 58 ms warm
+(Tectonics) and 48 ms for derive (Climate). The cold grid-table gap is gone
+because `build_tables` now runs in parallel. `CubeSphere::new` does not hold
+the cache lock during that build, so a stolen rayon job cannot block on the
+same lock. Chunks scale with
+`rayon::current_num_threads()`, and routing checks every 65,536 sequential
+graph steps inside `depress` and the donor/stack builds. The gap tests build
+in the test profile, which also runs the debug-only routing validation, so
+the `n = 1024` test reports its gaps without asserting. The budget is
+asserted at `n = 512` and by the end-to-end deadline test, which cancels
+inside the final climate stage.
 
 Point sampling:
 

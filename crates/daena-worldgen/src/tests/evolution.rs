@@ -1,7 +1,9 @@
-use crate::evolution::{erode, fill_single_cell_pits, ErodeJob, ErodeOptions, WaterIn};
+use crate::evolution::{
+    erode, fill_single_cell_pits, ErodeJob, ErodeOptions, ErosionBuffers, WaterIn,
+};
 use crate::grid::{CubeSphere, NONE};
 use crate::noise::noise_on_sphere;
-use crate::routing::RoutingScratch;
+use crate::routing::{DomainIndex, RoutingScratch};
 use crate::{ErosionParams, NoProgress};
 
 fn landscape(n: u32) -> (CubeSphere, Vec<f32>, Vec<u8>) {
@@ -78,11 +80,15 @@ fn zero_uplift_does_not_raise_or_undercut() {
         check_bounds: true,
         stage: None,
     };
+    let index = DomainIndex::full(h.len());
+    let mut buffers = ErosionBuffers::new(h.len());
     let mut progress = NoProgress;
     let report = erode(
         ErodeJob {
             grid: &grid,
+            index: &index,
             h: &mut h,
+            buffers: &mut buffers,
             domain: &domain,
             uplift: &uplift,
             k_rock: &k_rock,
@@ -112,6 +118,11 @@ fn cell_and_chunk_basin_modes_agree() {
         .collect();
     let runoff_m_yr: Vec<f32> = runoff_mm.iter().map(|value| value / 1000.0).collect();
     let evap_m_yr = vec![0.0f32; n];
+    let weight: Vec<f32> = runoff_mm
+        .iter()
+        .copied()
+        .map(crate::climate::runoff_weight)
+        .collect();
     let ice_m_yr: Vec<f32> = (0..n)
         .map(|cell| {
             if domain[cell] == 1 && grid.position(cell as u32)[2] > 0.4 {
@@ -122,7 +133,7 @@ fn cell_and_chunk_basin_modes_agree() {
         })
         .collect();
     let water = WaterIn {
-        runoff_mm: &runoff_mm,
+        weight: &weight,
         runoff_m_yr: &runoff_m_yr,
         evap_m_yr: &evap_m_yr,
         ice_m_yr: &ice_m_yr,
@@ -142,11 +153,15 @@ fn cell_and_chunk_basin_modes_agree() {
             scratch.parallel_min_cells = 0;
             scratch.chunk_cells = 64;
         }
+        let index = DomainIndex::full(h.len());
+        let mut buffers = ErosionBuffers::new(h.len());
         let mut progress = NoProgress;
         let report = erode(
             ErodeJob {
                 grid: &grid,
+                index: &index,
                 h: &mut h,
+                buffers: &mut buffers,
                 domain: &domain,
                 uplift: &uplift,
                 k_rock: &k_rock,
@@ -170,6 +185,60 @@ fn cell_and_chunk_basin_modes_agree() {
 }
 
 #[test]
+fn active_index_matches_full_index() {
+    let (grid, h0, domain) = landscape(32);
+    let n = h0.len();
+    let uplift = vec![2.0e-4f32; n];
+    let k_rock = vec![1.0f32; n];
+    let options = ErodeOptions {
+        iterations: 6,
+        dt_yr: 5.0e4,
+        params: ErosionParams::default(),
+        record_steps: false,
+        check_bounds: true,
+        stage: None,
+    };
+    let run = |active: bool| {
+        let mut h = h0.clone();
+        let index = if active {
+            DomainIndex::active(&grid, &domain)
+        } else {
+            DomainIndex::full(n)
+        };
+        let mut scratch = RoutingScratch::with_index(&index);
+        let mut buffers = ErosionBuffers::new(index.len());
+        let mut progress = NoProgress;
+        let report = erode(
+            ErodeJob {
+                grid: &grid,
+                index: &index,
+                h: &mut h,
+                buffers: &mut buffers,
+                domain: &domain,
+                uplift: &uplift,
+                k_rock: &k_rock,
+                scratch: &mut scratch,
+                options: &options,
+                water: None,
+            },
+            &mut progress,
+        )
+        .unwrap();
+        (h, report)
+    };
+    let (full_h, mut full_report) = run(false);
+    let (active_h, mut active_report) = run(true);
+    assert_eq!(full_h, active_h);
+    let full_ice = std::mem::take(&mut full_report.q_ice);
+    let active_ice = std::mem::take(&mut active_report.q_ice);
+    assert_eq!(full_report, active_report);
+    let active_index = DomainIndex::active(&grid, &domain);
+    for (slot, &cell) in active_index.cells().iter().enumerate() {
+        assert_eq!(active_ice[slot], full_ice[cell as usize], "ice at {cell}");
+    }
+}
+
+#[test]
 fn uniform_uplift_step_shrinks() {
     let (grid, mut h, domain) = landscape(16);
     let uplift = vec![2.0e-4f32; h.len()];
@@ -183,11 +252,15 @@ fn uniform_uplift_step_shrinks() {
         check_bounds: false,
         stage: None,
     };
+    let index = DomainIndex::full(h.len());
+    let mut buffers = ErosionBuffers::new(h.len());
     let mut progress = NoProgress;
     let report = erode(
         ErodeJob {
             grid: &grid,
+            index: &index,
             h: &mut h,
+            buffers: &mut buffers,
             domain: &domain,
             uplift: &uplift,
             k_rock: &k_rock,
@@ -223,11 +296,15 @@ fn rift_subsidence_stops_at_floor() {
         check_bounds: false,
         stage: None,
     };
+    let index = DomainIndex::full(h.len());
+    let mut buffers = ErosionBuffers::new(h.len());
     let mut progress = NoProgress;
     erode(
         ErodeJob {
             grid: &grid,
+            index: &index,
             h: &mut h,
+            buffers: &mut buffers,
             domain: &domain,
             uplift: &uplift,
             k_rock: &k_rock,

@@ -7,7 +7,6 @@ use crate::{
     sea_level_for_ocean_volume, NoProgress, Preset, Progress, Stage, World, WorldError,
     WorldSettings,
 };
-
 fn settings(preset: Preset, seed: u64, resolution: u32) -> WorldSettings {
     WorldSettings {
         seed,
@@ -97,6 +96,30 @@ fn assert_same_world(left: &World, right: &World) {
     assert_eq!(left.biome_hash(), right.biome_hash());
     assert_eq!(left.hazard_hash(), right.hazard_hash());
     assert_eq!(hashes(left), hashes(right));
+}
+
+#[test]
+fn final_routing_matches_full_grid_route() {
+    for resolution in [64u32, 128] {
+        let world = generate(&settings(Preset::Earthlike, 7, resolution), &mut NoProgress).unwrap();
+        let domain: Vec<u8> = world
+            .ocean
+            .iter()
+            .map(|&flag| u8::from(flag == 0))
+            .collect();
+        let mut scratch = crate::routing::RoutingScratch::new(world.elevation_m.len());
+        crate::routing::route(
+            &world.grid,
+            &world.elevation_m,
+            &domain,
+            None,
+            &mut scratch,
+            None,
+        );
+        assert_eq!(world.receiver, scratch.receiver, "n={resolution}");
+        let area: Vec<f32> = scratch.area.iter().map(|&value| value as f32).collect();
+        assert_eq!(world.drainage_area_m2, area, "n={resolution}");
+    }
 }
 
 #[test]
@@ -828,8 +851,7 @@ fn cancellation_gaps_at_n1024_report_cold_and_warm() {
     );
     // Report only. In the test profile the n = 1024 routing stages and the
     // debug-only routing validation sit close to the 100 ms budget, so an
-    // assertion here is flaky. E3 adds checks inside routing and asserts the
-    // end-to-end budget on the release command path.
+    // assertion here is flaky. Release gaps are measured from this output.
 }
 
 struct DeadlineProgress {

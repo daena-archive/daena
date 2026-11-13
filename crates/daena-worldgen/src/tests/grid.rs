@@ -319,3 +319,44 @@ fn cross_face_samples_do_not_overshoot_sharp_steps() {
     }
     assert!(checked > 1000);
 }
+
+#[test]
+fn neighbor_links_are_symmetric() {
+    for n in [8u32, 16, 32, 64, 128, 256, 512, 1024] {
+        let grid = crate::CubeSphere::new(n, 6_371_000.0).unwrap();
+        let mut asym = 0u32;
+        let mut first = None;
+        for cell in 0..grid.cell_count() as u32 {
+            for nb in grid.neighbors(cell) {
+                if nb == crate::NONE {
+                    continue;
+                }
+                if !grid.neighbors(nb).contains(&cell) {
+                    asym += 1;
+                    first.get_or_insert((cell, nb));
+                }
+            }
+        }
+        assert_eq!(asym, 0, "n={n} first asymmetric link {first:?}");
+    }
+}
+
+#[test]
+fn parallel_uncached_grid_builds_do_not_deadlock() {
+    // Regression for the table cache: `build_tables` runs rayon jobs, so a
+    // lock held across the build lets a stolen job block on the same lock.
+    crate::grid::clear_tables_cache();
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(4)
+        .build()
+        .unwrap();
+    pool.scope(|scope| {
+        for n in [256u32, 512, 1024, 2048] {
+            scope.spawn(move |_| {
+                let grid = crate::CubeSphere::new(n, RADIUS).unwrap();
+                assert_eq!(grid.n, n);
+            });
+        }
+    });
+    crate::grid::clear_tables_cache();
+}

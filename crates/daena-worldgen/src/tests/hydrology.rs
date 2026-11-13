@@ -96,7 +96,7 @@ fn balance(
 fn flood_orders_receivers_and_reaches_the_ocean() {
     let (grid, h, ocean, _) = bowl();
     let field = climate(grid.cell_count(), 0.0, 0.0, 0.0);
-    let hydro = hydrology::build(&grid, &h, &ocean, &field, 100.0, &|| false).unwrap();
+    let hydro = hydrology::build(&grid, &h, &ocean, &field, 100.0, None, &|| false).unwrap();
     let n = grid.cell_count();
     let mut rank = vec![0u32; n];
     for (i, &cell) in hydro.pop_order.iter().enumerate() {
@@ -134,7 +134,7 @@ fn closed_basin_fills_drains_or_turns_saline() {
     ];
     let dry_mm = vec![0.0f32; n];
     let dry = climate_runoff(&dry_mm, 0.0, 5000.0);
-    let none = hydrology::build(&grid, &h, &ocean, &dry, 100.0, &|| false).unwrap();
+    let none = hydrology::build(&grid, &h, &ocean, &dry, 100.0, None, &|| false).unwrap();
     assert!(none.lakes.is_empty(), "zero runoff still made a lake");
 
     let mut wet_mm = vec![0.0f32; n];
@@ -142,7 +142,7 @@ fn closed_basin_fills_drains_or_turns_saline() {
         wet_mm[cell as usize] = 5000.0;
     }
     let wet = climate_runoff(&wet_mm, 4000.0, 5000.0);
-    let full = hydrology::build(&grid, &h, &ocean, &wet, 100.0, &|| false).unwrap();
+    let full = hydrology::build(&grid, &h, &ocean, &wet, 100.0, None, &|| false).unwrap();
     assert_eq!(full.lakes.len(), 1);
     let lake = &full.lakes[0];
     assert_eq!(lake.kind, LakeKind::Fresh);
@@ -162,7 +162,7 @@ fn closed_basin_fills_drains_or_turns_saline() {
         low_mm[cell as usize] = 500.0;
     }
     let low = climate_runoff(&low_mm, 0.0, 1000.0);
-    let salt = hydrology::build(&grid, &h, &ocean, &low, 100.0, &|| false).unwrap();
+    let salt = hydrology::build(&grid, &h, &ocean, &low, 100.0, None, &|| false).unwrap();
     assert_eq!(salt.lakes.len(), 1);
     let lake = &salt.lakes[0];
     assert_eq!(lake.kind, LakeKind::Saline);
@@ -216,7 +216,7 @@ fn lake_minimum_cell_is_the_lowest_cell_not_the_smallest_id() {
         wet_mm[cell as usize] = 5000.0;
     }
     let wet = climate_runoff(&wet_mm, 4000.0, 5000.0);
-    let full = hydrology::build(&grid, &h, &ocean, &wet, 100.0, &|| false).unwrap();
+    let full = hydrology::build(&grid, &h, &ocean, &wet, 100.0, None, &|| false).unwrap();
     assert_eq!(full.lakes.len(), 1);
     assert_eq!(full.lakes[0].spill_cell, spill);
     assert_eq!(full.lakes[0].minimum_cell, grid.id(0, 4, 1));
@@ -226,7 +226,7 @@ fn lake_minimum_cell_is_the_lowest_cell_not_the_smallest_id() {
         low_mm[cell as usize] = 500.0;
     }
     let low = climate_runoff(&low_mm, 0.0, 1000.0);
-    let salt = hydrology::build(&grid, &h, &ocean, &low, 100.0, &|| false).unwrap();
+    let salt = hydrology::build(&grid, &h, &ocean, &low, 100.0, None, &|| false).unwrap();
     assert_eq!(salt.lakes.len(), 1);
     assert_eq!(salt.lakes[0].minimum_cell, grid.id(0, 4, 1));
 }
@@ -301,7 +301,7 @@ fn no_ocean_has_one_root() {
     h[0] = 10.0;
     let ocean = vec![0u8; n];
     let field = climate(n, 10.0, 10.0, 0.0);
-    let hydro = hydrology::build(&grid, &h, &ocean, &field, 1.0e12, &|| false).unwrap();
+    let hydro = hydrology::build(&grid, &h, &ocean, &field, 1.0e12, None, &|| false).unwrap();
     let roots: Vec<u32> = (0..n)
         .filter(|&cell| hydro.receiver[cell] == cell as u32)
         .map(|cell| cell as u32)

@@ -329,9 +329,10 @@ pub enum Stage {
 
 /// Receives stage updates and can stop the build.
 ///
-/// `Send` lets [`generate`] run on a rayon worker so its per-cell loops are
-/// injected from inside the pool.
-pub trait Progress: Send {
+/// `Send + Sync` lets [`generate`] run on a rayon worker and lets both
+/// branches of a `rayon::join` poll [`Self::cancelled`]. Reports stay on the
+/// calling thread.
+pub trait Progress: Send + Sync {
     /// `done` counts completed units of `total` for `stage`.
     fn report(&mut self, stage: Stage, done: u32, total: u32);
     /// Return true to abort with [`WorldError::Cancelled`].
@@ -490,7 +491,10 @@ pub struct World {
     pub biome: Vec<u8>,
     /// Long-term hazard rates and potentials.
     pub hazards: Hazards,
-    /// Phase timings in milliseconds. `total` includes climate, water and biomes.
+    /// Phase timings in milliseconds. `total` is wall time and includes
+    /// climate, water and biomes. Spans may overlap (the final coarse climate
+    /// runs beside final routing and the lake flood), so the individual
+    /// entries do not sum to `total`.
     pub timings: Vec<(&'static str, f64)>,
     /// Evolution climate passes, then the final pass. Spin-up years are per pass.
     pub climate_passes: Vec<ClimatePass>,
@@ -1258,6 +1262,7 @@ fn generate_inner(
         timings,
         evolved.passes,
         evolved.stats,
+        evolved.scratch,
         started,
     )
 }
@@ -1299,6 +1304,7 @@ pub fn derive_world(
         Vec::new(),
         Vec::new(),
         Vec::new(),
+        None,
         started,
     )
 }
@@ -1334,6 +1340,7 @@ pub fn derive_after_surface(
         Vec::new(),
         Vec::new(),
         Vec::new(),
+        None,
         started,
     )
 }
@@ -1384,6 +1391,7 @@ pub fn derive_epoch(
         Vec::new(),
         Vec::new(),
         Vec::new(),
+        None,
         started,
     )
 }
@@ -1399,6 +1407,7 @@ fn derive_after_surface_inner(
     mut timings: Vec<(&'static str, f64)>,
     mut climate_passes: Vec<ClimatePass>,
     levels: Vec<LevelStats>,
+    mut reusable_scratch: Option<RoutingScratch>,
     started: Instant,
 ) -> Result<World, WorldError> {
     // The ocean flood is already done; nothing downstream reads the domain.
@@ -1407,45 +1416,87 @@ fn derive_after_surface_inner(
         return Err(WorldError::Cancelled);
     }
     progress.report(Stage::FinalRouting, 0, 1);
-    let t_route = Instant::now();
+    let t_join = Instant::now();
     let n = elevation.len();
-    let route_domain: Vec<u8> = sea.ocean.iter().map(|flag| u8::from(*flag == 0)).collect();
-    if progress.cancelled() {
-        return Err(WorldError::Cancelled);
-    }
-    // Evolution already dropped its routing scratch before returning.
-    let mut scratch = RoutingScratch::new(n);
-    let _routed = route_with_cancel(
-        &surface.grid,
-        &elevation,
-        &route_domain,
-        None,
-        &mut scratch,
-        None,
-        &|| progress.cancelled(),
-    )?;
-    let receiver = std::mem::take(&mut scratch.receiver);
-    let area = std::mem::take(&mut scratch.area);
-    drop(scratch);
-    let drainage_area_m2: Vec<f32> = area.iter().map(|value| *value as f32).collect();
-    drop(area);
-    timings.push(("final_routing", elapsed_ms(t_route)));
+    // The coarse climate is one long, mostly serial solve. Routing and the
+    // lake flood read only the surface, so they run beside it. The two spans
+    // overlap; `total` is wall time, not their sum.
+    let (surface_side, climate_side) = rayon::join(
+        || -> Result<_, WorldError> {
+            if progress.cancelled() {
+                return Err(WorldError::Cancelled);
+            }
+            let route_domain: Vec<u8> = sea.ocean.iter().map(|flag| u8::from(*flag == 0)).collect();
+            // Land cells plus the ocean ring they drain into. Non-ring ocean
+            // cells are their own roots, so the expanded fields match the
+            // full-grid route exactly.
+            let route_index = routing::DomainIndex::active(&surface.grid, &route_domain);
+            let route_elev: Vec<f32> = route_index
+                .cells()
+                .iter()
+                .map(|&cell| elevation[cell as usize])
+                .collect();
+            let mut scratch = match reusable_scratch.take() {
+                Some(mut scratch) => {
+                    scratch.rebase(route_index.len());
+                    scratch
+                }
+                None => RoutingScratch::with_index(&route_index),
+            };
+            let _routed = route_with_cancel(
+                &surface.grid,
+                &route_elev,
+                &route_domain,
+                &route_index,
+                None,
+                &mut scratch,
+                None,
+                &|| progress.cancelled(),
+            )?;
+            if progress.cancelled() {
+                return Err(WorldError::Cancelled);
+            }
+            let mut receiver = vec![0u32; n];
+            let mut drainage_area_m2 = vec![0.0f32; n];
+            for (slot, &cell) in route_index.cells().iter().enumerate() {
+                receiver[cell as usize] = route_index.cell(scratch.receiver[slot] as usize);
+                drainage_area_m2[cell as usize] = scratch.area[slot] as f32;
+            }
+            let mut active = vec![0u8; n];
+            for &cell in route_index.cells() {
+                active[cell as usize] = 1;
+            }
+            for (cell, flag) in active.iter().enumerate() {
+                if *flag == 0 {
+                    receiver[cell] = cell as u32;
+                    drainage_area_m2[cell] = surface.grid.area_m2(cell as u32) as f32;
+                }
+            }
+            let flood = hydrology::priority_flood(&surface.grid, &elevation, &sea.ocean, &|| {
+                progress.cancelled()
+            })?;
+            if progress.cancelled() {
+                return Err(WorldError::Cancelled);
+            }
+            Ok((receiver, drainage_area_m2, flood, elapsed_ms(t_join)))
+        },
+        || {
+            climate::coarse_with(
+                &surface.grid,
+                &elevation,
+                &sea.ocean,
+                &settings.planet,
+                &climate::ClimateOptions::published(),
+                &|| progress.cancelled(),
+            )
+            .map(|field| (field, elapsed_ms(t_join)))
+        },
+    );
+    let (receiver, drainage_area_m2, flood, route_ms) = surface_side?;
+    let (climate_field, coarse_ms) = climate_side?;
+    timings.push(("final_routing", route_ms));
     progress.report(Stage::FinalRouting, 1, 1);
-
-    if progress.cancelled() {
-        return Err(WorldError::Cancelled);
-    }
     progress.report(Stage::Climate, 0, 1);
-    let t_coarse = Instant::now();
-    let climate_field = climate::coarse_with(
-        &surface.grid,
-        &elevation,
-        &sea.ocean,
-        &settings.planet,
-        &climate::ClimateOptions::published(),
-        &|| progress.cancelled(),
-    )?;
-    let coarse_ms = elapsed_ms(t_coarse);
     timings.push(("climate_coarse", coarse_ms));
     climate_passes.push(ClimatePass {
         label: "final",
@@ -1479,6 +1530,7 @@ fn derive_after_surface_inner(
         &sea.ocean,
         &climate,
         settings.river_min_m3s,
+        Some(flood),
         &|| progress.cancelled(),
     )?;
     timings.push(("hydrology", elapsed_ms(t_hydro)));
@@ -1610,6 +1662,16 @@ pub(crate) fn direction_from_lat_lon(lat_deg: f64, lon_deg: f64) -> [f64; 3] {
     let lon = lon_deg.to_radians();
     let cl = lat.cos();
     [cl * lon.cos(), cl * lon.sin(), lat.sin()]
+}
+
+/// Cell count of one cancellation-batch chunk, tuned for 12 threads.
+///
+/// A batch runs on the whole pool, so its wall time grows when the pool
+/// shrinks. Keeping cells per thread constant keeps one batch at roughly the
+/// same wall time on any core count.
+pub(crate) fn scaled_chunk(base_cells: usize) -> usize {
+    let threads = rayon::current_num_threads().max(1);
+    (base_cells * threads).div_ceil(12).max(1)
 }
 
 fn elapsed_ms(started: Instant) -> f64 {

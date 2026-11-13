@@ -41,6 +41,8 @@ struct GridTables {
     border_nb: Vec<[u32; 8]>,
     /// Radians. `0` where the neighbour is [`NONE`].
     border_dist: Vec<[f32; 8]>,
+    /// `tan` of each cell-centre angle along one face axis.
+    tan_centre: Vec<f64>,
 }
 
 fn cache() -> &'static Mutex<BTreeMap<u32, Arc<GridTables>>> {
@@ -48,15 +50,29 @@ fn cache() -> &'static Mutex<BTreeMap<u32, Arc<GridTables>>> {
     CACHE.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 
-fn tables_for(n: u32) -> Arc<GridTables> {
+/// Drop every cached grid table. Tests use this to force uncached builds.
+#[cfg(test)]
+pub(crate) fn clear_tables_cache() {
     let map = cache();
     let mut guard = map.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(existing) = guard.get(&n) {
-        return Arc::clone(existing);
+    guard.clear();
+}
+
+fn tables_for(n: u32) -> Arc<GridTables> {
+    let map = cache();
+    // Never hold the lock during `build_tables`: that work runs on the rayon
+    // pool, and a stolen job can call `CubeSphere::new` for another size.
+    let existing = {
+        let guard = map.lock().unwrap_or_else(|e| e.into_inner());
+        guard.get(&n).map(Arc::clone)
+    };
+    if let Some(existing) = existing {
+        return existing;
     }
     let built = Arc::new(build_tables(n));
-    guard.insert(n, Arc::clone(&built));
-    built
+    let mut guard = map.lock().unwrap_or_else(|e| e.into_inner());
+    // Another thread may have built the same size while we released the lock.
+    Arc::clone(guard.entry(n).or_insert(built))
 }
 
 /// Cube-sphere cell complex of resolution `n` (cells along one face edge).
@@ -130,7 +146,9 @@ impl CubeSphere {
     /// Unit vector of the cell centre.
     pub fn position(&self, cell: u32) -> [f64; 3] {
         let (face, i, j) = self.decode(cell);
-        unit_on_face(face, self.n, i, j)
+        let ta = self.tables.tan_centre[i as usize];
+        let tb = self.tables.tan_centre[j as usize];
+        unit_from_tangents(face, ta, tb)
     }
 
     /// `(latitude, longitude)` in radians. Latitude is `asin(z)`, longitude `atan2(y, x)`.
@@ -751,12 +769,13 @@ fn upsample_with_cancel(
         ));
     }
     let n = child.cell_count();
+    let chunk = crate::scaled_chunk(RESAMPLE_CHUNK);
     let mut out = vec![0.0f32; n];
-    for start in (0..n).step_by(RESAMPLE_CHUNK) {
+    for start in (0..n).step_by(chunk) {
         if cancelled() {
             return Err(crate::WorldError::Cancelled);
         }
-        let end = (start + RESAMPLE_CHUNK).min(n);
+        let end = (start + chunk).min(n);
         out[start..end]
             .par_iter_mut()
             .enumerate()
@@ -791,12 +810,13 @@ fn downsample_with_cancel(
         ));
     }
     let n = parent.cell_count();
+    let chunk = crate::scaled_chunk(RESAMPLE_CHUNK);
     let mut out = vec![0.0f32; n];
-    for start in (0..n).step_by(RESAMPLE_CHUNK) {
+    for start in (0..n).step_by(chunk) {
         if cancelled() {
             return Err(crate::WorldError::Cancelled);
         }
-        let end = (start + RESAMPLE_CHUNK).min(n);
+        let end = (start + chunk).min(n);
         out[start..end]
             .par_iter_mut()
             .enumerate()
@@ -850,26 +870,33 @@ fn border_slot(n: u32, i: u32, j: u32) -> Option<u32> {
 
 fn build_tables(n: u32) -> GridTables {
     let nn = (n * n) as usize;
+    let nu = n as usize;
+    let tan_centre: Vec<f64> = (0..n).map(|i| centre_tangent(n, i)).collect();
     let mut area_sr = vec![0.0f64; nn];
-    for j in 0..n {
-        for i in 0..n {
-            area_sr[(j * n + i) as usize] = cell_solid_angle(n, i, j);
+    area_sr.par_chunks_mut(nu).enumerate().for_each(|(j, row)| {
+        for (i, slot) in row.iter_mut().enumerate() {
+            *slot = cell_solid_angle(n, i as u32, j as u32);
         }
-    }
+    });
     let mut dist_rad = vec![0.0f32; 8 * nn];
     if n >= 3 {
-        for j in 1..n - 1 {
-            for i in 1..n - 1 {
-                let p = unit_on_face(0, n, i, j);
-                let local = (j * n + i) as usize;
-                for k in 0..8 {
-                    let ii = (i as i32 + NEIGHBOR_DI[k]) as u32;
-                    let jj = (j as i32 + NEIGHBOR_DJ[k]) as u32;
-                    let q = unit_on_face(0, n, ii, jj);
-                    dist_rad[k * nn + local] = angular_sep(p, q) as f32;
-                }
-            }
-        }
+        dist_rad
+            .par_chunks_mut(nn)
+            .enumerate()
+            .for_each(|(k, plane)| {
+                plane.par_chunks_mut(nu).enumerate().for_each(|(j, row)| {
+                    if j == 0 || j + 1 == nu {
+                        return;
+                    }
+                    for i in 1..nu - 1 {
+                        let p = unit_from_tangents(0, tan_centre[i], tan_centre[j]);
+                        let ii = (i as i32 + NEIGHBOR_DI[k]) as usize;
+                        let jj = (j as i32 + NEIGHBOR_DJ[k]) as usize;
+                        let q = unit_from_tangents(0, tan_centre[ii], tan_centre[jj]);
+                        row[i] = angular_sep(p, q) as f32;
+                    }
+                });
+            });
     }
     let bcount = border_count(n) as usize;
     let mut border_nb = vec![[NONE; 8]; 6 * bcount];
@@ -912,6 +939,7 @@ fn build_tables(n: u32) -> GridTables {
         dist_rad,
         border_nb,
         border_dist,
+        tan_centre,
     }
 }
 
@@ -950,13 +978,18 @@ fn omega(x: f64, y: f64) -> f64 {
     (x * y / (1.0 + x * x + y * y).sqrt()).atan()
 }
 
-fn unit_on_face(face: u32, n: u32, i: u32, j: u32) -> [f64; 3] {
+fn centre_tangent(n: u32, i: u32) -> f64 {
     let nf = n as f64;
-    let a = ((i as f64 + 0.5) / nf - 0.5) * std::f64::consts::FRAC_PI_2;
-    let b = ((j as f64 + 0.5) / nf - 0.5) * std::f64::consts::FRAC_PI_2;
+    (((i as f64 + 0.5) / nf - 0.5) * std::f64::consts::FRAC_PI_2).tan()
+}
+
+fn unit_on_face(face: u32, n: u32, i: u32, j: u32) -> [f64; 3] {
+    unit_from_tangents(face, centre_tangent(n, i), centre_tangent(n, j))
+}
+
+#[inline]
+fn unit_from_tangents(face: u32, ta: f64, tb: f64) -> [f64; 3] {
     let basis = FACE_BASIS[face as usize];
-    let ta = a.tan();
-    let tb = b.tan();
     let mut p = [0.0; 3];
     for c in 0..3 {
         p[c] = basis[0][c] + ta * basis[1][c] + tb * basis[2][c];

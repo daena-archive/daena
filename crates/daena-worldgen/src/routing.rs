@@ -468,6 +468,7 @@ where
 ///
 /// `balance: None` carves every pit. A balance builds the same tree, then
 /// closes a pit when evaporation over the area below its pass meets the inflow.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn route(
     grid: &CubeSphere,
     elev: &[f32],
@@ -476,6 +477,22 @@ pub fn route(
     scratch: &mut RoutingScratch,
     balance: Option<&BasinBalance<'_>>,
 ) -> RouteStats {
+    route_with_cancel(grid, elev, domain, weight, scratch, balance, &|| false)
+        .expect("routing without a cancellation callback cannot cancel")
+}
+
+pub(crate) fn route_with_cancel(
+    grid: &CubeSphere,
+    elev: &[f32],
+    domain: &[u8],
+    weight: Option<&[f32]>,
+    scratch: &mut RoutingScratch,
+    balance: Option<&BasinBalance<'_>>,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<RouteStats, crate::WorldError> {
+    if cancelled() {
+        return Err(crate::WorldError::Cancelled);
+    }
     let n = elev.len();
     scratch.resize(n);
     if let Some(w) = weight {
@@ -485,18 +502,33 @@ pub fn route(
         scratch.weight.clear();
     }
     receivers(grid, elev, domain, scratch);
+    if cancelled() {
+        return Err(crate::WorldError::Cancelled);
+    }
     build_donors_stack(scratch);
+    if cancelled() {
+        return Err(crate::WorldError::Cancelled);
+    }
     let stats = depress(grid, elev, domain, scratch, balance);
+    if cancelled() {
+        return Err(crate::WorldError::Cancelled);
+    }
     // Depression carving clears the donor graph. Rebuild it from the receivers
     // that carving left, including the case where nothing was carved.
     build_donors_stack(scratch);
+    if cancelled() {
+        return Err(crate::WorldError::Cancelled);
+    }
     drainage(grid, scratch);
+    if cancelled() {
+        return Err(crate::WorldError::Cancelled);
+    }
     if cfg!(debug_assertions) {
         if let Err(err) = validate_routing(&scratch.receiver, &scratch.stack) {
             panic!("routing validation failed: {err}");
         }
     }
-    stats
+    Ok(stats)
 }
 
 fn receivers(grid: &CubeSphere, elev: &[f32], domain: &[u8], scratch: &mut RoutingScratch) {

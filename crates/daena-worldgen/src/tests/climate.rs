@@ -813,6 +813,7 @@ fn run_coarse(world: &World, options: &ClimateOptions) -> (ClimateField, f64) {
         &world.ocean,
         &world.settings.planet,
         options,
+        &|| false,
     )
     .unwrap();
     let ms = started.elapsed().as_secs_f64() * 1000.0;
@@ -875,6 +876,7 @@ fn global_temperature(field: &ClimateField, weights: &Weights) -> f64 {
     sum / (weights.total_area * 12.0)
 }
 
+#[allow(clippy::needless_range_loop)]
 fn global_precip(annual: &[f64], weights: &Weights) -> f64 {
     let mut sum = 0.0;
     for cell in 0..annual.len() {
@@ -883,6 +885,7 @@ fn global_precip(annual: &[f64], weights: &Weights) -> f64 {
     sum / weights.total_area
 }
 
+#[allow(clippy::needless_range_loop)]
 fn land_precip(annual: &[f64], weights: &Weights) -> f64 {
     let mut sum = 0.0;
     for cell in 0..annual.len() {
@@ -982,6 +985,7 @@ impl Metrics {
     }
 }
 
+#[allow(clippy::needless_range_loop)]
 fn metrics(run: &ClimateField, reference: &Reference) -> Metrics {
     let n = run.grid.cell_count();
     let mut sum_t = 0.0;
@@ -1068,6 +1072,7 @@ fn check_reference(label: &str, reference: &Reference) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn format_run(
     kind: &str,
     world: &str,

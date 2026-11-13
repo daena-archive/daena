@@ -14,13 +14,14 @@ use std::time::Instant;
 use rayon::prelude::*;
 
 use crate::climate::{self, ClimateOptions, SurfaceWater};
-use crate::grid::{resample, CubeSphere};
+use crate::grid::{resample_with_cancel, CubeSphere};
 use crate::noise::{
     derive_seed, derive_seed_salt, fbm, fbm_fixed_norm, noise_on_sphere, SeedDomain,
 };
 use crate::routing::{
-    accumulate_with_weight, fold_cells_mut, fold_cells_zip_mut, route, run_basin_kernel_gather,
-    run_basin_kernel_keep, BasinBalance, BasinView, CellIndex, RoutingScratch, SlotIndex,
+    accumulate_with_weight, fold_cells_mut, fold_cells_zip_mut, route_with_cancel,
+    run_basin_kernel_gather, run_basin_kernel_keep, BasinBalance, BasinView, CellIndex,
+    RoutingScratch, SlotIndex,
 };
 use crate::sealevel;
 use crate::tectonics::Tectonics;
@@ -153,7 +154,11 @@ pub(crate) fn evolve(
             WorldError::InvalidSettings(format!("schedule does not cover n = {n}"))
         })?;
         let grid = CubeSphere::new(n, radius_m).map_err(WorldError::Internal)?;
-        let mut prepared = prepare_fields(&tect_grid, tectonics, &grid, seed)?;
+        let mut prepared =
+            prepare_fields(&tect_grid, tectonics, &grid, seed, &|| progress.cancelled())?;
+        if progress.cancelled() {
+            return Err(WorldError::Cancelled);
+        }
         if n == 64 || n == 256 {
             let source = parent.as_ref().ok_or_else(|| {
                 WorldError::Internal(format!("climate at n = {n} has no coarser surface"))
@@ -171,13 +176,15 @@ pub(crate) fn evolve(
                 &source.h,
                 &source.domain,
                 settings.land_fraction,
-            );
+                &|| progress.cancelled(),
+            )?;
             let field = climate::coarse_with(
                 &source.grid,
                 &frame,
                 &ocean,
                 &settings.planet,
                 &ClimateOptions::erosion(),
+                &|| progress.cancelled(),
             )?;
             let wall_ms = elapsed_ms(started_c);
             timings.push((climate_timing_name(n), wall_ms));
@@ -194,6 +201,9 @@ pub(crate) fn evolve(
         }
         prepared.h = initial_elevation(&grid, &prepared, parent.as_ref(), seed)?;
         fill_single_cell_pits(&grid, &mut prepared.h, &prepared.domain);
+        if progress.cancelled() {
+            return Err(WorldError::Cancelled);
+        }
         parent = None;
         let started = Instant::now();
         let surface = match driving.as_ref() {
@@ -203,17 +213,29 @@ pub(crate) fn evolve(
                     &prepared.h,
                     &prepared.domain,
                     settings.land_fraction,
-                );
-                Some(climate::surface_water(
+                    &|| progress.cancelled(),
+                )?;
+                if progress.cancelled() {
+                    return Err(WorldError::Cancelled);
+                }
+                let water = climate::surface_water(
                     &grid,
                     &frame,
                     &ocean,
                     &settings.planet,
                     field,
-                ))
+                    &|| progress.cancelled(),
+                )?;
+                if progress.cancelled() {
+                    return Err(WorldError::Cancelled);
+                }
+                Some(water)
             }
             None => None,
         };
+        if progress.cancelled() {
+            return Err(WorldError::Cancelled);
+        }
         let mut scratch = RoutingScratch::new(grid.cell_count());
         let stage = Stage::Level(n);
         let options = ErodeOptions {
@@ -278,6 +300,28 @@ pub(crate) fn evolve(
     })
 }
 
+/// Rebuild the final-grid pre-erosion fields and flood domain without erosion.
+pub(crate) fn prepare_surface(
+    settings: &WorldSettings,
+    tectonics: &Tectonics,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<crate::SurfaceContext, WorldError> {
+    let grid =
+        CubeSphere::new(settings.resolution, settings.radius_m).map_err(WorldError::Internal)?;
+    let tect_grid =
+        CubeSphere::new(tectonics.n, settings.radius_m).map_err(WorldError::Internal)?;
+    let prepared = prepare_fields(&tect_grid, tectonics, &grid, settings.seed, cancelled)?;
+    Ok(crate::SurfaceContext {
+        grid,
+        domain: prepared.domain,
+        base_m: prepared.base,
+        uplift_m_yr: prepared.uplift,
+        k_rock: prepared.k_rock,
+        plate: prepared.plate,
+        crust: prepared.crust,
+    })
+}
+
 fn water_in(surface: &SurfaceWater) -> WaterIn<'_> {
     WaterIn {
         runoff_mm: &surface.runoff_mm,
@@ -337,11 +381,23 @@ fn prepare_fields(
     tectonics: &Tectonics,
     grid: &CubeSphere,
     seed: u64,
+    cancelled: &dyn Fn() -> bool,
 ) -> Result<Prepared, WorldError> {
-    let mut base = resample(tect_grid, &tectonics.base_m, grid).map_err(WorldError::Internal)?;
-    let mut uplift =
-        resample(tect_grid, &tectonics.uplift_m_yr, grid).map_err(WorldError::Internal)?;
-    let mut k_rock = resample(tect_grid, &tectonics.k_rock, grid).map_err(WorldError::Internal)?;
+    if cancelled() {
+        return Err(WorldError::Cancelled);
+    }
+    let mut base = resample_with_cancel(tect_grid, &tectonics.base_m, grid, cancelled)?;
+    if cancelled() {
+        return Err(WorldError::Cancelled);
+    }
+    let mut uplift = resample_with_cancel(tect_grid, &tectonics.uplift_m_yr, grid, cancelled)?;
+    if cancelled() {
+        return Err(WorldError::Cancelled);
+    }
+    let mut k_rock = resample_with_cancel(tect_grid, &tectonics.k_rock, grid, cancelled)?;
+    if cancelled() {
+        return Err(WorldError::Cancelled);
+    }
     add_detail(
         grid,
         tectonics.n,
@@ -350,7 +406,8 @@ fn prepare_fields(
         &mut base,
         &mut uplift,
         &mut k_rock,
-    );
+        cancelled,
+    )?;
     let domain: Vec<u8> = base.iter().map(|v| u8::from(*v > 0.0)).collect();
     let plate = sample_labels(tect_grid, &tectonics.plate, grid);
     let crust = sample_labels(tect_grid, &tectonics.crust, grid);
@@ -365,6 +422,11 @@ fn prepare_fields(
     })
 }
 
+/// Cells per detail chunk. Six chunks at `n = 1024`; each stays under the
+/// 100 ms cancellation budget in release on a 12-thread machine.
+const DETAIL_CHUNK: usize = 1_048_576;
+
+#[allow(clippy::too_many_arguments)]
 fn add_detail(
     grid: &CubeSphere,
     n_t: u32,
@@ -373,48 +435,63 @@ fn add_detail(
     base: &mut [f32],
     uplift: &mut [f32],
     k_rock: &mut [f32],
-) {
+    cancelled: &dyn Fn() -> bool,
+) -> Result<(), WorldError> {
     let uplift_seed = derive_seed(seed, SeedDomain::UpliftDetail);
     let lith_seed = derive_seed_salt(seed, SeedDomain::Lithology, 1);
     let (detail_freq, detail_octaves) = detail_octaves(grid.n, n_t);
     let (uplift_freq, uplift_octaves) = uplift_octaves(grid.n);
     let finer = grid.n > n_t;
-    base.par_iter_mut()
-        .zip(uplift.par_iter_mut())
-        .zip(k_rock.par_iter_mut())
-        .enumerate()
-        .for_each(|(cell, ((b, u), k))| {
-            let p = grid.position(cell as u32);
-            if finer {
-                let mut acc = 0.0f64;
-                let mut scale = n_t;
-                let mut oct = 0u64;
-                loop {
-                    let freq = f64::from(scale) / std::f64::consts::PI;
-                    let lambda = radius / freq;
-                    let amp = 400.0 * (lambda / 80_000.0).powf(0.9);
-                    let sample_seed = derive_seed_salt(seed, SeedDomain::BaseDetail, oct);
-                    acc += amp * noise_on_sphere(sample_seed, p, freq);
-                    if scale >= grid.n || oct > 32 {
-                        break;
+    let n = base.len();
+    let chunk = DETAIL_CHUNK;
+    for start in (0..n).step_by(chunk) {
+        if cancelled() {
+            return Err(WorldError::Cancelled);
+        }
+        let end = (start + chunk).min(n);
+        let base_slice = &mut base[start..end];
+        let uplift_slice = &mut uplift[start..end];
+        let rock_slice = &mut k_rock[start..end];
+        base_slice
+            .par_iter_mut()
+            .zip(uplift_slice.par_iter_mut())
+            .zip(rock_slice.par_iter_mut())
+            .enumerate()
+            .for_each(|(offset, ((b, u), k))| {
+                let cell = start + offset;
+                let p = grid.position(cell as u32);
+                if finer {
+                    let mut acc = 0.0f64;
+                    let mut scale = n_t;
+                    let mut oct = 0u64;
+                    loop {
+                        let freq = f64::from(scale) / std::f64::consts::PI;
+                        let lambda = radius / freq;
+                        let amp = 400.0 * (lambda / 80_000.0).powf(0.9);
+                        let sample_seed = derive_seed_salt(seed, SeedDomain::BaseDetail, oct);
+                        acc += amp * noise_on_sphere(sample_seed, p, freq);
+                        if scale >= grid.n || oct > 32 {
+                            break;
+                        }
+                        let next = scale.saturating_mul(2);
+                        scale = if next > grid.n { grid.n } else { next };
+                        oct += 1;
                     }
-                    let next = scale.saturating_mul(2);
-                    scale = if next > grid.n { grid.n } else { next };
-                    oct += 1;
+                    let weight = (-f64::from(b.abs()) / 1500.0).exp();
+                    *b = (f64::from(*b) + weight * acc) as f32;
+                    let rock = fbm(lith_seed, p, detail_freq, detail_octaves, 2.0, 0.5);
+                    *k = (f64::from(*k) * (0.25 * rock).exp()) as f32;
                 }
-                let weight = (-f64::from(b.abs()) / 1500.0).exp();
-                *b = (f64::from(*b) + weight * acc) as f32;
-                let rock = fbm(lith_seed, p, detail_freq, detail_octaves, 2.0, 0.5);
-                *k = (f64::from(*k) * (0.25 * rock).exp()) as f32;
-            }
-            let detail = fbm_fixed_norm(uplift_seed, p, uplift_freq, uplift_octaves, 2.0, 0.5);
-            let before = f64::from(*u);
-            let mut next = before * (1.0 + 0.35 * detail);
-            if before >= 0.0 {
-                next = next.max(0.0);
-            }
-            *u = next as f32;
-        });
+                let detail = fbm_fixed_norm(uplift_seed, p, uplift_freq, uplift_octaves, 2.0, 0.5);
+                let before = f64::from(*u);
+                let mut next = before * (1.0 + 0.35 * detail);
+                if before >= 0.0 {
+                    next = next.max(0.0);
+                }
+                *u = next as f32;
+            });
+    }
+    Ok(())
 }
 
 /// Octave band for base detail and the fine `k_rock` multiplier.
@@ -555,8 +632,14 @@ pub(crate) fn erode(
     let n = job.h.len();
     let mut aux = vec![0.0f32; n];
     let mut am = vec![0.0f32; n];
+    if progress.cancelled() {
+        return Err(WorldError::Cancelled);
+    }
     let mut lake = vec![0u8; n];
     let mut pit_next = vec![0.0f32; n];
+    if progress.cancelled() {
+        return Err(WorldError::Cancelled);
+    }
     let mut steps = Vec::new();
     let mut violations = 0u32;
     let mut pits_last = 0u32;
@@ -574,9 +657,18 @@ pub(crate) fn erode(
         Some(water) => water.runoff_mm.iter().copied().map(runoff_weight).collect(),
         None => Vec::new(),
     };
+    if progress.cancelled() {
+        return Err(WorldError::Cancelled);
+    }
     let mut boosted = vec![0.0f32; base_weight.len()];
     let mut q_ice = vec![0.0f64; n];
+    if progress.cancelled() {
+        return Err(WorldError::Cancelled);
+    }
     let mut glaciated = vec![0u8; n];
+    if progress.cancelled() {
+        return Err(WorldError::Cancelled);
+    }
     for iter in 0..iterations {
         if progress.cancelled() {
             return Err(WorldError::Cancelled);
@@ -587,6 +679,9 @@ pub(crate) fn erode(
             Vec::new()
         };
         fill_single_cell_pits_swap(job.grid, job.h, job.domain, &mut pit_next);
+        if progress.cancelled() {
+            return Err(WorldError::Cancelled);
+        }
         let balance = water.map(|water| BasinBalance {
             runoff_m_yr: water.runoff_m_yr,
             evap_m_yr: water.evap_m_yr,
@@ -596,14 +691,18 @@ pub(crate) fn erode(
         } else {
             None
         };
-        let routed = route(
+        let routed = route_with_cancel(
             job.grid,
             job.h,
             job.domain,
             weight,
             job.scratch,
             balance.as_ref(),
-        );
+            &|| progress.cancelled(),
+        )?;
+        if progress.cancelled() {
+            return Err(WorldError::Cancelled);
+        }
         if iter == 0 {
             pits_first = routed.pits;
         }
@@ -625,6 +724,9 @@ pub(crate) fn erode(
                 },
             );
         }
+        if progress.cancelled() {
+            return Err(WorldError::Cancelled);
+        }
         violations = violations.saturating_add(stream_power(
             &mut job,
             &mut am,
@@ -632,6 +734,9 @@ pub(crate) fn erode(
             &glaciated,
             &mut pit_next,
         ));
+        if progress.cancelled() {
+            return Err(WorldError::Cancelled);
+        }
         if water.is_some() {
             overdeepen(
                 job.h,
@@ -641,6 +746,9 @@ pub(crate) fn erode(
                 job.scratch.parallel_basins(),
             );
         }
+        if progress.cancelled() {
+            return Err(WorldError::Cancelled);
+        }
         hillslopes(
             job.h,
             job.domain,
@@ -649,6 +757,9 @@ pub(crate) fn erode(
             job.options.params.s_c,
             &mut pit_next,
         );
+        if progress.cancelled() {
+            return Err(WorldError::Cancelled);
+        }
         smooth(
             job.grid,
             job.h,
@@ -656,12 +767,18 @@ pub(crate) fn erode(
             job.domain,
             job.options.params.kappa,
         );
+        if progress.cancelled() {
+            return Err(WorldError::Cancelled);
+        }
         clamped_last = clamp_elevation(
             job.h,
             job.domain,
             job.options.params.max_elevation_m,
             job.scratch.parallel_basins(),
         );
+        if progress.cancelled() {
+            return Err(WorldError::Cancelled);
+        }
         if record_steps {
             let mut max_step = 0.0f32;
             for (old, new) in before.iter().zip(job.h.iter()) {

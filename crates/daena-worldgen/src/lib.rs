@@ -7,6 +7,9 @@
 
 #![deny(unsafe_code)]
 
+/// Engine output contract version. Any output change bumps this.
+pub const WORLD_ENGINE_VERSION: u32 = 1;
+
 mod biome;
 mod climate;
 mod evolution;
@@ -28,7 +31,8 @@ pub use climate::{
 };
 pub use grid::{downsample, downsample_max, resample, upsample, CubeSphere, FACE_BASIS, NONE};
 pub use hazards::{
-    HazardStats, Hazards, StormClimatology, VolcanicActivity, VolcanicOrigin, VolcanicSource,
+    trace_storm, HazardStats, Hazards, StormClimatology, StormStep, StormTrack, VolcanicActivity,
+    VolcanicOrigin, VolcanicSource,
 };
 pub use hydrology::{Hydrology, Lake, LakeKind, RiverEnd, RiverSegment};
 pub use noise::{derive_seed, fbm, hash3, ridged, splitmix64, warp, SeedDomain};
@@ -38,11 +42,15 @@ pub use render::{
     hillshade, render_equirect, render_equirect_with_shade, render_orthographic,
     render_orthographic_with_shade, write_png, Layer,
 };
+pub use sealevel::{
+    ocean_volume_at, ocean_volume_curve, sea_level_for_ocean_volume, OceanVolumeSample,
+};
 pub use tectonics::{BoundaryKind, BoundaryRecord, Hotspot, Plate, SubductSide, Tectonics};
 
 use std::time::Instant;
 
-use routing::route;
+use rayon::prelude::*;
+use routing::route_with_cancel;
 use routing::RoutingScratch;
 
 /// How continents are arranged before the area threshold is applied.
@@ -340,6 +348,15 @@ impl Progress for NoProgress {
     fn report(&mut self, _stage: Stage, _done: u32, _total: u32) {}
 }
 
+/// Fail with [`WorldError::Cancelled`] when the sink asks to stop.
+pub fn check_cancelled(progress: &dyn Progress) -> Result<(), WorldError> {
+    if progress.cancelled() {
+        Err(WorldError::Cancelled)
+    } else {
+        Ok(())
+    }
+}
+
 /// Failure from settings, cancellation, or an internal invariant.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WorldError {
@@ -479,6 +496,113 @@ pub struct World {
     pub climate_passes: Vec<ClimatePass>,
 }
 
+/// Hashes stored beside a canonical source.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GenerationHashes {
+    /// FNV-1a over the source `i32` millimetres, not the `f32` bits.
+    pub elevation_mm: u64,
+    /// FNV-1a over the regenerated tectonic field.
+    pub tectonics: u64,
+    /// [`ClimateSummary::hash_bits`].
+    pub climate: u64,
+    /// [`Hydrology::hash_bits`].
+    pub hydrology: u64,
+    /// FNV-1a over the biome ids.
+    pub biome: u64,
+    /// FNV-1a over the hazard fields and sources.
+    pub hazards: u64,
+}
+
+/// Climate values at one point.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ClimatePoint {
+    pub t_annual_c: f32,
+    pub t_warm_c: f32,
+    pub t_cold_c: f32,
+    pub t_nh_summer_c: f32,
+    pub t_nh_winter_c: f32,
+    pub p_annual_mm: f32,
+    pub p_nh_summer_mm: f32,
+    pub p_nh_winter_mm: f32,
+    pub p_dry_month_mm: f32,
+    pub pet_annual_mm: f32,
+    pub runoff_mm: f32,
+    pub ice_balance_mm: f32,
+    pub sea_ice_months: u8,
+    pub wind_east_milli: i32,
+    pub wind_north_milli: i32,
+    pub aridity_ppm: u32,
+    pub maritime_ppm: u32,
+}
+
+/// Hydrology values at one point.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HydrologyPoint {
+    pub lake_id: u32,
+    pub lake_level_m: f32,
+    pub discharge_m3s: f32,
+    pub ice_cover: u8,
+    pub ocean: bool,
+}
+
+/// Hazard values at one point.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HazardPoint {
+    pub quake_rate_km2: f32,
+    pub quake_hazard: u8,
+    pub volcanic_hazard: u8,
+    pub drought: u8,
+    pub heat_wave: u8,
+    pub extreme_rain: u8,
+    pub flood: u8,
+}
+
+/// Point sample of every canonical field.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PointSample {
+    pub cell: u32,
+    pub elevation_m: f32,
+    pub ocean: bool,
+    pub biome: Biome,
+    pub climate: ClimatePoint,
+    pub hydrology: HydrologyPoint,
+    pub hazards: HazardPoint,
+}
+
+/// Hazard fields in an equirectangular view.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HazardView {
+    pub quake_rate_km2: Vec<f32>,
+    pub quake_hazard: Vec<u8>,
+    pub volcanic_hazard: Vec<u8>,
+    pub drought: Vec<u8>,
+    pub heat_wave: Vec<u8>,
+    pub extreme_rain: Vec<u8>,
+    pub flood: Vec<u8>,
+}
+
+type MonthRow = (Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>);
+
+/// Equirectangular raster view of a finished world.
+#[derive(Clone, Debug)]
+pub struct EquirectView {
+    pub width: u32,
+    pub height: u32,
+    pub elevation_m: Vec<f32>,
+    pub ocean: Vec<u8>,
+    pub climate: ClimateSummary,
+    pub t_nh_summer_c: Vec<f32>,
+    pub t_nh_winter_c: Vec<f32>,
+    pub p_nh_summer_mm: Vec<f32>,
+    pub p_nh_winter_mm: Vec<f32>,
+    pub biome: Vec<u8>,
+    pub lake_id: Vec<u32>,
+    pub discharge_m3s: Vec<f32>,
+    pub ice_cover: Vec<u8>,
+    pub hazards: HazardView,
+    pub storms: StormClimatology,
+}
+
 /// Land aridity and the ocean rainfall belts used to judge the moisture scheme.
 #[derive(Clone, Copy, Debug)]
 pub struct LandMoisture {
@@ -504,10 +628,67 @@ fn ratio(sum: f64, area: f64) -> f64 {
     }
 }
 
+/// Convert metres to the canonical whole-millimetre representation.
+#[inline]
+pub fn elevation_mm_from_m(value_m: f32) -> i32 {
+    let millimetres = (f64::from(value_m) * 1000.0).round();
+    millimetres.clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32
+}
+
+/// Convert whole millimetres back to the canonical `f32` metres.
+#[inline]
+pub fn elevation_m_from_mm(value_mm: i32) -> f32 {
+    value_mm as f32 / 1000.0
+}
+
+/// Round every elevation to the canonical whole-millimetre `f32` value.
+pub fn canonicalize_elevation_m(elevation: &mut [f32]) {
+    for value in elevation {
+        *value = elevation_m_from_mm(elevation_mm_from_m(*value));
+    }
+}
+
 impl World {
     /// FNV-1a over the little-endian bits of each elevation.
     pub fn elevation_hash(&self) -> u64 {
         elevation_hash(&self.elevation_m)
+    }
+
+    /// Canonical source elevations, relative to reference sea level.
+    pub fn source_elevation_mm(&self) -> Vec<i32> {
+        self.elevation_m
+            .iter()
+            .map(|value| elevation_mm_from_m(*value))
+            .collect()
+    }
+
+    /// Hashes the source stores for decode/derive validation.
+    pub fn generation_hashes(&self) -> GenerationHashes {
+        let elevation_mm = self.source_elevation_mm();
+        GenerationHashes {
+            elevation_mm: elevation_mm_hash(&elevation_mm),
+            tectonics: self.tectonics.hash_bits(),
+            climate: self.climate.hash_bits(),
+            hydrology: self.hydrology.hash_bits(),
+            biome: self.biome_hash(),
+            hazards: self.hazards.hash_bits(),
+        }
+    }
+
+    /// Reference water inventory: all cells below sea level, in cubic metres.
+    pub fn reference_water_inventory_m3(&self) -> u64 {
+        let elevation_mm = self.source_elevation_mm();
+        ocean_volume_at(&self.grid, &elevation_mm, 0).unwrap_or(0)
+    }
+
+    /// Hash of the tectonic field stored by the source.
+    pub fn tectonics_hash(&self) -> u64 {
+        self.tectonics.hash_bits()
+    }
+
+    /// Hash of every hazard field and source.
+    pub fn hazard_hash(&self) -> u64 {
+        self.hazards.hash_bits()
     }
 
     /// FNV-1a over the climate summary, in field order, then sea-ice months.
@@ -594,10 +775,415 @@ impl World {
             .sample_bilinear(&self.elevation_m, direction_from_lat_lon(lat_deg, lon_deg))
     }
 
+    /// Point sample; continuous fields are bilinear, classes and ids nearest.
+    pub fn sample_point(&self, lat_deg: f64, lon_deg: f64) -> PointSample {
+        let p = direction_from_lat_lon(lat_deg, lon_deg);
+        let cell = self.grid.cell_at(p);
+        let sample = |field: &[f32]| self.grid.sample_bilinear(field, p);
+        let t_annual = sample(&self.climate.t_annual_c);
+        let p_annual = sample(&self.climate.p_annual_mm);
+        let pet = sample(&self.climate.pet_annual_mm);
+        let (t_summer, p_summer) =
+            self.climate_month_at_point(lat_deg, lon_deg, climate::NH_SUMMER_SOLSTICE);
+        let (t_winter, p_winter) =
+            self.climate_month_at_point(lat_deg, lon_deg, climate::NH_WINTER_SOLSTICE);
+        let ocean = self.ocean.get(cell as usize).copied().unwrap_or(1) == 1;
+        let (aridity, maritime) = {
+            let aridity = if ocean || pet <= 0.0 {
+                0
+            } else {
+                (1.0e6 * (1.0 - f64::from(p_annual) / f64::from(pet)).clamp(0.0, 1.0)).round()
+                    as u32
+            };
+            let coarse = &self.climate_field;
+            let coarse_cell = coarse.grid.cell_at(p) as usize;
+            let maritime = (f64::from(coarse.maritime.get(coarse_cell).copied().unwrap_or(0.0))
+                * 1.0e6)
+                .round()
+                .clamp(0.0, 1.0e6) as u32;
+            (aridity, maritime)
+        };
+        let lake_id = self
+            .hydrology
+            .lake_id
+            .get(cell as usize)
+            .copied()
+            .unwrap_or(NONE);
+        let lake_level = self
+            .hydrology
+            .lakes
+            .iter()
+            .find(|lake| lake.id == lake_id)
+            .map(|lake| lake.level_m as f32)
+            .unwrap_or(0.0);
+        let wind = {
+            let field = &self.climate_field;
+            let n = field.grid.cell_count();
+            let coarse_cell = field.grid.cell_at(p) as usize;
+            let mut east = 0.0;
+            let mut north = 0.0;
+            let pos = field.grid.position(coarse_cell as u32);
+            let (east_dir, north_dir) = climate::point_east_north(pos);
+            for month in 0..12 {
+                let base = month * 3 * n + coarse_cell;
+                let value = [
+                    f64::from(field.wind[base]),
+                    f64::from(field.wind[base + n]),
+                    f64::from(field.wind[base + 2 * n]),
+                ];
+                let tangent = climate::point_tangent(pos, value);
+                east += crate::grid::dot3(tangent, east_dir);
+                north += crate::grid::dot3(tangent, north_dir);
+            }
+            (
+                (east / 12.0 * 1000.0).round() as i32,
+                (north / 12.0 * 1000.0).round() as i32,
+            )
+        };
+        let hazard_u8 = |field: &[u8]| field.get(cell as usize).copied().unwrap_or(0);
+        PointSample {
+            cell,
+            elevation_m: sample(&self.elevation_m),
+            ocean,
+            biome: Biome::from_u8(self.biome.get(cell as usize).copied().unwrap_or(0))
+                .unwrap_or(Biome::DeepOcean),
+            climate: ClimatePoint {
+                t_annual_c: t_annual,
+                t_warm_c: sample(&self.climate.t_warm_c),
+                t_cold_c: sample(&self.climate.t_cold_c),
+                t_nh_summer_c: t_summer,
+                t_nh_winter_c: t_winter,
+                p_annual_mm: p_annual,
+                p_nh_summer_mm: p_summer,
+                p_nh_winter_mm: p_winter,
+                p_dry_month_mm: sample(&self.climate.p_dry_month_mm),
+                pet_annual_mm: pet,
+                runoff_mm: sample(&self.climate.runoff_mm),
+                ice_balance_mm: sample(&self.climate.ice_balance_mm),
+                sea_ice_months: self
+                    .climate
+                    .sea_ice_months
+                    .get(cell as usize)
+                    .copied()
+                    .unwrap_or(0),
+                wind_east_milli: wind.0,
+                wind_north_milli: wind.1,
+                aridity_ppm: aridity,
+                maritime_ppm: maritime,
+            },
+            hydrology: HydrologyPoint {
+                lake_id,
+                lake_level_m: lake_level,
+                discharge_m3s: self.grid.sample_f64(&self.hydrology.discharge_m3s, p) as f32,
+                ice_cover: self
+                    .hydrology
+                    .ice_cover
+                    .get(cell as usize)
+                    .copied()
+                    .unwrap_or(0),
+                ocean,
+            },
+            hazards: HazardPoint {
+                quake_rate_km2: sample(&self.hazards.quake_rate_km2),
+                quake_hazard: hazard_u8(&self.hazards.quake_hazard),
+                volcanic_hazard: hazard_u8(&self.hazards.volcanic_hazard),
+                drought: hazard_u8(&self.hazards.drought),
+                heat_wave: hazard_u8(&self.hazards.heat_wave),
+                extreme_rain: hazard_u8(&self.hazards.extreme_rain),
+                flood: hazard_u8(&self.hazards.flood),
+            },
+        }
+    }
+
+    /// Bilinear monthly temperature and precipitation at a point.
+    ///
+    /// The stencil is built on the fine grid, so each term is a fine cell with
+    /// its own lapse and orographic correction.
+    pub fn climate_month_at_point(&self, lat_deg: f64, lon_deg: f64, month: usize) -> (f32, f32) {
+        let p = direction_from_lat_lon(lat_deg, lon_deg);
+        let (face, fx, fy) = self.grid.face_coords(p);
+        let temperature = self
+            .grid
+            .sample_chart(face, fx, fy, &|cell| {
+                Some(f64::from(self.climate_month_at(cell, month).0))
+            })
+            .unwrap_or(0.0);
+        let precipitation = self
+            .grid
+            .sample_chart(face, fx, fy, &|cell| {
+                Some(f64::from(self.climate_month_at(cell, month).1))
+            })
+            .unwrap_or(0.0);
+        (temperature as f32, precipitation as f32)
+    }
+
+    /// Equirectangular raster view; continuous fields bilinear, classes nearest.
+    pub fn equirect_view(&self, width: u32, height: u32) -> Result<EquirectView, WorldError> {
+        if width == 0 || height == 0 {
+            return Err(WorldError::Internal(
+                "equirect view dimensions must be positive".to_string(),
+            ));
+        }
+        let count = width as usize * height as usize;
+        let points: Vec<[f64; 3]> = (0..count)
+            .map(|index| {
+                let row = index / width as usize;
+                let col = index % width as usize;
+                let lon = -180.0 + 360.0 * (col as f64 + 0.5) / width as f64;
+                let lat = -90.0 + 180.0 * (row as f64 + 0.5) / height as f64;
+                direction_from_lat_lon(lat, lon)
+            })
+            .collect();
+        let resample = |field: &[f32]| -> Vec<f32> {
+            points
+                .iter()
+                .map(|p| self.grid.sample_bilinear(field, *p))
+                .collect()
+        };
+        let nearest_u8 = |field: &[u8]| -> Vec<u8> {
+            points
+                .iter()
+                .map(|p| field[self.grid.cell_at(*p) as usize])
+                .collect()
+        };
+        let nearest_u32 = |field: &[u32]| -> Vec<u32> {
+            points
+                .iter()
+                .map(|p| field[self.grid.cell_at(*p) as usize])
+                .collect()
+        };
+        let discharge_f32: Vec<f32> = self
+            .hydrology
+            .discharge_m3s
+            .iter()
+            .map(|value| *value as f32)
+            .collect();
+        let climate = ClimateSummary {
+            t_annual_c: resample(&self.climate.t_annual_c),
+            t_warm_c: resample(&self.climate.t_warm_c),
+            t_cold_c: resample(&self.climate.t_cold_c),
+            p_annual_mm: resample(&self.climate.p_annual_mm),
+            p_dry_month_mm: resample(&self.climate.p_dry_month_mm),
+            pet_annual_mm: resample(&self.climate.pet_annual_mm),
+            runoff_mm: resample(&self.climate.runoff_mm),
+            ice_balance_mm: resample(&self.climate.ice_balance_mm),
+            sea_ice_months: nearest_u8(&self.climate.sea_ice_months),
+            stats: self.climate.stats,
+        };
+        let rows: Vec<MonthRow> = (0..height)
+            .into_par_iter()
+            .map(|row| {
+                let lat = -90.0 + 180.0 * (f64::from(row) + 0.5) / f64::from(height);
+                let mut summer_t = Vec::with_capacity(width as usize);
+                let mut winter_t = Vec::with_capacity(width as usize);
+                let mut summer_p = Vec::with_capacity(width as usize);
+                let mut winter_p = Vec::with_capacity(width as usize);
+                for col in 0..width {
+                    let lon = -180.0 + 360.0 * (f64::from(col) + 0.5) / f64::from(width);
+                    let (st, sp) =
+                        self.climate_month_at_point(lat, lon, climate::NH_SUMMER_SOLSTICE);
+                    let (wt, wp) =
+                        self.climate_month_at_point(lat, lon, climate::NH_WINTER_SOLSTICE);
+                    summer_t.push(st);
+                    winter_t.push(wt);
+                    summer_p.push(sp);
+                    winter_p.push(wp);
+                }
+                (summer_t, winter_t, summer_p, winter_p)
+            })
+            .collect();
+        let mut t_nh_summer_c = Vec::with_capacity(count);
+        let mut t_nh_winter_c = Vec::with_capacity(count);
+        let mut p_nh_summer_mm = Vec::with_capacity(count);
+        let mut p_nh_winter_mm = Vec::with_capacity(count);
+        for (summer_t, winter_t, summer_p, winter_p) in rows {
+            t_nh_summer_c.extend_from_slice(&summer_t);
+            t_nh_winter_c.extend_from_slice(&winter_t);
+            p_nh_summer_mm.extend_from_slice(&summer_p);
+            p_nh_winter_mm.extend_from_slice(&winter_p);
+        }
+        Ok(EquirectView {
+            width,
+            height,
+            elevation_m: resample(&self.elevation_m),
+            ocean: nearest_u8(&self.ocean),
+            climate,
+            t_nh_summer_c,
+            t_nh_winter_c,
+            p_nh_summer_mm,
+            p_nh_winter_mm,
+            biome: nearest_u8(&self.biome),
+            lake_id: nearest_u32(&self.hydrology.lake_id),
+            discharge_m3s: resample(&discharge_f32),
+            ice_cover: nearest_u8(&self.hydrology.ice_cover),
+            hazards: HazardView {
+                quake_rate_km2: resample(&self.hazards.quake_rate_km2),
+                quake_hazard: nearest_u8(&self.hazards.quake_hazard),
+                volcanic_hazard: nearest_u8(&self.hazards.volcanic_hazard),
+                drought: nearest_u8(&self.hazards.drought),
+                heat_wave: nearest_u8(&self.hazards.heat_wave),
+                extreme_rain: nearest_u8(&self.hazards.extreme_rain),
+                flood: nearest_u8(&self.hazards.flood),
+            },
+            storms: self.hazards.storms.clone(),
+        })
+    }
+
     /// Equirectangular elevation sample, width by height, row-major.
     pub fn to_equirect(&self, width: u32, height: u32) -> Vec<f32> {
         render::sample_equirect(&self.grid, &self.elevation_m, width, height)
     }
+
+    /// One month's downscaled temperature (°C) and precipitation (mm) at a cell.
+    pub fn climate_month_at(&self, cell: u32, month: usize) -> (f32, f32) {
+        climate::month_at(
+            &self.grid,
+            &self.climate_field,
+            &self.elevation_m,
+            &self.ocean,
+            &self.settings.planet,
+            cell as usize,
+            month,
+        )
+    }
+
+    /// Coarse-cell ocean fraction used by the storm tracer.
+    pub fn coarse_ocean_fraction(&self) -> Vec<f64> {
+        let coarse = &self.climate_field.grid;
+        let scale = self.grid.n / coarse.n;
+        hazards::coarse_ocean_fraction(&self.grid, &self.ocean, coarse, scale)
+    }
+
+    /// Latitude and longitude of a canonical cell centre, degrees.
+    pub fn cell_lat_lon(&self, cell: u32) -> (f64, f64) {
+        let (lat, lon) = self.grid.lat_lon(cell);
+        (lat.to_degrees(), lon.to_degrees())
+    }
+
+    /// Exact area of a canonical cell, square metres.
+    pub fn cell_area_m2(&self, cell: u32) -> f64 {
+        self.grid.area_m2(cell)
+    }
+}
+
+/// Pre-erosion fields on the final grid, rebuilt from settings and tectonics.
+///
+/// The erosion domain is `base_m > 0`; no erosion state is needed. This is the
+/// input shared by generation and decode/derive.
+#[derive(Clone, Debug)]
+pub struct SurfaceContext {
+    /// Final cube-sphere grid.
+    pub grid: CubeSphere,
+    /// `1` where `base_m > 0`.
+    pub domain: Vec<u8>,
+    /// Pre-erosion surface, unshifted, metres.
+    pub base_m: Vec<f32>,
+    /// Uplift, metres per year.
+    pub uplift_m_yr: Vec<f32>,
+    /// Erodibility multiplier.
+    pub k_rock: Vec<f32>,
+    /// Plate index per cell.
+    pub plate: Vec<u8>,
+    /// `1` continental, `0` oceanic.
+    pub crust: Vec<u8>,
+}
+
+impl SurfaceContext {
+    /// Clone the borrowed parts into an owned context.
+    pub fn from_parts(
+        grid: &CubeSphere,
+        domain: &[u8],
+        base_m: &[f32],
+        uplift_m_yr: &[f32],
+        k_rock: &[f32],
+        plate: &[u8],
+        crust: &[u8],
+    ) -> Self {
+        Self {
+            grid: grid.clone(),
+            domain: domain.to_vec(),
+            base_m: base_m.to_vec(),
+            uplift_m_yr: uplift_m_yr.to_vec(),
+            k_rock: k_rock.to_vec(),
+            plate: plate.to_vec(),
+            crust: crust.to_vec(),
+        }
+    }
+}
+
+/// Build only the tectonic model, on `min(resolution, 256)`.
+pub fn generate_tectonics(
+    settings: &WorldSettings,
+    progress: &mut dyn Progress,
+) -> Result<Tectonics, WorldError> {
+    settings.validate()?;
+    tectonics::build(settings, settings.resolution.min(256), &|| {
+        progress.cancelled()
+    })
+}
+
+/// Rebuild the final-grid pre-erosion fields and flood domain from settings.
+pub fn prepare_surface(
+    settings: &WorldSettings,
+    tectonics: &Tectonics,
+    progress: &mut dyn Progress,
+) -> Result<SurfaceContext, WorldError> {
+    settings.validate()?;
+    evolution::prepare_surface(settings, tectonics, &|| progress.cancelled())
+}
+
+/// Bilinear equirectangular resample of an `f32` field.
+#[must_use]
+pub fn resample_equirect_f32(
+    grid: &CubeSphere,
+    field: &[f32],
+    width: u32,
+    height: u32,
+) -> Vec<f32> {
+    resample_equirect_points(width, height)
+        .into_iter()
+        .map(|(lat, lon)| grid.sample_bilinear(field, direction_from_lat_lon(lat, lon)))
+        .collect()
+}
+
+/// Nearest-cell equirectangular resample of a `u8` field.
+#[must_use]
+pub fn resample_equirect_nearest_u8(
+    grid: &CubeSphere,
+    field: &[u8],
+    width: u32,
+    height: u32,
+) -> Vec<u8> {
+    resample_equirect_points(width, height)
+        .into_iter()
+        .map(|(lat, lon)| field[grid.cell_at(direction_from_lat_lon(lat, lon)) as usize])
+        .collect()
+}
+
+/// Nearest-cell equirectangular resample of a `u32` field.
+#[must_use]
+pub fn resample_equirect_nearest_u32(
+    grid: &CubeSphere,
+    field: &[u32],
+    width: u32,
+    height: u32,
+) -> Vec<u32> {
+    resample_equirect_points(width, height)
+        .into_iter()
+        .map(|(lat, lon)| field[grid.cell_at(direction_from_lat_lon(lat, lon)) as usize])
+        .collect()
+}
+
+fn resample_equirect_points(width: u32, height: u32) -> Vec<(f64, f64)> {
+    let mut points = Vec::with_capacity(width as usize * height as usize);
+    for row in 0..height {
+        let lat = -90.0 + 180.0 * (f64::from(row) + 0.5) / f64::from(height);
+        for col in 0..width {
+            let lon = -180.0 + 360.0 * (f64::from(col) + 0.5) / f64::from(width);
+            points.push((lat, lon));
+        }
+    }
+    points
 }
 
 /// Build a world. `progress` is notified per tectonic stage and per erosion iteration.
@@ -625,7 +1211,7 @@ fn generate_inner(
     progress.report(Stage::Tectonics, 0, 1);
     let t0 = Instant::now();
     let n_t = settings.resolution.min(256);
-    let tectonics = tectonics::build(settings, n_t)?;
+    let tectonics = tectonics::build(settings, n_t, &|| progress.cancelled())?;
     timings.push(("tectonics", elapsed_ms(t0)));
     progress.report(Stage::Tectonics, 1, 1);
 
@@ -640,30 +1226,204 @@ fn generate_inner(
     let mut fields = evolved.fields;
     let mut elevation = std::mem::take(&mut fields.h);
     let domain = std::mem::take(&mut fields.domain);
-    let sea = sealevel::solve(
+    let shift = sealevel::apply_threshold(
         &fields.grid,
         &mut elevation,
-        &domain,
         settings.land_fraction,
-    );
-    drop(domain);
+        &|| progress.cancelled(),
+    )?;
+    canonicalize_elevation_m(&mut elevation);
+    let sea = sealevel::finish(&fields.grid, &elevation, &domain, shift, &|| {
+        progress.cancelled()
+    })?;
     timings.push(("sea_level", elapsed_ms(t_sea)));
     progress.report(Stage::SeaLevel, 1, 1);
 
+    let surface = SurfaceContext {
+        grid: fields.grid,
+        domain,
+        base_m: fields.base,
+        uplift_m_yr: fields.uplift,
+        k_rock: fields.k_rock,
+        plate: fields.plate,
+        crust: fields.crust,
+    };
+    derive_after_surface_inner(
+        settings,
+        tectonics,
+        surface,
+        elevation,
+        sea,
+        progress,
+        timings,
+        evolved.passes,
+        evolved.stats,
+        started,
+    )
+}
+
+/// Decode and derive a world from its canonical surface, without erosion.
+pub fn derive_world(
+    settings: &WorldSettings,
+    tectonics: &Tectonics,
+    elevation_mm: &[i32],
+    progress: &mut dyn Progress,
+) -> Result<World, WorldError> {
+    let started = Instant::now();
+    settings.validate()?;
+    let grid =
+        CubeSphere::new(settings.resolution, settings.radius_m).map_err(WorldError::Internal)?;
+    if elevation_mm.len() != grid.cell_count() {
+        return Err(WorldError::InvalidSettings(format!(
+            "elevation count {} does not match the {}-cell grid",
+            elevation_mm.len(),
+            grid.cell_count()
+        )));
+    }
+    let surface = prepare_surface(settings, tectonics, progress)?;
+    let elevation = elevation_mm
+        .iter()
+        .copied()
+        .map(elevation_m_from_mm)
+        .collect::<Vec<_>>();
+    let sea = sealevel::finish(&surface.grid, &elevation, &surface.domain, 0.0, &|| {
+        progress.cancelled()
+    })?;
+    derive_after_surface_inner(
+        settings,
+        tectonics.clone(),
+        surface,
+        elevation,
+        sea,
+        progress,
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        started,
+    )
+}
+
+/// Derive every post-erosion product from a prepared surface.
+pub fn derive_after_surface(
+    settings: &WorldSettings,
+    tectonics: &Tectonics,
+    surface: &SurfaceContext,
+    elevation_m: &[f32],
+    progress: &mut dyn Progress,
+) -> Result<World, WorldError> {
+    let started = Instant::now();
+    settings.validate()?;
+    if elevation_m.len() != surface.grid.cell_count() {
+        return Err(WorldError::InvalidSettings(format!(
+            "elevation count {} does not match the {}-cell grid",
+            elevation_m.len(),
+            surface.grid.cell_count()
+        )));
+    }
+    let elevation = elevation_m.to_vec();
+    let sea = sealevel::finish(&surface.grid, &elevation, &surface.domain, 0.0, &|| {
+        progress.cancelled()
+    })?;
+    derive_after_surface_inner(
+        settings,
+        tectonics.clone(),
+        surface.clone(),
+        elevation,
+        sea,
+        progress,
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        started,
+    )
+}
+
+/// Derive an epoch surface. `reference_elevation_mm` is relative to the
+/// accepted reference sea level; `epoch_sea_level_mm` is relative to it.
+pub fn derive_epoch(
+    settings: &WorldSettings,
+    tectonics: &Tectonics,
+    reference_elevation_mm: &[i32],
+    epoch_sea_level_mm: i32,
+    temperature_offset_c: f64,
+    progress: &mut dyn Progress,
+) -> Result<World, WorldError> {
+    let started = Instant::now();
+    let mut epoch_settings = settings.clone();
+    epoch_settings.planet = epoch_settings
+        .planet
+        .with_temperature_offset(temperature_offset_c);
+    epoch_settings.validate()?;
+    let grid = CubeSphere::new(epoch_settings.resolution, epoch_settings.radius_m)
+        .map_err(WorldError::Internal)?;
+    if reference_elevation_mm.len() != grid.cell_count() {
+        return Err(WorldError::InvalidSettings(format!(
+            "elevation count {} does not match the {}-cell grid",
+            reference_elevation_mm.len(),
+            grid.cell_count()
+        )));
+    }
+    let surface = prepare_surface(&epoch_settings, tectonics, progress)?;
+    let elevation = reference_elevation_mm
+        .iter()
+        .map(|value| {
+            let shifted = i64::from(*value) - i64::from(epoch_sea_level_mm);
+            elevation_m_from_mm(shifted.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32)
+        })
+        .collect::<Vec<_>>();
+    let sea = sealevel::finish(&surface.grid, &elevation, &surface.domain, 0.0, &|| {
+        progress.cancelled()
+    })?;
+    derive_after_surface_inner(
+        &epoch_settings,
+        tectonics.clone(),
+        surface,
+        elevation,
+        sea,
+        progress,
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        started,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn derive_after_surface_inner(
+    settings: &WorldSettings,
+    tectonics: Tectonics,
+    mut surface: SurfaceContext,
+    elevation: Vec<f32>,
+    sea: sealevel::SeaLevel,
+    progress: &mut dyn Progress,
+    mut timings: Vec<(&'static str, f64)>,
+    mut climate_passes: Vec<ClimatePass>,
+    levels: Vec<LevelStats>,
+    started: Instant,
+) -> Result<World, WorldError> {
+    // The ocean flood is already done; nothing downstream reads the domain.
+    drop(std::mem::take(&mut surface.domain));
+    if progress.cancelled() {
+        return Err(WorldError::Cancelled);
+    }
     progress.report(Stage::FinalRouting, 0, 1);
     let t_route = Instant::now();
     let n = elevation.len();
     let route_domain: Vec<u8> = sea.ocean.iter().map(|flag| u8::from(*flag == 0)).collect();
+    if progress.cancelled() {
+        return Err(WorldError::Cancelled);
+    }
     // Evolution already dropped its routing scratch before returning.
     let mut scratch = RoutingScratch::new(n);
-    let _routed = route(
-        &fields.grid,
+    let _routed = route_with_cancel(
+        &surface.grid,
         &elevation,
         &route_domain,
         None,
         &mut scratch,
         None,
-    );
+        &|| progress.cancelled(),
+    )?;
     let receiver = std::mem::take(&mut scratch.receiver);
     let area = std::mem::take(&mut scratch.area);
     drop(scratch);
@@ -678,18 +1438,18 @@ fn generate_inner(
     progress.report(Stage::Climate, 0, 1);
     let t_coarse = Instant::now();
     let climate_field = climate::coarse_with(
-        &fields.grid,
+        &surface.grid,
         &elevation,
         &sea.ocean,
         &settings.planet,
         &climate::ClimateOptions::published(),
+        &|| progress.cancelled(),
     )?;
     let coarse_ms = elapsed_ms(t_coarse);
     timings.push(("climate_coarse", coarse_ms));
-    let mut climate_passes = evolved.passes;
     climate_passes.push(ClimatePass {
         label: "final",
-        source_n: fields.grid.n,
+        source_n: surface.grid.n,
         spinup_years: climate_field.spinup_years,
         converged: climate_field.converged,
         residual_k: climate_field.spinup_residual_k,
@@ -698,12 +1458,13 @@ fn generate_inner(
     });
     let t_down = Instant::now();
     let climate = climate::downscale(
-        &fields.grid,
+        &surface.grid,
         &elevation,
         &sea.ocean,
         &settings.planet,
         &climate_field,
-    );
+        &|| progress.cancelled(),
+    )?;
     timings.push(("climate_downscale", elapsed_ms(t_down)));
     progress.report(Stage::Climate, 1, 1);
 
@@ -713,18 +1474,26 @@ fn generate_inner(
     progress.report(Stage::Hydrology, 0, 1);
     let t_hydro = Instant::now();
     let hydrology = hydrology::build(
-        &fields.grid,
+        &surface.grid,
         &elevation,
         &sea.ocean,
         &climate,
         settings.river_min_m3s,
+        &|| progress.cancelled(),
     )?;
     timings.push(("hydrology", elapsed_ms(t_hydro)));
     progress.report(Stage::Hydrology, 1, 1);
 
     progress.report(Stage::Biomes, 0, 1);
     let t_biome = Instant::now();
-    let biome = biome::classify(&fields.grid, &elevation, &sea.ocean, &climate, &hydrology)?;
+    let biome = biome::classify(
+        &surface.grid,
+        &elevation,
+        &sea.ocean,
+        &climate,
+        &hydrology,
+        &|| progress.cancelled(),
+    )?;
     timings.push(("biomes", elapsed_ms(t_biome)));
     progress.report(Stage::Biomes, 1, 1);
 
@@ -733,31 +1502,34 @@ fn generate_inner(
     }
     progress.report(Stage::Hazards, 0, 1);
     let t_hazard = Instant::now();
-    let hazards = hazards::build(&hazards::HazardIn {
-        grid: &fields.grid,
-        ocean: &sea.ocean,
-        elevation: &elevation,
-        climate: &climate,
-        climate_field: &climate_field,
-        hydrology: &hydrology,
-        tectonics: &tectonics,
-        river_min_m3s: settings.river_min_m3s,
-        seed: settings.seed,
-    })?;
+    let hazards = hazards::build(
+        &hazards::HazardIn {
+            grid: &surface.grid,
+            ocean: &sea.ocean,
+            elevation: &elevation,
+            climate: &climate,
+            climate_field: &climate_field,
+            hydrology: &hydrology,
+            tectonics: &tectonics,
+            river_min_m3s: settings.river_min_m3s,
+            seed: settings.seed,
+        },
+        &|| progress.cancelled(),
+    )?;
     timings.push(("hazards", elapsed_ms(t_hazard)));
     progress.report(Stage::Hazards, 1, 1);
     timings.push(("total", elapsed_ms(started)));
 
-    let stats = summarize(&elevation, &sea, evolved.stats);
+    let stats = summarize(&elevation, &sea, levels);
     Ok(World {
         settings: settings.clone(),
-        grid: fields.grid,
+        grid: surface.grid,
         elevation_m: elevation,
-        base_m: fields.base,
-        uplift_m_yr: fields.uplift,
-        k_rock: fields.k_rock,
-        plate: fields.plate,
-        crust: fields.crust,
+        base_m: surface.base_m,
+        uplift_m_yr: surface.uplift_m_yr,
+        k_rock: surface.k_rock,
+        plate: surface.plate,
+        crust: surface.crust,
         ocean: sea.ocean,
         receiver,
         drainage_area_m2,
@@ -822,6 +1594,17 @@ pub(crate) fn elevation_hash(values: &[f32]) -> u64 {
     hash
 }
 
+fn elevation_mm_hash(values: &[i32]) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for value in values {
+        for byte in value.to_le_bytes() {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+    hash
+}
+
 pub(crate) fn direction_from_lat_lon(lat_deg: f64, lon_deg: f64) -> [f64; 3] {
     let lat = lat_deg.to_radians();
     let lon = lon_deg.to_radians();
@@ -837,6 +1620,7 @@ fn elapsed_ms(started: Instant) -> f64 {
 mod tests {
     mod biome;
     mod climate;
+    mod e2;
     mod evolution;
     mod grid;
     mod hazards;
@@ -845,6 +1629,7 @@ mod tests {
     mod pipeline;
     mod preset;
     mod routing;
+    mod sampling;
     mod settings;
     mod tectonics;
 }

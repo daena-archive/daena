@@ -176,6 +176,28 @@ pub struct StormClimatology {
     pub track_km2: Vec<f32>,
     /// Potential intensity reached, `[0, 1]`.
     pub intensity: Vec<f32>,
+    /// Monthly genesis, month-major, formations per year per km².
+    pub genesis_monthly_km2: Vec<f32>,
+}
+
+/// One step of a traced storm track.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StormStep {
+    /// Coarse climate cell.
+    pub cell: u32,
+    /// Carried intensity at this step.
+    pub intensity: f64,
+}
+
+/// A storm track from one genesis cell and month.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StormTrack {
+    /// Genesis cell on the coarse climate grid.
+    pub genesis_cell: u32,
+    /// Genesis month, 0 is the spring equinox.
+    pub month: u32,
+    /// Steps in visit order; a cell may repeat.
+    pub steps: Vec<StormStep>,
 }
 
 /// Summary numbers for the hazard products.
@@ -256,7 +278,10 @@ pub(crate) struct HazardIn<'a> {
 }
 
 /// Build every hazard field. Existing world products are read only.
-pub(crate) fn build(input: &HazardIn<'_>) -> Result<Hazards, WorldError> {
+pub(crate) fn build(
+    input: &HazardIn<'_>,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<Hazards, WorldError> {
     let n = input.grid.cell_count();
     if input.ocean.len() != n
         || input.elevation.len() != n
@@ -274,9 +299,21 @@ pub(crate) fn build(input: &HazardIn<'_>) -> Result<Hazards, WorldError> {
             "hazard inputs do not match the terrain grid".to_string(),
         ));
     }
+    if cancelled() {
+        return Err(WorldError::Cancelled);
+    }
     let (quake_rate_km2, quake_hazard, quake) = earthquakes(input)?;
+    if cancelled() {
+        return Err(WorldError::Cancelled);
+    }
     let volcanoes = volcanoes(input)?;
+    if cancelled() {
+        return Err(WorldError::Cancelled);
+    }
     let storms = storms(input)?;
+    if cancelled() {
+        return Err(WorldError::Cancelled);
+    }
     let (prefix, extra) = rayon::join(
         || {
             hash_quake_fields(
@@ -295,6 +332,9 @@ pub(crate) fn build(input: &HazardIn<'_>) -> Result<Hazards, WorldError> {
         },
     );
     let (drought, heat_wave, extreme_rain, flood) = extra?;
+    if cancelled() {
+        return Err(WorldError::Cancelled);
+    }
     let mut stats = hazard_stats(
         input,
         &quake_rate_km2,
@@ -323,8 +363,7 @@ pub(crate) fn build(input: &HazardIn<'_>) -> Result<Hazards, WorldError> {
 
 impl Hazards {
     /// FNV-1a over the hazard fields in declaration order, sources by id.
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn hash_bits(&self) -> u64 {
+    pub fn hash_bits(&self) -> u64 {
         let hash = hash_quake_fields(
             0xcbf2_9ce4_8422_2325u64,
             &self.quake_rate_km2,
@@ -377,6 +416,9 @@ fn hash_quake_fields(
         hash = fnv_f32(hash, *value);
     }
     for value in &storms.intensity {
+        hash = fnv_f32(hash, *value);
+    }
+    for value in &storms.genesis_monthly_km2 {
         hash = fnv_f32(hash, *value);
     }
     hash
@@ -939,6 +981,89 @@ fn splat(
     }
 }
 
+/// Trace one storm from a genesis cell and month.
+///
+/// `ocean_fraction` is the coarse-cell ocean share from
+/// [`coarse_ocean_fraction`]. The output is identical to the inline loop that
+/// built the hazard climatology before phase E2.
+pub fn trace_storm(
+    climate_field: &ClimateField,
+    ocean_fraction: &[f64],
+    genesis_cell: u32,
+    month: u32,
+) -> Result<StormTrack, WorldError> {
+    let coarse = &climate_field.grid;
+    let n_c = coarse.cell_count();
+    if ocean_fraction.len() != n_c {
+        return Err(WorldError::Internal(
+            "storm ocean fraction does not match the climate grid".to_string(),
+        ));
+    }
+    if genesis_cell as usize >= n_c || month as usize >= 12 {
+        return Err(WorldError::Internal(
+            "storm genesis cell or month is outside the climate grid".to_string(),
+        ));
+    }
+    let base = month as usize * n_c;
+    let plane = month as usize * 3 * n_c;
+    let mut pos = coarse.position(genesis_cell);
+    let mut cell = genesis_cell as usize;
+    let mut strength = smoothstep(
+        STORM_PI_SST_START_C,
+        STORM_PI_SST_FULL_C,
+        f64::from(climate_field.t_c[base + cell]),
+    );
+    let mut steps = vec![StormStep {
+        cell: genesis_cell,
+        intensity: strength,
+    }];
+    for _ in 0..STORM_STEPS {
+        let wind = [
+            f64::from(climate_field.wind[plane + cell]),
+            f64::from(climate_field.wind[plane + n_c + cell]),
+            f64::from(climate_field.wind[plane + 2 * n_c + cell]),
+        ];
+        let (east, north) = local_east_north(pos);
+        let poleward = if pos[2] >= 0.0 { 1.0 } else { -1.0 };
+        // The deep-layer flow is the zonal wind; the surface trades carry an
+        // equatorward boundary-layer component that would cancel beta drift.
+        let zonal = wind[0] * east[0] + wind[1] * east[1] + wind[2] * east[2];
+        let direction = normalize([
+            (zonal - STORM_BETA_WESTWARD) * east[0] + poleward * STORM_BETA_POLEWARD * north[0],
+            (zonal - STORM_BETA_WESTWARD) * east[1] + poleward * STORM_BETA_POLEWARD * north[1],
+            (zonal - STORM_BETA_WESTWARD) * east[2] + poleward * STORM_BETA_POLEWARD * north[2],
+        ]);
+        pos = step_gc(pos, direction, STORM_STEP_M / coarse.radius_m);
+        cell = coarse.cell_at(pos) as usize;
+        let local_pi = smoothstep(
+            STORM_PI_SST_START_C,
+            STORM_PI_SST_FULL_C,
+            f64::from(climate_field.t_c[base + cell]),
+        );
+        let ocean = ocean_fraction[cell] >= STORM_OCEAN_FRACTION;
+        strength = if ocean {
+            strength + STORM_OCEAN_RELAX * (local_pi - strength)
+        } else {
+            strength * STORM_LAND_DECAY
+        };
+        steps.push(StormStep {
+            cell: cell as u32,
+            intensity: strength,
+        });
+        // A storm over cool water can fall below the potential intensity
+        // threshold and still keep a tracked circulation; the stop is the
+        // land-decay cutoff.
+        if !ocean && strength < STORM_STOP_INTENSITY {
+            break;
+        }
+    }
+    Ok(StormTrack {
+        genesis_cell,
+        month,
+        steps,
+    })
+}
+
 fn storms(input: &HazardIn<'_>) -> Result<StormClimatology, WorldError> {
     let fine = input.grid;
     let coarse = &input.climate_field.grid;
@@ -971,7 +1096,6 @@ fn storms(input: &HazardIn<'_>) -> Result<StormClimatology, WorldError> {
         .into_par_iter()
         .map(|month| {
             let base = month * n_c;
-            let plane = month * 3 * n_c;
             let mut genesis = vec![0.0f64; n_c];
             let mut track = vec![0.0f64; n_c];
             let mut intensity = vec![0.0f64; n_c];
@@ -984,75 +1108,38 @@ fn storms(input: &HazardIn<'_>) -> Result<StormClimatology, WorldError> {
                         hadley,
                     );
             }
-            for origin in 0..n_c {
-                let weight = genesis[origin];
+            for (origin, weight) in genesis.iter().copied().enumerate() {
                 if weight <= 0.0 {
                     continue;
                 }
-                let mut pos = ocean_columns[origin].0;
-                let mut cell = origin;
-                let mut strength = smoothstep(
-                    STORM_PI_SST_START_C,
-                    STORM_PI_SST_FULL_C,
-                    f64::from(input.climate_field.t_c[base + origin]),
-                );
-                raise(&mut intensity, cell, strength);
-                add_track(&mut track, cell, weight, &inverse_area);
-                let mut seen = vec![cell];
-                for _ in 0..STORM_STEPS {
-                    let wind = [
-                        f64::from(input.climate_field.wind[plane + cell]),
-                        f64::from(input.climate_field.wind[plane + n_c + cell]),
-                        f64::from(input.climate_field.wind[plane + 2 * n_c + cell]),
-                    ];
-                    let (east, north) = local_east_north(pos);
-                    let poleward = if pos[2] >= 0.0 { 1.0 } else { -1.0 };
-                    // The deep-layer flow is the zonal wind; the surface trades
-                    // carry an equatorward boundary-layer component that would
-                    // cancel the beta drift.
-                    let zonal = wind[0] * east[0] + wind[1] * east[1] + wind[2] * east[2];
-                    let direction = normalize([
-                        (zonal - STORM_BETA_WESTWARD) * east[0]
-                            + poleward * STORM_BETA_POLEWARD * north[0],
-                        (zonal - STORM_BETA_WESTWARD) * east[1]
-                            + poleward * STORM_BETA_POLEWARD * north[1],
-                        (zonal - STORM_BETA_WESTWARD) * east[2]
-                            + poleward * STORM_BETA_POLEWARD * north[2],
-                    ]);
-                    pos = step_gc(pos, direction, STORM_STEP_M / coarse.radius_m);
-                    cell = coarse.cell_at(pos) as usize;
-                    let local_pi = smoothstep(
-                        STORM_PI_SST_START_C,
-                        STORM_PI_SST_FULL_C,
-                        f64::from(input.climate_field.t_c[base + cell]),
-                    );
-                    let ocean = ocean_frac[cell] >= STORM_OCEAN_FRACTION;
-                    strength = if ocean {
-                        strength + STORM_OCEAN_RELAX * (local_pi - strength)
-                    } else {
-                        strength * STORM_LAND_DECAY
-                    };
-                    if !seen.contains(&cell) {
-                        seen.push(cell);
+                let traced = trace_storm(
+                    input.climate_field,
+                    &ocean_frac,
+                    origin as u32,
+                    month as u32,
+                )?;
+                let mut seen = Vec::new();
+                for step in traced.steps {
+                    let cell = step.cell as usize;
+                    raise(&mut intensity, cell, step.intensity);
+                    if !seen.contains(&step.cell) {
+                        seen.push(step.cell);
                         add_track(&mut track, cell, weight, &inverse_area);
-                    }
-                    raise(&mut intensity, cell, strength);
-                    // A storm over cool water can fall below the potential
-                    // intensity threshold and still keep a tracked circulation;
-                    // the stop is the land-decay cutoff.
-                    if !ocean && strength < STORM_STOP_INTENSITY {
-                        break;
                     }
                 }
             }
-            MonthStorm {
+            Ok::<_, WorldError>(MonthStorm {
                 genesis,
                 track,
                 intensity,
-            }
+            })
         })
-        .collect();
+        .collect::<Result<Vec<_>, _>>()?;
 
+    let genesis_monthly_km2: Vec<f32> = months
+        .iter()
+        .flat_map(|month| month.genesis.iter().map(|value| *value as f32))
+        .collect();
     let mut genesis = vec![0.0f64; n_c];
     let mut track = vec![0.0f64; n_c];
     let mut intensity = vec![0.0f64; n_c];
@@ -1072,6 +1159,7 @@ fn storms(input: &HazardIn<'_>) -> Result<StormClimatology, WorldError> {
         genesis_km2: to_f32(genesis),
         track_km2: to_f32(track),
         intensity: to_f32(intensity),
+        genesis_monthly_km2,
     })
 }
 
@@ -1081,7 +1169,7 @@ struct MonthStorm {
     intensity: Vec<f64>,
 }
 
-fn coarse_ocean_fraction(
+pub(crate) fn coarse_ocean_fraction(
     fine: &CubeSphere,
     fine_ocean: &[u8],
     coarse: &CubeSphere,

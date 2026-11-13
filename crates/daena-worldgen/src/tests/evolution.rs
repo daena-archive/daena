@@ -261,7 +261,7 @@ fn sea_frame_matches_solve_and_does_not_write() {
         }
     }
     let before = h.clone();
-    let (frame, ocean) = crate::sealevel::sea_frame(&grid, &h, &domain, 0.29);
+    let (frame, ocean) = crate::sealevel::sea_frame(&grid, &h, &domain, 0.29, &|| false).unwrap();
     assert_eq!(h, before);
     let mut shifted = before.clone();
     let solved = crate::sealevel::solve(&grid, &mut shifted, &domain, 0.29);

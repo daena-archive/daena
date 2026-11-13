@@ -285,7 +285,7 @@ impl CubeSphere {
     /// Face-local bilinear weights. A corner outside the face uses the cell
     /// [`extrapolated_cell`] would pick, shifted from that cell centre to the
     /// virtual node by a tangent gradient.
-    fn sample_chart(
+    pub(crate) fn sample_chart(
         &self,
         face: u32,
         fx: f64,
@@ -629,25 +629,7 @@ pub fn upsample(
     parent_field: &[f32],
     child: &CubeSphere,
 ) -> Result<Vec<f32>, String> {
-    if child.n != parent.n * 2 {
-        return Err(format!(
-            "upsample requires child.n = 2 * parent.n ({} vs {})",
-            child.n, parent.n
-        ));
-    }
-    if parent_field.len() != parent.cell_count() {
-        return Err("upsample field length does not match parent grid".to_string());
-    }
-    let mut out = vec![0.0f32; child.cell_count()];
-    out.par_iter_mut().enumerate().for_each(|(cell, dest)| {
-        let (face, i, j) = child.decode(cell as u32);
-        let fx = (i as f64 + 0.5) / 2.0;
-        let fy = (j as f64 + 0.5) / 2.0;
-        *dest = parent
-            .sample_face(parent_field, None, face, fx, fy)
-            .unwrap_or(0.0);
-    });
-    Ok(out)
+    upsample_with_cancel(parent, parent_field, child, &|| false).map_err(cancel_error_text)
 }
 
 /// Area-weighted mean of the four children. `child.n` must be `2 * parent.n`.
@@ -656,31 +638,7 @@ pub fn downsample(
     field: &[f32],
     parent: &CubeSphere,
 ) -> Result<Vec<f32>, String> {
-    if child.n != parent.n * 2 {
-        return Err(format!(
-            "downsample requires child.n = 2 * parent.n ({} vs {})",
-            child.n, parent.n
-        ));
-    }
-    if field.len() != child.cell_count() {
-        return Err("downsample field length does not match child grid".to_string());
-    }
-    let mut out = vec![0.0f32; parent.cell_count()];
-    out.par_iter_mut().enumerate().for_each(|(cell, dest)| {
-        let mut wsum = 0.0f64;
-        let mut vsum = 0.0f64;
-        for kid in parent.child_ids(cell as u32) {
-            let area = child.area_m2(kid);
-            wsum += area;
-            vsum += area * f64::from(field[kid as usize]);
-        }
-        *dest = if wsum == 0.0 {
-            0.0
-        } else {
-            (vsum / wsum) as f32
-        };
-    });
-    Ok(out)
+    downsample_with_cancel(child, field, parent, &|| false).map_err(cancel_error_text)
 }
 
 /// Maximum of the four children. `child.n` must be `2 * parent.n`.
@@ -709,40 +667,156 @@ pub fn downsample_max(
     Ok(out)
 }
 
+/// Cells per resample chunk. These kernels are cheap per cell, so a large
+/// chunk keeps barriers few and the cancellation gap well under 100 ms.
+const RESAMPLE_CHUNK: usize = 4_194_304;
+
+/// Map a cancellation-aware error back to the public `String` form.
+fn cancel_error_text(error: crate::WorldError) -> String {
+    match error {
+        crate::WorldError::Internal(text) => text,
+        other => other.to_string(),
+    }
+}
+
 /// Resample `field` from `src` onto `dst`. Resolutions must differ by a power of two.
 /// Upsampling repeats bilinear doubling. Downsampling repeats the four-child mean.
 pub fn resample(src: &CubeSphere, field: &[f32], dst: &CubeSphere) -> Result<Vec<f32>, String> {
+    resample_with_cancel(src, field, dst, &|| false).map_err(cancel_error_text)
+}
+
+/// Resample with a cancellation check between fixed cell chunks.
+pub(crate) fn resample_with_cancel(
+    src: &CubeSphere,
+    field: &[f32],
+    dst: &CubeSphere,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<Vec<f32>, crate::WorldError> {
     if src.n == dst.n {
         if field.len() != src.cell_count() {
-            return Err("resample field length mismatch".to_string());
+            return Err(crate::WorldError::Internal(
+                "resample field length mismatch".to_string(),
+            ));
         }
         return Ok(field.to_vec());
     }
     if src.n > dst.n {
         if !src.n.is_multiple_of(dst.n) {
-            return Err("resample resolutions are not nested".to_string());
+            return Err(crate::WorldError::Internal(
+                "resample resolutions are not nested".to_string(),
+            ));
         }
         let mut cur_grid = src.clone();
         let mut cur = field.to_vec();
         while cur_grid.n > dst.n {
-            let next = CubeSphere::new(cur_grid.n / 2, cur_grid.radius_m)?;
-            cur = downsample(&cur_grid, &cur, &next)?;
+            let next = CubeSphere::new(cur_grid.n / 2, cur_grid.radius_m)
+                .map_err(crate::WorldError::Internal)?;
+            cur = downsample_with_cancel(&cur_grid, &cur, &next, cancelled)?;
             cur_grid = next;
         }
         Ok(cur)
     } else {
         if !dst.n.is_multiple_of(src.n) {
-            return Err("resample resolutions are not nested".to_string());
+            return Err(crate::WorldError::Internal(
+                "resample resolutions are not nested".to_string(),
+            ));
         }
         let mut cur_grid = src.clone();
         let mut cur = field.to_vec();
         while cur_grid.n < dst.n {
-            let next = CubeSphere::new(cur_grid.n * 2, cur_grid.radius_m)?;
-            cur = upsample(&cur_grid, &cur, &next)?;
+            let next = CubeSphere::new(cur_grid.n * 2, cur_grid.radius_m)
+                .map_err(crate::WorldError::Internal)?;
+            cur = upsample_with_cancel(&cur_grid, &cur, &next, cancelled)?;
             cur_grid = next;
         }
         Ok(cur)
     }
+}
+
+fn upsample_with_cancel(
+    parent: &CubeSphere,
+    parent_field: &[f32],
+    child: &CubeSphere,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<Vec<f32>, crate::WorldError> {
+    if child.n != parent.n * 2 {
+        return Err(crate::WorldError::Internal(format!(
+            "upsample requires child.n = 2 * parent.n ({} vs {})",
+            child.n, parent.n
+        )));
+    }
+    if parent_field.len() != parent.cell_count() {
+        return Err(crate::WorldError::Internal(
+            "upsample field length does not match parent grid".to_string(),
+        ));
+    }
+    let n = child.cell_count();
+    let mut out = vec![0.0f32; n];
+    for start in (0..n).step_by(RESAMPLE_CHUNK) {
+        if cancelled() {
+            return Err(crate::WorldError::Cancelled);
+        }
+        let end = (start + RESAMPLE_CHUNK).min(n);
+        out[start..end]
+            .par_iter_mut()
+            .enumerate()
+            .for_each(|(offset, dest)| {
+                let cell = start + offset;
+                let (face, i, j) = child.decode(cell as u32);
+                let fx = (i as f64 + 0.5) / 2.0;
+                let fy = (j as f64 + 0.5) / 2.0;
+                *dest = parent
+                    .sample_face(parent_field, None, face, fx, fy)
+                    .unwrap_or(0.0);
+            });
+    }
+    Ok(out)
+}
+
+fn downsample_with_cancel(
+    child: &CubeSphere,
+    field: &[f32],
+    parent: &CubeSphere,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<Vec<f32>, crate::WorldError> {
+    if child.n != parent.n * 2 {
+        return Err(crate::WorldError::Internal(format!(
+            "downsample requires child.n = 2 * parent.n ({} vs {})",
+            child.n, parent.n
+        )));
+    }
+    if field.len() != child.cell_count() {
+        return Err(crate::WorldError::Internal(
+            "downsample field length does not match child grid".to_string(),
+        ));
+    }
+    let n = parent.cell_count();
+    let mut out = vec![0.0f32; n];
+    for start in (0..n).step_by(RESAMPLE_CHUNK) {
+        if cancelled() {
+            return Err(crate::WorldError::Cancelled);
+        }
+        let end = (start + RESAMPLE_CHUNK).min(n);
+        out[start..end]
+            .par_iter_mut()
+            .enumerate()
+            .for_each(|(offset, dest)| {
+                let cell = start + offset;
+                let mut wsum = 0.0f64;
+                let mut vsum = 0.0f64;
+                for kid in parent.child_ids(cell as u32) {
+                    let area = child.area_m2(kid);
+                    wsum += area;
+                    vsum += area * f64::from(field[kid as usize]);
+                }
+                *dest = if wsum == 0.0 {
+                    0.0
+                } else {
+                    (vsum / wsum) as f32
+                };
+            });
+    }
+    Ok(out)
 }
 
 /// Axis neighbour slots: E, N, W, S.

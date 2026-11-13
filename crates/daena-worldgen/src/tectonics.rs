@@ -137,22 +137,192 @@ pub struct Tectonics {
     pub fragments_reassigned: u32,
 }
 
+impl Tectonics {
+    /// FNV-1a over every tectonic field, in declaration order.
+    pub fn hash_bits(&self) -> u64 {
+        let mut h = 0xcbf2_9ce4_8422_2325u64;
+        h = fnv_u32(h, self.n);
+        h = fnv_u8(h, layout_code(self.resolved_layout));
+        h = fnv_f64(h, self.crust_fraction);
+        h = fnv_u32(h, self.plates.len() as u32);
+        for plate in &self.plates {
+            for value in plate.site.iter().chain(plate.axis.iter()) {
+                h = fnv_f64(h, *value);
+            }
+            h = fnv_f64(h, plate.omega_rad_yr);
+            h = fnv_u32(h, plate.subduction_rank);
+            h = fnv_f64(h, plate.weight_rad);
+            h = fnv_u8(h, plate.crust_majority);
+        }
+        h = fnv_u32(h, self.boundaries.len() as u32);
+        for boundary in &self.boundaries {
+            h = fnv_u32(h, boundary.cell);
+            h = fnv_u32(h, boundary.neighbor);
+            h = fnv_u8(h, boundary.plate_a);
+            h = fnv_u8(h, boundary.plate_b);
+            h = fnv_u8(h, boundary.crust_a);
+            h = fnv_u8(h, boundary.crust_b);
+            h = fnv_u8(h, boundary_kind_code(boundary.kind));
+            h = fnv_f32(h, boundary.convergence_m_yr);
+            h = fnv_f32(h, boundary.shear_m_yr);
+            h = fnv_f32(h, boundary.convergence_raw_m_yr);
+            h = fnv_f32(h, boundary.shear_raw_m_yr);
+            h = fnv_u8(h, subduct_side_code(boundary.subducts));
+        }
+        h = fnv_u32(h, self.hotspots.len() as u32);
+        for hotspot in &self.hotspots {
+            for value in hotspot.origin.iter() {
+                h = fnv_f64(h, *value);
+            }
+            h = fnv_u32(h, hotspot.points.len() as u32);
+            for point in &hotspot.points {
+                for value in point {
+                    h = fnv_f64(h, *value);
+                }
+            }
+        }
+        for value in &self.plate {
+            h = fnv_u8(h, *value);
+        }
+        for value in &self.crust {
+            h = fnv_u8(h, *value);
+        }
+        for field in [&self.base_m, &self.uplift_m_yr, &self.k_rock] {
+            for value in field {
+                h = fnv_f32(h, *value);
+            }
+        }
+        for value in &self.d_boundary {
+            h = fnv_f32(h, *value);
+        }
+        for value in &self.d_ridge {
+            h = fnv_f32(h, *value);
+        }
+        for value in &self.d_edge {
+            h = fnv_f32(h, *value);
+        }
+        for value in &self.boundary_record {
+            h = fnv_u32(h, *value);
+        }
+        for value in &self.d_arc {
+            h = fnv_f32(h, *value);
+        }
+        for value in &self.arc_record {
+            h = fnv_u32(h, *value);
+        }
+        for value in &self.boundary_kind {
+            h = fnv_u8(h, *value);
+        }
+        fnv_u32(h, self.fragments_reassigned)
+    }
+}
+
+fn layout_code(layout: ContinentLayout) -> u8 {
+    match layout {
+        ContinentLayout::Pangea => 1,
+        ContinentLayout::Few => 2,
+        ContinentLayout::Many => 3,
+        ContinentLayout::Mixed => 4,
+    }
+}
+
+fn boundary_kind_code(kind: BoundaryKind) -> u8 {
+    match kind {
+        BoundaryKind::Convergent => 1,
+        BoundaryKind::Divergent => 2,
+        BoundaryKind::Transform => 3,
+    }
+}
+
+fn subduct_side_code(side: SubductSide) -> u8 {
+    match side {
+        SubductSide::None => 0,
+        SubductSide::This => 1,
+        SubductSide::Other => 2,
+    }
+}
+
+fn fnv_byte(mut hash: u64, byte: u8) -> u64 {
+    hash ^= u64::from(byte);
+    hash.wrapping_mul(0x0000_0100_0000_01b3)
+}
+
+fn fnv_u8(hash: u64, value: u8) -> u64 {
+    fnv_byte(hash, value)
+}
+
+fn fnv_u32(mut hash: u64, value: u32) -> u64 {
+    for byte in value.to_le_bytes() {
+        hash = fnv_byte(hash, byte);
+    }
+    hash
+}
+
+fn fnv_f32(hash: u64, value: f32) -> u64 {
+    fnv_u32(hash, value.to_bits())
+}
+
+fn fnv_f64(mut hash: u64, value: f64) -> u64 {
+    for byte in value.to_bits().to_le_bytes() {
+        hash = fnv_byte(hash, byte);
+    }
+    hash
+}
+
+/// Cells per tectonic field chunk. The fields are moderately expensive per
+/// cell; this keeps the cancellation gap under the command budget.
+const FIELD_CHUNK: usize = 131_072;
+
 /// Build the tectonic state on a grid of resolution `n`.
-pub fn build(settings: &WorldSettings, n: u32) -> Result<Tectonics, WorldError> {
+pub fn build(
+    settings: &WorldSettings,
+    n: u32,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<Tectonics, WorldError> {
+    if cancelled() {
+        return Err(WorldError::Cancelled);
+    }
     let grid = CubeSphere::new(n, settings.radius_m).map_err(WorldError::Internal)?;
     let ncells = grid.cell_count();
     let seed = settings.seed;
     let plates = make_plates(settings);
+    if cancelled() {
+        return Err(WorldError::Cancelled);
+    }
     let mut plate = assign_plates(&grid, &plates, seed);
+    if cancelled() {
+        return Err(WorldError::Cancelled);
+    }
     let fragments_reassigned =
         enforce_connectivity(&grid, &mut plate, &plates).map_err(WorldError::Internal)?;
+    if cancelled() {
+        return Err(WorldError::Cancelled);
+    }
     let (crust, resolved, crust_fraction) = make_crust(&grid, settings, seed);
+    if cancelled() {
+        return Err(WorldError::Cancelled);
+    }
     let plates = with_majority(&grid, plates, &plate, &crust);
     let boundaries = make_boundaries(&grid, &plates, &plate, &crust, settings.radius_m);
+    if cancelled() {
+        return Err(WorldError::Cancelled);
+    }
     let (d_boundary, boundary_record) = distance_on_plate(&grid, &plate, &boundaries);
+    if cancelled() {
+        return Err(WorldError::Cancelled);
+    }
     let (d_ridge, d_edge) = ridge_and_edge(&grid, &crust, &boundaries);
+    if cancelled() {
+        return Err(WorldError::Cancelled);
+    }
     let classes = class_fields(&grid, &plate, &boundaries);
+    if cancelled() {
+        return Err(WorldError::Cancelled);
+    }
     let hotspots = make_hotspots(&grid, settings, &plates, &plate);
+    if cancelled() {
+        return Err(WorldError::Cancelled);
+    }
     let mut base_m = vec![0.0f32; ncells];
     let mut uplift_m_yr = vec![0.0f32; ncells];
     let mut k_rock = vec![0.0f32; ncells];
@@ -178,17 +348,29 @@ pub fn build(settings: &WorldSettings, n: u32) -> Result<Tectonics, WorldError> 
         xform_seed: derive_seed(seed, SeedDomain::TransformRidged),
         mod_seed: derive_seed(seed, SeedDomain::UpliftModulation),
     };
-    base_m
-        .par_iter_mut()
-        .zip(uplift_m_yr.par_iter_mut())
-        .zip(k_rock.par_iter_mut())
-        .enumerate()
-        .for_each(|(i, ((b, u), k))| {
-            let (bv, uv, kv) = eval_cell(&ctx, i);
-            *b = bv;
-            *u = uv;
-            *k = kv;
-        });
+    let chunk = FIELD_CHUNK;
+    for start in (0..ncells).step_by(chunk) {
+        if cancelled() {
+            return Err(WorldError::Cancelled);
+        }
+        let end = (start + chunk).min(ncells);
+        let base = &mut base_m[start..end];
+        let uplift = &mut uplift_m_yr[start..end];
+        let rock = &mut k_rock[start..end];
+        base.par_iter_mut()
+            .zip(uplift.par_iter_mut())
+            .zip(rock.par_iter_mut())
+            .enumerate()
+            .for_each(|(offset, ((b, u), k))| {
+                let (bv, uv, kv) = eval_cell(&ctx, start + offset);
+                *b = bv;
+                *u = uv;
+                *k = kv;
+            });
+    }
+    if cancelled() {
+        return Err(WorldError::Cancelled);
+    }
     let boundary_kind = boundary_kind_field(ncells, &boundaries);
     let ClassFields { arc, .. } = classes;
     Ok(Tectonics {

@@ -420,11 +420,15 @@ pub(crate) fn coarse_with(
     ocean: &[u8],
     planet: &PlanetSettings,
     options: &ClimateOptions,
+    cancelled: &dyn Fn() -> bool,
 ) -> Result<ClimateField, WorldError> {
     if elevation.len() != fine.cell_count() || ocean.len() != fine.cell_count() {
         return Err(WorldError::Internal(
             "climate inputs do not match the terrain grid".to_string(),
         ));
+    }
+    if cancelled() {
+        return Err(WorldError::Cancelled);
     }
     let n_c = fine.n.min(64);
     let grid = CubeSphere::new(n_c, fine.radius_m).map_err(WorldError::Internal)?;
@@ -447,7 +451,8 @@ pub(crate) fn coarse_with(
         &insolation,
         &rotation,
         options,
-    );
+        cancelled,
+    )?;
     let (wind, itcz) = diagnose_circulation(
         &grid,
         &geo,
@@ -455,19 +460,22 @@ pub(crate) fn coarse_with(
         planet.axial_tilt_deg,
         &rotation,
     );
-    let precip = precipitate(&PrecipIn {
-        planet,
-        grid: &grid,
-        geo: &geo,
-        land: &land,
-        temperature: &spin.temperature,
-        insolation: &insolation,
-        wind: &wind,
-        itcz: &itcz,
-        phi_h_deg: rotation.phi_h_deg,
-        phi_f_deg: rotation.phi_f_deg,
-        warmup_months: options.moisture_warmup_months,
-    });
+    let precip = precipitate(
+        &PrecipIn {
+            planet,
+            grid: &grid,
+            geo: &geo,
+            land: &land,
+            temperature: &spin.temperature,
+            insolation: &insolation,
+            wind: &wind,
+            itcz: &itcz,
+            phi_h_deg: rotation.phi_h_deg,
+            phi_f_deg: rotation.phi_f_deg,
+            warmup_months: options.moisture_warmup_months,
+        },
+        cancelled,
+    )?;
     let out = ClimateField {
         grid: grid.clone(),
         t_c: to_f32(&spin.temperature),
@@ -527,7 +535,9 @@ pub(crate) fn spin_up_on_land(
         &insolation,
         &rotation,
         &ClimateOptions::published(),
+        &|| false,
     )
+    .unwrap()
     .temperature
 }
 
@@ -541,13 +551,17 @@ pub(crate) fn surface_water(
     ocean: &[u8],
     planet: &PlanetSettings,
     field: &ClimateField,
-) -> SurfaceWater {
-    let summary = downscale(fine, elevation, ocean, planet, field);
+    cancelled: &dyn Fn() -> bool,
+) -> Result<SurfaceWater, WorldError> {
+    let summary = downscale(fine, elevation, ocean, planet, field, cancelled)?;
     let n = summary.runoff_mm.len();
     let mut runoff_m_yr = Vec::with_capacity(n);
     let mut evap_m_yr = Vec::with_capacity(n);
     let mut ice_m_yr = Vec::with_capacity(n);
     for cell in 0..n {
+        if cell.is_multiple_of(65_536) && cancelled() {
+            return Err(WorldError::Cancelled);
+        }
         let runoff = f64::from(summary.runoff_mm[cell]).max(0.0);
         let pet = f64::from(summary.pet_annual_mm[cell]);
         let rain = f64::from(summary.p_annual_mm[cell]);
@@ -555,13 +569,17 @@ pub(crate) fn surface_water(
         evap_m_yr.push(((pet - rain).max(0.0) / 1000.0) as f32);
         ice_m_yr.push((f64::from(summary.ice_balance_mm[cell]) / 1000.0) as f32);
     }
-    SurfaceWater {
+    Ok(SurfaceWater {
         runoff_mm: summary.runoff_mm,
         runoff_m_yr,
         evap_m_yr,
         ice_m_yr,
-    }
+    })
 }
+
+/// Downscale columns per cancellation batch. One column is 4096 cells; at
+/// `n = 1024` a batch takes 55-90 ms in release on a 12-thread machine.
+const DOWNSCALE_COLUMNS: usize = 160;
 
 /// Lapse, orographic precipitation and the annual water balance on the terrain grid.
 pub(crate) fn downscale(
@@ -570,12 +588,19 @@ pub(crate) fn downscale(
     ocean: &[u8],
     planet: &PlanetSettings,
     field: &ClimateField,
-) -> ClimateSummary {
+    cancelled: &dyn Fn() -> bool,
+) -> Result<ClimateSummary, WorldError> {
+    if cancelled() {
+        return Err(WorldError::Cancelled);
+    }
     let n = fine.cell_count();
     let h_pos: Vec<f64> = elevation
         .iter()
         .map(|value| f64::from(value.max(0.0)))
         .collect();
+    if cancelled() {
+        return Err(WorldError::Cancelled);
+    }
     let month_days = planet.month_seconds() / 86_400.0;
     // Cell centres are reused by the stencil, the orographic gradient and the
     // area report. Computing each one on demand repeated the face tangents.
@@ -583,6 +608,9 @@ pub(crate) fn downscale(
         .into_par_iter()
         .map(|cell| fine.position(cell as u32))
         .collect();
+    if cancelled() {
+        return Err(WorldError::Cancelled);
+    }
     // One stencil per fine cell. Every month and field reuses it.
     let stencils: Vec<ChartStencil> = (0..n)
         .into_par_iter()
@@ -591,6 +619,9 @@ pub(crate) fn downscale(
             field.grid.chart_stencil(face, fx, fy)
         })
         .collect();
+    if cancelled() {
+        return Err(WorldError::Cancelled);
+    }
     let ctx = DownCtx {
         fine,
         field,
@@ -603,20 +634,73 @@ pub(crate) fn downscale(
     // Contiguous columns, in cell order. A later array-of-structs transpose
     // was slower than writing each field once.
     let starts: Vec<usize> = (0..n).step_by(4096).collect();
-    let parts: Vec<Column> = starts
-        .into_par_iter()
-        .map(|start| {
-            let end = (start + 4096).min(n);
-            let mut column = Column::with_capacity(end - start);
-            for cell in start..end {
-                column.push(downscale_cell(&ctx, cell));
-            }
-            column
-        })
-        .collect();
-    let mut summary = summary_from_columns(&parts);
-    summary.stats = area_stats(fine, ocean, &summary, field, &positions);
-    summary
+    let mut parts: Vec<Column> = Vec::with_capacity(starts.len());
+    for batch in starts.chunks(DOWNSCALE_COLUMNS) {
+        if cancelled() {
+            return Err(WorldError::Cancelled);
+        }
+        let batch_parts: Vec<Column> = batch
+            .par_iter()
+            .map(|start| downscale_column(&ctx, *start, n))
+            .collect();
+        parts.extend(batch_parts);
+    }
+    if cancelled() {
+        return Err(WorldError::Cancelled);
+    }
+    let mut summary = summary_from_columns(&parts, cancelled)?;
+    if cancelled() {
+        return Err(WorldError::Cancelled);
+    }
+    summary.stats = area_stats(fine, ocean, &summary, field, &positions, cancelled)?;
+    Ok(summary)
+}
+
+/// One month of the downscaled surface at one fine cell.
+pub(crate) fn month_at(
+    fine: &CubeSphere,
+    field: &ClimateField,
+    elevation: &[f32],
+    ocean: &[u8],
+    planet: &PlanetSettings,
+    cell: usize,
+    month: usize,
+) -> (f32, f32) {
+    assert!(month < MONTHS, "month must be in 0..12");
+    assert!(cell < fine.cell_count(), "cell is outside the grid");
+    let pos = fine.position(cell as u32);
+    let (east, north) = east_north(pos);
+    let gx_gy = tangent_gradient_with(
+        fine,
+        cell,
+        &Frame { pos, east, north },
+        |index| f64::from(elevation[index as usize].max(0.0)),
+        |index| fine.position(index),
+    );
+    let (face, fx, fy) = field.grid.face_coords(pos);
+    let stencil = field.grid.chart_stencil(face, fx, fy);
+    let value = downscale_month(
+        field,
+        &stencil,
+        field.grid.cell_count(),
+        month,
+        pos,
+        gx_gy.0,
+        gx_gy.1,
+        f64::from(elevation[cell].max(0.0)),
+        ocean.get(cell).copied().unwrap_or(1),
+        planet.month_seconds() / 86_400.0,
+    );
+    (value.t_m as f32, value.p_m as f32)
+}
+
+fn downscale_column(ctx: &DownCtx<'_>, start: usize, n: usize) -> Column {
+    let end = (start + 4096).min(n);
+    let mut column = Column::with_capacity(end - start);
+    for cell in start..end {
+        column.push(downscale_cell(ctx, cell));
+    }
+    column
 }
 
 #[derive(Clone, Copy)]
@@ -672,7 +756,10 @@ impl Column {
     }
 }
 
-fn summary_from_columns(parts: &[Column]) -> ClimateSummary {
+fn summary_from_columns(
+    parts: &[Column],
+    cancelled: &dyn Fn() -> bool,
+) -> Result<ClimateSummary, WorldError> {
     let n = parts.iter().map(|part| part.t_annual.len()).sum();
     let mut summary = ClimateSummary {
         t_annual_c: Vec::with_capacity(n),
@@ -698,6 +785,9 @@ fn summary_from_columns(parts: &[Column]) -> ClimateSummary {
         },
     };
     for part in parts {
+        if cancelled() {
+            return Err(WorldError::Cancelled);
+        }
         summary.t_annual_c.extend_from_slice(&part.t_annual);
         summary.t_warm_c.extend_from_slice(&part.t_warm);
         summary.t_cold_c.extend_from_slice(&part.t_cold);
@@ -708,7 +798,7 @@ fn summary_from_columns(parts: &[Column]) -> ClimateSummary {
         summary.ice_balance_mm.extend_from_slice(&part.ice);
         summary.sea_ice_months.extend_from_slice(&part.sea_ice);
     }
-    summary
+    Ok(summary)
 }
 
 fn aggregate(
@@ -894,6 +984,7 @@ impl CoverCtx<'_> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn spin_up(
     planet: &PlanetSettings,
     geo: &[Geo],
@@ -902,7 +993,8 @@ fn spin_up(
     insolation: &[f64],
     rotation: &Rotation,
     options: &ClimateOptions,
-) -> Spinup {
+    cancelled: &dyn Fn() -> bool,
+) -> Result<Spinup, WorldError> {
     let n = geo.len();
     let dt = planet.month_seconds();
     let a_coeff = 203.3 - planet.greenhouse_wm2 - B_FEEDBACK * planet.temperature_offset_c;
@@ -946,6 +1038,9 @@ fn spin_up(
             .collect();
         let mut iterations = 0u32;
         loop {
+            if cancelled() {
+                return Err(WorldError::Cancelled);
+            }
             step_temperature(
                 &EnergyIn {
                     geo,
@@ -1020,9 +1115,15 @@ fn spin_up(
     let mut rms_k = f64::MAX;
     let mut converged = false;
     for year in 1..=options.spinup_limit {
+        if cancelled() {
+            return Err(WorldError::Cancelled);
+        }
         years = year;
         let mut max_change = 0.0f64;
         for month in 0..MONTHS {
+            if cancelled() {
+                return Err(WorldError::Cancelled);
+            }
             step_temperature(
                 &EnergyIn {
                     geo,
@@ -1209,7 +1310,7 @@ fn spin_up(
         previous_t.copy_from_slice(&temperature);
     }
     let published = publish_spin(&temperature, &previous_t, converged);
-    Spinup {
+    Ok(Spinup {
         temperature: published.temperature,
         s_land,
         s_ocean,
@@ -1223,7 +1324,7 @@ fn spin_up(
         drift,
         #[cfg(test)]
         eq_iters,
-    }
+    })
 }
 
 pub(crate) struct PublishedSpin {
@@ -2135,7 +2236,7 @@ struct PrecipIn<'a> {
     warmup_months: usize,
 }
 
-fn precipitate(input: &PrecipIn<'_>) -> Vec<f64> {
+fn precipitate(input: &PrecipIn<'_>, cancelled: &dyn Fn() -> bool) -> Result<Vec<f64>, WorldError> {
     let n = input.geo.len();
     let steps = input.planet.month_seconds() / STEP_SECONDS;
     let warmup_months = input.warmup_months;
@@ -2159,10 +2260,16 @@ fn precipitate(input: &PrecipIn<'_>) -> Vec<f64> {
     let mut rain = vec![0.0; n];
     let mut prep = vec![MoistureCell::default(); n];
     for step in 0..warmup_months + MONTHS {
+        if cancelled() {
+            return Err(WorldError::Cancelled);
+        }
         let month = (step as isize - warmup_months as isize).rem_euclid(MONTHS as isize) as usize;
         input.moisture_prep(month, &mut prep);
         rain.fill(0.0);
         for _ in 0..MOISTURE_SWEEPS {
+            if cancelled() {
+                return Err(WorldError::Cancelled);
+            }
             // One pass reads the old column and writes the next one, so the
             // upwind samples all see the same sweep. Each cell updates only
             // its own rain and soil-water slots.
@@ -2217,7 +2324,7 @@ fn precipitate(input: &PrecipIn<'_>) -> Vec<f64> {
             }
         }
     }
-    monthly
+    Ok(monthly)
 }
 
 struct MoistureCtx<'a> {
@@ -2369,6 +2476,48 @@ struct DownCtx<'a> {
     stencils: &'a [ChartStencil],
 }
 
+#[derive(Clone, Copy)]
+struct MonthDown {
+    t_m: f64,
+    p_m: f64,
+    pet_mm: f64,
+    snow: f64,
+    degree_days: f64,
+    sea_ice: bool,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn downscale_month(
+    field: &ClimateField,
+    stencil: &ChartStencil,
+    n: usize,
+    month: usize,
+    pos: [f64; 3],
+    gx: f64,
+    gy: f64,
+    h: f64,
+    ocean: u8,
+    month_days: f64,
+) -> MonthDown {
+    let (east, north) = east_north(pos);
+    let sample = sample_month(field, stencil, n, month);
+    let wind = tangent_part(pos, sample.wind);
+    let zonal = dot3(wind, east);
+    let meridional = dot3(wind, north);
+    let speed = (zonal * zonal + meridional * meridional).sqrt();
+    let factor = orographic_factor(speed, zonal, meridional, gx, gy);
+    let t_m = sample.t_sl - LAPSE_K_PER_M * h;
+    let p_m = (sample.precip * factor).max(0.0);
+    MonthDown {
+        t_m,
+        p_m,
+        pet_mm: pet_mm(month_days, t_m, sample.insolation),
+        snow: p_m * smoothstep(2.0, -2.0, t_m),
+        degree_days: positive_degree_days(month_days, t_m),
+        sea_ice: ocean == 1 && sample.t_sl < -1.8,
+    }
+}
+
 fn downscale_cell(ctx: &DownCtx<'_>, cell: usize) -> Downscaled {
     let pos = ctx.positions[cell];
     let (east, north) = east_north(pos);
@@ -2392,23 +2541,27 @@ fn downscale_cell(ctx: &DownCtx<'_>, cell: usize) -> Downscaled {
     let mut degree_days = 0.0;
     let mut ice_months = 0u8;
     for month in 0..MONTHS {
-        let sample = sample_month(ctx.field, stencil, n, month);
-        let wind = tangent_part(pos, sample.wind);
-        let zonal = dot3(wind, east);
-        let meridional = dot3(wind, north);
-        let speed = (zonal * zonal + meridional * meridional).sqrt();
-        let factor = orographic_factor(speed, zonal, meridional, gx, gy);
-        let t_m = sample.t_sl - LAPSE_K_PER_M * ctx.h_pos[cell];
-        let p_m = (sample.precip * factor).max(0.0);
-        t_sum += t_m;
-        t_warm = t_warm.max(t_m);
-        t_cold = t_cold.min(t_m);
-        p_sum += p_m;
-        p_dry = p_dry.min(p_m);
-        pet_sum += pet_mm(ctx.month_days, t_m, sample.insolation);
-        snow += p_m * smoothstep(2.0, -2.0, t_m);
-        degree_days += positive_degree_days(ctx.month_days, t_m);
-        if ocean == 1 && sample.t_sl < -1.8 {
+        let sample = downscale_month(
+            ctx.field,
+            stencil,
+            n,
+            month,
+            pos,
+            gx,
+            gy,
+            ctx.h_pos[cell],
+            ocean,
+            ctx.month_days,
+        );
+        t_sum += sample.t_m;
+        t_warm = t_warm.max(sample.t_m);
+        t_cold = t_cold.min(sample.t_m);
+        p_sum += sample.p_m;
+        p_dry = p_dry.min(sample.p_m);
+        pet_sum += sample.pet_mm;
+        snow += sample.snow;
+        degree_days += sample.degree_days;
+        if sample.sea_ice {
             ice_months = ice_months.saturating_add(1);
         }
     }
@@ -2576,7 +2729,8 @@ fn area_stats(
     summary: &ClimateSummary,
     field: &ClimateField,
     positions: &[[f64; 3]],
-) -> ClimateStats {
+    cancelled: &dyn Fn() -> bool,
+) -> Result<ClimateStats, WorldError> {
     let mut global_t = Accum::default();
     let mut equator_t = Accum::default();
     let mut polar_t = Accum::default();
@@ -2588,6 +2742,9 @@ fn area_stats(
         .zip(summary.t_annual_c.iter().zip(&summary.p_annual_mm))
         .enumerate()
     {
+        if cell.is_multiple_of(65_536) && cancelled() {
+            return Err(WorldError::Cancelled);
+        }
         let lat = pos[2].clamp(-1.0, 1.0).asin();
         let lat_deg = lat.to_degrees().abs();
         let area = fine.area_m2(cell as u32);
@@ -2606,7 +2763,7 @@ fn area_stats(
             subtrop_p.add(precip, area);
         }
     }
-    ClimateStats {
+    Ok(ClimateStats {
         t_global_c: global_t.mean(),
         t_equator_c: equator_t.mean(),
         t_polar_c: polar_t.mean(),
@@ -2617,7 +2774,7 @@ fn area_stats(
         spinup_converged: field.converged,
         spinup_residual_k: field.spinup_residual_k,
         phi_h_deg: field.phi_h_deg,
-    }
+    })
 }
 
 #[derive(Clone, Copy, Default)]
@@ -2784,12 +2941,22 @@ fn tangent_gradient(
     frame: &Frame,
     position: impl Fn(u32) -> [f64; 3],
 ) -> (f64, f64) {
+    tangent_gradient_with(grid, cell, frame, |index| field[index as usize], position)
+}
+
+fn tangent_gradient_with(
+    grid: &CubeSphere,
+    cell: usize,
+    frame: &Frame,
+    height: impl Fn(u32) -> f64,
+    position: impl Fn(u32) -> [f64; 3],
+) -> (f64, f64) {
     let mut a00 = 0.0;
     let mut a01 = 0.0;
     let mut a11 = 0.0;
     let mut b0 = 0.0;
     let mut b1 = 0.0;
-    let centre = field[cell];
+    let centre = height(cell as u32);
     for (k, &nb) in grid.neighbors(cell as u32).iter().enumerate() {
         if nb == NONE {
             continue;
@@ -2813,7 +2980,7 @@ fn tangent_gradient(
         }
         let xm = dx / horiz * dist;
         let ym = dy / horiz * dist;
-        let dh = field[nb as usize] - centre;
+        let dh = height(nb) - centre;
         a00 += xm * xm;
         a01 += xm * ym;
         a11 += ym * ym;
@@ -2860,6 +3027,14 @@ fn tangent_part(up: [f64; 3], value: [f64; 3]) -> [f64; 3] {
         value[1] - up[1] * radial,
         value[2] - up[2] * radial,
     ]
+}
+
+pub(crate) fn point_east_north(up: [f64; 3]) -> ([f64; 3], [f64; 3]) {
+    east_north(up)
+}
+
+pub(crate) fn point_tangent(up: [f64; 3], value: [f64; 3]) -> [f64; 3] {
+    tangent_part(up, value)
 }
 
 fn east_north(up: [f64; 3]) -> ([f64; 3], [f64; 3]) {

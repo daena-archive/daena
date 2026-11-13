@@ -43,6 +43,36 @@ pub enum Biome {
 }
 
 impl Biome {
+    /// Every class in id order.
+    pub const ALL: [Biome; 26] = [
+        Self::DeepOcean,
+        Self::Shelf,
+        Self::Trench,
+        Self::Reef,
+        Self::SeaIceSeasonal,
+        Self::SeaIcePerennial,
+        Self::FreshLake,
+        Self::SaltLake,
+        Self::SaltFlat,
+        Self::IceSheet,
+        Self::Glacier,
+        Self::Tundra,
+        Self::Alpine,
+        Self::BorealForest,
+        Self::ColdSteppe,
+        Self::ColdDesert,
+        Self::TemperateRainforest,
+        Self::TemperateForest,
+        Self::Mediterranean,
+        Self::Grassland,
+        Self::HotDesert,
+        Self::Savanna,
+        Self::TropicalSeasonalForest,
+        Self::TropicalRainforest,
+        Self::Wetland,
+        Self::Mangrove,
+    ];
+
     pub fn from_u8(value: u8) -> Option<Self> {
         Some(match value {
             0 => Self::DeepOcean,
@@ -194,6 +224,10 @@ impl Biome {
     }
 }
 
+/// Cells per biome chunk. Slope and classification are cheap per cell, so a
+/// large chunk keeps barriers few while checking often enough to cancel.
+const BIOME_CHUNK: usize = 524_288;
+
 /// One biome per cell.
 pub(crate) fn classify(
     grid: &CubeSphere,
@@ -201,6 +235,7 @@ pub(crate) fn classify(
     ocean: &[u8],
     climate: &ClimateSummary,
     hydro: &Hydrology,
+    cancelled: &dyn Fn() -> bool,
 ) -> Result<Vec<u8>, WorldError> {
     let n = grid.cell_count();
     if elevation.len() != n
@@ -220,14 +255,31 @@ pub(crate) fn classify(
             "biome inputs do not match the terrain grid".to_string(),
         ));
     }
-    let slopes: Vec<f64> = (0..n)
-        .into_par_iter()
-        .map(|cell| slope(grid, elevation, cell))
-        .collect();
-    let biome = (0..n)
-        .into_par_iter()
-        .map(|cell| classify_cell(grid, elevation, ocean, climate, hydro, &slopes, cell) as u8)
-        .collect();
+    let chunk = BIOME_CHUNK;
+    let mut slopes = Vec::with_capacity(n);
+    for start in (0..n).step_by(chunk) {
+        if cancelled() {
+            return Err(WorldError::Cancelled);
+        }
+        let end = (start + chunk).min(n);
+        let part: Vec<f64> = (start..end)
+            .into_par_iter()
+            .map(|cell| slope(grid, elevation, cell))
+            .collect();
+        slopes.extend(part);
+    }
+    let mut biome = Vec::with_capacity(n);
+    for start in (0..n).step_by(chunk) {
+        if cancelled() {
+            return Err(WorldError::Cancelled);
+        }
+        let end = (start + chunk).min(n);
+        let part: Vec<u8> = (start..end)
+            .into_par_iter()
+            .map(|cell| classify_cell(grid, elevation, ocean, climate, hydro, &slopes, cell) as u8)
+            .collect();
+        biome.extend(part);
+    }
     Ok(biome)
 }
 

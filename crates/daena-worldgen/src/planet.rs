@@ -48,6 +48,13 @@ impl Default for PlanetSettings {
 }
 
 impl PlanetSettings {
+    /// Add an epoch or retained-heat offset to the authored offset.
+    #[must_use]
+    pub fn with_temperature_offset(mut self, offset_c: f64) -> Self {
+        self.temperature_offset_c += offset_c;
+        self
+    }
+
     /// Reject values outside the phase B1 ranges.
     pub fn validate(&self) -> Result<(), WorldError> {
         check_range("star_luminosity", self.star_luminosity, 0.05, 20.0, true)?;

@@ -924,8 +924,8 @@ Decode order:
    `header_bytes + 4 · cell_count`; trailing bytes are invalid.
 3. Decode elevation `i32` values in cell order and check
    `elevation_hash`.
-4. Rebuild `Tectonics` with `generate_tectonics(settings)` and compare
-   `tectonics_hash`.
+4. Rebuild `Tectonics` with `generate_tectonics(settings, progress)` and
+   compare `tectonics_hash`.
 5. Recompute `reference_water_inventory_m3` on the cube grid and compare it.
 6. Decode stops here; it does not run a full derive only to validate.
    Whenever a derive runs (accept, reload without a cache, cache rebuild),
@@ -942,8 +942,9 @@ in order, every per-cell field in declaration order, and
 `fragments_reassigned`. No map iteration order reaches it. `hazard_hash` is
 `Hazards::hash_bits`, which already covers the fields in declaration order and
 sources in id order; it becomes public in E2. `ClimateSummary::hash_bits`
-gains the new solstice temperature and precipitation fields in declaration
-order, so the source validates the fields the product publishes.
+covers the nine stored annual summary fields in declaration order. Solstice
+temperature and precipitation are computed on demand, so they are not stored
+and add no hash field.
 
 #### Consumer crosswalk
 
@@ -986,8 +987,8 @@ tools read canonical cells directly and do not go through the view.
 | `derivation_version` | new `CLIMATE_DERIVATION_VERSION` | kept |
 | `planetary` | product display configuration reconstructed from source `PlanetSettings`; display-only fields carry no physical effect | kept |
 | `temperature_centi_c` | `round(100 · ClimateSummary.t_annual_c)` | kept |
-| `temperature_nh_summer_centi_c` | new `ClimateSummary.t_nh_summer_c`, month 3, downscaled with the same lapse and orographic correction | kept; E2 addition |
-| `temperature_nh_winter_centi_c` | new `ClimateSummary.t_nh_winter_c`, month 9 | kept; E2 addition |
+| `temperature_nh_summer_centi_c` | `world.climate_month_at_point(lat, lon, 3).0`, downscaled with the same lapse and orographic correction | kept; E2 addition |
+| `temperature_nh_winter_centi_c` | `world.climate_month_at_point(lat, lon, 9).0` | kept; E2 addition |
 | `moisture_mm_per_year` | no engine published column-moisture field and no consumer after the views are cut | removed |
 | `precipitation_mm_per_year` | `round(ClimateSummary.p_annual_mm)` | kept |
 | `runoff_mm_per_year` | `round(ClimateSummary.runoff_mm)` | kept |
@@ -1002,8 +1003,8 @@ tools read canonical cells directly and do not go through the view.
 | `current_east_milli`, `current_north_milli` | no ocean-circulation model | removed with current layer, current arrows, studio current sample and current metrics |
 | `humidity_ppm` | no engine published relative humidity | removed with humidity view, Find Place filters, Atlas humidity style and studio humidity sample |
 | `aridity_ppm` | land: `round(1e6 · clamp(1 - P_annual / PET_annual, 0, 1))`; ocean: `0` | kept, computed |
-| `precipitation_nh_summer_mm` | new `ClimateSummary.p_nh_summer_mm`, month 3 | kept; E2 addition |
-| `precipitation_nh_winter_mm` | new `ClimateSummary.p_nh_winter_mm`, month 9 | kept; E2 addition |
+| `precipitation_nh_summer_mm` | `world.climate_month_at_point(lat, lon, 3).1` | kept; E2 addition |
+| `precipitation_nh_winter_mm` | `world.climate_month_at_point(lat, lon, 9).1` | kept; E2 addition |
 | `biome_class` | engine `Biome` discriminant `0..=25` | kept; legend and classes replaced |
 | `storm_suitability_ppm` | presentation index: `round(1e6 · genesis_km2 / max(genesis_km2))`; 0 when the maximum is 0 | kept, computed; physical rate stays in `Hazards.storms` |
 | `storm_track_ppm` | presentation index: `round(1e6 · track_km2 / max(track_km2))`; 0 when the maximum is 0 | kept, computed |
@@ -1405,7 +1406,10 @@ settled in E2.
 ```rust
 pub const WORLD_ENGINE_VERSION: u32 = 1;
 
-pub fn generate_tectonics(settings: &WorldSettings) -> Result<Tectonics, WorldError>;
+pub fn generate_tectonics(
+    settings: &WorldSettings,
+    progress: &mut dyn Progress,
+) -> Result<Tectonics, WorldError>;
 
 pub struct SurfaceContext {
     pub grid: CubeSphere,
@@ -1420,6 +1424,7 @@ pub struct SurfaceContext {
 pub fn prepare_surface(
     settings: &WorldSettings,
     tectonics: &Tectonics,
+    progress: &mut dyn Progress,
 ) -> Result<SurfaceContext, WorldError>;
 
 pub fn derive_after_surface(
@@ -1455,6 +1460,12 @@ pub fn derive_epoch(
 - `derive_epoch` subtracts the epoch sea level from the reference elevation
   and adds the temperature offset to the planet before calling
   `derive_after_surface`.
+- A derived `World` has the same substantive fields, but its `timings` and
+  `climate_passes` contain only the passes it ran, `stats.levels` is empty,
+  and `sea_level_shift_m` is `0` because the source does not store the
+  pre-canonicalisation shift. Generation keeps the full diagnostics. Tests
+  compare every substantive field and all generation hashes, not those
+  diagnostics.
 
 Canonical elevation:
 
@@ -1463,6 +1474,10 @@ pub fn elevation_mm_from_m(value_m: f32) -> i32; // round(value_m * 1000)
 pub fn elevation_m_from_mm(value_mm: i32) -> f32; // value_mm as f32 / 1000
 pub fn canonicalize_elevation_m(elevation: &mut [f32]);
 ```
+
+Canonicalisation moves a value by at most 0.5 mm from the rounding step plus
+half an `f32` ULP. Below 16 km that bound is under 1 mm; the observed maximum
+over the E2 world set is 0.9766 mm.
 
 Source data and hashes:
 
@@ -1487,7 +1502,20 @@ impl World {
 impl Tectonics {
     pub fn hash_bits(&self) -> u64;
 }
+```
 
+`elevation_mm` hashes the `i32` millimetres, not the `f32` bits. `tectonics`
+covers every tectonic field, plate, boundary, hotspot and count. `climate`
+covers the nine stored summary fields; `ClimateStats` is report-only and is
+excluded. `hydrology` covers lake kind, level, area, volume, evaporation,
+outflow and inflow, every river, `lake_id`, discharge, ice and the receiver
+tree. `Lake::id`, `minimum_cell` and `spill_cell` are excluded because they are
+claim metadata derived from the water state and lake geometry; `filled_m` is
+excluded as routing scratch, and `pop_order`/`lake_exit` are test-only.
+`biome` covers the ids. `hazards` covers the hazard fields, volcanic sources
+and all four storm arrays; `HazardStats` is excluded.
+
+```rust
 pub struct OceanVolumeSample {
     pub sea_level_mm: i32,
     pub volume_m3: u64,
@@ -1516,12 +1544,36 @@ Cancellation:
 pub fn check_cancelled(progress: &dyn Progress) -> Result<(), WorldError>;
 ```
 
-`coarse_with` and `downscale` gain a cancellation callback; the spin-up year
-loop, each moisture month and each of the 48 sweeps call it. `Hydrology::build`
-checks before/after the priority flood and inside the settle/ice loops every
-fixed chunk. `Hazards::build` checks before each month, each boundary chunk and
-each source loop. The engine test uses a `Progress` that cancels after the
-first stage and asserts `WorldError::Cancelled` within 100 ms.
+`generate_tectonics` and `prepare_surface` take `progress` and check between
+their stages. `coarse_with` and `downscale` gain a cancellation callback; the
+spin-up year loop, each moisture month and each of the 48 sweeps call it.
+Chunks are sized by measured work: a downscale batch is 160 columns (55-90 ms
+at `n = 1024` in release), resample and detail chunks are 4.2M and 1.0M cells, and
+tectonic, biome and hazard chunks are sized to stay under the 100 ms budget.
+`Hydrology::build` checks before/after the priority flood and inside the
+settle/ice loops every fixed chunk. Routing checks between its receiver,
+stack, depression, rebuild and drainage stages. Erosion checks between pit
+fill, routing, ice, stream power, overdeepening, hillslopes, smoothing and
+clamping. `Hazards::build` checks at hazard stage boundaries; its rayon
+chunks are not interrupted. `resample`, `upsample` and `downsample` call the
+cancellable implementations with a never-cancel callback, so one copy of each
+arithmetic remains. A deterministic test cancels at 30 evenly spaced checks in
+`generate` and `derive_world`, so the default `cargo test` exercises
+cancellation without relying on wall-clock tests.
+The gap test measures the largest wall-clock gap between `cancelled()` calls
+and runs with `--ignored --test-threads=1` because parallel test load can
+deschedule the test thread. Release gaps on a 12-thread machine: at
+`n = 512`, 57-61 ms for generation and 51-53 ms for derive; at `n = 1024`,
+61-71 ms for warm generation (`depress` inside erosion routing at level 512)
+and 56-87 ms for derive (one downscale batch). The cold `n = 1024` gap is
+183 ms. It ends at the first check in `prepare_fields`, and it covers
+`CubeSphere::new(1024)`, which builds the cached grid tables once per process;
+later runs reuse them. The gap tests build in the test profile, which also
+runs the debug-only routing validation, so the `n = 1024` test reports its
+gaps without asserting. E3 adds checks inside `depress`, sizes parallel chunks
+per thread so the budget holds on machines with fewer cores, and asserts the
+100 ms budget end to end. An end-to-end deadline test cancels inside the final
+climate stage.
 
 Point sampling:
 
@@ -1537,9 +1589,29 @@ pub struct PointSample {
 }
 
 impl World {
+    pub fn climate_month_at(&self, cell: u32, month: usize) -> (f32, f32);
+    pub fn climate_month_at_point(
+        &self,
+        lat_deg: f64,
+        lon_deg: f64,
+        month: usize,
+    ) -> (f32, f32);
     pub fn sample_point(&self, lat_deg: f64, lon_deg: f64) -> PointSample;
+    pub fn coarse_ocean_fraction(&self) -> Vec<f64>;
+    pub fn cell_lat_lon(&self, cell: u32) -> (f64, f64);
+    pub fn cell_area_m2(&self, cell: u32) -> f64;
 }
 ```
+
+`CubeSphere::lat_lon`, `area_m2`, `cell_at`, `position` and `sample_bilinear`
+are already public; the `World` helpers are thin convenience wrappers.
+
+`climate_month_at` uses the same per-cell downscale corrections and returns
+`(temperature °C, precipitation mm)`. Monthly values are computed on demand;
+`ClimateSummary` keeps only its existing annual fields. `climate_month_at_point`
+uses the cross-face chart stencil and calls `climate_month_at` for its terms.
+The equirect view's four monthly fields use the point method; no
+full-resolution monthly fields live in `ClimateSummary`.
 
 `ClimatePoint` carries annual, warmest, coldest, solstice temperatures,
 precipitation, PET, runoff, ice balance, sea-ice months, wind and aridity
@@ -1557,11 +1629,26 @@ pub struct EquirectView {
     pub elevation_m: Vec<f32>,
     pub ocean: Vec<u8>,
     pub climate: ClimateSummary,
+    pub t_nh_summer_c: Vec<f32>,
+    pub t_nh_winter_c: Vec<f32>,
+    pub p_nh_summer_mm: Vec<f32>,
+    pub p_nh_winter_mm: Vec<f32>,
     pub biome: Vec<u8>,
     pub lake_id: Vec<u32>,
     pub discharge_m3s: Vec<f32>,
     pub ice_cover: Vec<u8>,
     pub hazards: HazardView,
+    pub storms: StormClimatology,
+}
+
+pub struct HazardView {
+    pub quake_rate_km2: Vec<f32>,
+    pub quake_hazard: Vec<u8>,
+    pub volcanic_hazard: Vec<u8>,
+    pub drought: Vec<u8>,
+    pub heat_wave: Vec<u8>,
+    pub extreme_rain: Vec<u8>,
+    pub flood: Vec<u8>,
 }
 
 impl World {
@@ -1588,18 +1675,20 @@ pub fn resample_equirect_nearest_u32(
 ) -> Vec<u32>;
 ```
 
-The view uses the equirectangular cell-centre convention already used by the
-product: longitude `-180 + 360·(col + 0.5)/width`, latitude
-`-90 + 180·(row + 0.5)/height`. Class and id fields use nearest sampling;
-continuous fields use bilinear sampling, with the engine's cross-face chart
-stencil at seams.
+The view uses cell centres: longitude
+`-180 + 360·(col + 0.5)/width`, latitude
+`-90 + 180·(row + 0.5)/height`. This is not the current product convention;
+`daena-physical/src/lib.rs` `latitude_micro`/`longitude_micro` currently use
+edge-origin row/column values. E4 moves those two helpers to centres together
+with the view. Class and id fields use nearest sampling; continuous fields use
+bilinear sampling, with the engine's cross-face chart stencil at seams.
 
 Storm tracer:
 
 ```rust
 pub struct StormStep {
     pub cell: u32,
-    pub intensity: f32,
+    pub intensity: f64,
 }
 
 pub struct StormTrack {
@@ -1610,11 +1699,15 @@ pub struct StormTrack {
 
 pub fn trace_storm(
     climate_field: &ClimateField,
-    ocean_fraction: &[f32],
+    ocean_fraction: &[f64],
     genesis_cell: u32,
     month: u32,
 ) -> Result<StormTrack, WorldError>;
 ```
+
+The ocean fraction stays `f64` because the hazard pass computes it in `f64`
+and the tracer must match the pre-E2 loop bit for bit. `StormStep.intensity`
+is `f64` for the same reason; product consumers may cast it.
 
 `Hazards::storms` calls `trace_storm` and must produce the same cells and
 intensities as the current inline loop. `StormClimatology` gains
@@ -1633,6 +1726,11 @@ impl Lake {
 
 The values come from the priority-flood depression and the lowest lake cell.
 No product code reconstructs them from geometry.
+
+Canonical millimetre elevation changes three lake counts relative to the
+engine before E2 (575bf6f): Earthlike at `n = 512` 326 to 325, Frozen seed 3
+at `n = 512` 300 to 299, and Hothouse seed 11 at `n = 1024` 1,415 to 1,430.
+Total lake area changes by -0.004 %, and dry depressions are unchanged.
 
 Epoch planet override:
 
@@ -1737,7 +1835,7 @@ Every item is removed in E3–E8 as part of the hard cut; none is synthesized.
 
 | Step | Content | Exit tests |
 | --- | --- | --- |
-| E2 | Engine additions: `generate_tectonics`, `SurfaceContext`, `prepare_surface`, `derive_after_surface`, `derive_world`, `derive_epoch`, canonical elevation, public hashes/version, cube inventory solver, cancellation callbacks, point sampling, equirect view/resamplers, shared storm tracer, lake spill/minimum cells, monthly storm weights, solstice climate summary fields, planet offset helper. Refactor `generate_inner` to call the shared downstream path. Regenerate the canonical-elevation baseline. | `cargo test -p daena-worldgen --locked --offline`; tests that generation and `derive_world` produce identical fields/hashes; canonical `f32`/`i32` round trip; every hash changes when its field changes; storm tracer equals the old inline trace cell-for-cell; cancellation ends within 100 ms; 1-thread/12-thread identity; point and equirect sampling seam tests. |
+| E2 | Engine additions: `generate_tectonics`, `SurfaceContext`, `prepare_surface`, `derive_after_surface`, `derive_world`, `derive_epoch`, canonical elevation, public hashes/version, cube inventory solver, cancellation callbacks, point sampling, equirect view/resamplers, shared storm tracer, lake spill/minimum cells, monthly storm weights, on-demand solstice month access, planet offset helper. Refactor `generate_inner` to call the shared downstream path. Regenerate the canonical-elevation baseline. | `cargo test -p daena-worldgen --locked --offline`; tests that generation and `derive_world` produce identical fields/hashes; canonical `f32`/`i32` round trip; every hash changes when its field changes; storm tracer equals the old inline trace cell-for-cell; cancellation ends within 100 ms; 1-thread/12-thread identity; point and equirect sampling seam tests. |
 | E3 | Source `DAENAPW2`, product generation path, accept and reload. `daena-physical` defines source magic/version, manual codec, `PhysicalIdentityManifestV2`, `GENERATOR_VERSION = 2`, validation and old-version rejection. Generation calls `generate`, encodes v2, creates the product view and generation JSON. Progress mapping and cancellation. `project_physical_generate/preview/accept/status/cancel` use the engine job. | Source round trip is byte-exact and length-strict; decode+derive reproduces all hashes; corrupt elevation, tectonic hash, settings, trailing bytes and old magic are rejected with the right codes; accept writes the source asset and descriptor atomically; reload after deleting `.daena/` rebuilds and validates; old source is `physical.source.unsupported-version`; cancellation latency under 100 ms end to end; materialized events untouched. |
 | E4 | Derived products and epochs. `daena_physical::engine::Products` adapters build product `ClimateField`, `HydrologyField`, `HazardField`, GeoJSON, contours and the equirect view; `derived_cache::StaticDerivedPhysics` stores the engine-backed products; `history.rs` epoch path solves the cube sea level from the land-ice and expansion changes relative to epoch zero, then calls `derive_epoch` once; cache version dir/key gains engine/source versions; remove evolution from job results and commands; bump `CLIMATE_DERIVATION_VERSION`, `HYDROLOGY_DERIVATION_VERSION`, `HISTORICAL_DERIVATION_VERSION`, `CACHE_FORMAT_VERSION`; hazard field versions may wait for E6 but the cache key includes them. | `cargo test -p daena-physical --locked --offline`; product field shapes and formulas; epoch 0 equals the present products; epoch sea level and `HistoricalMetrics` conservation; epoch at `n = 512` is at most 1.5 s (measured, estimate recorded); deleting `.daena/cache/physical-derived` rebuilds identical products; source-only rebuild after deleting `.daena/`; external checkpoint import validates; cache key changes with engine/source/epoch/view-size and planetary-token versions. |
 | E5 | Tools. Find Place, routes, claims, landmass/region, previews, coastlines, contours and Atlas input move to canonical cells and the equirect view. Claims use canonical cube ids; Atlas `prepare_from_source` builds the view at the explicit view size and keeps its transform/styles/tile cache; remove humidity/current Atlas inputs and styles. `project_physical_find_place`, `suggest_routes`, `propose_region`, and Atlas Studio claim/inspect use the adapter. | Find Place criteria map one-to-one (no humidity), candidates use canonical ids and point coordinates; route paths, slope, crossings, lake/ice cells match engine data; claim ids resolve at the reference and at epochs, and old ids are unresolved; region geometry closes and is epoch-aware; GeoJSON feature/byte limits hold at 1024×512 and 2048×1024; Atlas golden tests regenerated with a reason each; Atlas tile seams/cache deletion unchanged. |

@@ -24,10 +24,14 @@ pub enum LakeKind {
 }
 
 /// One settled lake. Volumes are cubic metres per year except `volume_m3`.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Lake {
     pub id: u32,
     pub kind: LakeKind,
+    /// Lowest cell of the settled lake.
+    pub minimum_cell: u32,
+    /// Depression spill cell from the priority flood.
+    pub spill_cell: u32,
     /// Water surface, metres. The spill elevation when the lake is full.
     pub level_m: f64,
     pub area_m2: f64,
@@ -51,7 +55,7 @@ pub enum RiverEnd {
 }
 
 /// One path from a river head to the ocean, a lake, or a cell already traced.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct RiverSegment {
     pub cells: Vec<u32>,
     pub end: RiverEnd,
@@ -59,7 +63,7 @@ pub struct RiverSegment {
 }
 
 /// Drainage products. `receiver[k]` is the downstream cell, or `k` at a root.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Hydrology {
     pub lakes: Vec<Lake>,
     pub rivers: Vec<RiverSegment>,
@@ -133,6 +137,7 @@ pub(crate) fn build(
     ocean: &[u8],
     climate: &ClimateSummary,
     river_min_m3s: f64,
+    cancelled: &dyn Fn() -> bool,
 ) -> Result<Hydrology, WorldError> {
     let n = grid.cell_count();
     if elevation.len() != n
@@ -146,11 +151,26 @@ pub(crate) fn build(
             "hydrology inputs do not match the terrain grid".to_string(),
         ));
     }
-    let flood = priority_flood(grid, elevation, ocean)?;
+    if cancelled() {
+        return Err(WorldError::Cancelled);
+    }
+    let flood = priority_flood(grid, elevation, ocean, cancelled)?;
+    if cancelled() {
+        return Err(WorldError::Cancelled);
+    }
     let (lakes, lake_id, lake_exit, discharge) =
-        settle_water(grid, elevation, ocean, climate, &flood);
-    let ice_cover = cover_ice(grid, ocean, &climate.ice_balance_mm, &flood);
+        settle_water(grid, elevation, ocean, climate, &flood, cancelled)?;
+    if cancelled() {
+        return Err(WorldError::Cancelled);
+    }
+    let ice_cover = cover_ice(grid, ocean, &climate.ice_balance_mm, &flood, cancelled)?;
+    if cancelled() {
+        return Err(WorldError::Cancelled);
+    }
     let rivers = trace_rivers(ocean, &lake_id, &flood.receiver, &discharge, river_min_m3s);
+    if cancelled() {
+        return Err(WorldError::Cancelled);
+    }
     let filled_m: Vec<f32> = flood.filled.iter().map(|value| *value as f32).collect();
     Ok(Hydrology {
         lakes,
@@ -165,7 +185,12 @@ pub(crate) fn build(
     })
 }
 
-fn priority_flood(grid: &CubeSphere, elevation: &[f32], ocean: &[u8]) -> Result<Flood, WorldError> {
+fn priority_flood(
+    grid: &CubeSphere,
+    elevation: &[f32],
+    ocean: &[u8],
+    cancelled: &dyn Fn() -> bool,
+) -> Result<Flood, WorldError> {
     let n = grid.cell_count();
     let mut receiver = vec![NONE; n];
     let mut filled = vec![0.0; n];
@@ -207,7 +232,12 @@ fn priority_flood(grid: &CubeSphere, elevation: &[f32], ocean: &[u8]) -> Result<
     let mut pop_order = Vec::with_capacity(n);
     let mut depressions: Vec<Depression> = Vec::new();
     let mut member = vec![NONE; n];
+    let mut pops = 0u32;
     while let Some(item) = heap.pop() {
+        pops += 1;
+        if pops.is_multiple_of(4096) && cancelled() {
+            return Err(WorldError::Cancelled);
+        }
         let c = item.cell;
         let ci = c as usize;
         pop_order.push(c);
@@ -307,13 +337,15 @@ fn lowest_land(elevation: &[f32], ocean: &[u8]) -> Option<usize> {
     best.map(|(_, cell)| cell)
 }
 
+#[allow(clippy::type_complexity)]
 fn settle_water(
     grid: &CubeSphere,
     elevation: &[f32],
     ocean: &[u8],
     climate: &ClimateSummary,
     flood: &Flood,
-) -> (Vec<Lake>, Vec<u32>, Vec<u8>, Vec<f64>) {
+    cancelled: &dyn Fn() -> bool,
+) -> Result<(Vec<Lake>, Vec<u32>, Vec<u8>, Vec<f64>), WorldError> {
     let n = grid.cell_count();
     let mut q = vec![0.0; n];
     let mut lakes = Vec::new();
@@ -323,7 +355,10 @@ fn settle_water(
     for (id, dep) in flood.depressions.iter().enumerate() {
         exit_of[dep.exit as usize] = id as u32;
     }
-    for &cell in flood.pop_order.iter().rev() {
+    for (index, &cell) in flood.pop_order.iter().rev().enumerate() {
+        if index.is_multiple_of(4096) && cancelled() {
+            return Err(WorldError::Cancelled);
+        }
         let c = cell as usize;
         if ocean[c] == 0 {
             q[c] += runoff_m3(grid, climate, c);
@@ -357,7 +392,19 @@ fn settle_water(
         }
     }
     let discharge = q.iter().map(|value| value / YEAR_SECONDS).collect();
-    (lakes, lake_id, lake_exit, discharge)
+    Ok((lakes, lake_id, lake_exit, discharge))
+}
+
+fn lowest_cell(cells: &[u32], elevation: &[f32]) -> u32 {
+    cells
+        .iter()
+        .copied()
+        .min_by(|a, b| {
+            elevation[*a as usize]
+                .total_cmp(&elevation[*b as usize])
+                .then_with(|| a.cmp(b))
+        })
+        .unwrap_or(0)
 }
 
 fn runoff_m3(grid: &CubeSphere, climate: &ClimateSummary, cell: usize) -> f64 {
@@ -401,9 +448,12 @@ fn settle_depression(
                 volume += depth * basin.grid.area_m2(cell);
             }
         }
+        let minimum_cell = lowest_cell(&dep.cells, basin.elevation);
         return Some(Lake {
             id,
             kind: LakeKind::Fresh,
+            minimum_cell,
+            spill_cell: dep.spill,
             level_m: level,
             area_m2: area_full,
             volume_m3: volume,
@@ -429,6 +479,8 @@ fn settle_depression(
         return Some(Lake {
             id,
             kind: LakeKind::SaltFlat,
+            minimum_cell: cell,
+            spill_cell: dep.spill,
             level_m: f64::from(basin.elevation[cell as usize]),
             area_m2: smallest,
             volume_m3: 0.0,
@@ -456,9 +508,12 @@ fn settle_depression(
             volume += depth * basin.grid.area_m2(*cell);
         }
     }
+    let minimum_cell = lowest_cell(&taken, basin.elevation);
     Some(Lake {
         id,
         kind: LakeKind::Saline,
+        minimum_cell,
+        spill_cell: dep.spill,
         level_m: level,
         area_m2: area,
         volume_m3: volume,
@@ -470,10 +525,19 @@ fn settle_depression(
 
 /// `q_ice` follows the flood receivers. A positive-balance region of at least
 /// `2·10^11 m²` is an ice sheet; other cells with `q_ice > 0` are glaciers.
-fn cover_ice(grid: &CubeSphere, ocean: &[u8], ice_balance_mm: &[f32], flood: &Flood) -> Vec<u8> {
+fn cover_ice(
+    grid: &CubeSphere,
+    ocean: &[u8],
+    ice_balance_mm: &[f32],
+    flood: &Flood,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<Vec<u8>, WorldError> {
     let n = grid.cell_count();
     let mut q = vec![0.0; n];
-    for &cell in flood.pop_order.iter().rev() {
+    for (index, &cell) in flood.pop_order.iter().rev().enumerate() {
+        if index.is_multiple_of(4096) && cancelled() {
+            return Err(WorldError::Cancelled);
+        }
         let c = cell as usize;
         if ocean[c] == 1 {
             continue;
@@ -525,7 +589,7 @@ fn cover_ice(grid: &CubeSphere, ocean: &[u8], ice_balance_mm: &[f32], flood: &Fl
             cover[cell] = 1;
         }
     }
-    cover
+    Ok(cover)
 }
 
 fn trace_rivers(

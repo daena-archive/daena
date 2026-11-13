@@ -1,7 +1,24 @@
 use crate::{
-    generate, ContinentLayout, ErosionParams, NoProgress, PlanetSettings, Schedule, ScheduleStep,
-    WorldError, WorldSettings,
+    elevation_m_from_mm, elevation_mm_from_m, generate, ContinentLayout, ErosionParams, NoProgress,
+    PlanetSettings, Schedule, ScheduleStep, WorldError, WorldSettings,
 };
+
+#[test]
+fn canonical_elevation_round_trips_every_millimetre() {
+    for millimetres in -12_000_000..=12_000_000 {
+        let metres = elevation_m_from_mm(millimetres);
+        assert_eq!(
+            elevation_mm_from_m(metres),
+            millimetres,
+            "millimetres {millimetres}"
+        );
+        assert_eq!(
+            elevation_m_from_mm(elevation_mm_from_m(metres)).to_bits(),
+            metres.to_bits(),
+            "bits for {millimetres} mm"
+        );
+    }
+}
 
 fn rejected(settings: WorldSettings) {
     let err = generate(&settings, &mut NoProgress).unwrap_err();

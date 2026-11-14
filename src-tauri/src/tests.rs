@@ -200,8 +200,8 @@ fn physical_command_cancellation_latency_is_under_budget() {
         (total, worst, worst_at_ms, worst_phase)
     }
 
-    let (total_512, worst_512, at_512, phase_512) = sweep(512, 125);
-    let (total_1024, worst_1024, at_1024, phase_1024) = sweep(1024, 500);
+    let (total_512, worst_512, at_512, phase_512) = sweep(512, 50);
+    let (total_1024, worst_1024, at_1024, phase_1024) = sweep(1024, 50);
     let report = format!(
         "n=512 full {:?} worst late {:?} at {} ms ({})\nn=1024 full {:?} worst late {:?} at {} ms ({})",
         total_512, worst_512, at_512, phase_512,
@@ -474,6 +474,9 @@ fn reopened_historical_products_preserve_terrain_and_report_water_balance() {
         &physical_identity,
         persisted,
         historical.metrics.normalized_epoch,
+        daena_physical::planetary::PlanetaryConfiguration::earth_like(),
+        daena_physical::engine::PRODUCT_VIEW_WIDTH,
+        daena_physical::engine::PRODUCT_VIEW_HEIGHT,
     );
     let response = historical_response(
         &generated.tectonics,
@@ -535,6 +538,9 @@ fn reopened_historical_products_preserve_terrain_and_report_water_balance() {
             &physical_identity,
             cold_parameters,
             cold.metrics.normalized_epoch,
+            daena_physical::planetary::PlanetaryConfiguration::earth_like(),
+            daena_physical::engine::PRODUCT_VIEW_WIDTH,
+            daena_physical::engine::PRODUCT_VIEW_HEIGHT,
         ),
         cold.metrics.epoch_offset_years,
         cold.metrics.normalized_epoch,
@@ -5629,4 +5635,125 @@ fn project_saves_run_while_a_close_is_pending_and_are_refused_once_confirmed() {
     );
     abandon_close();
     assert!(begin_project_command().is_ok());
+}
+
+#[test]
+fn historical_cache_key_changes_with_epoch_view_and_planetary_versions() {
+    let identity = format!("sha256:{}", "a".repeat(64));
+    let forcing = daena_physical::history::HistoricalForcingParameters::default_for_seed(7);
+    let earth = daena_physical::planetary::PlanetaryConfiguration::earth_like();
+    let first = historical_cache_key(
+        &identity,
+        forcing,
+        0,
+        earth,
+        daena_physical::engine::PRODUCT_VIEW_WIDTH,
+        daena_physical::engine::PRODUCT_VIEW_HEIGHT,
+    );
+    assert!(first.contains(&format!(
+        "engine:{}",
+        daena_physical::engine::WORLD_ENGINE_VERSION
+    )));
+    assert!(first.contains(&format!("fmt:{}", daena_physical::engine::SOURCE_VERSION)));
+    assert!(first.contains("history-v"));
+    assert!(first.contains("hazards-v"));
+    assert!(first.contains("climate-v"));
+    assert!(first.contains("hydro-v"));
+    assert_ne!(
+        first,
+        historical_cache_key(
+            &identity,
+            forcing,
+            1,
+            earth,
+            daena_physical::engine::PRODUCT_VIEW_WIDTH,
+            daena_physical::engine::PRODUCT_VIEW_HEIGHT,
+        )
+    );
+    assert_ne!(
+        first,
+        historical_cache_key(
+            &identity,
+            forcing,
+            0,
+            earth,
+            daena_physical::engine::PRODUCT_VIEW_WIDTH * 2,
+            daena_physical::engine::PRODUCT_VIEW_HEIGHT * 2,
+        )
+    );
+    let mut close = earth;
+    close.retained_heat_centi_c += 1;
+    assert_ne!(
+        first,
+        historical_cache_key(
+            &identity,
+            forcing,
+            0,
+            close,
+            daena_physical::engine::PRODUCT_VIEW_WIDTH,
+            daena_physical::engine::PRODUCT_VIEW_HEIGHT,
+        )
+    );
+    let other = daena_physical::history::HistoricalForcingParameters::default_for_seed(8);
+    assert_ne!(
+        first,
+        historical_cache_key(
+            &identity,
+            other,
+            0,
+            earth,
+            daena_physical::engine::PRODUCT_VIEW_WIDTH,
+            daena_physical::engine::PRODUCT_VIEW_HEIGHT,
+        )
+    );
+}
+
+#[test]
+fn volcanic_source_ids_serialize_as_decimal_strings_beyond_two_to_the_53() {
+    let products = engine_products(32);
+    let mut hazards = products.hazards().clone();
+    let id = u64::MAX - 1;
+    hazards
+        .volcanic_sources
+        .push(daena_physical::products::VolcanicSource {
+            stable_id: id,
+            cell: 0,
+            origin: daena_physical::products::VolcanicOrigin::Hotspot,
+            activity_class: daena_physical::products::VolcanicActivity::Dormant,
+            eruptions_per_model_year_nano: 1,
+        });
+    let json = engine_hazard_products(&hazards);
+    let value = &json["volcanicSources"].as_array().unwrap().last().unwrap()["stableId"];
+    assert_eq!(value, &serde_json::json!(id.to_string()));
+    assert_eq!(value.as_str().unwrap().parse::<u64>().unwrap(), id);
+}
+
+#[test]
+fn engine_cache_rebuilds_after_the_derived_directory_is_deleted() {
+    let products = engine_products(32);
+    let generation = products.generation().unwrap().clone();
+    let source = products.source().to_vec();
+    let validated = daena_core::maps::physical::validate_source(&source, &generation).unwrap();
+    let root = std::env::temp_dir().join(format!("daena-engine-cache-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&root).unwrap();
+    let planetary = daena_physical::planetary::PlanetaryConfiguration::earth_like();
+    let first = load_or_fill_engine_static(
+        root.to_str().unwrap(),
+        &validated.identity,
+        &validated.source,
+        planetary,
+    )
+    .unwrap();
+    let cache_root = root.join(daena_core::maps::physical::PHYSICAL_DERIVED_CACHE_RELATIVE);
+    assert!(cache_root.exists());
+    std::fs::remove_dir_all(&cache_root).unwrap();
+    let rebuilt = load_or_fill_engine_static(
+        root.to_str().unwrap(),
+        &validated.identity,
+        &validated.source,
+        planetary,
+    )
+    .unwrap();
+    assert_eq!(first, rebuilt);
+    std::fs::remove_dir_all(&root).unwrap();
 }

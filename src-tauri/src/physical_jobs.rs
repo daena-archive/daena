@@ -24,9 +24,11 @@ pub(super) struct PhysicalJobResult {
     pub(super) generation: serde_json::Value,
     pub(super) physical_identity: String,
     pub(super) derived_geojson: String,
-    /// Transitional E3 view climate. E4 replaces it with the engine-backed
-    /// product climate field.
-    pub(super) climate: daena_physical::climate::ClimateField,
+    pub(super) climate: daena_physical::products::ClimateField,
+    pub(super) hydrology: daena_physical::products::HydrologyField,
+    /// E6 consumes the hazard field from the job result.
+    #[allow(dead_code)]
+    pub(super) hazards: daena_physical::products::HazardField,
 }
 
 pub(super) struct PhysicalJob {

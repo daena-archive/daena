@@ -6,8 +6,9 @@
 
 use super::{
     climate::{self, ClimateField, ClimateSettings},
-    derive_subsystem_seed,
-    derived_cache::StaticDerivedPhysics,
+    derive_subsystem_seed, derive_subsystem_seed64,
+    derived_cache::{LegacyDerivedPhysics, StaticDerivedPhysics},
+    engine::{DecodedSource, DerivedProducts},
     evolution::{self, DrainageField},
     hydrology::{self, HydrologyField, ThermalExpansion},
     planetary::PlanetaryConfiguration,
@@ -15,7 +16,7 @@ use super::{
     PhysicalError, PhysicalErrorCode, PhysicalField, ProgressPhase, ProgressSink, SeedDomain,
 };
 
-pub const HISTORICAL_DERIVATION_VERSION: u16 = 2;
+pub const HISTORICAL_DERIVATION_VERSION: u16 = 3;
 pub const FORCING_COMPONENT_COUNT: usize = 3;
 pub const MAX_HISTORICAL_OFFSET_YEARS: i64 = 10_000_000;
 const MIN_PERIOD_YEARS: i64 = 4;
@@ -46,6 +47,16 @@ pub struct HistoricalForcingParameters {
 impl HistoricalForcingParameters {
     pub fn default_for(seed: u32, retry_index: u32) -> Self {
         let random = derive_subsystem_seed(seed, retry_index, SeedDomain::HistoricalClimate);
+        Self::from_random(random)
+    }
+
+    /// Forcing from the full 64-bit world seed. The product seed is not
+    /// truncated through a `u32` on this path.
+    pub fn default_for_seed(seed: u64) -> Self {
+        Self::from_random(derive_subsystem_seed64(seed, SeedDomain::HistoricalClimate))
+    }
+
+    fn from_random(random: u64) -> Self {
         let period_0 = 100_000 + ((random >> 8) % 50_001) as i64;
         let period_1 = 41_000 + ((random >> 24) % 9_001) as i64;
         let period_2 = 23_000 + ((random >> 48) % 5_001) as i64;
@@ -133,7 +144,9 @@ pub struct HistoricalMetrics {
     pub temperature_offset_centi_c: i32,
     pub lagged_temperature_offset_centi_c: i32,
     pub land_ice_equilibrium_m3: u64,
-    pub land_ice_m3: u64,
+    /// Signed change from epoch zero. Positive means more land ice than at
+    /// epoch zero; negative means less.
+    pub land_ice_m3: i64,
     pub thermal_expansion_m3: i64,
     pub effective_ocean_water_m3: u64,
     pub conserved_water_m3: u64,
@@ -368,7 +381,7 @@ pub fn derive_historical_world_with_planet(
 
 pub fn derive_historical_world_from_static(
     field: &PhysicalField,
-    static_physics: &StaticDerivedPhysics,
+    static_physics: &LegacyDerivedPhysics,
     reference_water_inventory_m3: u64,
     crust_by_cell: Option<&[CrustType]>,
     parameters: HistoricalForcingParameters,
@@ -390,7 +403,7 @@ pub fn derive_historical_world_from_static(
 #[allow(clippy::too_many_arguments)]
 fn derive_historical_world_with_cache(
     field: &PhysicalField,
-    static_physics: Option<&StaticDerivedPhysics>,
+    static_physics: Option<&LegacyDerivedPhysics>,
     reference_water_inventory_m3: u64,
     crust_by_cell: Option<&[CrustType]>,
     parameters: HistoricalForcingParameters,
@@ -517,9 +530,10 @@ fn derive_historical_world_with_cache(
         };
     }
 
-    let land_ice_m3 = hydrology.metrics.land_ice_m3;
+    let land_ice_magnitude = hydrology.metrics.land_ice_m3;
+    let land_ice_m3 = land_ice_magnitude as i64;
     let remaining_mass = reference_water_inventory_m3
-        .saturating_sub(land_ice_m3)
+        .saturating_sub(land_ice_magnitude)
         .saturating_sub(hydrology.metrics.inland_water_m3)
         .max(1);
     let thermal_expansion_m3 =
@@ -552,6 +566,108 @@ fn derive_historical_world_with_cache(
         climate,
         drainage,
         hydrology,
+    })
+}
+
+/// Engine-backed historical products for one epoch.
+#[derive(Clone, PartialEq, Eq)]
+pub struct DerivedHistoricalWorld {
+    pub metrics: HistoricalMetrics,
+    pub products: DerivedProducts,
+}
+
+/// Derive one epoch from the canonical source.
+///
+/// Land ice and thermal expansion are changes relative to epoch zero. Epoch
+/// zero reuses the present products byte for byte and takes no sea-level solve
+/// or climate run.
+pub fn derive_historical_products(
+    decoded: &DecodedSource,
+    present: &StaticDerivedPhysics,
+    parameters: HistoricalForcingParameters,
+    epoch_offset_years: i64,
+    planetary: PlanetaryConfiguration,
+    progress: &mut dyn ProgressSink,
+) -> Result<DerivedHistoricalWorld, PhysicalError> {
+    parameters.validate()?;
+    let normalized_epoch = normalize_epoch_offset(epoch_offset_years)?;
+    let reference_inventory = decoded.reference_water_inventory_m3();
+    if reference_inventory == 0 {
+        return Err(PhysicalError::coded(
+            PhysicalErrorCode::GeneratorInvalidSettings,
+            "historical derivation requires a positive water inventory",
+        ));
+    }
+    let temperature = temperature_offset_centi_c(normalized_epoch, parameters);
+    let lagged = lagged_temperature_offset_centi_c(normalized_epoch, parameters);
+    let equilibrium = land_ice_volume(reference_inventory, lagged, parameters);
+    let equilibrium_at_zero = land_ice_volume(reference_inventory, 0, parameters);
+    let land_ice_change = i128::from(equilibrium) - i128::from(equilibrium_at_zero);
+    let expansion_at = thermal_expansion_volume(reference_inventory, temperature, parameters);
+    let expansion_at_zero = thermal_expansion_volume(reference_inventory, 0, parameters);
+    let expansion_change = i128::from(expansion_at) - i128::from(expansion_at_zero);
+    let curve = decoded.ocean_volume_curve()?;
+    let maximum = i128::from(curve.last().map(|point| point.volume_m3).unwrap_or(0));
+    let target =
+        (i128::from(reference_inventory) - land_ice_change + expansion_change).clamp(0, maximum);
+    let target = target as u64;
+
+    if normalized_epoch == 0 {
+        let products = DerivedProducts {
+            view: present.view.clone(),
+            climate: present.climate.clone(),
+            hydrology: present.hydrology.clone(),
+            hazards: present.hazards.clone(),
+            derived_geojson: present.geojson.clone(),
+            hashes: present.hashes,
+        };
+        return Ok(DerivedHistoricalWorld {
+            metrics: HistoricalMetrics {
+                derivation_version: HISTORICAL_DERIVATION_VERSION,
+                epoch_offset_years,
+                normalized_epoch,
+                temperature_offset_centi_c: 0,
+                lagged_temperature_offset_centi_c: 0,
+                land_ice_equilibrium_m3: equilibrium_at_zero,
+                land_ice_m3: 0,
+                thermal_expansion_m3: 0,
+                effective_ocean_water_m3: reference_inventory,
+                conserved_water_m3: target,
+                balance_error_m3: 0,
+                sea_level_mm: 0,
+            },
+            products,
+        });
+    }
+
+    progress.report(ProgressPhase::CalculatingClimate, 0, 1)?;
+    let sea_level_mm = decoded.sea_level_for_curve(&curve, target)?;
+    let effective_ocean_water_m3 = decoded.ocean_volume_at(sea_level_mm)?;
+    let products = decoded.derive_epoch_products(
+        sea_level_mm,
+        f64::from(temperature) / 100.0,
+        planetary,
+        progress,
+    )?;
+    progress.report(ProgressPhase::CalculatingClimate, 1, 1)?;
+    let balance_error_m3 = effective_ocean_water_m3.abs_diff(target);
+    Ok(DerivedHistoricalWorld {
+        metrics: HistoricalMetrics {
+            derivation_version: HISTORICAL_DERIVATION_VERSION,
+            epoch_offset_years,
+            normalized_epoch,
+            temperature_offset_centi_c: temperature,
+            lagged_temperature_offset_centi_c: lagged,
+            land_ice_equilibrium_m3: equilibrium,
+            land_ice_m3: land_ice_change.clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64,
+            thermal_expansion_m3: expansion_change.clamp(i128::from(i64::MIN), i128::from(i64::MAX))
+                as i64,
+            effective_ocean_water_m3,
+            conserved_water_m3: target,
+            balance_error_m3,
+            sea_level_mm,
+        },
+        products,
     })
 }
 
@@ -614,7 +730,7 @@ mod tests {
         assert!(normalize_epoch_offset(-MAX_HISTORICAL_OFFSET_YEARS - 1).is_err());
     }
 
-    fn extreme_epochs(parameters: HistoricalForcingParameters) -> (i64, i64) {
+    pub(super) fn extreme_epochs(parameters: HistoricalForcingParameters) -> (i64, i64) {
         let span = parameters.period_years();
         let mut cold = (-span, i32::MAX);
         let mut warm = (span, i32::MIN);
@@ -810,7 +926,7 @@ mod tests {
     #[test]
     fn epoch_zero_from_static_cache_reuses_present_climate_and_hydrology() {
         let world = fixture();
-        let physics = crate::derived_cache::StaticDerivedPhysics::from_world(&world).unwrap();
+        let physics = crate::derived_cache::LegacyDerivedPhysics::from_world(&world).unwrap();
         let parameters =
             HistoricalForcingParameters::default_for(world.field.seed, world.field.retry_index);
         let mut progress = NoopProgress;
@@ -865,7 +981,7 @@ mod tests {
     #[test]
     fn cached_and_uncached_historical_winds_match() {
         let world = fixture();
-        let physics = crate::derived_cache::StaticDerivedPhysics::from_world(&world).unwrap();
+        let physics = crate::derived_cache::LegacyDerivedPhysics::from_world(&world).unwrap();
         let parameters =
             HistoricalForcingParameters::default_for(world.field.seed, world.field.retry_index);
         let (cold_epoch, _) = extreme_epochs(parameters);
@@ -943,6 +1059,220 @@ mod tests {
         assert!(
             close_world.climate.metrics.mean_temperature_centi_c
                 > earth.climate.metrics.mean_temperature_centi_c
+        );
+    }
+}
+
+#[cfg(test)]
+mod e4_tests {
+    use super::*;
+    use crate::derived_cache::StaticDerivedPhysics;
+    use crate::engine::{self, WorldPreset};
+    use crate::planetary::PlanetaryConfiguration;
+    use crate::{NoopProgress, DEFAULT_RADIUS_METRES};
+
+    fn engine_products(resolution: u32) -> engine::Products {
+        let settings = engine::Settings::from_parts(
+            831_429,
+            WorldPreset::Earthlike,
+            resolution,
+            DEFAULT_RADIUS_METRES,
+            290_000,
+            PlanetaryConfiguration::earth_like(),
+        );
+        engine::generate(settings, &mut NoopProgress).unwrap()
+    }
+
+    fn present(source: &[u8]) -> StaticDerivedPhysics {
+        let decoded = engine::decode_source(source).unwrap();
+        let mut progress = NoopProgress;
+        let derived = decoded
+            .derive_products(PlanetaryConfiguration::earth_like(), &mut progress)
+            .unwrap();
+        StaticDerivedPhysics::new(
+            derived.view,
+            derived.climate,
+            derived.hydrology,
+            derived.hazards,
+            derived.derived_geojson,
+            derived.hashes,
+        )
+    }
+
+    #[test]
+    fn epoch_zero_equals_the_present_products_byte_for_byte() {
+        let products = engine_products(32);
+        let decoded = engine::decode_source(products.source()).unwrap();
+        let physics = present(products.source());
+        let forcing = HistoricalForcingParameters::default_for_seed(831_429);
+        let mut progress = NoopProgress;
+        let historical = derive_historical_products(
+            &decoded,
+            &physics,
+            forcing,
+            0,
+            PlanetaryConfiguration::earth_like(),
+            &mut progress,
+        )
+        .unwrap();
+        assert_eq!(historical.products.view, physics.view);
+        assert_eq!(historical.products.climate, physics.climate);
+        assert_eq!(historical.products.hydrology, physics.hydrology);
+        assert_eq!(historical.products.hazards, physics.hazards);
+        assert_eq!(historical.products.derived_geojson, physics.geojson);
+        assert_eq!(historical.metrics.sea_level_mm, 0);
+        assert_eq!(historical.metrics.land_ice_m3, 0);
+        assert_eq!(historical.metrics.thermal_expansion_m3, 0);
+        assert_eq!(historical.metrics.balance_error_m3, 0);
+    }
+
+    #[test]
+    fn epoch_sea_level_is_conserved_within_one_millimetre_of_ocean_volume() {
+        let products = engine_products(32);
+        let decoded = engine::decode_source(products.source()).unwrap();
+        let physics = present(products.source());
+        let forcing = HistoricalForcingParameters::default_for_seed(831_429);
+        let (cold_epoch, warm_epoch) = super::tests::extreme_epochs(forcing);
+        for epoch in [cold_epoch, warm_epoch] {
+            let mut progress = NoopProgress;
+            let historical = derive_historical_products(
+                &decoded,
+                &physics,
+                forcing,
+                epoch,
+                PlanetaryConfiguration::earth_like(),
+                &mut progress,
+            )
+            .unwrap();
+            let volume = decoded
+                .ocean_volume_at(historical.metrics.sea_level_mm)
+                .unwrap();
+            assert_eq!(historical.metrics.effective_ocean_water_m3, volume);
+            let target = historical.metrics.conserved_water_m3 as i128;
+            let one_mm_volume = (4.0
+                * std::f64::consts::PI
+                * (DEFAULT_RADIUS_METRES as f64).powi(2)
+                * 0.001)
+                .ceil() as u128;
+            assert!(
+                (volume as i128 - target).unsigned_abs() <= one_mm_volume,
+                "epoch {epoch}: volume {volume}, target {target}"
+            );
+            let expected_target = i128::from(decoded.reference_water_inventory_m3())
+                - i128::from(historical.metrics.land_ice_m3)
+                + i128::from(historical.metrics.thermal_expansion_m3);
+            assert_eq!(target, expected_target);
+            assert_eq!(
+                historical.metrics.sea_level_mm,
+                historical.products.view.sea_level_mm
+            );
+            assert_eq!(
+                historical.metrics.temperature_offset_centi_c,
+                temperature_offset_centi_c(epoch, forcing)
+            );
+        }
+    }
+
+    #[test]
+    fn land_ice_change_is_signed_relative_to_epoch_zero() {
+        let products = engine_products(32);
+        let decoded = engine::decode_source(products.source()).unwrap();
+        let physics = present(products.source());
+        let forcing = HistoricalForcingParameters::default_for_seed(831_429);
+        let (cold_epoch, warm_epoch) = super::tests::extreme_epochs(forcing);
+        let mut progress = NoopProgress;
+        let cold = derive_historical_products(
+            &decoded,
+            &physics,
+            forcing,
+            cold_epoch,
+            PlanetaryConfiguration::earth_like(),
+            &mut progress,
+        )
+        .unwrap();
+        let warm = derive_historical_products(
+            &decoded,
+            &physics,
+            forcing,
+            warm_epoch,
+            PlanetaryConfiguration::earth_like(),
+            &mut progress,
+        )
+        .unwrap();
+        assert!(cold.metrics.land_ice_m3 > 0);
+        assert!(warm.metrics.land_ice_m3 < 0);
+        assert!(cold.metrics.sea_level_mm < warm.metrics.sea_level_mm);
+    }
+
+    #[test]
+    #[ignore = "wall-clock: release-only epoch cancellation sweep"]
+    fn epoch_cancellation_stays_under_the_deadline_budget() {
+        struct DeadlineSink {
+            deadline: std::time::Instant,
+            armed: bool,
+        }
+        impl crate::ProgressSink for DeadlineSink {
+            fn report(
+                &mut self,
+                _phase: crate::ProgressPhase,
+                _completed: u32,
+                _total: u32,
+            ) -> Result<(), PhysicalError> {
+                if std::time::Instant::now() >= self.deadline {
+                    self.armed = true;
+                }
+                Ok(())
+            }
+
+            fn check_cancelled(&self) -> Result<(), PhysicalError> {
+                if self.armed || std::time::Instant::now() >= self.deadline {
+                    Err(PhysicalError::Cancelled)
+                } else {
+                    Ok(())
+                }
+            }
+        }
+        let products = engine_products(512);
+        let decoded = engine::decode_source(products.source()).unwrap();
+        let physics = present(products.source());
+        let forcing = HistoricalForcingParameters::default_for_seed(831_429);
+        let epoch = forcing.period_years() / 4;
+        let planet = PlanetaryConfiguration::earth_like();
+        let started = std::time::Instant::now();
+        derive_historical_products(
+            &decoded,
+            &physics,
+            forcing,
+            epoch,
+            planet,
+            &mut NoopProgress,
+        )
+        .unwrap();
+        let total = started.elapsed();
+        let mut worst = std::time::Duration::ZERO;
+        let mut deadline_ms = 25;
+        while std::time::Duration::from_millis(deadline_ms) < total {
+            let started = std::time::Instant::now();
+            let mut sink = DeadlineSink {
+                deadline: started + std::time::Duration::from_millis(deadline_ms),
+                armed: false,
+            };
+            let result =
+                derive_historical_products(&decoded, &physics, forcing, epoch, planet, &mut sink);
+            if !matches!(result, Err(PhysicalError::Cancelled)) {
+                deadline_ms += 100;
+                continue;
+            }
+            let late = started
+                .elapsed()
+                .saturating_sub(std::time::Duration::from_millis(deadline_ms));
+            worst = worst.max(late);
+            deadline_ms += 100;
+        }
+        println!("epoch total {total:?}; worst late {worst:?}");
+        assert!(
+            worst.as_millis() < crate::CANCELLATION_LATENCY_BUDGET_MS,
+            "epoch cancellation was {worst:?} late"
         );
     }
 }

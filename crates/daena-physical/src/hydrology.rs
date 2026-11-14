@@ -16,7 +16,7 @@ use super::{
 };
 use crate::tectonics::CrustType;
 
-pub const HYDROLOGY_DERIVATION_VERSION: u16 = 1;
+pub const HYDROLOGY_DERIVATION_VERSION: u16 = 2;
 pub const MAX_HYDROLOGY_FEATURES: usize = crate::MAX_GEOJSON_FEATURES;
 pub const WATER_SOLVER_UNDERRELAXATION_PPM: u32 = 1_000_000;
 const MAX_FIXED_POINT_ITERATIONS: u32 = 32;

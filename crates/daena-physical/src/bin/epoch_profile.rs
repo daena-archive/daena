@@ -1,7 +1,7 @@
 use std::env;
 use std::time::Instant;
 
-use daena_physical::derived_cache::StaticDerivedPhysics;
+use daena_physical::derived_cache::LegacyDerivedPhysics;
 use daena_physical::history::{
     derive_historical_world_from_static, derive_historical_world_with_planet,
     HistoricalForcingParameters, HistoricalWorld,
@@ -58,7 +58,7 @@ fn main() -> Result<(), String> {
     let inventory = world.report.reference_water_inventory_m3;
     let forcing =
         HistoricalForcingParameters::default_for(world.field.seed, world.field.retry_index);
-    let physics = StaticDerivedPhysics::from_world(&world).map_err(|e| e.to_string())?;
+    let physics = LegacyDerivedPhysics::from_world(&world).map_err(|e| e.to_string())?;
     let planetary = PlanetaryConfiguration::earth_like();
     let derive = |progress: &mut NoopProgress| -> Result<HistoricalWorld, String> {
         if use_static {

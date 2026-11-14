@@ -10,10 +10,8 @@ use daena_worldgen as worldgen;
 use serde_json::json;
 
 use crate::{
-    climate::{self, ClimateField},
-    planetary::PlanetaryConfiguration,
-    PhysicalError, PhysicalErrorCode, PhysicalField, ProgressPhase, ProgressSink, ValidationReport,
-    GENERATOR_ID, GENERATOR_VERSION,
+    planetary::PlanetaryConfiguration, products, PhysicalError, PhysicalErrorCode, PhysicalField,
+    ProgressPhase, ProgressSink, ValidationReport, GENERATOR_ID, GENERATOR_VERSION,
 };
 
 pub use worldgen::WORLD_ENGINE_VERSION;
@@ -355,17 +353,6 @@ pub struct SourceHashes {
 }
 
 impl SourceHashes {
-    fn from_engine(hashes: worldgen::GenerationHashes) -> Self {
-        Self {
-            elevation_mm: hashes.elevation_mm,
-            tectonics: hashes.tectonics,
-            climate: hashes.climate,
-            hydrology: hashes.hydrology,
-            biome: hashes.biome,
-            hazards: hashes.hazards,
-        }
-    }
-
     pub fn mismatch(&self, other: &Self) -> Option<&'static str> {
         if self.elevation_mm != other.elevation_mm {
             return Some("elevationHash");
@@ -469,19 +456,148 @@ impl DecodedSource {
             coastline_segments: 0,
         })
     }
+
+    /// Canonical reference elevations in cell order.
+    pub fn reference_elevation_mm(&self) -> &[i32] {
+        &self.elevation_mm
+    }
+
+    /// Resolved seed stored in the source.
+    pub fn seed(&self) -> u64 {
+        self.settings.seed
+    }
+
+    fn cube_grid(&self) -> Result<worldgen::CubeSphere, PhysicalError> {
+        worldgen::CubeSphere::new(self.settings.resolution, self.settings.radius_m)
+            .map_err(|error| invalid(error.to_string()))
+    }
+
+    /// Ocean volume samples on the canonical cube grid.
+    pub fn ocean_volume_curve(&self) -> Result<Vec<OceanVolumePoint>, PhysicalError> {
+        let grid = self.cube_grid()?;
+        worldgen::ocean_volume_curve(&grid, &self.elevation_mm)
+            .map(|curve| {
+                curve
+                    .into_iter()
+                    .map(|sample| OceanVolumePoint {
+                        sea_level_mm: sample.sea_level_mm,
+                        volume_m3: sample.volume_m3,
+                    })
+                    .collect()
+            })
+            .map_err(|error| invalid(error.to_string()))
+    }
+
+    /// Solve a sea level from an already-built canonical curve.
+    pub fn sea_level_for_curve(
+        &self,
+        curve: &[OceanVolumePoint],
+        inventory_m3: u64,
+    ) -> Result<i32, PhysicalError> {
+        let samples = curve
+            .iter()
+            .map(|point| worldgen::OceanVolumeSample {
+                sea_level_mm: point.sea_level_mm,
+                volume_m3: point.volume_m3,
+            })
+            .collect::<Vec<_>>();
+        worldgen::sea_level_for_ocean_volume(&samples, inventory_m3)
+            .map_err(|error| invalid(error.to_string()))
+    }
+
+    /// Ocean volume below a sea level on the canonical cube grid.
+    pub fn ocean_volume_at(&self, sea_level_mm: i32) -> Result<u64, PhysicalError> {
+        let grid = self.cube_grid()?;
+        worldgen::ocean_volume_at(&grid, &self.elevation_mm, sea_level_mm)
+            .map_err(|error| invalid(error.to_string()))
+    }
+
+    /// Re-derive the present world and build the engine-backed products.
+    pub fn derive_products(
+        &self,
+        planetary: PlanetaryConfiguration,
+        progress: &mut dyn ProgressSink,
+    ) -> Result<DerivedProducts, PhysicalError> {
+        let mut adapter = EngineProgress::new(progress);
+        let derived = worldgen::derive_world(
+            &self.settings,
+            &self.tectonics,
+            &self.elevation_mm,
+            &mut adapter,
+        );
+        adapter.finish()?;
+        let world = derived.map_err(|error| map_world_error(error, true))?;
+        let computed = source_hashes_with_cancel(&world, &world.source_elevation_mm(), progress)?;
+        if let Some(field) = computed.mismatch(&self.hashes) {
+            return Err(invalid(format!(
+                "derived generation hash does not match the source: {field}"
+            )));
+        }
+        let mut products = build_world_products(&world, 0, planetary, Some(computed), progress)?;
+        products.hashes = computed;
+        Ok(products)
+    }
+
+    /// Derive one epoch from the canonical source and build its products.
+    pub fn derive_epoch_products(
+        &self,
+        epoch_sea_level_mm: i32,
+        temperature_offset_c: f64,
+        planetary: PlanetaryConfiguration,
+        progress: &mut dyn ProgressSink,
+    ) -> Result<DerivedProducts, PhysicalError> {
+        let mut adapter = EngineProgress::new(progress);
+        let derived = worldgen::derive_epoch(
+            &self.settings,
+            &self.tectonics,
+            &self.elevation_mm,
+            epoch_sea_level_mm,
+            temperature_offset_c,
+            &mut adapter,
+        );
+        adapter.finish()?;
+        let world = derived.map_err(|error| map_world_error(error, true))?;
+        build_world_products(
+            &world,
+            epoch_sea_level_mm,
+            planetary,
+            Some(self.hashes),
+            progress,
+        )
+    }
 }
 
 /// Products built from one engine world.
 pub struct Products {
     source: Vec<u8>,
     view: PhysicalField,
-    climate: ClimateField,
+    climate: products::ClimateField,
+    hydrology: products::HydrologyField,
+    hazards: products::HazardField,
     derived_geojson: String,
     generation: Option<serde_json::Value>,
     hashes: SourceHashes,
     reference_water_inventory_m3: u64,
     resolution: u32,
     seed: u64,
+}
+
+/// One canonical cube-grid ocean volume sample.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OceanVolumePoint {
+    pub sea_level_mm: i32,
+    pub volume_m3: u64,
+}
+
+/// Derive the engine-backed product fields without a source envelope.
+#[derive(Clone, PartialEq, Eq)]
+pub struct DerivedProducts {
+    pub view: PhysicalField,
+    pub climate: products::ClimateField,
+    pub hydrology: products::HydrologyField,
+    pub hazards: products::HazardField,
+    pub derived_geojson: String,
+    pub hashes: SourceHashes,
 }
 
 impl Products {
@@ -493,8 +609,16 @@ impl Products {
         &self.view
     }
 
-    pub fn climate(&self) -> &ClimateField {
+    pub fn climate(&self) -> &products::ClimateField {
         &self.climate
+    }
+
+    pub fn hydrology(&self) -> &products::HydrologyField {
+        &self.hydrology
+    }
+
+    pub fn hazards(&self) -> &products::HazardField {
+        &self.hazards
     }
 
     pub fn derived_geojson(&self) -> &str {
@@ -534,7 +658,7 @@ pub fn generate(
     adapter.finish()?;
     let world = generated.map_err(|error| map_world_error(error, false))?;
     let elevation_mm = world.source_elevation_mm();
-    let hashes = SourceHashes::from_engine(world.generation_hashes());
+    let hashes = source_hashes_with_cancel(&world, &elevation_mm, progress)?;
     let reference_water_inventory_m3 = world.reference_water_inventory_m3();
     let source = encode_parts(
         &world.settings,
@@ -548,15 +672,20 @@ pub fn generate(
         &world.settings,
         reference_water_inventory_m3,
     ));
-    build_products(
+    let derived = build_world_products(&world, 0, settings.planetary, Some(hashes), progress)?;
+    Ok(Products {
         source,
+        view: derived.view,
+        climate: derived.climate,
+        hydrology: derived.hydrology,
+        hazards: derived.hazards,
+        derived_geojson: derived.derived_geojson,
         generation,
-        &world,
-        settings.planetary,
         hashes,
         reference_water_inventory_m3,
-        progress,
-    )
+        resolution: world.settings.resolution,
+        seed: world.settings.seed,
+    })
 }
 
 /// Decode and validate a canonical source. This rebuilds tectonics and checks
@@ -765,7 +894,7 @@ pub fn reload(
     );
     adapter.finish()?;
     let world = derived.map_err(|error| map_world_error(error, true))?;
-    let computed = SourceHashes::from_engine(world.generation_hashes());
+    let computed = source_hashes_with_cancel(&world, &decoded.elevation_mm, progress)?;
     if let Some(field) = computed.mismatch(&decoded.hashes) {
         return Err(invalid(format!(
             "derived generation hash does not match the source: {field}"
@@ -782,78 +911,75 @@ pub fn reload(
     if source != bytes {
         return Err(invalid("source is not in canonical form"));
     }
-    build_products(
-        source,
-        None,
-        &world,
-        planetary,
-        decoded.hashes,
-        decoded.reference_water_inventory_m3,
-        progress,
-    )
-}
-
-fn build_products(
-    source: Vec<u8>,
-    generation: Option<serde_json::Value>,
-    world: &worldgen::World,
-    planetary: PlanetaryConfiguration,
-    hashes: SourceHashes,
-    reference_water_inventory_m3: u64,
-    progress: &mut dyn ProgressSink,
-) -> Result<Products, PhysicalError> {
-    if source.len() > crate::MAX_SOURCE_BYTES {
-        return Err(PhysicalError::coded(
-            PhysicalErrorCode::LimitExceeded,
-            format!("source exceeds the {} byte budget", crate::MAX_SOURCE_BYTES),
-        ));
-    }
-    let elevation_m = world
-        .equirect_elevation_with_cancel(PRODUCT_VIEW_WIDTH, PRODUCT_VIEW_HEIGHT, &|| {
-            progress.check_cancelled().is_err()
-        })
-        .map_err(|error| map_world_error(error, false))?;
-    let elevations_mm = elevation_m
-        .iter()
-        .map(|value| worldgen::elevation_mm_from_m(*value))
-        .collect::<Vec<_>>();
-    let field = PhysicalField {
-        grid: crate::Grid::new(
-            PRODUCT_VIEW_WIDTH,
-            PRODUCT_VIEW_HEIGHT,
-            world.settings.radius_m.round() as u64,
-        )
-        .map_err(PhysicalError::InvalidSettings)?,
-        seed: (world.settings.seed & u64::from(u32::MAX)) as u32,
-        retry_index: 0,
-        target_land_fraction_ppm: (world.settings.land_fraction * 1_000_000.0).round() as u32,
-        sea_level_mm: 0,
-        elevations_mm,
-    };
-    field.validate().map_err(PhysicalError::InvalidSettings)?;
-    let climate = transitional_climate(&field, planetary, progress)?;
-    let derived_geojson = crate::to_geojson_with_progress(&field, progress)?;
+    let derived = build_world_products(&world, 0, planetary, Some(decoded.hashes), progress)?;
     Ok(Products {
         source,
-        view: field,
-        climate,
-        derived_geojson,
-        generation,
-        hashes,
-        reference_water_inventory_m3,
-        resolution: world.settings.resolution,
-        seed: world.settings.seed,
+        view: derived.view,
+        climate: derived.climate,
+        hydrology: derived.hydrology,
+        hazards: derived.hazards,
+        derived_geojson: derived.derived_geojson,
+        generation: None,
+        hashes: decoded.hashes,
+        reference_water_inventory_m3: decoded.reference_water_inventory_m3,
+        resolution: decoded.settings.resolution,
+        seed: decoded.settings.seed,
     })
 }
 
-fn transitional_climate(
-    field: &PhysicalField,
+/// Build every engine-backed product field from one finished world.
+///
+/// `sea_level_mm` is zero for the present world. For an epoch it is the solved
+/// epoch sea level; the product view keeps reference elevations and stores the
+/// epoch level in `PhysicalField::sea_level_mm`.
+pub fn build_world_products(
+    world: &worldgen::World,
+    sea_level_mm: i32,
     planetary: PlanetaryConfiguration,
+    hashes: Option<SourceHashes>,
     progress: &mut dyn ProgressSink,
-) -> Result<ClimateField, PhysicalError> {
-    let mut settings = climate::ClimateSettings::default_for(field.grid);
-    settings.planetary = planetary;
-    climate::derive_current_climate(field, settings, field.seed, field.retry_index, progress)
+) -> Result<DerivedProducts, PhysicalError> {
+    if progress.check_cancelled().is_err() {
+        return Err(PhysicalError::Cancelled);
+    }
+    let cancelled = || progress.check_cancelled().is_err();
+    let raster =
+        products::build_view_raster(world, PRODUCT_VIEW_WIDTH, PRODUCT_VIEW_HEIGHT, &cancelled)?;
+    let view = PhysicalField {
+        grid: raster.grid,
+        seed: (world.settings.seed & u64::from(u32::MAX)) as u32,
+        retry_index: 0,
+        target_land_fraction_ppm: (world.settings.land_fraction * 1_000_000.0)
+            .round()
+            .clamp(1.0, 999_999.0) as u32,
+        sea_level_mm,
+        elevations_mm: raster
+            .elevations_mm
+            .iter()
+            .map(|value| value.saturating_add(sea_level_mm))
+            .collect(),
+    };
+    view.validate().map_err(PhysicalError::InvalidSettings)?;
+    progress.check_cancelled()?;
+    let climate = products::build_climate(world, &raster, planetary)?;
+    progress.check_cancelled()?;
+    let hydrology = products::build_hydrology(world, &raster, &view, &cancelled)?;
+    progress.check_cancelled()?;
+    let hazards = products::build_hazards(world, &raster, &cancelled)?;
+    progress.check_cancelled()?;
+    let derived_geojson = crate::to_geojson_with_progress(&view, progress)?;
+    let hashes = match hashes {
+        Some(hashes) => hashes,
+        None => source_hashes_with_cancel(world, &world.source_elevation_mm(), progress)?,
+    };
+    Ok(DerivedProducts {
+        view,
+        climate,
+        hydrology,
+        hazards,
+        derived_geojson,
+        hashes,
+    })
 }
 
 fn encode_parts(
@@ -958,10 +1084,7 @@ fn generation_json(
     resolved: &worldgen::WorldSettings,
     reference_water_inventory_m3: u64,
 ) -> serde_json::Value {
-    let forcing = crate::history::HistoricalForcingParameters::default_for(
-        (settings.seed & u64::from(u32::MAX)) as u32,
-        0,
-    );
+    let forcing = crate::history::HistoricalForcingParameters::default_for_seed(settings.seed);
     json!({
         "id": GENERATOR_ID,
         "version": GENERATOR_VERSION,
@@ -1098,6 +1221,226 @@ fn elevation_mm_hash(values: &[i32]) -> u64 {
     hash
 }
 
+const HASH_CHUNK: usize = 65_536;
+
+fn hash_byte(mut hash: u64, byte: u8) -> u64 {
+    hash ^= u64::from(byte);
+    hash.wrapping_mul(FNV_PRIME)
+}
+
+fn hash_u32(mut hash: u64, value: u32) -> u64 {
+    for byte in value.to_le_bytes() {
+        hash = hash_byte(hash, byte);
+    }
+    hash
+}
+
+fn hash_u64(mut hash: u64, value: u64) -> u64 {
+    for byte in value.to_le_bytes() {
+        hash = hash_byte(hash, byte);
+    }
+    hash
+}
+
+fn hash_f32_value(hash: u64, value: f32) -> u64 {
+    hash_u32(hash, value.to_bits())
+}
+
+fn hash_f64_value(hash: u64, value: f64) -> u64 {
+    hash_u64(hash, value.to_bits())
+}
+
+fn hash_elevation_mm(
+    mut hash: u64,
+    values: &[i32],
+    progress: &dyn ProgressSink,
+) -> Result<u64, PhysicalError> {
+    for chunk in values.chunks(HASH_CHUNK) {
+        progress.check_cancelled()?;
+        for value in chunk {
+            hash = hash_u32(hash, *value as u32);
+        }
+    }
+    Ok(hash)
+}
+
+fn hash_u8_values(
+    mut hash: u64,
+    values: &[u8],
+    progress: &dyn ProgressSink,
+) -> Result<u64, PhysicalError> {
+    for chunk in values.chunks(HASH_CHUNK) {
+        progress.check_cancelled()?;
+        for value in chunk {
+            hash = hash_byte(hash, *value);
+        }
+    }
+    Ok(hash)
+}
+
+fn hash_u32_values(
+    mut hash: u64,
+    values: &[u32],
+    progress: &dyn ProgressSink,
+) -> Result<u64, PhysicalError> {
+    for chunk in values.chunks(HASH_CHUNK) {
+        progress.check_cancelled()?;
+        for value in chunk {
+            hash = hash_u32(hash, *value);
+        }
+    }
+    Ok(hash)
+}
+
+fn hash_f32_values(
+    mut hash: u64,
+    values: &[f32],
+    progress: &dyn ProgressSink,
+) -> Result<u64, PhysicalError> {
+    for chunk in values.chunks(HASH_CHUNK) {
+        progress.check_cancelled()?;
+        for value in chunk {
+            hash = hash_f32_value(hash, *value);
+        }
+    }
+    Ok(hash)
+}
+
+fn hash_f64_values(
+    mut hash: u64,
+    values: &[f64],
+    progress: &dyn ProgressSink,
+) -> Result<u64, PhysicalError> {
+    for chunk in values.chunks(HASH_CHUNK) {
+        progress.check_cancelled()?;
+        for value in chunk {
+            hash = hash_f64_value(hash, *value);
+        }
+    }
+    Ok(hash)
+}
+
+fn climate_hash(
+    climate: &worldgen::ClimateSummary,
+    progress: &dyn ProgressSink,
+) -> Result<u64, PhysicalError> {
+    let mut hash = FNV_OFFSET;
+    for field in [
+        climate.t_annual_c.as_slice(),
+        climate.t_warm_c.as_slice(),
+        climate.t_cold_c.as_slice(),
+        climate.p_annual_mm.as_slice(),
+        climate.p_dry_month_mm.as_slice(),
+        climate.pet_annual_mm.as_slice(),
+        climate.runoff_mm.as_slice(),
+        climate.ice_balance_mm.as_slice(),
+    ] {
+        hash = hash_f32_values(hash, field, progress)?;
+    }
+    hash_u8_values(hash, &climate.sea_ice_months, progress)
+}
+
+fn hydrology_hash(
+    hydrology: &worldgen::Hydrology,
+    progress: &dyn ProgressSink,
+) -> Result<u64, PhysicalError> {
+    let mut hash = FNV_OFFSET;
+    for lake in &hydrology.lakes {
+        progress.check_cancelled()?;
+        hash = hash_byte(hash, lake.kind as u8);
+        hash = hash_f64_value(hash, lake.level_m);
+        hash = hash_f64_value(hash, lake.area_m2);
+        hash = hash_f64_value(hash, lake.volume_m3);
+        hash = hash_f64_value(hash, lake.evaporated_m3);
+        hash = hash_f64_value(hash, lake.outflow_m3);
+        hash = hash_f64_value(hash, lake.inflow_m3);
+    }
+    for river in &hydrology.rivers {
+        hash = hash_byte(hash, river.end as u8);
+        hash = hash_f64_value(hash, river.max_discharge_m3s);
+        for chunk in river.cells.chunks(HASH_CHUNK) {
+            progress.check_cancelled()?;
+            for cell in chunk {
+                hash = hash_u32(hash, *cell);
+            }
+        }
+    }
+    hash = hash_u32_values(hash, &hydrology.lake_id, progress)?;
+    hash = hash_f64_values(hash, &hydrology.discharge_m3s, progress)?;
+    hash = hash_u8_values(hash, &hydrology.ice_cover, progress)?;
+    hash_u32_values(hash, &hydrology.receiver, progress)
+}
+
+fn hazards_hash(
+    hazards: &worldgen::Hazards,
+    progress: &dyn ProgressSink,
+) -> Result<u64, PhysicalError> {
+    let mut hash = FNV_OFFSET;
+    hash = hash_f32_values(hash, &hazards.quake_rate_km2, progress)?;
+    hash = hash_u8_values(hash, &hazards.quake_hazard, progress)?;
+    hash = hash_u8_values(hash, &hazards.volcanic_hazard, progress)?;
+    for source in &hazards.volcanic_sources {
+        progress.check_cancelled()?;
+        hash = hash_u64(hash, source.id);
+        for component in source.pos {
+            hash = hash_f64_value(hash, component);
+        }
+        hash = hash_u32(hash, source.cell);
+        hash = hash_byte(
+            hash,
+            match source.origin {
+                worldgen::VolcanicOrigin::SubductionArc => 0,
+                worldgen::VolcanicOrigin::Hotspot => 1,
+                worldgen::VolcanicOrigin::Rift => 2,
+            },
+        );
+        hash = hash_byte(
+            hash,
+            match source.activity {
+                worldgen::VolcanicActivity::Dormant => 0,
+                worldgen::VolcanicActivity::Moderate => 1,
+                worldgen::VolcanicActivity::Vigorous => 2,
+            },
+        );
+        hash = hash_f32_value(hash, source.eruptions_per_yr);
+    }
+    hash = hash_f32_values(hash, &hazards.storms.genesis_km2, progress)?;
+    hash = hash_f32_values(hash, &hazards.storms.track_km2, progress)?;
+    hash = hash_f32_values(hash, &hazards.storms.intensity, progress)?;
+    hash = hash_f32_values(hash, &hazards.storms.genesis_monthly_km2, progress)?;
+    hash = hash_u8_values(hash, &hazards.drought, progress)?;
+    hash = hash_u8_values(hash, &hazards.heat_wave, progress)?;
+    hash = hash_u8_values(hash, &hazards.extreme_rain, progress)?;
+    hash_u8_values(hash, &hazards.flood, progress)
+}
+
+/// Compute the source hashes with cancellation between chunks.
+///
+/// This mirrors `World::generation_hashes` exactly; the equality test at
+/// `source_hashes_match_the_engine` keeps the two implementations locked.
+pub fn source_hashes_with_cancel(
+    world: &worldgen::World,
+    elevation_mm: &[i32],
+    progress: &dyn ProgressSink,
+) -> Result<SourceHashes, PhysicalError> {
+    progress.check_cancelled()?;
+    let elevation_mm_hash = hash_elevation_mm(FNV_OFFSET, elevation_mm, progress)?;
+    let tectonics = world.tectonics_hash();
+    progress.check_cancelled()?;
+    let climate = climate_hash(&world.climate, progress)?;
+    let hydrology = hydrology_hash(&world.hydrology, progress)?;
+    let biome = hash_u8_values(FNV_OFFSET, &world.biome, progress)?;
+    let hazards = hazards_hash(&world.hazards, progress)?;
+    Ok(SourceHashes {
+        elevation_mm: elevation_mm_hash,
+        tectonics,
+        climate,
+        hydrology,
+        biome,
+        hazards,
+    })
+}
+
 fn invalid(message: impl Into<String>) -> PhysicalError {
     PhysicalError::coded(PhysicalErrorCode::SourceInvalid, message)
 }
@@ -1192,6 +1535,22 @@ mod tests {
     }
 
     #[test]
+    fn source_hashes_match_the_engine() {
+        let world_settings = settings(64).world_settings().unwrap();
+        let progress = NoopProgress;
+        let world = worldgen::generate(&world_settings, &mut worldgen::NoProgress).unwrap();
+        let elevation = world.source_elevation_mm();
+        let ours = source_hashes_with_cancel(&world, &elevation, &progress).unwrap();
+        let engine = world.generation_hashes();
+        assert_eq!(ours.elevation_mm, engine.elevation_mm);
+        assert_eq!(ours.tectonics, engine.tectonics);
+        assert_eq!(ours.climate, engine.climate);
+        assert_eq!(ours.hydrology, engine.hydrology);
+        assert_eq!(ours.biome, engine.biome);
+        assert_eq!(ours.hazards, engine.hazards);
+    }
+
+    #[test]
     fn decode_and_derive_reproduce_every_generation_hash() {
         let generated = generate(settings(64), &mut NoopProgress).unwrap();
         let reloaded = reload(
@@ -1201,6 +1560,22 @@ mod tests {
         )
         .unwrap();
         assert_eq!(reloaded.hashes(), generated.hashes());
+    }
+
+    #[test]
+    fn source_only_rebuild_reproduces_every_product_field() {
+        let generated = generate(settings(64), &mut NoopProgress).unwrap();
+        let reloaded = reload(
+            generated.source(),
+            PlanetaryConfiguration::earth_like(),
+            &mut NoopProgress,
+        )
+        .unwrap();
+        assert_eq!(reloaded.view(), generated.view());
+        assert_eq!(reloaded.climate(), generated.climate());
+        assert_eq!(reloaded.hydrology(), generated.hydrology());
+        assert_eq!(reloaded.hazards(), generated.hazards());
+        assert_eq!(reloaded.derived_geojson(), generated.derived_geojson());
     }
 
     #[test]
@@ -1315,5 +1690,139 @@ mod tests {
             reload,
             generated.source().len()
         );
+    }
+
+    #[test]
+    #[ignore = "wall-clock: release-only E4 timing table"]
+    fn e4_release_timing_table() {
+        use crate::derived_cache::StaticDerivedPhysics;
+        use crate::history::{derive_historical_products, HistoricalForcingParameters};
+        use std::fs;
+
+        let mut rows = Vec::new();
+        for resolution in [512, 1024] {
+            let started = Instant::now();
+            let generated = generate(settings(resolution), &mut NoopProgress).unwrap();
+            let generation = started.elapsed();
+            let started = Instant::now();
+            let decoded = decode_source(generated.source()).unwrap();
+            let decode = started.elapsed();
+            let started = Instant::now();
+            let derived = decoded
+                .derive_products(PlanetaryConfiguration::earth_like(), &mut NoopProgress)
+                .unwrap();
+            let derive = started.elapsed();
+            let cold_reload = decode + derive;
+            let max_strahler = derived
+                .hydrology
+                .rivers
+                .iter()
+                .map(|river| river.strahler_order)
+                .max()
+                .unwrap_or(0);
+            println!(
+                "n={resolution}: decode {decode:?}; derive+views {derive:?}; cold reload {cold_reload:?}; max Strahler {max_strahler}"
+            );
+            let physics = StaticDerivedPhysics::new(
+                derived.view,
+                derived.climate,
+                derived.hydrology,
+                derived.hazards,
+                derived.derived_geojson,
+                derived.hashes,
+            );
+            let dir = std::env::temp_dir().join(format!(
+                "daena-e4-timing-{}-{}",
+                std::process::id(),
+                resolution
+            ));
+            crate::derived_cache::save(&dir, &physics).unwrap();
+            let started = Instant::now();
+            let cache = crate::derived_cache::load(&dir).unwrap().unwrap();
+            let warm_cache = started.elapsed();
+            let started = Instant::now();
+            let forcing = HistoricalForcingParameters::default_for_seed(831_429);
+            let _ = derive_historical_products(
+                &decoded,
+                &cache,
+                forcing,
+                forcing.period_years() / 4,
+                PlanetaryConfiguration::earth_like(),
+                &mut NoopProgress,
+            )
+            .unwrap();
+            let epoch = started.elapsed();
+            rows.push((resolution, generation, cold_reload, warm_cache, epoch));
+            let _ = fs::remove_dir_all(&dir);
+        }
+        for (resolution, generation, cold_reload, warm_cache, epoch) in rows {
+            println!(
+                "n={resolution}: generation {generation:?}; cold reload {cold_reload:?}; warm cache {warm_cache:?}; epoch {epoch:?}"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "wall-clock: release-only E4 epoch breakdown"]
+    fn e4_epoch_breakdown_at_512() {
+        use crate::history::HistoricalForcingParameters;
+        let generated = generate(settings(512), &mut NoopProgress).unwrap();
+        let decoded = decode_source(generated.source()).unwrap();
+        let forcing = HistoricalForcingParameters::default_for_seed(831_429);
+        let sea_level = 0;
+        let mut progress = NoopProgress;
+        let started = Instant::now();
+        let mut adapter = EngineProgress::new(&mut progress);
+        let epoch_world = worldgen::derive_epoch(
+            &decoded.settings,
+            &decoded.tectonics,
+            &decoded.elevation_mm,
+            sea_level,
+            f64::from(crate::history::temperature_offset_centi_c(
+                forcing.period_years() / 4,
+                forcing,
+            )) / 100.0,
+            &mut adapter,
+        )
+        .unwrap();
+        adapter.finish().unwrap();
+        let engine_epoch = started.elapsed();
+        let started = Instant::now();
+        let raster = products::build_view_raster(
+            &epoch_world,
+            PRODUCT_VIEW_WIDTH,
+            PRODUCT_VIEW_HEIGHT,
+            &|| false,
+        )
+        .unwrap();
+        let view = started.elapsed();
+        let field = PhysicalField {
+            grid: raster.grid,
+            seed: 831_429,
+            retry_index: 0,
+            target_land_fraction_ppm: 290_000,
+            sea_level_mm: sea_level,
+            elevations_mm: raster.elevations_mm.clone(),
+        };
+        let started = Instant::now();
+        let climate =
+            products::build_climate(&epoch_world, &raster, PlanetaryConfiguration::earth_like())
+                .unwrap();
+        let climate_time = started.elapsed();
+        let started = Instant::now();
+        let hydrology =
+            products::build_hydrology(&epoch_world, &raster, &field, &|| false).unwrap();
+        let hydrology_time = started.elapsed();
+        let started = Instant::now();
+        let _ = products::build_hazards(&epoch_world, &raster, &|| false).unwrap();
+        let hazards_time = started.elapsed();
+        let started = Instant::now();
+        let _ = crate::to_geojson_with_progress(&field, &NoopProgress).unwrap();
+        let geojson = started.elapsed();
+        println!(
+            "epoch breakdown: engine {engine_epoch:?}; view {view:?}; climate {climate_time:?}; hydrology {hydrology_time:?}; hazards {hazards_time:?}; geojson {geojson:?}; spinup {}",
+            climate.metrics.climate_spinup_years
+        );
+        let _ = hydrology;
     }
 }

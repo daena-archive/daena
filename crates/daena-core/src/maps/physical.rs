@@ -140,6 +140,8 @@ pub fn physical_derived_cache_dir(
     project_root: &Path,
     identity: &str,
     planetary: daena_physical::planetary::PlanetaryConfiguration,
+    view_width: u32,
+    view_height: u32,
 ) -> Result<PathBuf, CoreError> {
     let Some(hex) = identity.strip_prefix("sha256:") else {
         return Err(CoreError::Validation(
@@ -158,7 +160,13 @@ pub fn physical_derived_cache_dir(
     Ok(project_root
         .join(PHYSICAL_DERIVED_CACHE_RELATIVE)
         .join(format!("sha256-{hex}"))
-        .join(daena_physical::derived_cache::StaticDerivedPhysics::version_dir(planetary)))
+        .join(
+            daena_physical::derived_cache::StaticDerivedPhysics::version_dir(
+                planetary,
+                view_width,
+                view_height,
+            ),
+        ))
 }
 
 #[must_use]

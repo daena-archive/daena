@@ -22,6 +22,7 @@ pub mod hydro_claim;
 pub mod hydrology;
 pub mod landmass_claim;
 pub mod planetary;
+pub mod products;
 pub mod region;
 pub mod resolution;
 pub mod routing;
@@ -532,6 +533,11 @@ pub fn derive_subsystem_seed(seed: u32, retry_index: u32, domain: SeedDomain) ->
     )
 }
 
+/// Derive a subsystem value from the full 64-bit world seed.
+pub fn derive_subsystem_seed64(seed: u64, domain: SeedDomain) -> u64 {
+    splitmix64(seed ^ domain.tag())
+}
+
 fn elevation_for(seed: u32, retry_index: u32, index: usize) -> i32 {
     let state = u64::from(seed)
         ^ (u64::from(retry_index).wrapping_mul(0xd6e8_feb8_6659_fd93))
@@ -896,11 +902,19 @@ pub struct Segment {
 }
 
 pub(crate) fn longitude_micro(grid: &Grid, column: u32) -> i32 {
-    (-180_000_000i64 + 360_000_000i64 * i64::from(column) / i64::from(grid.width)) as i32
+    if column >= grid.width {
+        return 180_000_000;
+    }
+    (-180_000_000i64 + 360_000_000i64 * (2 * i64::from(column) + 1) / (2 * i64::from(grid.width)))
+        as i32
 }
 
 pub(crate) fn latitude_micro(grid: &Grid, row: u32) -> i32 {
-    (-90_000_000i64 + 180_000_000i64 * i64::from(row) / i64::from(grid.height)) as i32
+    if row >= grid.height {
+        return 90_000_000;
+    }
+    (-90_000_000i64 + 180_000_000i64 * (2 * i64::from(row) + 1) / (2 * i64::from(grid.height)))
+        as i32
 }
 
 pub fn coastline_paths(field: &PhysicalField) -> Result<Vec<Vec<[i32; 2]>>, PhysicalError> {

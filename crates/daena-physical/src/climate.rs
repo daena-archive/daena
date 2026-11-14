@@ -42,7 +42,7 @@ use crate::planetary::{
 use rayon::prelude::*;
 use std::sync::OnceLock;
 
-pub const CLIMATE_DERIVATION_VERSION: u16 = 2;
+pub const CLIMATE_DERIVATION_VERSION: u16 = 3;
 pub const BIOME_OCEAN: u32 = 0;
 pub const BIOME_ICE: u32 = 1;
 pub const BIOME_TUNDRA: u32 = 2;

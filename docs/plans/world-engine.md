@@ -1040,8 +1040,8 @@ tools read canonical cells directly and do not go through the view.
 | `wind_east_milli`, `wind_north_milli` | annual mean of the twelve `ClimateField.wind` tangent vectors, projected on local east/north, ×1000 | kept |
 | `wind_east_nh_summer_milli`, `wind_north_nh_summer_milli` | same projection at month 3 | kept |
 | `wind_east_nh_winter_milli`, `wind_north_nh_winter_milli` | same projection at month 9 | kept |
-| `wind_divergence_ppm` | finite-difference divergence of the coarse wind field on the climate grid, then resampled | kept, computed |
-| `wind_divergence_nh_summer_ppm`, `wind_divergence_nh_winter_ppm` | same at months 3 and 9 | kept, computed |
+| `wind_divergence_nano_per_s` (was `wind_divergence_ppm`) | spherical finite-difference divergence of the view wind, in 1e-9 s⁻¹ | kept, computed |
+| `wind_divergence_nh_summer_nano_per_s`, `wind_divergence_nh_winter_nano_per_s` | same at months 3 and 9 | kept, computed |
 | `wind_band`, `wind_band_nh_summer`, `wind_band_nh_winter` | latitude relative to `ClimateField.phi_h_deg` and `phi_f_deg`: `0` Hadley, `1` Ferrel, `2` polar | kept, computed |
 | `current_east_milli`, `current_north_milli` | no ocean-circulation model | removed with current layer, current arrows, studio current sample and current metrics |
 | `humidity_ppm` | no engine published relative humidity | removed with humidity view, Find Place filters, Atlas humidity style and studio humidity sample |
@@ -1061,7 +1061,8 @@ Climate metrics:
   seasonal range and seasonal min/max from `t_warm_c`/`t_cold_c`; permanent
   and seasonal frozen land from `t_cold_c`/`t_warm_c` and sea ice; mean wind
   speed and easterly/converging shares from the coarse wind; ITCZ from
-  `phi_h_deg`; land aridity from `1 - P/PET`; dominant land biome; storm
+  `ClimateField.itcz_lat_deg`; land aridity from `1 - P/PET`; dominant land
+  biome; storm
   genesis/track/intensity means; expected storms per year from
   `Σ genesis_km2 · coarse_cell_area`; drought/heat/extreme-rain means from
   the engine hazard fields; growing/dry/wet season means from the monthly
@@ -1887,7 +1888,7 @@ Every item is removed in E3–E8 as part of the hard cut; none is synthesized.
 | E5 | Tools. Find Place, routes, claims, landmass/region, previews, coastlines, contours and Atlas input move to canonical cells and the equirect view. Claims use canonical cube ids; Atlas `prepare_from_source` builds the view at the explicit view size and keeps its transform/styles/tile cache; remove humidity/current Atlas inputs and styles. `project_physical_find_place`, `suggest_routes`, `propose_region`, and Atlas Studio claim/inspect use the adapter. | Find Place criteria map one-to-one (no humidity), candidates use canonical ids and point coordinates; route paths, slope, crossings, lake/ice cells match engine data; claim ids resolve at the reference and at epochs, and old ids are unresolved; region geometry closes and is epoch-aware; GeoJSON feature/byte limits hold at 1024×512 and 2048×1024; Atlas golden tests regenerated with a reason each; Atlas tile seams/cache deletion unchanged. |
 | E6 | Events and hazards. Build the product `HazardField` from engine fields with explicit unit functions; widen volcanic source ids and `MaterializedEvent.sampled_center_id` to `u64` and serialize them as decimal strings; use engine lake spill cells; replace the inline storm path with `trace_storm` and monthly genesis; bump `HAZARD_DERIVATION_VERSION = 2`, `VOLCANIC_SOURCE_DERIVATION_VERSION = 2`, earthquake/eruption materialization to 2, storm/flood materialization to 3, `EVENT_MATERIALIZATION_VERSION = 3`; keep already materialized events. | Unit tests for M ≥ 5 → M ≥ 4, area multiplication, nano/ppm conversions, u64 ids and JSON round trips beyond `2^53`, source ordering; event sampling deterministic and bounded; storm tracks match engine tracer; flood events use spill cells and fresh/overflowing lakes; expected lambda matches rate mass; materialized events keep authored provenance; version mismatches fail validation rather than mixing semantics. |
 | E7 | Frontend. Remove humidity, current, evolution, terrain-age and tectonic-style views/controls; add world preset and resolution; 26-class biome legend; hazard layers and source metadata; show engine-derived metrics; update Find Place, routes, claims and epoch UI; Atlas studio surface samples lose humidity/current/thickness; Atlas humidity style is not offered. | `npm run check` and the Maps/Atlas frontend tests; Tauri command tests for new input/result shapes; rendered desktop checks for preset/resolution, layer toggles, biome legend, no removed overlays, claim/epoch labels, Atlas studio inspection and detach; no UI reads a removed field. |
-| E8 | Clean-up and budgets. Delete uncalled old generator code, old source codec, old types and constants; measure full generation, memory, source size, epoch time, GeoJSON at 1024×512/2048×1024; set `GENERATION_TIME_BUDGET_MS`, `WORKING_MEMORY_BUDGET_BYTES`, `MAX_SOURCE_BYTES`, production resolution constants and GeoJSON limits from the measured envelopes; update ADR 0004 decision history and `MAPS.md` in the same commit; regenerate Atlas/engine golden fixtures with reasons. | Full `cargo test --workspace --locked --offline`; no reference to deleted generator/source symbols; measured budget table recorded; ADR/MAPS constants match code; clean checkpoint export, delete `.daena/`, rebuild, and compare physical identity/products; malformed source, external checkpoint edit and missing `.daena` recovery; packaged Tauri desktop lifecycle check for generate/accept/reload/export. |
+| E8 | Clean-up and budgets. Delete uncalled old generator code, old source codec, old types and constants; move the cancellable chunked source hashing from `daena-physical` (`source_hashes_with_cancel`, an FNV replica locked to `World::generation_hashes` by a test) into the engine; measure full generation, memory, source size, epoch time, GeoJSON at 1024×512/2048×1024; set `GENERATION_TIME_BUDGET_MS`, `WORKING_MEMORY_BUDGET_BYTES`, `MAX_SOURCE_BYTES`, production resolution constants and GeoJSON limits from the measured envelopes; update ADR 0004 decision history and `MAPS.md` in the same commit; regenerate Atlas/engine golden fixtures with reasons. | Full `cargo test --workspace --locked --offline`; no reference to deleted generator/source symbols; measured budget table recorded; ADR/MAPS constants match code; clean checkpoint export, delete `.daena/`, rebuild, and compare physical identity/products; malformed source, external checkpoint edit and missing `.daena` recovery; packaged Tauri desktop lifecycle check for generate/accept/reload/export. |
 
 #### E3 notes
 
@@ -1961,6 +1962,114 @@ Transitional state until E4–E7:
   engine products. Atlas reads the new source in E5. Materialized events are
   never touched by generation or acceptance.
 
+#### E4 notes
+
+Implemented in E4 on top of E3 (`5eff345`). E4 adds engine-backed products,
+the derived cache and epochs; the unmigrated E5–E7 consumers still use the old
+product types.
+
+- **Product types.** The engine-backed fields are
+  `daena_physical::products::{ClimateField, HydrologyField, HazardField}` and
+  their basin, river, hazard-source and metric records. The old
+  `climate::ClimateField`, `hydrology::HydrologyField` and
+  `hazards::HazardField` stay for Find Place, routes, claims, events, Atlas and
+  the old generator tests until E5/E6 move those consumers; E8 deletes them.
+  Nothing is renamed later.
+- **Climate.** `products::ClimateField` is built from the explicit 1024×512
+  cell-centred view: annual and solstice temperature and precipitation,
+  runoff and runoff volume, maritime factor, annual and solstice wind,
+  divergence and wind bands, aridity, the engine biome id `0..=25`, storm
+  presentation indices and the kept metrics. The engine spin-up year count is
+  a new `climateSpinupYears` metric; the old transport slot is not reused.
+  Moisture, humidity and ocean currents are absent, not zero-filled.
+- **Hydrology.** `products::HydrologyField` is built from the engine lakes,
+  rivers and receivers: levels, slope, hillshade, bathymetry, receiver-root
+  watershed ids, engine lake ids, lake/ice/shelf/island masks, engine basins
+  (canonical minimum and spill cells), rivers (canonical source and mouth,
+  computed Strahler order, Ocean/Lake/Confluence end), canonical cell-centre
+  river coordinates, geometry and view counts. Ice thickness, volume-to-spill,
+  the basin tree, direct precipitation and the water-balance fixed-point
+  metrics are absent. Strahler order is computed on the river network only
+  (river cells, terminal ocean/lake cell excluded) and each segment takes the
+  maximum order along its own cells; the n=512 network reaches order 5.
+- **Wind and ITCZ.** Divergence uses the spherical
+  `(1/(R cosφ))(∂u/∂λ + ∂(v cosφ)/∂φ)` form with a pole floor and is stored
+  in 1e-9 s⁻¹ as `wind_divergence_*_nano_per_s`; a 1e-6 scale rounded typical
+  surface values (1e-6 to 1e-5 s⁻¹) to single digits. The ITCZ metric
+  is the mean of the engine's `ClimateField.itcz_lat_deg`, not the Hadley edge.
+- **Hazards.** `products::HazardField` maps engine `u8` potentials to ppm,
+  converts `M ≥ 5` to `M ≥ 4` with `10^0.9` in
+  `products::earthquake_rate_nano`, multiplies by m², sums eruption rates per
+  cell and keeps `u64` source ids. Raster cells use the view cell area; point
+  and event consumers use the canonical cube cell area. JSON serializes a
+  source id as a decimal string. Source cells map to the view row at their own
+  latitude; events and materialization stay E6.
+- **Evolution.** It is gone from the job result. The registered
+  `project_physical_derived_evolution` command remains and returns
+  `physical evolution products were removed in phase E4`.
+- **Geometry.** `latitude_micro` and `longitude_micro` now use cell centres.
+  The legacy tectonic diagnostic calls them with one-past-the-edge indices, so
+  those two out-of-range indices keep the edge value `180`/`90`.
+- **Cache.** `derived_cache::StaticDerivedPhysics` stores the view, climate,
+  hydrology, hazards, GeoJSON and the generation hashes. The cache format is
+  `CACHE_FORMAT_VERSION = 3`; the directory string is
+  `e<engine>-s<source>-c<climate>-h<hydrology>-z<hazard>-v<volcanic-source>-view<width>x<height>-<planet-token>`.
+  Every fill checks the decoded source's generation hashes before publishing.
+  Derived and reload commands fill on a miss and read the cache on a hit.
+- **Versions.** `CLIMATE_DERIVATION_VERSION = 3`,
+  `HYDROLOGY_DERIVATION_VERSION = 2`, `HISTORICAL_DERIVATION_VERSION = 3`,
+  `CACHE_FORMAT_VERSION = 3`. Hazard derivation versions stay at their E6
+  values (`1`) but are already in the cache key.
+- **Epochs.** `history::derive_historical_products` takes `I_ref` from the
+  source, computes `ΔI_ice = I_eq(t) − I_eq(0)` and
+  `ΔE = E(t) − E(0)`, solves the canonical cube sea level once with
+  one `ocean_volume_curve` and `sea_level_for_curve`, calls `derive_epoch` once
+  with the temperature offset relative to epoch zero, and adapts that world
+  with the same product builders. Epoch zero reuses the present products
+  byte for byte and performs no solve or climate run. `land_ice_m3` is `i64`:
+  positive means more land ice than at epoch zero. The conservation error is
+  `|V(S) − I_epoch|`.
+- **Forcing seed.** `HistoricalForcingParameters::default_for_seed(u64)` mixes
+  the full 64-bit seed through the new `derive_subsystem_seed64`; generation
+  uses it. The old `default_for(u32, retry)` remains for unmigrated consumers.
+- **Epoch cache key.** `physical_identity | source format | engine | history,
+  hazard, volcanic-source, climate and hydrology versions | view size |
+  planetary token | normalized epoch | every forcing field`.
+- **Measured timings** (release, 12-thread M4 Pro; wall time):
+
+  | Step | n=512 | n=1024 |
+  | --- | ---: | ---: |
+  | Generation through products | 2.13 s | 3.82 s |
+  | Reload, cold derived cache | 1.38 s | 2.49 s |
+  | Derived command, warm cache | 0.17 s | 0.20 s |
+  | One epoch | 1.09 s | 2.03 s |
+
+  The warm command time is a `DAENAPW2` decode/validate (150-176 ms) plus the
+  cache read (22-23 ms); re-deriving the world is 1.23-2.32 s. The epoch target
+  is 1.5 s at n=512; measured 1.09-1.15 s. The 1024 row is recorded but not an
+  E4 target. The generated river network reaches Strahler order 5 at n=512 and
+  n=1024.
+- **Cancellation.** The E3 release deadline sweep now includes the product
+  adapters and chunked source hashing: worst lateness was 51 ms at n=512 and
+  51 ms at n=1024, both under the 100 ms budget. A new epoch sweep measured
+  30 ms worst lateness. The adapters check between view row batches, inside the
+  canonical root/island/river-order loops, in hazard mass loops, between
+  polygon batches, and inside each source-hash chunk; the engine hash spans are
+  replicated as chunked FNV with a lock test against the engine values.
+
+Doubts:
+
+- The view's solstice temperature and precipitation values call
+  `climate_month_at_point` for every view cell, twice. That is the largest
+  adapter cost (about 0.34 s), although the epoch is now about 1.1 s.
+  A future engine-side cancellable equirect view would remove the duplicate
+  resampling logic.
+- The hazard `earthquake_rate_mass_nano` metric uses canonical cube cell areas,
+  while the view rate arrays use view pixel areas, as required. A consumer that
+  sums the view array will get the view mass, not the canonical mass.
+- River `coordinate_count` is the engine cell count, as the field mapping says;
+  `river_coordinates` has one cell-centre point per cell, so the two always
+  match.
 
 Decided 2026-11-11:
 

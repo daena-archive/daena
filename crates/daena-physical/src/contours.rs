@@ -109,6 +109,15 @@ pub fn polygons_from_mask(
     grid: Grid,
     mask: &[bool],
 ) -> Result<Vec<Vec<Vec<[i32; 2]>>>, PhysicalError> {
+    polygons_from_mask_with_cancel(grid, mask, &|| false)
+}
+
+/// `polygons_from_mask` with a cancellation check in the scalar extraction.
+pub fn polygons_from_mask_with_cancel(
+    grid: Grid,
+    mask: &[bool],
+    cancelled: &(dyn Fn() -> bool + Sync),
+) -> Result<Vec<Vec<Vec<[i32; 2]>>>, PhysicalError> {
     if mask.len() != grid.sample_count() {
         return Err(PhysicalError::coded(
             PhysicalErrorCode::GeometryInvalid,
@@ -119,12 +128,21 @@ pub fn polygons_from_mask(
         .iter()
         .map(|inside| if *inside { 1 } else { 0 })
         .collect::<Vec<_>>();
-    polygons_above(grid, &scalar, 0)
+    Ok(extract_with_cancel(grid, &scalar, 0, true, cancelled)?.polygons)
 }
 
 pub fn polygons_for_sparse_cells(
     grid: Grid,
     cells: &[usize],
+) -> Result<Vec<Vec<Vec<[i32; 2]>>>, PhysicalError> {
+    polygons_for_sparse_cells_with_cancel(grid, cells, &|| false)
+}
+
+/// `polygons_for_sparse_cells` with cancellation between candidate squares.
+pub fn polygons_for_sparse_cells_with_cancel(
+    grid: Grid,
+    cells: &[usize],
+    cancelled: &(dyn Fn() -> bool + Sync),
 ) -> Result<Vec<Vec<Vec<[i32; 2]>>>, PhysicalError> {
     if cells.iter().any(|cell| *cell >= grid.sample_count()) {
         return Err(PhysicalError::coded(
@@ -145,7 +163,7 @@ pub fn polygons_for_sparse_cells(
         for cell in cells {
             mask[*cell] = true;
         }
-        return polygons_from_mask(grid, &mask);
+        return polygons_from_mask_with_cancel(grid, &mask, cancelled);
     }
 
     let included = cells.iter().copied().collect::<BTreeSet<_>>();
@@ -160,8 +178,14 @@ pub fn polygons_for_sparse_cells(
     let value =
         |row: u32, col: u32| i32::from(included.contains(&grid.index(row, col % grid.width)));
     let mut segments = Vec::with_capacity(squares.len());
-    for (row, col) in squares {
+    for (index, (row, col)) in squares.into_iter().enumerate() {
+        if index.is_multiple_of(65_536) && cancelled() {
+            return Err(PhysicalError::Cancelled);
+        }
         push_marching_square_segments(grid, 0, true, row, col, &value, &mut segments);
+    }
+    if cancelled() {
+        return Err(PhysicalError::Cancelled);
     }
     Ok(assemble(grid, segments)?.polygons)
 }

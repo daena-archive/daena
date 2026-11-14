@@ -576,19 +576,32 @@ pub struct DerivedHistoricalWorld {
     pub products: DerivedProducts,
 }
 
-/// Derive one epoch from the canonical source.
+/// One solved epoch: its forcing, water inventory and sea level.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EpochSolve {
+    pub normalized_epoch: i64,
+    pub temperature_offset_centi_c: i32,
+    pub lagged_temperature_offset_centi_c: i32,
+    pub land_ice_equilibrium_m3: u64,
+    /// Signed change from epoch zero. Positive means more land ice.
+    pub land_ice_m3: i64,
+    pub thermal_expansion_m3: i64,
+    pub target_ocean_water_m3: u64,
+    pub sea_level_mm: i32,
+}
+
+/// Solve the epoch forcing, land-ice change, expansion and sea level once.
 ///
-/// Land ice and thermal expansion are changes relative to epoch zero. Epoch
-/// zero reuses the present products byte for byte and takes no sea-level solve
-/// or climate run.
-pub fn derive_historical_products(
+/// This is the shared path of [`derive_historical_products`] and the physical
+/// tools. Epoch zero takes no hypsometric solve and keeps the reference
+/// inventory and sea level.
+pub fn solve_epoch(
     decoded: &DecodedSource,
-    present: &StaticDerivedPhysics,
     parameters: HistoricalForcingParameters,
     epoch_offset_years: i64,
-    planetary: PlanetaryConfiguration,
-    progress: &mut dyn ProgressSink,
-) -> Result<DerivedHistoricalWorld, PhysicalError> {
+    progress: &dyn ProgressSink,
+) -> Result<EpochSolve, PhysicalError> {
+    progress.check_cancelled()?;
     parameters.validate()?;
     let normalized_epoch = normalize_epoch_offset(epoch_offset_years)?;
     let reference_inventory = decoded.reference_water_inventory_m3();
@@ -606,13 +619,54 @@ pub fn derive_historical_products(
     let expansion_at = thermal_expansion_volume(reference_inventory, temperature, parameters);
     let expansion_at_zero = thermal_expansion_volume(reference_inventory, 0, parameters);
     let expansion_change = i128::from(expansion_at) - i128::from(expansion_at_zero);
+    if normalized_epoch == 0 {
+        return Ok(EpochSolve {
+            normalized_epoch,
+            temperature_offset_centi_c: 0,
+            lagged_temperature_offset_centi_c: 0,
+            land_ice_equilibrium_m3: equilibrium_at_zero,
+            land_ice_m3: 0,
+            thermal_expansion_m3: 0,
+            target_ocean_water_m3: reference_inventory,
+            sea_level_mm: 0,
+        });
+    }
     let curve = decoded.ocean_volume_curve()?;
+    progress.check_cancelled()?;
     let maximum = i128::from(curve.last().map(|point| point.volume_m3).unwrap_or(0));
     let target =
         (i128::from(reference_inventory) - land_ice_change + expansion_change).clamp(0, maximum);
     let target = target as u64;
+    let sea_level_mm = decoded.sea_level_for_curve(&curve, target)?;
+    progress.check_cancelled()?;
+    Ok(EpochSolve {
+        normalized_epoch,
+        temperature_offset_centi_c: temperature,
+        lagged_temperature_offset_centi_c: lagged,
+        land_ice_equilibrium_m3: equilibrium,
+        land_ice_m3: land_ice_change.clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64,
+        thermal_expansion_m3: expansion_change.clamp(i128::from(i64::MIN), i128::from(i64::MAX))
+            as i64,
+        target_ocean_water_m3: target,
+        sea_level_mm,
+    })
+}
 
-    if normalized_epoch == 0 {
+/// Derive one epoch from the canonical source.
+///
+/// Land ice and thermal expansion are changes relative to epoch zero. Epoch
+/// zero reuses the present products byte for byte and takes no sea-level solve
+/// or climate run.
+pub fn derive_historical_products(
+    decoded: &DecodedSource,
+    present: &StaticDerivedPhysics,
+    parameters: HistoricalForcingParameters,
+    epoch_offset_years: i64,
+    planetary: PlanetaryConfiguration,
+    progress: &mut dyn ProgressSink,
+) -> Result<DerivedHistoricalWorld, PhysicalError> {
+    let solved = solve_epoch(decoded, parameters, epoch_offset_years, progress)?;
+    if solved.normalized_epoch == 0 {
         let products = DerivedProducts {
             view: present.view.clone(),
             climate: present.climate.clone(),
@@ -625,14 +679,14 @@ pub fn derive_historical_products(
             metrics: HistoricalMetrics {
                 derivation_version: HISTORICAL_DERIVATION_VERSION,
                 epoch_offset_years,
-                normalized_epoch,
+                normalized_epoch: 0,
                 temperature_offset_centi_c: 0,
                 lagged_temperature_offset_centi_c: 0,
-                land_ice_equilibrium_m3: equilibrium_at_zero,
+                land_ice_equilibrium_m3: solved.land_ice_equilibrium_m3,
                 land_ice_m3: 0,
                 thermal_expansion_m3: 0,
-                effective_ocean_water_m3: reference_inventory,
-                conserved_water_m3: target,
+                effective_ocean_water_m3: decoded.reference_water_inventory_m3(),
+                conserved_water_m3: solved.target_ocean_water_m3,
                 balance_error_m3: 0,
                 sea_level_mm: 0,
             },
@@ -641,31 +695,29 @@ pub fn derive_historical_products(
     }
 
     progress.report(ProgressPhase::CalculatingClimate, 0, 1)?;
-    let sea_level_mm = decoded.sea_level_for_curve(&curve, target)?;
-    let effective_ocean_water_m3 = decoded.ocean_volume_at(sea_level_mm)?;
     let products = decoded.derive_epoch_products(
-        sea_level_mm,
-        f64::from(temperature) / 100.0,
+        solved.sea_level_mm,
+        f64::from(solved.temperature_offset_centi_c) / 100.0,
         planetary,
         progress,
     )?;
     progress.report(ProgressPhase::CalculatingClimate, 1, 1)?;
-    let balance_error_m3 = effective_ocean_water_m3.abs_diff(target);
+    progress.check_cancelled()?;
+    let effective_ocean_water_m3 = decoded.ocean_volume_at(solved.sea_level_mm)?;
     Ok(DerivedHistoricalWorld {
         metrics: HistoricalMetrics {
             derivation_version: HISTORICAL_DERIVATION_VERSION,
             epoch_offset_years,
-            normalized_epoch,
-            temperature_offset_centi_c: temperature,
-            lagged_temperature_offset_centi_c: lagged,
-            land_ice_equilibrium_m3: equilibrium,
-            land_ice_m3: land_ice_change.clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64,
-            thermal_expansion_m3: expansion_change.clamp(i128::from(i64::MIN), i128::from(i64::MAX))
-                as i64,
+            normalized_epoch: solved.normalized_epoch,
+            temperature_offset_centi_c: solved.temperature_offset_centi_c,
+            lagged_temperature_offset_centi_c: solved.lagged_temperature_offset_centi_c,
+            land_ice_equilibrium_m3: solved.land_ice_equilibrium_m3,
+            land_ice_m3: solved.land_ice_m3,
+            thermal_expansion_m3: solved.thermal_expansion_m3,
             effective_ocean_water_m3,
-            conserved_water_m3: target,
-            balance_error_m3,
-            sea_level_mm,
+            conserved_water_m3: solved.target_ocean_water_m3,
+            balance_error_m3: effective_ocean_water_m3.abs_diff(solved.target_ocean_water_m3),
+            sea_level_mm: solved.sea_level_mm,
         },
         products,
     })

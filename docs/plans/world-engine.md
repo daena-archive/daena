@@ -1002,11 +1002,11 @@ and add no hash field.
 | `crates/daena-core/src/maps.rs`, `maps/physical.rs` | `SOURCE_MAGIC DAENAPW1`, `SOURCE_VERSION 1`, `TectonicWorld`, `PhysicalIdentityManifestV1`, width/height, retry index, evolution preset, tectonic style | `DAENAPW2`, version 2, `PhysicalIdentityManifestV2` with resolution, engine version, source/elevation/tectonic hashes and reference inventory; old magic/version rejected | – | E3 |
 | `crates/daena-core/src/maps/atlas.rs` | `validate_source`, source bytes, generation forcing, `source_sha256`, cache keys | source v2 through `validate_source`; identity and forcing unchanged in meaning; Atlas cache keys include the new identity/engine version | raster | E3, E5 |
 | `crates/daena-core/src/maps/calendar.rs` | `history::MAX_HISTORICAL_OFFSET_YEARS`, calendar binding | unchanged; epoch offset range and calendar math stay | point | – |
-| `crates/daena-core/src/project/store_map_locations.rs` | `hydro_claim::is_valid_id`, `landmass_claim::is_valid_id`, `hydro_claim::resolve` over view hydrology | ids remain `lake:`, `river:`, `landmass:`, `flood:` but the number is a canonical cube cell; old ids are unresolved under the hard cut | point | E5 |
+| `crates/daena-core/src/project/store_map_locations.rs` | `hydro_claim::is_valid_id`, `landmass_claim::is_valid_id`, `hydro_claim::resolve` over view hydrology | `lake:c…`, `river:c…`, `landmass:c…`, `flood:c…` with a canonical cube cell; old view-cell ids are unresolved under the hard cut | point | E5 |
 | `src-tauri/src/tests.rs`, `crates/daena-core/src/project/tests.rs` | old generated fixtures, recovery, event and epoch expectations | v2 fixtures at small `n`; accept/reload, delete `.daena/` rebuild, old-source rejection, cancellation latency | mixed | E3, E4, E8 |
 | `daena-physical/src/find_place.rs` | `ClimateField` arrays, `HydrologyField` arrays, `HazardField`, full view-grid scan; humidity filter | engine canonical cells; engine climate summary, hydrology, hazards; no humidity criterion; candidates carry canonical cell ids | point | E5 |
 | `daena-physical/src/routing.rs` | `HydrologyField` water level/slope/lake/ice, `ClimateField` biome; view-grid Dijkstra | canonical cube cells; elevation-derived slope, engine lake/river/ice, engine biome cost; routes return canonical cell ids and coordinates | point | E5 |
-| `daena-physical/src/hydro_claim.rs`, `landmass_claim.rs` | view-grid cell ids, `BasinStatus`, `minimum_cell`, `island_id` | engine lake/landmass components by canonical cell; ids by lowest cube cell; no `BasinStatus` dependence where the engine has no equivalent | point | E5 |
+| `daena-physical/src/hydro_claim.rs`, `landmass_claim.rs` | view-grid cell ids, `BasinStatus`, `minimum_cell`, `island_id` | engine lake/landmass components by canonical cell; `c`-marked ids from the lowest cube cell; no `BasinStatus` dependence where the engine has no equivalent | point | E5 |
 | `daena-physical/src/region.rs` | view hydrology `island_id`, `watershed_id`, polygons | engine landmass and receiver-root watersheds, polygonized on the requested view | raster for polygons, point for pick | E5 |
 | `daena-physical/src/contours.rs` | `PhysicalField` equirect elevation + sea level | equirect engine elevation view + epoch sea level | raster | E4, E5 |
 | `daena-physical/src/history.rs`, `derived_cache.rs` | `PhysicalField`, `ClimateField`, `DrainageField`, `HydrologyField`, old ocean volume curve, forcing math | engine `World`/`SurfaceContext`, cube inventory solver, product forcing math, engine-derived products; cache version dir gains engine/source versions | mixed | E4 |
@@ -1251,18 +1251,22 @@ and eruption lambda are the rate masses above.
 
 | Claim | Id today | Id after the cut |
 | --- | --- | --- |
-| Lake | `lake:{equirect_cell}` | `lake:{canonical_cube_cell}` from `Lake.minimum_cell` |
-| River | `river:{equirect_cell}` | `river:{canonical_cube_cell}` from the first cell of `RiverSegment.cells` |
-| Flood | `flood:{equirect_cell}` | `flood:{canonical_cube_cell}` from `Lake.minimum_cell` |
-| Landmass | `landmass:{equirect_cell}` | `landmass:{canonical_cube_cell}` from the lowest cell of the land component |
+| Lake | `lake:{equirect_cell}` | `lake:c{canonical_cube_cell}` from `Lake.minimum_cell` |
+| River | `river:{equirect_cell}` | `river:c{canonical_cube_cell}` from the first cell of `RiverSegment.cells` |
+| Flood | `flood:{equirect_cell}` | `flood:c{canonical_cube_cell}` from `Lake.minimum_cell` |
+| Landmass | `landmass:{equirect_cell}` | `landmass:c{canonical_cube_cell}` from the lowest cell of the land component |
 | Volcanic source | `u32` hash of product centers | engine `u64` `VolcanicSource.id`, serialized as a decimal string for JSON/TypeScript |
 | Orometry | Atlas id | unchanged |
 
 Ids are stable for one accepted source and `n`; they are not stable across
-`n`, view size or epoch (the feature itself can move). Old physical ids in
-existing projects are left unresolved and are shown as unresolved; there is
-no mapping from `DAENAPW1`. Authored overlays and materialized events keep
-their geometry and provenance.
+`n`, view size or epoch (the feature itself can move). The `c` marker keeps
+old format-only ids such as `lake:1234` out of the validators, so every old
+physical id is unresolved and shown as unresolved; there is no mapping from
+`DAENAPW1`. Resolving a new id at an epoch looks it up in that epoch's tool
+surface; a lake that is dry or merged at that epoch is unresolved, and a
+landmass id resolves only while its component's lowest cell is still that
+cell. Authored overlays and materialized events keep their geometry and
+provenance.
 
 #### Settings mapping
 
@@ -2099,6 +2103,139 @@ Decided 2026-11-11:
     epoch zero, plus the expansion change, in one hypsometric solve, with no
     lake-volume iteration. Epoch zero equals the present world. See
     "Epochs".
+
+#### E5a notes
+
+Implemented in E5a on top of E4 (`72cfa8b`). E5a moves the physical tools to
+canonical cube cells; Atlas and the frontend still consume the old product
+types until E5b and E7.
+
+- **Tool surface.** `daena_physical::engine::ToolSurface` is built from one
+  `worldgen::World` and the world is dropped before the surface returns. It
+  holds, per canonical cell: reference elevation `i32` mm (the epoch sea level
+  is one scalar), packed ocean/river/ice/fresh-lake/wet-lake flags, slope `u32` ppm, engine lake id `u32`, biome
+  `u8`, annual temperature `i32` centi-°C, precipitation and PET `u32` mm,
+  earthquake and volcanic hazard `u8`, storm genesis presentation index
+  `u32`, landmass component id `u32` (lowest cell, `u32::MAX` on ocean), the
+  priority-flood receiver `u32`, `SurfaceLake` records (id, minimum and spill
+  cells, fresh/overflowing/has-water, cell count) and `SurfaceRiver` cell
+  paths. Slope uses the true `CubeSphere::neighbor_distance` on the four cube
+  axes with one-sided differences at the poles. River is
+  `discharge_m3s >= river_min_m3s && lake_id == NONE`. Aridity is computed as
+  `1 - P/PET` on land rather than stored.
+  Size: 63,122,468 bytes at `n = 512` (40.13 bytes/cell) and 251,989,524
+  bytes at `n = 1024` (40.05 bytes/cell), measured in release.
+- **Cache.** `physical_commands` keeps a two-entry in-process LRU of
+  `Arc<ToolSurface>`. The key is the existing `historical_cache_key`, so it
+  covers physical identity, source format, engine, derivation versions, view
+  size, the planetary token, the normalized epoch and every forcing field.
+  There is no disk cache. `project_physical_clear_epoch_cache` clears both
+  this cache and the historical JSON cache.
+- **Epochs.** `history::solve_epoch` is the shared forcing, land-ice,
+  expansion, ocean-curve and sea-level solve. Both
+  `derive_historical_products` and the tool surface call it; the surface path
+  then makes one `derive_epoch` and drops the world. Epoch zero re-derives
+  through `derive_world` and verifies every source hash; an epoch world is not
+  hash-checked because its climate, hydrology, biome and hazard values are
+  expected to change.
+- **Find Place.** `find_place_canonical` maps every query field one to one:
+  the removed humidity fields are gone from `FindPlaceQuery`,
+  `FindPlaceMeans`, the soft keys, the fit score and the explanations.
+  Altitude is reference elevation minus the epoch sea level; aridity is
+  `1 - P/PET`; hazard ppm is the `u8` potential scaled by `1e6/255`. Coast and
+  freshwater distances are multi-source Dijkstra over the eight cube
+  neighbours with true cell-centre step lengths. Freshwater sources are
+  river cells and cells of fresh lakes that hold water; saline lakes and dry
+  salt flats are not freshwater. An absent source leaves
+  `u32::MAX`, which is a defined non-match. Candidates carry canonical
+  `cells`, canonical `means.islandId` and canonical cell-centre coordinates.
+  Clustering uses the eight cube neighbours; compactness uses a latitude and
+  wrapped-longitude bounding box at the canonical resolution.
+- **Routes.** `suggest_routes_canonical` runs Dijkstra on the eight cube
+  neighbours and never enters an ocean cell. Length, climb, edge slope and
+  maximum slope use true neighbour distances and the surface slope in µm/m.
+  River crossings are non-river to river transitions; lake cells are fresh or
+  saline lakes holding water (a dry salt flat costs as land), and ice cells
+  come from the surface. The 26 engine biomes map to the existing route-cost
+  families in `surface_biome_ppm`: sea ice/ice sheet/glacier 2.5, alpine 1.8,
+  tundra 1.4, salt flat/cold desert/hot desert 1.35, tropical seasonal
+  forest/tropical rainforest/mangrove 1.45, default 1.0. Authored geometry is
+  projected to canonical cells and marched with a slerp between consecutive
+  cell centres, so the reuse strategy still sees a connected corridor.
+- **Claims.** Canonical ids are `lake:c{minimum_cell}`,
+  `river:c{first_cell}`, `flood:c{minimum_cell}` and
+  `landmass:c{lowest_component_cell}`. `is_valid_id` accepts only the
+  `c` form, so `lake:1234`-style ids are rejected by anchor validation and
+  unresolved in `store_map_locations`. A lake resolves only while it holds
+  water at that surface epoch; a merged lake resolves to the surviving
+  component only if its own minimum cell is that component's lowest cell.
+  Landmass resolution requires the id cell to be the component's lowest cell,
+  so a joined landmass resolves under the lower id and the absorbed id stops
+  resolving.
+- **Regions.** `propose_region_canonical` selects canonical landmass or
+  receiver-root cells, rasterizes them onto the requested view through each
+  view pixel's nearest canonical cell, and polygonizes with
+  `contours::polygons_from_mask_with_cancel`. Rings are closed before return.
+  `region_id` is the canonical component id or receiver root; no view index
+  reaches the result. At an epoch the mask uses that epoch's ocean, lakes and
+  receivers.
+- **Hard cases covered by tests.** Antimeridian routes (160° to −160°),
+  ocean endpoints, unreachable islands, coast distance on a world with no
+  ocean, freshwater distance from lakes and rivers, dry lakes, merged
+  landmasses, epoch ocean movement, the same-cell route error, and empty
+  landmass/watershed clicks.
+- **GeoJSON limits.** The ignored release test builds E4's view products at
+  `1024×512` and `2048×1024` for `n = 1024`:
+  - `1024×512`: 290 features, 136,726 bytes, 1.06 s; 3,382 coastline
+    segments, 1,322 lake records, 8,793 watershed polygons, 436 land
+    polygons, 242 ocean polygons, 39 island components, 33,372 shelf cells,
+    5,252 bathymetry contours, 3,201 rivers.
+  - `2048×1024`: 427 features, 264,838 bytes, 2.88 s; 7,722 coastline
+    segments, 17,769 watershed polygons, 1,069 land polygons, 334 ocean
+    polygons, 74 island components, 133,379 shelf cells, 12,680 bathymetry
+    contours.
+  Both are far inside `MAX_GEOJSON_FEATURES` and
+  `MAX_DERIVED_GEOJSON_BYTES`; the view size is unchanged.
+- **Measured timings** (release, 12-thread M4 Pro; wall time, one source,
+  seed 831429, Earthlike, 29 % land):
+
+  | Step | n=512 | n=1024 |
+  | --- | ---: | ---: |
+  | Cold present surface (derive + surface) | 0.68 s | 1.81 s |
+  | Cold epoch surface (solve + derive + surface) | 0.59-0.64 s | 1.50-1.52 s |
+  | Warm Find Place with coast distance | 0.12-0.13 s | 0.56 s |
+  | Warm route (3 suggestions) | 0.24-0.25 s | 1.08-1.10 s |
+  | Warm landmass region on a 1024×512 view | 0.03 s | 0.03 s |
+
+  The cold rows are the surface cache fill after source decode and validation.
+  The epoch target is 1.5 s at `n = 512`; measured 0.59-0.64 s. Surface builds
+  are faster than the E4 derive because they do not build the view, climate,
+  hydrology, hazard or GeoJSON products.
+
+Doubts:
+
+- The E4 product view slope in `products::slope_ppm` divided millimetre
+  differences by metres and multiplied by `1e6`, 1000× the µm/m ppm
+  convention. Fixed in the E5a review: the view slope is now µm/m like the
+  tool surface, and `HYDROLOGY_DERIVATION_VERSION` is 3 so old caches miss.
+- The two-entry surface cache can hold 120 MiB at `n = 512` or 480 MiB at
+  `n = 1024` for a present plus an epoch surface. E8 must set
+  `WORKING_MEMORY_BUDGET_BYTES` with this in mind, or reduce the surface
+  width (for example store temperature and precipitation as `i16`/`u16`).
+- Storm genesis is stored per canonical cell as a presentation index
+  normalized by the canonical maximum. The view index uses the view maximum,
+  so the same point can differ by a few ppm between the two products.
+- Warm routes rerun Dijkstra for up to four strategies; the `n = 1024`
+  measurement is 1.08 s with three. No E5 target was set, but a future cache
+  or a single bidirectional search would reduce it.
+- `hydro_claim::claim_at_canonical` measures the river pick radius in raw
+  micro-degrees, like the old view code: it ignores the antimeridian wrap and
+  `cos(latitude)`. No command calls it yet; E5b must fix it when Atlas picks
+  move to the surface.
+- The old `find_place`, `suggest_routes`, `propose_region`, `claim_at` and
+  old id formatters remain for Atlas and E8; `is_valid_id` already rejects
+  their ids. Atlas claim anchors are unresolved until E5b moves them to the
+  canonical surface.
 
 The questions as raised:
 

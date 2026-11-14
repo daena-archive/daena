@@ -1,7 +1,13 @@
 // Physical-world commands and derived data.
+use std::collections::VecDeque;
+
 use super::*;
 
 pub(super) const HISTORICAL_CACHE_CAPACITY: usize = 16;
+pub(super) const TOOL_SURFACE_CACHE_CAPACITY: usize = 2;
+pub(super) type ToolSurfaceCache =
+    Mutex<VecDeque<(String, Arc<daena_physical::engine::ToolSurface>)>>;
+pub(super) static TOOL_SURFACE_CACHE: OnceLock<ToolSurfaceCache> = OnceLock::new();
 pub(super) static HISTORICAL_EPOCH_CACHE: OnceLock<Mutex<BTreeMap<String, serde_json::Value>>> =
     OnceLock::new();
 pub(super) static HISTORICAL_EPOCH_REQUESTS: OnceLock<Mutex<BTreeMap<String, Arc<AtomicU64>>>> =
@@ -942,6 +948,133 @@ pub(super) fn load_or_fill_engine_static(
     let physics = engine_static_derived(decoded, planetary)?;
     let _ = daena_physical::derived_cache::save(&cache_dir, &physics);
     Ok(physics)
+}
+
+pub(super) fn tool_surface_cache() -> &'static ToolSurfaceCache {
+    TOOL_SURFACE_CACHE.get_or_init(|| Mutex::new(VecDeque::new()))
+}
+
+pub(super) fn clear_tool_surface_cache() -> Result<(), String> {
+    tool_surface_cache()
+        .lock()
+        .map_err(|_| "tool surface cache is unavailable".to_string())?
+        .clear();
+    Ok(())
+}
+
+fn cached_tool_surface(key: &str) -> Option<Arc<daena_physical::engine::ToolSurface>> {
+    let mut cache = tool_surface_cache().lock().ok()?;
+    let index = cache.iter().position(|(entry, _)| entry == key)?;
+    let entry = cache.remove(index)?;
+    cache.push_back(entry.clone());
+    Some(entry.1)
+}
+
+fn store_tool_surface(key: String, surface: Arc<daena_physical::engine::ToolSurface>) {
+    let Ok(mut cache) = tool_surface_cache().lock() else {
+        return;
+    };
+    if let Some(index) = cache.iter().position(|(entry, _)| entry == &key) {
+        cache.remove(index);
+    }
+    while cache.len() >= TOOL_SURFACE_CACHE_CAPACITY {
+        cache.pop_front();
+    }
+    cache.push_back((key, surface));
+}
+
+/// Return the compact tool surface for one map and epoch. The small in-process
+/// LRU holds the present and one epoch; a cold surface re-derives the world and
+/// drops it once the surface exists. The cache key reuses the historical key
+/// shape, so physical identity, engine and source versions, the planetary
+/// token, the normalized epoch and every forcing field separate entries.
+pub(super) fn tool_surface_for_source(
+    physical_identity: &str,
+    decoded: &daena_physical::engine::DecodedSource,
+    generation: &serde_json::Value,
+    epoch_offset_years: i64,
+) -> Result<Arc<daena_physical::engine::ToolSurface>, String> {
+    let forcing = historical_forcing_from_generation(generation)?;
+    let planetary = planetary_from_generation(generation);
+    let normalized_epoch = daena_physical::history::normalize_epoch_offset(epoch_offset_years)
+        .map_err(|error| error.to_string())?;
+    let cache_key = historical_cache_key(
+        physical_identity,
+        forcing,
+        normalized_epoch,
+        planetary,
+        daena_physical::engine::PRODUCT_VIEW_WIDTH,
+        daena_physical::engine::PRODUCT_VIEW_HEIGHT,
+    );
+    if let Some(surface) = cached_tool_surface(&cache_key) {
+        return Ok(surface);
+    }
+    let mut progress = daena_physical::NoopProgress;
+    let surface = if normalized_epoch == 0 {
+        decoded.derive_tool_surface_present(&mut progress)
+    } else {
+        let solved =
+            daena_physical::history::solve_epoch(decoded, forcing, normalized_epoch, &progress)
+                .map_err(|error| error.to_string())?;
+        decoded.derive_tool_surface_epoch(
+            solved.sea_level_mm,
+            f64::from(solved.temperature_offset_centi_c) / 100.0,
+            &mut progress,
+        )
+    }
+    .map_err(|error| format!("maps.physical: {error}"))?;
+    let surface = Arc::new(surface);
+    store_tool_surface(cache_key, surface.clone());
+    Ok(surface)
+}
+
+pub(super) fn physical_find_place_response(
+    physical_identity: &str,
+    decoded: &daena_physical::engine::DecodedSource,
+    generation: &serde_json::Value,
+    epoch_offset_years: i64,
+    query: &daena_physical::find_place::FindPlaceQuery,
+) -> Result<daena_physical::find_place::FindPlaceResult, String> {
+    let surface =
+        tool_surface_for_source(physical_identity, decoded, generation, epoch_offset_years)?;
+    daena_physical::find_place::find_place_canonical(&surface, query)
+        .map_err(|error| error.to_string())
+}
+
+pub(super) fn physical_routes_response(
+    physical_identity: &str,
+    decoded: &daena_physical::engine::DecodedSource,
+    generation: &serde_json::Value,
+    epoch_offset_years: i64,
+    query: &daena_physical::routing::RouteSuggestQuery,
+) -> Result<daena_physical::routing::RouteSuggestResult, String> {
+    let surface =
+        tool_surface_for_source(physical_identity, decoded, generation, epoch_offset_years)?;
+    daena_physical::routing::suggest_routes_canonical(&surface, query)
+        .map_err(|error| error.to_string())
+}
+
+pub(super) fn physical_region_response(
+    physical_identity: &str,
+    decoded: &daena_physical::engine::DecodedSource,
+    generation: &serde_json::Value,
+    epoch_offset_years: i64,
+    lon_micro: i32,
+    lat_micro: i32,
+    detector: &str,
+) -> Result<crate::atlas_studio::AtlasRegionProposal, String> {
+    let surface =
+        tool_surface_for_source(physical_identity, decoded, generation, epoch_offset_years)?;
+    let proposal = daena_physical::region::propose_region_canonical(
+        &surface,
+        lon_micro,
+        lat_micro,
+        detector,
+        daena_physical::engine::PRODUCT_VIEW_WIDTH,
+        daena_physical::engine::PRODUCT_VIEW_HEIGHT,
+    )
+    .map_err(|error| error.to_string())?;
+    crate::atlas_studio::region_proposal_geometry(proposal)
 }
 
 pub(super) fn engine_historical_hashes(
@@ -1950,45 +2083,14 @@ pub(super) async fn project_physical_find_place(
             })?;
         let bytes = project.asset_bytes(source_id.to_string())?;
         let validated = daena_core::maps::physical::validate_source(&bytes, &generation)?;
-        let world = validated.legacy_world()?;
-        let physics = load_or_fill_static_derived(
-            &project.info().ok_or(CoreError::ProjectNotOpen)?.root,
+        physical_find_place_response(
             &validated.identity,
-            world,
+            &validated.source,
             &generation,
-            validated.report.reference_water_inventory_m3,
+            epoch_offset_years,
+            &query,
         )
-        .map_err(CoreError::Validation)?;
-        let hazards = daena_physical::hazards::derive_hazards(world)
-            .map_err(|error| CoreError::Validation(error.to_string()))?;
-        let normalized_epoch = daena_physical::history::normalize_epoch_offset(epoch_offset_years)
-            .map_err(|error| CoreError::Validation(error.to_string()))?;
-        let result = if normalized_epoch == 0 {
-            daena_physical::find_place::find_place(
-                &physics.climate,
-                &physics.hydrology,
-                Some(&hazards),
-                &query,
-            )
-        } else {
-            let (historical, _, _) = derive_reopened_historical_from_static(
-                world,
-                &generation,
-                validated.report.reference_water_inventory_m3,
-                normalized_epoch,
-                &physics,
-                &mut daena_physical::NoopProgress,
-            )
-            .map_err(CoreError::Validation)?;
-            daena_physical::find_place::find_place(
-                &historical.climate,
-                &historical.hydrology,
-                Some(&hazards),
-                &query,
-            )
-        }
-        .map_err(|error| CoreError::Validation(error.to_string()))?;
-        Ok(result)
+        .map_err(CoreError::Validation)
     })
     .await
 }
@@ -2017,41 +2119,14 @@ pub(super) async fn project_physical_suggest_routes(
             })?;
         let bytes = project.asset_bytes(source_id.to_string())?;
         let validated = daena_core::maps::physical::validate_source(&bytes, &generation)?;
-        let world = validated.legacy_world()?;
-        let physics = load_or_fill_static_derived(
-            &project.info().ok_or(CoreError::ProjectNotOpen)?.root,
+        physical_routes_response(
             &validated.identity,
-            world,
+            &validated.source,
             &generation,
-            validated.report.reference_water_inventory_m3,
+            epoch_offset_years,
+            &query,
         )
-        .map_err(CoreError::Validation)?;
-        let normalized_epoch = daena_physical::history::normalize_epoch_offset(epoch_offset_years)
-            .map_err(|error| CoreError::Validation(error.to_string()))?;
-        let result = if normalized_epoch == 0 {
-            daena_physical::routing::suggest_routes(
-                &physics.hydrology,
-                Some(&physics.climate),
-                &query,
-            )
-        } else {
-            let (historical, _, _) = derive_reopened_historical_from_static(
-                world,
-                &generation,
-                validated.report.reference_water_inventory_m3,
-                normalized_epoch,
-                &physics,
-                &mut daena_physical::NoopProgress,
-            )
-            .map_err(CoreError::Validation)?;
-            daena_physical::routing::suggest_routes(
-                &historical.hydrology,
-                Some(&historical.climate),
-                &query,
-            )
-        }
-        .map_err(|error| CoreError::Validation(error.to_string()))?;
-        Ok(result)
+        .map_err(CoreError::Validation)
     })
     .await
 }
@@ -2082,40 +2157,22 @@ pub(super) async fn project_physical_propose_region(
             })?;
         let bytes = project.asset_bytes(source_id.to_string())?;
         let validated = daena_core::maps::physical::validate_source(&bytes, &generation)?;
-        let world = validated.legacy_world()?;
-        let physics = load_or_fill_static_derived(
-            &project.info().ok_or(CoreError::ProjectNotOpen)?.root,
+        physical_region_response(
             &validated.identity,
-            world,
+            &validated.source,
             &generation,
-            validated.report.reference_water_inventory_m3,
+            epoch_offset_years,
+            lon_micro,
+            lat_micro,
+            &detector,
         )
-        .map_err(CoreError::Validation)?;
-        let normalized_epoch = daena_physical::history::normalize_epoch_offset(epoch_offset_years)
-            .map_err(|error| CoreError::Validation(error.to_string()))?;
-        let hydrology = if normalized_epoch == 0 {
-            physics.hydrology
-        } else {
-            let (historical, _, _) = derive_reopened_historical_from_static(
-                world,
-                &generation,
-                validated.report.reference_water_inventory_m3,
-                normalized_epoch,
-                &physics,
-                &mut daena_physical::NoopProgress,
-            )
-            .map_err(CoreError::Validation)?;
-            historical.hydrology
-        };
-        let proposal =
-            daena_physical::region::propose_region(&hydrology, lon_micro, lat_micro, &detector)
-                .map_err(|error| CoreError::Validation(error.to_string()))?;
-        crate::atlas_studio::region_proposal_geometry(proposal).map_err(CoreError::Validation)
+        .map_err(CoreError::Validation)
     })
     .await
 }
 
 #[tauri::command]
 pub(super) fn project_physical_clear_epoch_cache() -> Result<(), String> {
-    clear_historical_epoch_cache()
+    clear_historical_epoch_cache()?;
+    clear_tool_surface_cache()
 }

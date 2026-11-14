@@ -8956,3 +8956,24 @@ fn point_location_projection_and_spatial_query() {
     drop(store);
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn physical_claim_resolution_accepts_only_canonical_ids() {
+    let store = ProjectStore::in_memory().unwrap();
+    for (feature_kind, feature_id, expected) in [
+        ("physical-lake", "lake:c12", "resolved"),
+        ("physical-river", "river:c4", "resolved"),
+        ("physical-landmass", "landmass:c512", "resolved"),
+        ("physical-lake", "lake:12", "unresolved"),
+        ("physical-river", "river:4", "unresolved"),
+        ("physical-landmass", "landmass:512", "unresolved"),
+        ("physical-lake", "lake:c", "unresolved"),
+        ("physical-river", "river:c4:18", "unresolved"),
+    ] {
+        assert_eq!(
+            store.provider_feature_resolution("map-entity", Some(feature_kind), Some(feature_id)),
+            expected,
+            "{feature_kind} {feature_id}"
+        );
+    }
+}

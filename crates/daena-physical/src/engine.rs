@@ -4,9 +4,11 @@
 //! maps product settings and progress, owns the `DAENAPW2` source codec, and
 //! builds the transitional product views.
 
+use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
 
 use daena_worldgen as worldgen;
+use rayon::prelude::*;
 use serde_json::json;
 
 use crate::{
@@ -567,6 +569,605 @@ impl DecodedSource {
     }
 }
 
+/// Sentinel cell id for "no cell" in [`ToolSurface`].
+pub const TOOL_SURFACE_NONE: u32 = worldgen::NONE;
+
+const FLAG_OCEAN: u8 = 1;
+const FLAG_RIVER: u8 = 2;
+const FLAG_ICE: u8 = 4;
+/// Cell of a fresh lake that holds water.
+const FLAG_FRESH_LAKE: u8 = 8;
+/// Cell of a fresh or saline lake that holds water (not a dry salt flat).
+const FLAG_WET_LAKE: u8 = 16;
+
+/// One lake at the surface epoch. Cells are canonical cube cells.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SurfaceLake {
+    pub id: u32,
+    pub minimum_cell: u32,
+    pub spill_cell: u32,
+    pub fresh: bool,
+    pub overflowing: bool,
+    /// Whether the lake holds water at this surface epoch. A salt flat is dry
+    /// even though the engine keeps its depression record.
+    pub has_water: bool,
+    pub cell_count: u32,
+}
+
+/// One river segment at the surface epoch, head cell first.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SurfaceRiver {
+    pub source_cell: u32,
+    pub mouth_cell: u32,
+    pub strahler_order: u16,
+    pub cells: Vec<u32>,
+}
+
+/// Compact canonical cell surface for the physical tools (Find Place, routes,
+/// claims and regions).
+///
+/// Built from one [`worldgen::World`]; the world is released once the surface
+/// exists. Elevations are reference elevations (relative to the reference sea
+/// level), and `sea_level_mm` moves them for an epoch. Every other field is the
+/// value at the surface epoch.
+pub struct ToolSurface {
+    grid: worldgen::CubeSphere,
+    pub sea_level_mm: i32,
+    /// Reference elevation in millimetres, canonical cell order.
+    pub elevation_mm: Vec<i32>,
+    /// Bit flags: ocean, river, ice.
+    pub flags: Vec<u8>,
+    /// Slope in parts per million (µm/m) from true cube-neighbour distances.
+    pub slope_ppm: Vec<u32>,
+    /// Engine lake id, or [`TOOL_SURFACE_NONE`].
+    pub lake_id: Vec<u32>,
+    /// Engine biome id `0..=25`.
+    pub biome_class: Vec<u8>,
+    pub temperature_centi_c: Vec<i32>,
+    pub precipitation_mm: Vec<u32>,
+    pub pet_mm: Vec<u32>,
+    pub earthquake_hazard: Vec<u8>,
+    pub volcanic_hazard: Vec<u8>,
+    /// Storm genesis presentation index, `0..=1_000_000`.
+    pub storm_genesis_ppm: Vec<u32>,
+    /// Landmass component id: the lowest canonical cell of the component, or
+    /// [`TOOL_SURFACE_NONE`] on ocean.
+    pub landmass_id: Vec<u32>,
+    /// Priority-flood receiver cell at the surface epoch.
+    pub receiver: Vec<u32>,
+    pub lakes: Vec<SurfaceLake>,
+    pub rivers: Vec<SurfaceRiver>,
+}
+
+impl ToolSurface {
+    pub fn cell_count(&self) -> usize {
+        self.elevation_mm.len()
+    }
+
+    pub fn resolution(&self) -> u32 {
+        self.grid.n
+    }
+
+    pub fn radius_metres(&self) -> f64 {
+        self.grid.radius_m
+    }
+
+    pub fn ocean(&self, cell: u32) -> bool {
+        self.flags
+            .get(cell as usize)
+            .is_some_and(|flags| flags & FLAG_OCEAN != 0)
+    }
+
+    pub fn ocean_count(&self) -> usize {
+        self.flags
+            .iter()
+            .filter(|flags| *flags & FLAG_OCEAN != 0)
+            .count()
+    }
+
+    pub fn river(&self, cell: u32) -> bool {
+        self.flags
+            .get(cell as usize)
+            .is_some_and(|flags| flags & FLAG_RIVER != 0)
+    }
+
+    pub fn ice(&self, cell: u32) -> bool {
+        self.flags
+            .get(cell as usize)
+            .is_some_and(|flags| flags & FLAG_ICE != 0)
+    }
+
+    pub fn lake_id(&self, cell: u32) -> u32 {
+        self.lake_id
+            .get(cell as usize)
+            .copied()
+            .unwrap_or(TOOL_SURFACE_NONE)
+    }
+
+    pub fn is_lake(&self, cell: u32) -> bool {
+        self.lake_id(cell) != TOOL_SURFACE_NONE
+    }
+
+    /// Cell of a fresh lake holding water at the surface epoch.
+    pub fn fresh_lake(&self, cell: u32) -> bool {
+        self.flags
+            .get(cell as usize)
+            .is_some_and(|flags| flags & FLAG_FRESH_LAKE != 0)
+    }
+
+    /// Cell of a fresh or saline lake holding water; a dry salt flat is not.
+    pub fn wet_lake(&self, cell: u32) -> bool {
+        self.flags
+            .get(cell as usize)
+            .is_some_and(|flags| flags & FLAG_WET_LAKE != 0)
+    }
+
+    pub fn landmass_id(&self, cell: u32) -> u32 {
+        self.landmass_id
+            .get(cell as usize)
+            .copied()
+            .unwrap_or(TOOL_SURFACE_NONE)
+    }
+
+    pub fn receiver(&self, cell: u32) -> u32 {
+        self.receiver
+            .get(cell as usize)
+            .copied()
+            .unwrap_or(TOOL_SURFACE_NONE)
+    }
+
+    pub fn lake(&self, lake_id: u32) -> Option<&SurfaceLake> {
+        self.lakes.iter().find(|lake| lake.id == lake_id)
+    }
+
+    pub fn lake_at_minimum_cell(&self, minimum_cell: u32) -> Option<&SurfaceLake> {
+        self.lakes
+            .iter()
+            .find(|lake| lake.minimum_cell == minimum_cell)
+    }
+
+    pub fn river_at_source_cell(&self, source_cell: u32) -> Option<&SurfaceRiver> {
+        self.rivers
+            .iter()
+            .filter(|river| river.source_cell == source_cell)
+            .min_by_key(|river| (river.mouth_cell, river.cells.len()))
+    }
+
+    /// Nearest canonical cell to a latitude and longitude in degrees.
+    pub fn cell_at_degrees(&self, latitude_deg: f64, longitude_deg: f64) -> u32 {
+        self.grid.cell_at(direction(latitude_deg, longitude_deg))
+    }
+
+    /// Nearest canonical cell to micro-degree coordinates, `[lon, lat]`.
+    pub fn cell_at_microdegrees(&self, longitude_micro: i32, latitude_micro: i32) -> u32 {
+        self.cell_at_degrees(
+            f64::from(latitude_micro) / 1_000_000.0,
+            f64::from(longitude_micro) / 1_000_000.0,
+        )
+    }
+
+    /// Nearest canonical cell to a unit direction.
+    pub fn cell_at_direction(&self, direction: [f64; 3]) -> u32 {
+        self.grid.cell_at(direction)
+    }
+
+    /// Unit direction of a cell centre.
+    pub fn direction_of(&self, cell: u32) -> [f64; 3] {
+        self.grid.position(cell)
+    }
+
+    /// Cell centre in micro-degrees, `[lon, lat]`.
+    pub fn center_microdegrees(&self, cell: u32) -> [i32; 2] {
+        let (lat, lon) = self.grid.lat_lon(cell);
+        [
+            (lon.to_degrees() * 1_000_000.0).round() as i32,
+            (lat.to_degrees() * 1_000_000.0).round() as i32,
+        ]
+    }
+
+    pub fn cell_lat_lon_degrees(&self, cell: u32) -> (f64, f64) {
+        let (lat, lon) = self.grid.lat_lon(cell);
+        (lat.to_degrees(), lon.to_degrees())
+    }
+
+    /// Eight neighbours in order E, NE, N, NW, W, SW, S, SE. Absent
+    /// neighbours are [`TOOL_SURFACE_NONE`].
+    pub fn neighbors(&self, cell: u32) -> [u32; 8] {
+        self.grid.neighbors(cell)
+    }
+
+    /// Great-circle distance to neighbour `k`, metres.
+    pub fn neighbor_distance_metres(&self, cell: u32, k: usize) -> u32 {
+        self.grid
+            .neighbor_distance(cell, k)
+            .round()
+            .clamp(1.0, u32::MAX as f32) as u32
+    }
+
+    /// Distance in metres between two adjacent cells.
+    pub fn edge_distance_metres(&self, from: u32, to: u32) -> Option<u32> {
+        self.neighbors(from)
+            .iter()
+            .position(|neighbor| *neighbor == to)
+            .map(|k| self.neighbor_distance_metres(from, k))
+    }
+
+    pub fn area_m2(&self, cell: u32) -> f64 {
+        self.grid.area_m2(cell)
+    }
+
+    /// Receiver-tree root (watershed outlet) of a cell.
+    pub fn receiver_root(&self, cell: u32) -> u32 {
+        let mut cursor = cell;
+        for _ in 0..=self.receiver.len() {
+            let next = self.receiver(cursor);
+            if next == cursor || next == TOOL_SURFACE_NONE || next as usize >= self.receiver.len() {
+                return cursor;
+            }
+            cursor = next;
+        }
+        cursor
+    }
+
+    pub fn byte_size(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + self.elevation_mm.capacity() * std::mem::size_of::<i32>()
+            + self.flags.capacity() * std::mem::size_of::<u8>()
+            + self.slope_ppm.capacity() * std::mem::size_of::<u32>()
+            + self.lake_id.capacity() * std::mem::size_of::<u32>()
+            + self.biome_class.capacity() * std::mem::size_of::<u8>()
+            + self.temperature_centi_c.capacity() * std::mem::size_of::<i32>()
+            + self.precipitation_mm.capacity() * std::mem::size_of::<u32>()
+            + self.pet_mm.capacity() * std::mem::size_of::<u32>()
+            + self.earthquake_hazard.capacity() * std::mem::size_of::<u8>()
+            + self.volcanic_hazard.capacity() * std::mem::size_of::<u8>()
+            + self.storm_genesis_ppm.capacity() * std::mem::size_of::<u32>()
+            + self.landmass_id.capacity() * std::mem::size_of::<u32>()
+            + self.receiver.capacity() * std::mem::size_of::<u32>()
+            + self.lakes.capacity() * std::mem::size_of::<SurfaceLake>()
+            + self
+                .rivers
+                .iter()
+                .map(|river| std::mem::size_of::<SurfaceRiver>() + river.cells.capacity() * 4)
+                .sum::<usize>()
+    }
+}
+
+fn direction(latitude_deg: f64, longitude_deg: f64) -> [f64; 3] {
+    let lat = latitude_deg.clamp(-90.0, 90.0).to_radians();
+    let lon = longitude_deg.to_radians();
+    let cos_lat = lat.cos();
+    [cos_lat * lon.cos(), cos_lat * lon.sin(), lat.sin()]
+}
+
+fn add_saturating_i32(value: i32, delta: i32) -> i32 {
+    i64::from(value)
+        .saturating_add(i64::from(delta))
+        .clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
+}
+
+fn tool_surface_slope(grid: &worldgen::CubeSphere, elevation_mm: &[i32]) -> Vec<u32> {
+    (0..elevation_mm.len())
+        .into_par_iter()
+        .map(|cell| {
+            let cell = cell as u32;
+            let neighbors = grid.neighbors(cell);
+            let height = |index: usize| {
+                let neighbor = neighbors[index];
+                if neighbor == worldgen::NONE {
+                    None
+                } else {
+                    Some(f64::from(elevation_mm[neighbor as usize]))
+                }
+            };
+            let axis = |first: usize, second: usize| -> f64 {
+                let low = height(first);
+                let high = height(second);
+                let centre = f64::from(elevation_mm[cell as usize]);
+                match (low, high) {
+                    (Some(low), Some(high)) => {
+                        let distance = f64::from(grid.neighbor_distance(cell, first))
+                            + f64::from(grid.neighbor_distance(cell, second));
+                        if distance <= 0.0 {
+                            0.0
+                        } else {
+                            (high - low) / distance
+                        }
+                    }
+                    (Some(low), None) => {
+                        let distance = f64::from(grid.neighbor_distance(cell, first));
+                        if distance <= 0.0 {
+                            0.0
+                        } else {
+                            (centre - low) / distance
+                        }
+                    }
+                    (None, Some(high)) => {
+                        let distance = f64::from(grid.neighbor_distance(cell, second));
+                        if distance <= 0.0 {
+                            0.0
+                        } else {
+                            (high - centre) / distance
+                        }
+                    }
+                    (None, None) => 0.0,
+                }
+            };
+            // Neighbour order is E, NE, N, NW, W, SW, S, SE. A cube-grid
+            // central difference uses the true distance across both sides.
+            let east_west = axis(4, 0);
+            let north_south = axis(6, 2);
+            (east_west.hypot(north_south) * 1000.0)
+                .round()
+                .clamp(0.0, f64::from(u32::MAX)) as u32
+        })
+        .collect()
+}
+
+fn tool_surface_landmasses(world: &worldgen::World) -> Vec<u32> {
+    let count = world.ocean.len();
+    let mut ids = vec![worldgen::NONE; count];
+    let mut queue = VecDeque::new();
+    for start in 0..count {
+        if world.ocean[start] != 0 || ids[start] != worldgen::NONE {
+            continue;
+        }
+        let id = start as u32;
+        ids[start] = id;
+        queue.push_back(id);
+        while let Some(cell) = queue.pop_front() {
+            for neighbor in world.grid.neighbors(cell) {
+                let neighbor = neighbor as usize;
+                if neighbor < count && world.ocean[neighbor] == 0 && ids[neighbor] == worldgen::NONE
+                {
+                    ids[neighbor] = id;
+                    queue.push_back(neighbor as u32);
+                }
+            }
+        }
+    }
+    ids
+}
+
+fn tool_surface_storm_genesis(world: &worldgen::World) -> Vec<u32> {
+    let coarse = &world.climate_field.grid;
+    let genesis = &world.hazards.storms.genesis_km2;
+    let mut values = (0..world.grid.cell_count())
+        .into_par_iter()
+        .map(|cell| coarse.sample_bilinear(genesis, world.grid.position(cell as u32)))
+        .collect::<Vec<_>>();
+    let maximum = values.iter().copied().fold(0.0f32, f32::max);
+    for value in &mut values {
+        *value = if maximum > 0.0 {
+            (f64::from(*value) / f64::from(maximum) * 1_000_000.0).round() as f32
+        } else {
+            0.0
+        };
+    }
+    values
+        .into_iter()
+        .map(|value| value.clamp(0.0, 1_000_000.0) as u32)
+        .collect()
+}
+
+fn build_tool_surface(world: &worldgen::World, sea_level_mm: i32) -> ToolSurface {
+    let count = world.grid.cell_count();
+    let mut elevation_mm = world.source_elevation_mm();
+    for value in &mut elevation_mm {
+        *value = add_saturating_i32(*value, sea_level_mm);
+    }
+    let river_min = world.settings.river_min_m3s;
+    let lake_kinds = world
+        .hydrology
+        .lakes
+        .iter()
+        .map(|lake| (lake.id, lake.kind))
+        .collect::<BTreeMap<_, _>>();
+    let mut flags = Vec::with_capacity(count);
+    for cell in 0..count {
+        let mut value = 0u8;
+        if world.ocean[cell] != 0 {
+            value |= FLAG_OCEAN;
+        }
+        match lake_kinds.get(&world.hydrology.lake_id[cell]) {
+            Some(worldgen::LakeKind::Fresh) => value |= FLAG_FRESH_LAKE | FLAG_WET_LAKE,
+            Some(worldgen::LakeKind::Saline) => value |= FLAG_WET_LAKE,
+            _ => {}
+        }
+        if world.hydrology.lake_id[cell] == worldgen::NONE
+            && world.hydrology.discharge_m3s[cell] >= river_min
+        {
+            value |= FLAG_RIVER;
+        }
+        if world.hydrology.ice_cover[cell] != 0 {
+            value |= FLAG_ICE;
+        }
+        flags.push(value);
+    }
+    let mut lake_cell_counts = BTreeMap::<u32, u32>::new();
+    for id in &world.hydrology.lake_id {
+        if *id != worldgen::NONE {
+            *lake_cell_counts.entry(*id).or_default() += 1;
+        }
+    }
+    let lakes = world
+        .hydrology
+        .lakes
+        .iter()
+        .map(|lake| SurfaceLake {
+            id: lake.id,
+            minimum_cell: lake.minimum_cell,
+            spill_cell: lake.spill_cell,
+            fresh: lake.kind == worldgen::LakeKind::Fresh,
+            overflowing: lake.kind == worldgen::LakeKind::Fresh && lake.outflow_m3 > 0.0,
+            has_water: lake.kind != worldgen::LakeKind::SaltFlat
+                && lake_cell_counts.get(&lake.id).copied().unwrap_or(0) > 0,
+            cell_count: lake_cell_counts.get(&lake.id).copied().unwrap_or(0),
+        })
+        .collect::<Vec<_>>();
+    let river_order = products::river_strahler_orders(
+        &world.hydrology.receiver,
+        &world.hydrology.rivers,
+        &|| false,
+    )
+    .unwrap_or_else(|_| vec![0; count]);
+    let rivers = world
+        .hydrology
+        .rivers
+        .iter()
+        .filter_map(|river| {
+            let source_cell = *river.cells.first()?;
+            let mouth_cell = *river.cells.last()?;
+            Some(SurfaceRiver {
+                source_cell,
+                mouth_cell,
+                strahler_order: river
+                    .cells
+                    .iter()
+                    .map(|cell| river_order.get(*cell as usize).copied().unwrap_or(0))
+                    .max()
+                    .unwrap_or(1)
+                    .max(1),
+                cells: river.cells.clone(),
+            })
+        })
+        .collect::<Vec<_>>();
+    ToolSurface {
+        grid: world.grid.clone(),
+        sea_level_mm,
+        elevation_mm: elevation_mm.clone(),
+        flags,
+        slope_ppm: tool_surface_slope(&world.grid, &elevation_mm),
+        lake_id: world.hydrology.lake_id.clone(),
+        biome_class: world.biome.clone(),
+        temperature_centi_c: world
+            .climate
+            .t_annual_c
+            .iter()
+            .map(|value| products::centi_celsius(*value))
+            .collect(),
+        precipitation_mm: world
+            .climate
+            .p_annual_mm
+            .iter()
+            .map(|value| products::millimetres(*value))
+            .collect(),
+        pet_mm: world
+            .climate
+            .pet_annual_mm
+            .iter()
+            .map(|value| products::millimetres(*value))
+            .collect(),
+        earthquake_hazard: world.hazards.quake_hazard.clone(),
+        volcanic_hazard: world.hazards.volcanic_hazard.clone(),
+        storm_genesis_ppm: tool_surface_storm_genesis(world),
+        landmass_id: tool_surface_landmasses(world),
+        receiver: world.hydrology.receiver.clone(),
+        lakes,
+        rivers,
+    }
+}
+
+impl DecodedSource {
+    /// Derive the present world and build its compact tool surface. The world
+    /// is dropped before this returns, and its generation hashes are checked
+    /// against the source.
+    pub fn derive_tool_surface_present(
+        &self,
+        progress: &mut dyn ProgressSink,
+    ) -> Result<ToolSurface, PhysicalError> {
+        let mut adapter = EngineProgress::new(progress);
+        let derived = worldgen::derive_world(
+            &self.settings,
+            &self.tectonics,
+            &self.elevation_mm,
+            &mut adapter,
+        );
+        adapter.finish()?;
+        let world = derived.map_err(|error| map_world_error(error, true))?;
+        let computed = source_hashes_with_cancel(&world, &world.source_elevation_mm(), progress)?;
+        if let Some(field) = computed.mismatch(&self.hashes) {
+            return Err(invalid(format!(
+                "derived generation hash does not match the source: {field}"
+            )));
+        }
+        Ok(build_tool_surface(&world, 0))
+    }
+
+    /// Derive one epoch world and build its compact tool surface.
+    pub fn derive_tool_surface_epoch(
+        &self,
+        epoch_sea_level_mm: i32,
+        temperature_offset_c: f64,
+        progress: &mut dyn ProgressSink,
+    ) -> Result<ToolSurface, PhysicalError> {
+        let mut adapter = EngineProgress::new(progress);
+        let derived = worldgen::derive_epoch(
+            &self.settings,
+            &self.tectonics,
+            &self.elevation_mm,
+            epoch_sea_level_mm,
+            temperature_offset_c,
+            &mut adapter,
+        );
+        adapter.finish()?;
+        let world = derived.map_err(|error| map_world_error(error, true))?;
+        Ok(build_tool_surface(&world, epoch_sea_level_mm))
+    }
+}
+
+#[cfg(test)]
+impl ToolSurface {
+    /// Empty all-ocean surface for tool unit tests.
+    pub(crate) fn synthetic(n: u32) -> Self {
+        let grid = worldgen::CubeSphere::new(n, 6_371_000.0).expect("test grid");
+        let count = grid.cell_count();
+        Self {
+            grid,
+            sea_level_mm: 0,
+            elevation_mm: vec![0; count],
+            flags: vec![FLAG_OCEAN; count],
+            slope_ppm: vec![0; count],
+            lake_id: vec![TOOL_SURFACE_NONE; count],
+            biome_class: vec![0; count],
+            temperature_centi_c: vec![0; count],
+            precipitation_mm: vec![0; count],
+            pet_mm: vec![0; count],
+            earthquake_hazard: vec![0; count],
+            volcanic_hazard: vec![0; count],
+            storm_genesis_ppm: vec![0; count],
+            landmass_id: vec![TOOL_SURFACE_NONE; count],
+            receiver: (0..count as u32).collect(),
+            lakes: Vec::new(),
+            rivers: Vec::new(),
+        }
+    }
+
+    pub(crate) fn test_set_land(&mut self, cell: u32) {
+        self.flags[cell as usize] &= !FLAG_OCEAN;
+    }
+
+    pub(crate) fn test_set_ocean(&mut self, cell: u32) {
+        self.flags[cell as usize] |= FLAG_OCEAN;
+    }
+
+    pub(crate) fn test_set_river(&mut self, cell: u32) {
+        self.flags[cell as usize] |= FLAG_RIVER;
+    }
+
+    pub(crate) fn test_set_ice(&mut self, cell: u32) {
+        self.flags[cell as usize] |= FLAG_ICE;
+    }
+
+    pub(crate) fn test_set_lake(&mut self, cell: u32, lake_id: u32, fresh: bool) {
+        self.lake_id[cell as usize] = lake_id;
+        self.flags[cell as usize] |= FLAG_WET_LAKE;
+        if fresh {
+            self.flags[cell as usize] |= FLAG_FRESH_LAKE;
+        }
+    }
+}
+
 /// Products built from one engine world.
 pub struct Products {
     source: Vec<u8>,
@@ -939,12 +1540,34 @@ pub fn build_world_products(
     hashes: Option<SourceHashes>,
     progress: &mut dyn ProgressSink,
 ) -> Result<DerivedProducts, PhysicalError> {
+    build_world_products_with_view(
+        world,
+        sea_level_mm,
+        planetary,
+        hashes,
+        PRODUCT_VIEW_WIDTH,
+        PRODUCT_VIEW_HEIGHT,
+        progress,
+    )
+}
+
+/// Same as [`build_world_products`] with an explicit view size. E5 uses this
+/// only to measure the GeoJSON limits at 2048×1024; production stays on the
+/// recorded view constants.
+pub fn build_world_products_with_view(
+    world: &worldgen::World,
+    sea_level_mm: i32,
+    planetary: PlanetaryConfiguration,
+    hashes: Option<SourceHashes>,
+    width: u32,
+    height: u32,
+    progress: &mut dyn ProgressSink,
+) -> Result<DerivedProducts, PhysicalError> {
     if progress.check_cancelled().is_err() {
         return Err(PhysicalError::Cancelled);
     }
     let cancelled = || progress.check_cancelled().is_err();
-    let raster =
-        products::build_view_raster(world, PRODUCT_VIEW_WIDTH, PRODUCT_VIEW_HEIGHT, &cancelled)?;
+    let raster = products::build_view_raster(world, width, height, &cancelled)?;
     let view = PhysicalField {
         grid: raster.grid,
         seed: (world.settings.seed & u64::from(u32::MAX)) as u32,
@@ -1506,6 +2129,18 @@ mod tests {
         )
     }
 
+    fn record_measurement(line: &str) {
+        use std::io::Write;
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/e5a-measurements.txt");
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .expect("measurement file");
+        writeln!(file, "{line}").expect("measurement line");
+    }
+
     #[test]
     fn source_round_trip_is_byte_exact_and_length_strict() {
         let generated = generate(settings(64), &mut NoopProgress).unwrap();
@@ -1668,6 +2303,278 @@ mod tests {
         request.resolution = 64;
         assert!(request.validate().is_ok());
         assert!(request.validate_product().is_err());
+    }
+
+    #[test]
+    fn tool_surface_matches_the_derived_world() {
+        let generated = generate(settings(64), &mut NoopProgress).unwrap();
+        let decoded = decode_source(generated.source()).unwrap();
+        let world = worldgen::derive_world(
+            &decoded.settings,
+            &decoded.tectonics,
+            &decoded.elevation_mm,
+            &mut worldgen::NoProgress,
+        )
+        .unwrap();
+        let surface = build_tool_surface(&world, 0);
+        assert_eq!(surface.cell_count(), world.grid.cell_count());
+        assert_eq!(surface.elevation_mm, world.source_elevation_mm());
+        assert_eq!(surface.lake_id, world.hydrology.lake_id);
+        assert_eq!(surface.biome_class, world.biome);
+        assert_eq!(surface.earthquake_hazard, world.hazards.quake_hazard);
+        assert_eq!(surface.volcanic_hazard, world.hazards.volcanic_hazard);
+        assert_eq!(surface.receiver, world.hydrology.receiver);
+        for cell in 0..world.grid.cell_count() {
+            assert_eq!(surface.ocean(cell as u32), world.ocean[cell] != 0);
+            assert_eq!(
+                surface.river(cell as u32),
+                world.hydrology.lake_id[cell] == worldgen::NONE
+                    && world.hydrology.discharge_m3s[cell] >= world.settings.river_min_m3s
+            );
+            assert_eq!(
+                surface.ice(cell as u32),
+                world.hydrology.ice_cover[cell] != 0
+            );
+            assert_eq!(
+                surface.temperature_centi_c[cell],
+                products::centi_celsius(world.climate.t_annual_c[cell])
+            );
+            assert_eq!(
+                surface.precipitation_mm[cell],
+                products::millimetres(world.climate.p_annual_mm[cell])
+            );
+            assert_eq!(
+                surface.pet_mm[cell],
+                products::millimetres(world.climate.pet_annual_mm[cell])
+            );
+            if world.ocean[cell] == 0 {
+                let id = surface.landmass_id(cell as u32);
+                assert_ne!(id, TOOL_SURFACE_NONE);
+                assert!(id as usize <= cell);
+            }
+        }
+        assert!(surface.byte_size() > surface.cell_count() * 30);
+    }
+
+    #[test]
+    fn canonical_tools_match_a_generated_world() {
+        let generated = generate(settings(64), &mut NoopProgress).unwrap();
+        let decoded = decode_source(generated.source()).unwrap();
+        let world = worldgen::derive_world(
+            &decoded.settings,
+            &decoded.tectonics,
+            &decoded.elevation_mm,
+            &mut worldgen::NoProgress,
+        )
+        .unwrap();
+        let surface = build_tool_surface(&world, 0);
+        let query = crate::find_place::FindPlaceQuery {
+            temperature_centi_c_min: Some(-10_000),
+            ..crate::find_place::FindPlaceQuery::default()
+        };
+        let found = crate::find_place::find_place_canonical(&surface, &query).unwrap();
+        assert!(found.candidate_count >= 1);
+        for candidate in &found.candidates {
+            let mut altitude = 0i64;
+            let mut temperature = 0i64;
+            let mut precipitation = 0u64;
+            let mut slope = 0u64;
+            let mut islands = std::collections::BTreeMap::<u32, u32>::new();
+            for cell in &candidate.cells {
+                altitude += i64::from(
+                    (surface.elevation_mm[*cell as usize] - surface.sea_level_mm) / 1_000,
+                );
+                temperature += i64::from(surface.temperature_centi_c[*cell as usize]);
+                precipitation += u64::from(surface.precipitation_mm[*cell as usize]);
+                slope += u64::from(surface.slope_ppm[*cell as usize]);
+                *islands.entry(surface.landmass_id(*cell)).or_default() += 1;
+            }
+            let count = candidate.cells.len() as i64;
+            assert_eq!(candidate.means.altitude_m, (altitude / count) as i32);
+            assert_eq!(
+                candidate.means.temperature_centi_c,
+                (temperature / count) as i32
+            );
+            assert_eq!(
+                candidate.means.precipitation_mm,
+                (precipitation / count as u64) as u32
+            );
+            assert_eq!(candidate.means.slope_ppm, (slope / count as u64) as u32);
+            assert_eq!(
+                candidate.means.island_id,
+                islands
+                    .into_iter()
+                    .max_by_key(|(_, count)| *count)
+                    .map(|(id, _)| id)
+                    .unwrap_or(TOOL_SURFACE_NONE)
+            );
+            assert!(candidate.cells.iter().all(|cell| !surface.ocean(*cell)));
+        }
+
+        let mut landmass_cells = std::collections::BTreeMap::<u32, Vec<u32>>::new();
+        for cell in 0..surface.cell_count() as u32 {
+            if !surface.ocean(cell) {
+                landmass_cells
+                    .entry(surface.landmass_id(cell))
+                    .or_default()
+                    .push(cell);
+            }
+        }
+        let landmass = landmass_cells
+            .iter()
+            .max_by_key(|(_, cells)| cells.len())
+            .map(|(id, cells)| (*id, cells))
+            .expect("generated land");
+        let latitude_key =
+            |cell: &&u32| (surface.cell_lat_lon_degrees(**cell).0 * 1_000.0).round() as i64;
+        let start = *landmass.1.iter().min_by_key(latitude_key).unwrap();
+        let end = *landmass.1.iter().max_by_key(latitude_key).unwrap();
+        let start_point = surface.center_microdegrees(start);
+        let end_point = surface.center_microdegrees(end);
+        let routes = crate::routing::suggest_routes_canonical(
+            &surface,
+            &crate::routing::RouteSuggestQuery {
+                start_longitude_microdegrees: start_point[0],
+                start_latitude_microdegrees: start_point[1],
+                end_longitude_microdegrees: end_point[0],
+                end_latitude_microdegrees: end_point[1],
+                existing_routes: Vec::new(),
+            },
+        )
+        .unwrap();
+        assert!(routes.suggestion_count >= 1);
+        assert!(routes
+            .suggestions
+            .iter()
+            .all(|suggestion| suggestion.cells.iter().all(|cell| !surface.ocean(*cell))));
+
+        let lake = surface.lakes.iter().find(|lake| lake.has_water);
+        if let Some(lake) = lake {
+            let cell = (0..surface.cell_count() as u32)
+                .find(|cell| surface.lake_id(*cell) == lake.id)
+                .expect("a lake has cells");
+            let point = surface.center_microdegrees(cell);
+            let claim =
+                crate::hydro_claim::claim_at_canonical(&surface, point[0], point[1], 50_000)
+                    .expect("lake claim");
+            assert_eq!(claim.id, format!("lake:c{}", lake.minimum_cell));
+            assert_eq!(
+                crate::hydro_claim::resolve_canonical(&surface, claim.kind, &claim.id)
+                    .expect("lake resolves")
+                    .id,
+                claim.id
+            );
+        }
+
+        let click = surface.center_microdegrees(landmass.1[0]);
+        let region = crate::region::propose_region_canonical(
+            &surface,
+            click[0],
+            click[1],
+            crate::region::DETECTOR_LANDMASS,
+            64,
+            32,
+        )
+        .unwrap();
+        assert_eq!(region.region_id, landmass.0);
+        assert!(region.cell_count >= landmass.1.len() as u32);
+        assert!(!region.rings.is_empty());
+        assert!(region.rings.iter().all(|ring| ring.first() == ring.last()));
+    }
+
+    #[test]
+    fn tool_surface_epoch_uses_the_shared_epoch_solve() {
+        use crate::history::{solve_epoch, HistoricalForcingParameters};
+        let generated = generate(settings(64), &mut NoopProgress).unwrap();
+        let decoded = decode_source(generated.source()).unwrap();
+        let forcing = HistoricalForcingParameters::default_for_seed(831_429);
+        let epoch = forcing.period_years() / 2;
+        let solved = solve_epoch(&decoded, forcing, epoch, &NoopProgress).unwrap();
+        assert_eq!(solved.normalized_epoch, epoch);
+        let surface = decoded
+            .derive_tool_surface_epoch(
+                solved.sea_level_mm,
+                f64::from(solved.temperature_offset_centi_c) / 100.0,
+                &mut NoopProgress,
+            )
+            .unwrap();
+        assert_eq!(surface.sea_level_mm, solved.sea_level_mm);
+        assert_eq!(surface.cell_count(), decoded.elevation_mm().len());
+        let reference = decoded
+            .derive_tool_surface_present(&mut NoopProgress)
+            .unwrap();
+        assert_ne!(
+            (surface.ocean_count(), surface.sea_level_mm),
+            (reference.ocean_count(), reference.sea_level_mm)
+        );
+    }
+
+    #[test]
+    #[ignore = "wall-clock: release-only E5a surface sizes"]
+    fn tool_surface_sizes_at_product_resolutions() {
+        for resolution in [512, 1024] {
+            let generated = generate(settings(resolution), &mut NoopProgress).unwrap();
+            let decoded = decode_source(generated.source()).unwrap();
+            let started = Instant::now();
+            let surface = decoded
+                .derive_tool_surface_present(&mut NoopProgress)
+                .unwrap();
+            let elapsed = started.elapsed();
+            record_measurement(&format!(
+                "n={resolution}: surface {} bytes ({:.2} bytes/cell), present build {elapsed:?}",
+                surface.byte_size(),
+                surface.byte_size() as f64 / surface.cell_count() as f64
+            ));
+        }
+    }
+
+    #[test]
+    #[ignore = "wall-clock: release-only E5a GeoJSON limit measurement at 2048x1024"]
+    fn e5a_geojson_limits_at_1024x512_and_2048x1024() {
+        let generated = generate(settings(1024), &mut NoopProgress).unwrap();
+        let decoded = decode_source(generated.source()).unwrap();
+        let world = worldgen::derive_world(
+            &decoded.settings,
+            &decoded.tectonics,
+            &decoded.elevation_mm,
+            &mut worldgen::NoProgress,
+        )
+        .unwrap();
+        for (width, height) in [(1024, 512), (2048, 1024)] {
+            let started = Instant::now();
+            let derived = build_world_products_with_view(
+                &world,
+                0,
+                PlanetaryConfiguration::earth_like(),
+                None,
+                width,
+                height,
+                &mut NoopProgress,
+            )
+            .unwrap();
+            let elapsed = started.elapsed();
+            let features = derived
+                .derived_geojson
+                .matches("\"type\":\"Feature\"")
+                .count();
+            let bytes = derived.derived_geojson.len();
+            assert!(features <= crate::MAX_GEOJSON_FEATURES);
+            assert!(bytes <= crate::MAX_DERIVED_GEOJSON_BYTES);
+            record_measurement(&format!(
+                "view {width}x{height}: GeoJSON {features} features, {bytes} bytes, {elapsed:?}; coastline segments {}; lake records {}; watershed polygons {}; land polygons {}; ocean polygons {}; island components {}; shelf cells {}; bathymetry contours {}; rivers {}",
+                derived.hydrology.metrics.coastline_segment_count,
+                derived.hydrology.metrics.lake_count,
+                derived.hydrology.metrics.watershed_count,
+                derived.hydrology.metrics.land_polygon_count,
+                derived.hydrology.metrics.ocean_polygon_count,
+                derived.hydrology.metrics.island_count,
+                derived.hydrology.metrics.shelf_cell_count,
+                derived.hydrology.metrics.bathymetry_contour_count,
+                derived.hydrology.metrics.river_count,
+            ));
+            assert_eq!(derived.view.grid.width, width);
+            assert_eq!(derived.view.grid.height, height);
+        }
     }
 
     #[test]

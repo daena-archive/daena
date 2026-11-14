@@ -420,54 +420,45 @@ fn vector_descriptors_layers_and_feature_anchors_round_trip() {
         "fallbackPoint": [0.5, 0.5]
     }))
     .is_err());
-    assert!(anchor(&serde_json::json!({
-        "kind": "provider-feature",
-        "provider": PHYSICAL_PROVIDER,
-        "featureKind": "physical-lake",
-        "featureId": "lake:12",
-        "fallbackPoint": [0.5, 0.5]
-    }))
-    .is_ok());
-    assert!(anchor(&serde_json::json!({
-        "kind": "provider-feature",
-        "provider": PHYSICAL_PROVIDER,
-        "featureKind": "physical-river",
-        "featureId": "river:4",
-        "fallbackPoint": [0.5, 0.5]
-    }))
-    .is_ok());
-    assert!(anchor(&serde_json::json!({
-        "kind": "provider-feature",
-        "provider": PHYSICAL_PROVIDER,
-        "featureKind": "physical-river",
-        "featureId": "river:4:18",
-        "fallbackPoint": [0.5, 0.5]
-    }))
-    .is_err());
-    assert!(anchor(&serde_json::json!({
-        "kind": "provider-feature",
-        "provider": PHYSICAL_PROVIDER,
-        "featureKind": "physical-river",
-        "featureId": "river-000004",
-        "fallbackPoint": [0.5, 0.5]
-    }))
-    .is_err());
-    assert!(anchor(&serde_json::json!({
-        "kind": "provider-feature",
-        "provider": PHYSICAL_PROVIDER,
-        "featureKind": "physical-landmass",
-        "featureId": "landmass:12",
-        "fallbackPoint": [0.5, 0.5]
-    }))
-    .is_ok());
-    assert!(anchor(&serde_json::json!({
-        "kind": "provider-feature",
-        "provider": PHYSICAL_PROVIDER,
-        "featureKind": "physical-landmass",
-        "featureId": "island-000012",
-        "fallbackPoint": [0.5, 0.5]
-    }))
-    .is_err());
+    for (feature_kind, feature_id) in [
+        ("physical-lake", "lake:c12"),
+        ("physical-river", "river:c4"),
+        ("physical-landmass", "landmass:c12"),
+    ] {
+        assert!(
+            anchor(&serde_json::json!({
+                "kind": "provider-feature",
+                "provider": PHYSICAL_PROVIDER,
+                "featureKind": feature_kind,
+                "featureId": feature_id,
+                "fallbackPoint": [0.5, 0.5]
+            }))
+            .is_ok(),
+            "{feature_kind} {feature_id} should be accepted"
+        );
+    }
+    for (feature_kind, feature_id) in [
+        ("physical-lake", "lake:12"),
+        ("physical-river", "river:4"),
+        ("physical-river", "river:4:18"),
+        ("physical-river", "river-000004"),
+        ("physical-landmass", "landmass:12"),
+        ("physical-landmass", "island-000012"),
+        ("physical-lake", "lake:c"),
+        ("physical-lake", "lake:c-1"),
+    ] {
+        assert!(
+            anchor(&serde_json::json!({
+                "kind": "provider-feature",
+                "provider": PHYSICAL_PROVIDER,
+                "featureKind": feature_kind,
+                "featureId": feature_id,
+                "fallbackPoint": [0.5, 0.5]
+            }))
+            .is_err(),
+            "{feature_kind} {feature_id} should be rejected"
+        );
+    }
     let orometry_id = format!(
         "atlas:orometry:v{}:peak:12",
         daena_atlas::ATLAS_DETAIL_ALGORITHM_VERSION

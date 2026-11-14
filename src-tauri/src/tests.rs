@@ -5757,3 +5757,275 @@ fn engine_cache_rebuilds_after_the_derived_directory_is_deleted() {
     assert_eq!(first, rebuilt);
     std::fs::remove_dir_all(&root).unwrap();
 }
+
+fn largest_landmass_pair(surface: &daena_physical::engine::ToolSurface) -> (u32, u32) {
+    let mut counts = BTreeMap::<u32, Vec<u32>>::new();
+    for cell in 0..surface.cell_count() as u32 {
+        let id = surface.landmass_id(cell);
+        if id != daena_physical::engine::TOOL_SURFACE_NONE {
+            counts.entry(id).or_default().push(cell);
+        }
+    }
+    let cells = counts
+        .into_iter()
+        .max_by_key(|(_, cells)| cells.len())
+        .expect("a generated world has land")
+        .1;
+    let latitude_key =
+        |cell: &&u32| (surface.cell_lat_lon_degrees(**cell).0 * 1_000.0).round() as i64;
+    let north = *cells
+        .iter()
+        .max_by_key(latitude_key)
+        .expect("a landmass has cells");
+    let south = *cells
+        .iter()
+        .min_by_key(latitude_key)
+        .expect("a landmass has cells");
+    (south, north)
+}
+
+#[test]
+fn physical_tool_commands_use_canonical_cells_and_the_surface_cache() {
+    let products = engine_products(64);
+    let generation = products.generation().unwrap().clone();
+    let validated =
+        daena_core::maps::physical::validate_source(products.source(), &generation).unwrap();
+    let surface =
+        tool_surface_for_source(&validated.identity, &validated.source, &generation, 0).unwrap();
+    let cached =
+        tool_surface_for_source(&validated.identity, &validated.source, &generation, 0).unwrap();
+    assert_eq!(cached.cell_count(), surface.cell_count());
+    assert!(tool_surface_cache().lock().unwrap().len() <= TOOL_SURFACE_CACHE_CAPACITY);
+    let canonical_cells = 6 * validated.source.settings_snapshot().resolution.pow(2);
+
+    let find = physical_find_place_response(
+        &validated.identity,
+        &validated.source,
+        &generation,
+        0,
+        &daena_physical::find_place::FindPlaceQuery {
+            temperature_centi_c_min: Some(-10_000),
+            precipitation_mm_min: Some(0),
+            ..daena_physical::find_place::FindPlaceQuery::default()
+        },
+    )
+    .unwrap();
+    assert!(find.candidate_count >= 1);
+    assert!(find.candidate_count <= daena_physical::find_place::FIND_PLACE_MAX_CANDIDATES);
+    for candidate in &find.candidates {
+        assert!(!candidate.cells.is_empty());
+        assert!(candidate.cells.iter().all(|cell| *cell < canonical_cells));
+        assert!(
+            candidate.means.island_id < canonical_cells
+                || candidate.means.island_id == daena_physical::engine::TOOL_SURFACE_NONE
+        );
+    }
+
+    let (start_cell, end_cell) = largest_landmass_pair(&surface);
+    let start = surface.center_microdegrees(start_cell);
+    let end = surface.center_microdegrees(end_cell);
+    let routes = physical_routes_response(
+        &validated.identity,
+        &validated.source,
+        &generation,
+        0,
+        &daena_physical::routing::RouteSuggestQuery {
+            start_longitude_microdegrees: start[0],
+            start_latitude_microdegrees: start[1],
+            end_longitude_microdegrees: end[0],
+            end_latitude_microdegrees: end[1],
+            existing_routes: Vec::new(),
+        },
+    )
+    .unwrap();
+    assert!(routes.suggestion_count >= 1);
+    for suggestion in &routes.suggestions {
+        assert_eq!(suggestion.cells.first().copied(), Some(start_cell));
+        assert_eq!(suggestion.cells.last().copied(), Some(end_cell));
+        assert!(suggestion
+            .cells
+            .iter()
+            .all(|cell| *cell < canonical_cells && !surface.ocean(*cell)));
+    }
+
+    let click = surface
+        .center_microdegrees(cells_for_landmass(&surface, surface.landmass_id(start_cell))[0]);
+    let region = physical_region_response(
+        &validated.identity,
+        &validated.source,
+        &generation,
+        0,
+        click[0],
+        click[1],
+        daena_physical::region::DETECTOR_LANDMASS,
+    )
+    .unwrap();
+    assert_eq!(region.region_id, surface.landmass_id(start_cell));
+    assert!(region.cell_count > 0);
+    assert!(region.epoch_dependent);
+    let geometry_type = region.geometry["type"].as_str().unwrap_or_default();
+    assert!(geometry_type == "Polygon" || geometry_type == "MultiPolygon");
+}
+
+fn cells_for_landmass(surface: &daena_physical::engine::ToolSurface, id: u32) -> Vec<u32> {
+    (0..surface.cell_count() as u32)
+        .filter(|cell| surface.landmass_id(*cell) == id)
+        .collect()
+}
+
+#[test]
+fn physical_tool_commands_honor_a_non_zero_epoch() {
+    let products = engine_products(64);
+    let generation = products.generation().unwrap().clone();
+    let validated =
+        daena_core::maps::physical::validate_source(products.source(), &generation).unwrap();
+    let forcing = historical_forcing_from_generation(&generation).expect("generation forcing");
+    let epoch = forcing.period_years() / 4;
+    let reference =
+        tool_surface_for_source(&validated.identity, &validated.source, &generation, 0).unwrap();
+    let epoch_surface =
+        tool_surface_for_source(&validated.identity, &validated.source, &generation, epoch)
+            .unwrap();
+    assert!(!Arc::ptr_eq(&reference, &epoch_surface));
+    assert_eq!(epoch_surface.sea_level_mm, {
+        let solved = daena_physical::history::solve_epoch(
+            &validated.source,
+            forcing,
+            epoch,
+            &daena_physical::NoopProgress,
+        )
+        .unwrap();
+        solved.sea_level_mm
+    });
+    let land = (0..epoch_surface.cell_count() as u32)
+        .find(|cell| !epoch_surface.ocean(*cell))
+        .expect("epoch world has land");
+    let point = epoch_surface.center_microdegrees(land);
+    let find = physical_find_place_response(
+        &validated.identity,
+        &validated.source,
+        &generation,
+        epoch,
+        &daena_physical::find_place::FindPlaceQuery {
+            temperature_centi_c_min: Some(-20_000),
+            ..daena_physical::find_place::FindPlaceQuery::default()
+        },
+    )
+    .unwrap();
+    assert!(find.matched_cells > 0);
+    let region = physical_region_response(
+        &validated.identity,
+        &validated.source,
+        &generation,
+        epoch,
+        point[0],
+        point[1],
+        daena_physical::region::DETECTOR_LANDMASS,
+    )
+    .unwrap();
+    assert!(region.cell_count > 0);
+    assert_eq!(region.region_id, epoch_surface.landmass_id(land));
+}
+
+fn record_e5a_measurement(line: &str) {
+    use std::io::Write;
+    let path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../target/e5a-measurements.txt");
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .expect("measurement file");
+    writeln!(file, "{line}").expect("measurement line");
+}
+
+#[test]
+#[ignore = "wall-clock: release-only E5a timing and surface size table"]
+fn e5a_release_timing_table() {
+    for resolution in [512, 1024] {
+        clear_tool_surface_cache().unwrap();
+        let products = engine_products(resolution);
+        let generation = products.generation().unwrap().clone();
+        let validated =
+            daena_core::maps::physical::validate_source(products.source(), &generation).unwrap();
+        let identity = format!("{}|e5a-{resolution}", validated.identity);
+        let forcing = historical_forcing_from_generation(&generation).unwrap();
+        let epoch = forcing.period_years() / 4;
+
+        let started = Instant::now();
+        let present =
+            tool_surface_for_source(&identity, &validated.source, &generation, 0).unwrap();
+        let present_time = started.elapsed();
+        let started = Instant::now();
+        let epoch_surface =
+            tool_surface_for_source(&identity, &validated.source, &generation, epoch).unwrap();
+        let epoch_time = started.elapsed();
+        record_e5a_measurement(&format!(
+            "n={resolution}: present surface {} bytes ({:.2} B/cell) cold {present_time:?}; epoch surface {} bytes ({:.2} B/cell) cold {epoch_time:?}; epoch sea level {} mm",
+            present.byte_size(),
+            present.byte_size() as f64 / present.cell_count() as f64,
+            epoch_surface.byte_size(),
+            epoch_surface.byte_size() as f64 / epoch_surface.cell_count() as f64,
+            epoch_surface.sea_level_mm
+        ));
+
+        let started = Instant::now();
+        let find = physical_find_place_response(
+            &identity,
+            &validated.source,
+            &generation,
+            0,
+            &daena_physical::find_place::FindPlaceQuery {
+                temperature_centi_c_min: Some(0),
+                precipitation_mm_min: Some(400),
+                coast_distance_km_max: Some(500),
+                ..daena_physical::find_place::FindPlaceQuery::default()
+            },
+        )
+        .unwrap();
+        let find_time = started.elapsed();
+
+        let (start_cell, end_cell) = largest_landmass_pair(&present);
+        let start = present.center_microdegrees(start_cell);
+        let end = present.center_microdegrees(end_cell);
+        let route_query = daena_physical::routing::RouteSuggestQuery {
+            start_longitude_microdegrees: start[0],
+            start_latitude_microdegrees: start[1],
+            end_longitude_microdegrees: end[0],
+            end_latitude_microdegrees: end[1],
+            existing_routes: Vec::new(),
+        };
+        let started = Instant::now();
+        let routes =
+            physical_routes_response(&identity, &validated.source, &generation, 0, &route_query)
+                .unwrap();
+        let route_time = started.elapsed();
+
+        let (land, _) = largest_landmass_pair(&epoch_surface);
+        let point = epoch_surface.center_microdegrees(land);
+        let started = Instant::now();
+        let region = physical_region_response(
+            &identity,
+            &validated.source,
+            &generation,
+            epoch,
+            point[0],
+            point[1],
+            daena_physical::region::DETECTOR_LANDMASS,
+        )
+        .unwrap();
+        let region_time = started.elapsed();
+        record_e5a_measurement(&format!(
+            "n={resolution}: warm find place {find_time:?} ({} candidates, {} matched); warm route {route_time:?} ({} suggestions, {} cells); warm region {region_time:?} ({} cells, {} bytes geometry)",
+            find.candidate_count,
+            find.matched_cells,
+            routes.suggestion_count,
+            routes.suggestions.first().map_or(0, |item| item.cell_count),
+            region.cell_count,
+            region.geometry.to_string().len()
+        ));
+        drop(present);
+        drop(epoch_surface);
+        clear_tool_surface_cache().unwrap();
+    }
+}

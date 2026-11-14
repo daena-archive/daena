@@ -1465,7 +1465,8 @@ fn slope_ppm(field: &PhysicalField) -> Vec<u32> {
             / (2.0 * dx);
         let dzdy = (f64::from(field.elevations_mm[south]) - f64::from(field.elevations_mm[north]))
             / (2.0 * dy);
-        *slot = (dzdx.hypot(dzdy) * 1_000_000.0)
+        // Millimetres per metre times 1000 is micrometres per metre (ppm).
+        *slot = (dzdx.hypot(dzdy) * 1_000.0)
             .round()
             .clamp(0.0, f64::from(u32::MAX)) as u32;
     }

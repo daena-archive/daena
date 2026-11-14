@@ -14,7 +14,7 @@ pub const PHYSICAL_LAKE_FEATURE_KIND: &str = daena_physical::hydro_claim::KIND_L
 pub const PHYSICAL_RIVER_FEATURE_KIND: &str = daena_physical::hydro_claim::KIND_RIVER;
 pub const PHYSICAL_LANDMASS_FEATURE_KIND: &str = daena_physical::landmass_claim::KIND_LANDMASS;
 pub const ATLAS_OROMETRY_FEATURE_KIND: &str = daena_atlas::amplify::KIND_OROMETRY;
-pub const PHYSICAL_SOURCE_FORMAT: &str = "physical-world-v1";
+pub const PHYSICAL_SOURCE_FORMAT: &str = "physical-world-v2";
 pub const PHYSICAL_ADAPTER_VERSION: u32 = 1;
 pub const VECTOR_ADAPTER_VERSION: u32 = 1;
 pub const MAP_DESCRIPTOR_SCHEMA_VERSION: u32 = 1;
@@ -22,7 +22,7 @@ pub const MAP_LAYERS_SCHEMA_VERSION: u32 = 1;
 pub const PHYSICAL_MIME: &str = "application/vnd.daena.physical-world";
 pub const PHYSICAL_FILENAME: &str = "world.pworld";
 pub const PHYSICAL_GENERATOR_ID: &str = "daena-physical-world";
-pub const PHYSICAL_GENERATOR_VERSION: u32 = 1;
+pub const PHYSICAL_GENERATOR_VERSION: u32 = 2;
 pub const PHYSICAL_MAX_SOURCE_BYTES: usize = daena_physical::MAX_SOURCE_BYTES;
 pub const DETAIL_MAP_RELATIONSHIP: &str = "detail-map";
 pub const OVERVIEW_MAP_RELATIONSHIP: &str = "overview-map";
@@ -305,26 +305,18 @@ pub struct HistoricalForcingSettings {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct PhysicalMapGenerationSettings {
-    pub width: u32,
-    pub height: u32,
+    pub resolution: u32,
     #[serde(rename = "radiusMetres")]
     pub radius_metres: u64,
     #[serde(rename = "targetLandFractionPpm")]
     pub target_land_fraction_ppm: u32,
     #[serde(rename = "referenceWaterInventoryM3")]
     pub reference_water_inventory_m3: u64,
-    #[serde(rename = "plateCount")]
-    pub plate_count: u16,
-    #[serde(rename = "continentalPlateCount")]
-    pub continental_plate_count: u16,
-    #[serde(rename = "tectonicActivityPpm")]
-    pub tectonic_activity_ppm: u32,
-    #[serde(rename = "islandActivityPpm")]
-    pub island_activity_ppm: u32,
-    #[serde(rename = "evolutionPreset")]
-    pub evolution_preset: String,
-    #[serde(rename = "tectonicStyle", default = "default_tectonic_style")]
-    pub tectonic_style: String,
+    pub preset: String,
+    #[serde(rename = "engineVersion")]
+    pub engine_version: u32,
+    #[serde(rename = "sourceVersion")]
+    pub source_version: u16,
     #[serde(rename = "historicalForcing")]
     pub historical_forcing: HistoricalForcingSettings,
     #[serde(
@@ -335,12 +327,6 @@ pub struct PhysicalMapGenerationSettings {
     pub hazard_derivation_version: Option<u16>,
     #[serde(default)]
     pub planetary: daena_physical::planetary::PlanetaryConfiguration,
-}
-
-fn default_tectonic_style() -> String {
-    daena_physical::tectonics::TectonicStyle::Any
-        .as_str()
-        .to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -355,14 +341,8 @@ pub enum MapGenerationSettings {
 pub struct MapGeneration {
     pub id: String,
     pub version: u32,
-    pub seed: u32,
+    pub seed: u64,
     pub settings: MapGenerationSettings,
-    #[serde(
-        rename = "retryIndex",
-        default,
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub retry_index: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

@@ -229,7 +229,7 @@ fn force_lake(constraint: &AtlasConstraint, grid: Grid, hydrology: &mut Hydrolog
     if hydrology.lake_cells.len() != count {
         return;
     }
-    for cell in 0..count {
+    for (cell, lake) in hydrology.lake_cells.iter_mut().enumerate() {
         let lon = crate::detail::cell_center_lon_micro((cell as u32) % grid.width, grid.width);
         let lat = crate::detail::cell_center_lat_micro((cell as u32) / grid.width, grid.height);
         let hit = if constraint.closed {
@@ -238,7 +238,7 @@ fn force_lake(constraint: &AtlasConstraint, grid: Grid, hydrology: &mut Hydrolog
             near_path(&constraint.path, lon, lat, NEAR_PATH_RADIUS2)
         };
         if hit {
-            hydrology.lake_cells[cell] = true;
+            *lake = true;
         }
     }
 }

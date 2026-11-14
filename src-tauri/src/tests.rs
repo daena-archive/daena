@@ -54,6 +54,169 @@ fn physical_jobs_are_session_scoped_and_expire() {
     assert!(!manager.active_session_matches("project-a", &second_session));
 }
 
+fn engine_products(resolution: u32) -> daena_physical::engine::Products {
+    let settings = daena_physical::engine::Settings::from_parts(
+        831_429,
+        daena_physical::engine::WorldPreset::Earthlike,
+        resolution,
+        daena_physical::DEFAULT_RADIUS_METRES,
+        290_000,
+        daena_physical::planetary::PlanetaryConfiguration::earth_like(),
+    );
+    daena_physical::engine::generate(settings, &mut daena_physical::NoopProgress).unwrap()
+}
+
+#[test]
+fn accepted_engine_source_rebuilds_and_rejects_an_external_checkpoint_edit() {
+    let products = engine_products(32);
+    let generation = products.generation().unwrap().clone();
+    let root = std::env::temp_dir().join(format!("daena-engine-storage-{}", uuid::Uuid::new_v4()));
+    let store = ProjectStore::open_directory(&root).unwrap();
+    let accepted = store
+        .accept_physical_map(
+            "Engine storage".into(),
+            products.source().to_vec(),
+            generation.clone(),
+            Some("00000000-0000-4000-8000-0000000000e3"),
+        )
+        .unwrap();
+    let identity = accepted.physical_identity.clone();
+    let source_path = accepted.source.path.clone();
+    store.flush_checkpoint("engine storage test").unwrap();
+    drop(store);
+
+    std::fs::remove_dir_all(root.join(".daena")).unwrap();
+    let rebuilt = ProjectStore::open_directory(&root).unwrap();
+    let descriptor = rebuilt
+        .list_fields(accepted.entity.id.clone())
+        .unwrap()
+        .into_iter()
+        .find(|field| field.key == "map")
+        .unwrap();
+    let bytes = rebuilt.asset_bytes(accepted.source.id.clone()).unwrap();
+    let validated =
+        daena_core::maps::physical::validate_source(&bytes, &descriptor.value["generation"])
+            .unwrap();
+    assert_eq!(validated.identity, identity);
+    drop(rebuilt);
+
+    let portable_source = root.join(source_path);
+    let mut edited = std::fs::read(&portable_source).unwrap();
+    let last = edited.len() - 1;
+    edited[last] ^= 1;
+    std::fs::write(&portable_source, edited).unwrap();
+    std::fs::remove_dir_all(root.join(".daena")).unwrap();
+    assert!(ProjectStore::open_directory(&root).is_err());
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+#[ignore = "wall-clock: release-only deadline sweep"]
+fn physical_command_cancellation_latency_is_under_budget() {
+    struct DeadlineSink {
+        deadline: Instant,
+        armed: bool,
+        last_phase: daena_physical::ProgressPhase,
+    }
+
+    impl DeadlineSink {
+        fn new(deadline: Instant) -> Self {
+            Self {
+                deadline,
+                armed: false,
+                last_phase: daena_physical::ProgressPhase::BuildingTectonicStructure,
+            }
+        }
+
+        fn never() -> Self {
+            Self::new(Instant::now() + Duration::from_secs(86_400))
+        }
+
+        fn check(&mut self) {
+            if Instant::now() >= self.deadline {
+                self.armed = true;
+            }
+        }
+    }
+
+    impl daena_physical::ProgressSink for DeadlineSink {
+        fn report(
+            &mut self,
+            phase: daena_physical::ProgressPhase,
+            _completed: u32,
+            _total: u32,
+        ) -> Result<(), daena_physical::PhysicalError> {
+            self.last_phase = phase;
+            self.check();
+            Ok(())
+        }
+
+        fn check_cancelled(&self) -> Result<(), daena_physical::PhysicalError> {
+            if self.armed || Instant::now() >= self.deadline {
+                Err(daena_physical::PhysicalError::Cancelled)
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    fn settings(resolution: u32) -> daena_physical::engine::Settings {
+        daena_physical::engine::Settings::from_parts(
+            7,
+            daena_physical::engine::WorldPreset::Earthlike,
+            resolution,
+            daena_physical::DEFAULT_RADIUS_METRES,
+            290_000,
+            daena_physical::planetary::PlanetaryConfiguration::earth_like(),
+        )
+    }
+
+    fn sweep(resolution: u32, step_ms: u64) -> (Duration, Duration, u64, String) {
+        let settings = settings(resolution);
+        let started = Instant::now();
+        let full = daena_physical::engine::generate(settings, &mut DeadlineSink::never())
+            .expect("uncancelled generation succeeds");
+        let total = started.elapsed();
+        drop(full);
+        let mut worst = Duration::ZERO;
+        let mut worst_at_ms = 0;
+        let mut worst_phase = String::from("none");
+        let mut deadline_ms = 50;
+        while Duration::from_millis(deadline_ms) < total {
+            let started = Instant::now();
+            let mut sink = DeadlineSink::new(started + Duration::from_millis(deadline_ms));
+            let result = daena_physical::engine::generate(settings, &mut sink);
+            let elapsed = started.elapsed();
+            if matches!(result, Err(daena_physical::PhysicalError::Cancelled)) {
+                let late = elapsed.saturating_sub(Duration::from_millis(deadline_ms));
+                if late > worst {
+                    worst = late;
+                    worst_at_ms = deadline_ms;
+                    worst_phase = sink.last_phase.label().into();
+                }
+            }
+            deadline_ms += step_ms;
+        }
+        (total, worst, worst_at_ms, worst_phase)
+    }
+
+    let (total_512, worst_512, at_512, phase_512) = sweep(512, 125);
+    let (total_1024, worst_1024, at_1024, phase_1024) = sweep(1024, 500);
+    let report = format!(
+        "n=512 full {:?} worst late {:?} at {} ms ({})\nn=1024 full {:?} worst late {:?} at {} ms ({})",
+        total_512, worst_512, at_512, phase_512,
+        total_1024, worst_1024, at_1024, phase_1024
+    );
+    println!("{report}");
+    assert!(
+        worst_512.as_millis() < daena_physical::CANCELLATION_LATENCY_BUDGET_MS,
+        "n=512 cancellation was {worst_512:?} late at {at_512} ms ({phase_512})"
+    );
+    assert!(
+        worst_1024.as_millis() < daena_physical::CANCELLATION_LATENCY_BUDGET_MS,
+        "n=1024 cancellation was {worst_1024:?} late at {at_1024} ms ({phase_1024})"
+    );
+}
 #[test]
 fn physical_climate_products_expose_derived_fields_without_source_data() {
     let grid = daena_physical::Grid::new(8, 4, daena_physical::DEFAULT_RADIUS_METRES).unwrap();
@@ -292,11 +455,21 @@ fn reopened_historical_products_preserve_terrain_and_report_water_balance() {
     assert_eq!(generated.tectonics.physical_field(), before);
     assert!(historical.hydrology.metrics.converged);
     assert!(historical.metrics.balance_error_m3 <= historical.hydrology.metrics.tolerance_m3);
-    let source = daena_physical::tectonics::encode_source_v2(&generated.tectonics).unwrap();
+    let engine_settings = daena_physical::engine::Settings::from_parts(
+        831_429,
+        daena_physical::engine::WorldPreset::Earthlike,
+        32,
+        daena_physical::DEFAULT_RADIUS_METRES,
+        290_000,
+        daena_physical::planetary::PlanetaryConfiguration::earth_like(),
+    );
+    let products = daena_physical::engine::generate(engine_settings, &mut progress).unwrap();
+    let source = products.source().to_vec();
     let source_hash = format!("sha256:{:x}", Sha256::digest(&source));
-    let physical_identity = daena_core::maps::physical::validate_source(&source, &generation)
-        .unwrap()
-        .identity;
+    let physical_identity =
+        daena_core::maps::physical::validate_source(&source, products.generation().unwrap())
+            .unwrap()
+            .identity;
     let cache_key = historical_cache_key(
         &physical_identity,
         persisted,
@@ -2162,7 +2335,7 @@ fn foreign_instance_label_cannot_read_another_plugins_protocol() {
         .body(Vec::new())
         .unwrap();
     let respond = |label: &str| {
-        plugin_protocol_response(&label, &request, &core, &plugins, &transfers, &ai_runtime)
+        plugin_protocol_response(label, &request, &core, &plugins, &transfers, &ai_runtime)
     };
     let lore = plugin_instance_label("daena.lore", "4f2a9c1b-1111-4222-8333-444444444444").unwrap();
     assert_eq!(respond(&lore).status(), 403);

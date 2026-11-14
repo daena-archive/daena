@@ -391,65 +391,36 @@ fn relationship_constraints_and_batch_reads() {
 
 #[test]
 fn physical_map_acceptance_is_atomic_and_request_idempotent() {
-    let settings = daena_physical::GenerationSettings {
-        width: 16,
-        height: 8,
-        radius_metres: daena_physical::DEFAULT_RADIUS_METRES,
-        target_land_fraction_ppm: 300_000,
-    };
+    let engine_settings = daena_physical::engine::Settings::from_parts(
+        831_429,
+        daena_physical::engine::WorldPreset::Earthlike,
+        32,
+        daena_physical::DEFAULT_RADIUS_METRES,
+        290_000,
+        daena_physical::planetary::PlanetaryConfiguration::earth_like(),
+    );
     let mut progress = daena_physical::NoopProgress;
-    let world = daena_physical::generate_world(settings, 831_429, 0, &mut progress).unwrap();
-    let generation = serde_json::json!({
-        "id": crate::maps::PHYSICAL_GENERATOR_ID,
-        "version": crate::maps::PHYSICAL_GENERATOR_VERSION,
-        "seed": 831429,
-        "retryIndex": 0,
-        "settings": {
-            "width": settings.width,
-            "height": settings.height,
-            "radiusMetres": settings.radius_metres,
-            "targetLandFractionPpm": settings.target_land_fraction_ppm,
-            "referenceWaterInventoryM3": world.report.reference_water_inventory_m3,
-            "plateCount": world.tectonics.settings.plate_count,
-            "continentalPlateCount": world.tectonics.settings.continental_plate_count,
-            "tectonicActivityPpm": world.tectonics.settings.tectonic_activity_ppm,
-            "islandActivityPpm": world.tectonics.settings.island_activity_ppm,
-            "evolutionPreset": "mature",
-            "hazardDerivationVersion": daena_physical::hazards::HAZARD_DERIVATION_VERSION,
-            "historicalForcing": {
-                    "version": daena_physical::history::HISTORICAL_DERIVATION_VERSION,
-                "components": [
-                    { "amplitudeCentiC": 180, "periodYears": 12000, "phaseOffsetYears": 0 },
-                    { "amplitudeCentiC": 90, "periodYears": 4100, "phaseOffsetYears": 200 },
-                    { "amplitudeCentiC": 40, "periodYears": 2300, "phaseOffsetYears": 800 }
-                ],
-                "sensitivityPpm": 1000000,
-                "landIceAmplitudePpm": 24000,
-                "iceResponseYears": 800,
-                "iceMidpointCentiC": 0,
-                "iceTransitionWidthCentiC": 400,
-                "thermalExpansionPpmPerDegreeC": 210
-            }
-        }
-    });
+    let products = daena_physical::engine::generate(engine_settings, &mut progress).unwrap();
+    let source = products.source().to_vec();
+    let generation = products.generation().unwrap().clone();
     let root = std::env::temp_dir().join(format!("daena-physical-{}", Uuid::new_v4()));
     let store = ProjectStore::open_directory(&root).unwrap();
     let accepted = store
         .accept_physical_map(
             "Physical test".into(),
-            world.source.clone(),
+            source.clone(),
             generation.clone(),
             Some("00000000-0000-4000-8000-000000000001"),
         )
         .unwrap();
-    let expected_identity = crate::maps::physical::validate_source(&world.source, &generation)
+    let expected_identity = crate::maps::physical::validate_source(&source, &generation)
         .unwrap()
         .identity;
     assert_eq!(accepted.physical_identity, expected_identity);
     let replayed = store
         .accept_physical_map(
             "Physical test".into(),
-            world.source.clone(),
+            source.clone(),
             generation.clone(),
             Some("00000000-0000-4000-8000-000000000001"),
         )
@@ -459,7 +430,7 @@ fn physical_map_acceptance_is_atomic_and_request_idempotent() {
     assert_eq!(store.list_entities().unwrap().len(), 1);
     assert_eq!(
         store.asset_bytes(accepted.source.id.clone()).unwrap(),
-        world.source
+        source
     );
     let descriptor = store
         .list_fields(accepted.entity.id.clone())
@@ -468,7 +439,7 @@ fn physical_map_acceptance_is_atomic_and_request_idempotent() {
         .find(|field| field.key == "map")
         .unwrap();
     assert_eq!(
-        crate::maps::physical::validate_source(&world.source, &descriptor.value["generation"])
+        crate::maps::physical::validate_source(&source, &descriptor.value["generation"])
             .unwrap()
             .identity,
         accepted.physical_identity
@@ -491,7 +462,7 @@ fn physical_map_acceptance_is_atomic_and_request_idempotent() {
         .unwrap();
     assert_eq!(
         crate::maps::physical::validate_source(
-            &world.source,
+            &source,
             &presentation_descriptor.value["generation"],
         )
         .unwrap()
@@ -499,11 +470,14 @@ fn physical_map_acceptance_is_atomic_and_request_idempotent() {
         accepted.physical_identity
     );
     let mut identity_change = presentation_descriptor.clone();
-    identity_change.value["generation"]["settings"]["evolutionPreset"] = serde_json::json!("young");
+    identity_change.value["generation"]["settings"]["targetLandFractionPpm"] =
+        serde_json::json!(300_000);
+    // A changed identity field no longer matches the stored source, so the
+    // edit is rejected by source validation before the immutability check.
     assert!(matches!(
         store.set_field(identity_change),
         Err(CoreError::Validation(message))
-            if message.contains("physical identity fields are immutable")
+            if message.contains("source provenance mismatch")
     ));
     assert_eq!(
         descriptor.value["provider"]["id"],
@@ -590,7 +564,7 @@ fn physical_map_acceptance_is_atomic_and_request_idempotent() {
     assert!(matches!(
         store.accept_physical_map(
             "Different name".into(),
-            world.source.clone(),
+            source.clone(),
             generation,
             Some("00000000-0000-4000-8000-000000000001"),
         ),
@@ -603,7 +577,7 @@ fn physical_map_acceptance_is_atomic_and_request_idempotent() {
     assert_eq!(rebuilt.list_entities().unwrap().len(), 1);
     assert_eq!(
         rebuilt.asset_bytes(accepted.source.id.clone()).unwrap(),
-        world.source
+        source
     );
     let rebuilt_descriptor = rebuilt
         .list_fields(accepted.entity.id.clone())
@@ -8254,56 +8228,22 @@ fn physical_detach_fixture(
     FieldValue,
     String,
 ) {
-    let settings = daena_physical::GenerationSettings {
-        width: 16,
-        height: 8,
-        radius_metres: daena_physical::DEFAULT_RADIUS_METRES,
-        target_land_fraction_ppm: 300_000,
-    };
+    let engine_settings = daena_physical::engine::Settings::from_parts(
+        831_429,
+        daena_physical::engine::WorldPreset::Earthlike,
+        32,
+        daena_physical::DEFAULT_RADIUS_METRES,
+        290_000,
+        daena_physical::planetary::PlanetaryConfiguration::earth_like(),
+    );
     let mut progress = daena_physical::NoopProgress;
-    let world = daena_physical::generate_world(settings, 831_429, 0, &mut progress).unwrap();
-    let generation = serde_json::json!({
-        "id": crate::maps::PHYSICAL_GENERATOR_ID,
-        "version": crate::maps::PHYSICAL_GENERATOR_VERSION,
-        "seed": 831429,
-        "retryIndex": 0,
-        "settings": {
-            "width": settings.width,
-            "height": settings.height,
-            "radiusMetres": settings.radius_metres,
-            "targetLandFractionPpm": settings.target_land_fraction_ppm,
-            "referenceWaterInventoryM3": world.report.reference_water_inventory_m3,
-            "plateCount": world.tectonics.settings.plate_count,
-            "continentalPlateCount": world.tectonics.settings.continental_plate_count,
-            "tectonicActivityPpm": world.tectonics.settings.tectonic_activity_ppm,
-            "islandActivityPpm": world.tectonics.settings.island_activity_ppm,
-            "evolutionPreset": "mature",
-            "hazardDerivationVersion": daena_physical::hazards::HAZARD_DERIVATION_VERSION,
-            "historicalForcing": {
-                    "version": daena_physical::history::HISTORICAL_DERIVATION_VERSION,
-                "components": [
-                    { "amplitudeCentiC": 180, "periodYears": 12000, "phaseOffsetYears": 0 },
-                    { "amplitudeCentiC": 90, "periodYears": 4100, "phaseOffsetYears": 200 },
-                    { "amplitudeCentiC": 40, "periodYears": 2300, "phaseOffsetYears": 800 }
-                ],
-                "sensitivityPpm": 1000000,
-                "landIceAmplitudePpm": 24000,
-                "iceResponseYears": 800,
-                "iceMidpointCentiC": 0,
-                "iceTransitionWidthCentiC": 400,
-                "thermalExpansionPpmPerDegreeC": 210
-            }
-        }
-    });
+    let products = daena_physical::engine::generate(engine_settings, &mut progress).unwrap();
+    let source = products.source().to_vec();
+    let generation = products.generation().unwrap().clone();
     let root = std::env::temp_dir().join(format!("daena-{prefix}-{}", Uuid::new_v4()));
     let store = ProjectStore::open_directory(&root).unwrap();
     let accepted = store
-        .accept_physical_map(
-            "Physical detach test".into(),
-            world.source.clone(),
-            generation,
-            None,
-        )
+        .accept_physical_map("Physical detach test".into(), source, generation, None)
         .unwrap();
     let fields = store.list_fields(accepted.entity.id.clone()).unwrap();
     let map_field = fields

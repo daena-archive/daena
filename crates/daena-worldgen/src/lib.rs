@@ -929,6 +929,53 @@ impl World {
         (temperature as f32, precipitation as f32)
     }
 
+    /// Bilinear equirectangular elevation view, width by height, row-major.
+    ///
+    /// This is the elevation-only subset of [`Self::equirect_view`]: it
+    /// produces exactly the same `elevation_m` values, but skips the climate
+    /// and field resampling and checks `cancelled` between row batches. The
+    /// product view uses this path, so a cancel request does not wait for the
+    /// monthly climate view.
+    pub fn equirect_elevation_with_cancel(
+        &self,
+        width: u32,
+        height: u32,
+        cancelled: &(dyn Fn() -> bool + Sync),
+    ) -> Result<Vec<f32>, WorldError> {
+        if width == 0 || height == 0 {
+            return Err(WorldError::Internal(
+                "equirect view dimensions must be positive".to_string(),
+            ));
+        }
+        let count = width as usize * height as usize;
+        let mut out = vec![0.0f32; count];
+        let batch_rows = (height as usize / 16).max(1);
+        for start in (0..height as usize).step_by(batch_rows) {
+            if cancelled() {
+                return Err(WorldError::Cancelled);
+            }
+            let end = (start + batch_rows).min(height as usize);
+            let block = &mut out[start * width as usize..end * width as usize];
+            block
+                .par_chunks_mut(width as usize)
+                .enumerate()
+                .for_each(|(local_row, row_out)| {
+                    let row = start + local_row;
+                    let lat = -90.0 + 180.0 * (f64::from(row as u32) + 0.5) / f64::from(height);
+                    for (col, dest) in row_out.iter_mut().enumerate() {
+                        let lon = -180.0 + 360.0 * (col as f64 + 0.5) / f64::from(width);
+                        let direction = direction_from_lat_lon(lat, lon);
+                        *dest = self.grid.sample_bilinear(&self.elevation_m, direction);
+                    }
+                });
+        }
+        if cancelled() {
+            Err(WorldError::Cancelled)
+        } else {
+            Ok(out)
+        }
+    }
+
     /// Equirectangular raster view; continuous fields bilinear, classes nearest.
     pub fn equirect_view(&self, width: u32, height: u32) -> Result<EquirectView, WorldError> {
         if width == 0 || height == 0 {
@@ -970,6 +1017,7 @@ impl World {
             .iter()
             .map(|value| *value as f32)
             .collect();
+        let elevation_m = self.equirect_elevation_with_cancel(width, height, &|| false)?;
         let climate = ClimateSummary {
             t_annual_c: resample(&self.climate.t_annual_c),
             t_warm_c: resample(&self.climate.t_warm_c),
@@ -1017,7 +1065,7 @@ impl World {
         Ok(EquirectView {
             width,
             height,
-            elevation_m: resample(&self.elevation_m),
+            elevation_m,
             ocean: nearest_u8(&self.ocean),
             climate,
             t_nh_summer_c,

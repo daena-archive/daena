@@ -38,14 +38,8 @@ pub(super) async fn project_physical_generate(
     let request_id = request_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     uuid::Uuid::parse_str(&request_id)
         .map_err(|_| "physical generation request ID must be a UUID".to_string())?;
-    let evolution_preset = daena_physical::evolution::EvolutionPreset::parse(
-        input.evolution_preset.as_deref().unwrap_or("mature"),
-    )
-    .map_err(|error| error.to_string())?;
-    let tectonic_style = daena_physical::tectonics::TectonicStyle::parse(
-        input.tectonic_style.as_deref().unwrap_or("any"),
-    )
-    .map_err(|error| error.to_string())?;
+    let preset = daena_physical::engine::WorldPreset::parse(&input.settings.preset)
+        .ok_or_else(|| format!("unknown world preset {}", input.settings.preset))?;
     input
         .settings
         .planetary
@@ -54,6 +48,17 @@ pub(super) async fn project_physical_generate(
     if input.settings.planetary.radius_metres != input.settings.radius_metres {
         return Err("planetary.radiusMetres must match settings.radiusMetres".into());
     }
+    let engine_settings = daena_physical::engine::Settings::from_parts(
+        input.seed,
+        preset,
+        input.settings.resolution,
+        input.settings.radius_metres,
+        input.settings.target_land_fraction_ppm,
+        input.settings.planetary,
+    );
+    engine_settings
+        .validate_product()
+        .map_err(|error| error.to_string())?;
     let cancel = Arc::new(AtomicBool::new(false));
     let status = PhysicalJobStatus {
         job_id: job_id.clone(),
@@ -84,7 +89,6 @@ pub(super) async fn project_physical_generate(
         );
     let jobs_for_worker = jobs.inner().clone();
     let worker_job_id = job_id.clone();
-    let radius_metres = input.settings.planetary.radius_metres;
     tauri::async_runtime::spawn_blocking(move || {
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let mut progress = PhysicalProgress {
@@ -92,23 +96,7 @@ pub(super) async fn project_physical_generate(
                 job_id: worker_job_id.clone(),
                 cancel: cancel.clone(),
             };
-            let settings = daena_physical::GenerationSettings {
-                width: input.settings.width,
-                height: input.settings.height,
-                radius_metres,
-                target_land_fraction_ppm: input.settings.target_land_fraction_ppm,
-            };
-            daena_physical::generate_world_with_evolution(
-                settings,
-                input.seed,
-                input.retry_index,
-                daena_physical::evolution::EvolutionSettings {
-                    preset: evolution_preset,
-                },
-                input.settings.planetary,
-                tectonic_style,
-                &mut progress,
-            )
+            daena_physical::engine::generate(engine_settings, &mut progress)
         }));
         let mut manager = match jobs_for_worker.lock() {
             Ok(manager) => manager,
@@ -130,36 +118,14 @@ pub(super) async fn project_physical_generate(
             }
         };
         match outcome {
-            Ok(world) => {
-                let historical_forcing =
-                    daena_physical::history::HistoricalForcingParameters::default_for(
-                        input.seed,
-                        input.retry_index,
-                    );
-                let generation = serde_json::json!({
-                    "id": daena_core::maps::PHYSICAL_GENERATOR_ID,
-                    "version": daena_core::maps::PHYSICAL_GENERATOR_VERSION,
-                    "seed": input.seed,
-                    "retryIndex": input.retry_index,
-                    "settings": {
-                        "width": input.settings.width,
-                        "height": input.settings.height,
-                        "radiusMetres": radius_metres,
-                        "targetLandFractionPpm": input.settings.target_land_fraction_ppm,
-                        "referenceWaterInventoryM3": world.report.reference_water_inventory_m3,
-                        "plateCount": world.tectonics.settings.plate_count,
-                        "continentalPlateCount": world.tectonics.settings.continental_plate_count,
-                        "tectonicActivityPpm": world.tectonics.settings.tectonic_activity_ppm,
-                        "islandActivityPpm": world.tectonics.settings.island_activity_ppm,
-                        "evolutionPreset": evolution_preset.as_str(),
-                        "tectonicStyle": tectonic_style.as_str(),
-                        "hazardDerivationVersion": daena_physical::hazards::HAZARD_DERIVATION_VERSION,
-                        "historicalForcing": historical_forcing_products(historical_forcing),
-                        "planetary": input.settings.planetary,
-                    }
-                });
+            Ok(products) => {
+                let generation = products
+                    .generation()
+                    .cloned()
+                    .expect("engine generation records its generation metadata");
+                let source = products.source().to_vec();
                 let physical_identity =
-                    match daena_core::maps::physical::validate_source(&world.source, &generation) {
+                    match daena_core::maps::physical::validate_source(&source, &generation) {
                         Ok(validated) => validated.identity,
                         Err(error) => {
                             job.status.state = "failed".into();
@@ -182,13 +148,11 @@ pub(super) async fn project_physical_generate(
                 job.status.error_code = None;
                 job.status.physical_identity = Some(physical_identity.clone());
                 job.result = Some(PhysicalJobResult {
-                    source: world.source,
+                    source,
                     generation,
                     physical_identity,
-                    derived_geojson: world.derived_geojson,
-                    climate: world.climate,
-                    evolution: world.evolution,
-                    hydrology: world.hydrology,
+                    derived_geojson: products.derived_geojson().to_owned(),
+                    climate: products.climate().clone(),
                 });
             }
             Err(daena_physical::PhysicalError::Cancelled) => {
@@ -760,32 +724,6 @@ pub(super) fn load_or_fill_static_derived(
     Ok(physics)
 }
 
-pub(super) fn write_static_derived_from_job(
-    project_root: &str,
-    result: &PhysicalJobResult,
-) -> Result<(), String> {
-    let cache_dir = daena_core::maps::physical::physical_derived_cache_dir(
-        Path::new(project_root),
-        &result.physical_identity,
-        planetary_from_generation(&result.generation),
-    )
-    .map_err(|error| error.to_string())?;
-    let world = daena_physical::decode_source(&result.source)?;
-    let ocean_curve = daena_physical::hydrology::ocean_volume_curve(&world.physical_field())
-        .map_err(|error| format!("maps.physical: {error}"))?;
-    daena_physical::derived_cache::save(
-        &cache_dir,
-        &daena_physical::derived_cache::StaticDerivedPhysics {
-            climate: result.climate.clone(),
-            evolution: result.evolution.clone(),
-            hydrology: result.hydrology.clone(),
-            ocean_curve,
-            geojson: result.derived_geojson.clone(),
-        },
-    )
-    .map_err(|error| format!("maps.physical: {error}"))
-}
-
 #[cfg(test)]
 pub(super) fn derive_reopened_historical(
     world: &daena_physical::tectonics::TectonicWorld,
@@ -954,53 +892,23 @@ pub(super) fn project_physical_climate(
 #[tauri::command]
 pub(super) fn project_physical_evolution(
     state: tauri::State<'_, SharedCore>,
-    jobs: tauri::State<'_, SharedPhysicalJobs>,
-    job_id: String,
+    _jobs: tauri::State<'_, SharedPhysicalJobs>,
+    _job_id: String,
 ) -> Result<serde_json::Value, String> {
-    let project_id = current_info(state.inner())?
-        .ok_or_else(|| "open a project before reading physical evolution".to_string())?
-        .root;
-    let mut manager = jobs
-        .lock()
-        .map_err(|_| "physical job state is unavailable".to_string())?;
-    manager.reap_expired();
-    let job = manager
-        .jobs
-        .get(&job_id)
-        .filter(|job| manager.active_session_matches(&project_id, &job.session_id))
-        .ok_or("physical job was not found, expired, or belongs to another session")?;
-    let evolution = job
-        .result
-        .as_ref()
-        .map(|result| &result.evolution)
-        .ok_or_else(|| "physical job evolution is not ready".to_string())?;
-    Ok(physical_evolution_products(evolution))
+    current_info(state.inner())?
+        .ok_or_else(|| "open a project before reading physical evolution".to_string())?;
+    Err("physical evolution products are not available until phase E4".into())
 }
 
 #[tauri::command]
 pub(super) fn project_physical_hydrology(
     state: tauri::State<'_, SharedCore>,
-    jobs: tauri::State<'_, SharedPhysicalJobs>,
-    job_id: String,
+    _jobs: tauri::State<'_, SharedPhysicalJobs>,
+    _job_id: String,
 ) -> Result<serde_json::Value, String> {
-    let project_id = current_info(state.inner())?
-        .ok_or_else(|| "open a project before reading physical hydrology".to_string())?
-        .root;
-    let mut manager = jobs
-        .lock()
-        .map_err(|_| "physical job state is unavailable".to_string())?;
-    manager.reap_expired();
-    let job = manager
-        .jobs
-        .get(&job_id)
-        .filter(|job| manager.active_session_matches(&project_id, &job.session_id))
-        .ok_or("physical job was not found, expired, or belongs to another session")?;
-    let hydrology = job
-        .result
-        .as_ref()
-        .map(|result| &result.hydrology)
-        .ok_or_else(|| "physical job hydrology is not ready".to_string())?;
-    Ok(physical_hydrology_products(hydrology))
+    current_info(state.inner())?
+        .ok_or_else(|| "open a project before reading physical hydrology".to_string())?;
+    Err("physical hydrology products are not available until phase E4".into())
 }
 
 #[tauri::command]
@@ -1037,7 +945,18 @@ pub(super) async fn project_physical_accept(
             .ok_or_else(|| "physical job result is missing".to_string())?
     };
     let expected_identity = result.physical_identity.clone();
-    let _ = write_static_derived_from_job(&project_id, &result);
+    let resolution = result
+        .generation
+        .get("settings")
+        .and_then(|settings| settings.get("resolution"))
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| "physical generation is missing its resolution".to_string())?;
+    if !matches!(resolution, 512 | 1024) {
+        return Err(format!(
+            "{}: physical map resolution must be 512 or 1024",
+            daena_core::maps::physical::CODE_INVALID_SOURCE
+        ));
+    }
     let accepted = with_core(state, move |core| {
         let accepted = core.project(trusted_shell())?.accept_physical_map(
             name,
@@ -1081,18 +1000,15 @@ pub(super) async fn project_physical_derived_geojson(
                 CoreError::Validation("maps: physical generation is missing".into())
             })?;
         let bytes = project.asset_bytes(source_id.to_string())?;
-        let validated = daena_core::maps::physical::validate_source(&bytes, &generation)?;
-        let world = &validated.world;
-        let report = validated.report;
-        let physics = load_or_fill_static_derived(
-            &project.info().ok_or(CoreError::ProjectNotOpen)?.root,
-            &validated.identity,
-            world,
-            &generation,
-            report.reference_water_inventory_m3,
+        daena_core::maps::physical::validate_source(&bytes, &generation)?;
+        let mut progress = daena_physical::NoopProgress;
+        let products = daena_physical::engine::reload(
+            &bytes,
+            planetary_from_generation(&generation),
+            &mut progress,
         )
-        .map_err(CoreError::Validation)?;
-        Ok(physics.geojson)
+        .map_err(|error| CoreError::Validation(error.to_string()))?;
+        Ok(products.derived_geojson().to_owned())
     })
     .await
 }
@@ -1118,17 +1034,15 @@ pub(super) async fn project_physical_derived_climate(
                 CoreError::Validation("maps: physical generation is missing".into())
             })?;
         let bytes = project.asset_bytes(source_id.to_string())?;
-        let validated = daena_core::maps::physical::validate_source(&bytes, &generation)?;
-        let world = &validated.world;
-        let physics = load_or_fill_static_derived(
-            &project.info().ok_or(CoreError::ProjectNotOpen)?.root,
-            &validated.identity,
-            world,
-            &generation,
-            validated.report.reference_water_inventory_m3,
+        daena_core::maps::physical::validate_source(&bytes, &generation)?;
+        let mut progress = daena_physical::NoopProgress;
+        let products = daena_physical::engine::reload(
+            &bytes,
+            planetary_from_generation(&generation),
+            &mut progress,
         )
-        .map_err(CoreError::Validation)?;
-        Ok(physical_climate_products(&physics.climate))
+        .map_err(|error| CoreError::Validation(error.to_string()))?;
+        Ok(physical_climate_products(products.climate()))
     })
     .await
 }
@@ -1155,7 +1069,7 @@ pub(super) async fn project_physical_derived_evolution(
             })?;
         let bytes = project.asset_bytes(source_id.to_string())?;
         let validated = daena_core::maps::physical::validate_source(&bytes, &generation)?;
-        let world = &validated.world;
+        let world = validated.legacy_world()?;
         let physics = load_or_fill_static_derived(
             &project.info().ok_or(CoreError::ProjectNotOpen)?.root,
             &validated.identity,
@@ -1191,7 +1105,7 @@ pub(super) async fn project_physical_derived_hydrology(
             })?;
         let bytes = project.asset_bytes(source_id.to_string())?;
         let validated = daena_core::maps::physical::validate_source(&bytes, &generation)?;
-        let world = &validated.world;
+        let world = validated.legacy_world()?;
         let report = validated.report;
         let physics = load_or_fill_static_derived(
             &project.info().ok_or(CoreError::ProjectNotOpen)?.root,
@@ -1233,7 +1147,7 @@ pub(super) async fn project_physical_derived_epoch(
             })?;
         let bytes = project.asset_bytes(source_id.to_string())?;
         let validated = daena_core::maps::physical::validate_source(&bytes, &generation)?;
-        let world = &validated.world;
+        let world = validated.legacy_world()?;
         let report = validated.report;
         let physical_identity = validated.identity.clone();
         let forcing =
@@ -1369,7 +1283,7 @@ pub(super) async fn project_physical_materialize_events(
             .ok_or_else(|| CoreError::Validation("maps: physical generation is missing".into()))?;
         let bytes = project.asset_bytes(source_id.to_string())?;
         let validated = daena_core::maps::physical::validate_source(&bytes, &generation)?;
-        let world = &validated.world;
+        let world = validated.legacy_world()?;
         let needs_epoch_climate =
             request.event_kind == daena_physical::events::NaturalEventKind::Storm;
         let needs_epoch_hydrology =
@@ -1752,7 +1666,7 @@ pub(super) async fn project_physical_find_place(
             })?;
         let bytes = project.asset_bytes(source_id.to_string())?;
         let validated = daena_core::maps::physical::validate_source(&bytes, &generation)?;
-        let world = &validated.world;
+        let world = validated.legacy_world()?;
         let physics = load_or_fill_static_derived(
             &project.info().ok_or(CoreError::ProjectNotOpen)?.root,
             &validated.identity,
@@ -1819,7 +1733,7 @@ pub(super) async fn project_physical_suggest_routes(
             })?;
         let bytes = project.asset_bytes(source_id.to_string())?;
         let validated = daena_core::maps::physical::validate_source(&bytes, &generation)?;
-        let world = &validated.world;
+        let world = validated.legacy_world()?;
         let physics = load_or_fill_static_derived(
             &project.info().ok_or(CoreError::ProjectNotOpen)?.root,
             &validated.identity,
@@ -1884,7 +1798,7 @@ pub(super) async fn project_physical_propose_region(
             })?;
         let bytes = project.asset_bytes(source_id.to_string())?;
         let validated = daena_core::maps::physical::validate_source(&bytes, &generation)?;
-        let world = &validated.world;
+        let world = validated.legacy_world()?;
         let physics = load_or_fill_static_derived(
             &project.info().ok_or(CoreError::ProjectNotOpen)?.root,
             &validated.identity,

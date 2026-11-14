@@ -1,10 +1,7 @@
 use super::{MapGeneration, MapGenerationSettings, PhysicalMapGenerationSettings};
 use crate::error::CoreError;
 use daena_physical::{
-    decode_source,
-    history::HistoricalForcingParameters,
-    tectonics::{TectonicSettings, TectonicWorld},
-    validate_field_report, PRODUCTION_MAX_HEIGHT, PRODUCTION_MAX_WIDTH,
+    engine, history::HistoricalForcingParameters, tectonics::TectonicWorld, ValidationReport,
 };
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -16,42 +13,47 @@ pub const CODE_INVALID_SOURCE: &str = "physical.source.invalid";
 pub const CODE_UNSUPPORTED_SOURCE_VERSION: &str = "physical.source.unsupported-version";
 pub const PHYSICAL_DERIVED_CACHE_RELATIVE: &str = ".daena/cache/physical-derived";
 
-/// The validated physical descriptor/source pair exposed to the host.
+/// The validated `DAENAPW2` descriptor/source pair exposed to the host.
 ///
 /// The identity is deliberately opaque to callers. Only this module constructs
 /// it, so TypeScript and Tauri cannot accidentally implement a second
 /// normalization or hashing scheme.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 pub struct ValidatedPhysicalSource {
-    pub world: TectonicWorld,
-    pub report: daena_physical::ValidationReport,
+    pub source: engine::DecodedSource,
+    pub report: ValidationReport,
     pub identity: String,
+    /// Transitional slot for consumers that still read the retired `DAENAPW1`
+    /// tectonic type. It is always `None` for a `DAENAPW2` source; those
+    /// consumers fail honestly until their engine-backed replacement lands.
+    pub legacy_world: Option<TectonicWorld>,
+}
+
+impl ValidatedPhysicalSource {
+    pub fn legacy_world(&self) -> Result<&TectonicWorld, CoreError> {
+        self.legacy_world.as_ref().ok_or_else(|| {
+            invalid(
+                CODE_UNSUPPORTED_SOURCE_VERSION,
+                "this consumer reads the retired DAENAPW1 tectonic type and moves to the engine in a later phase",
+            )
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PhysicalIdentityManifestV1 {
+pub struct PhysicalIdentityManifestV2 {
     pub provider_id: String,
     pub source_format: String,
     pub adapter_version: u32,
     pub generator_id: String,
     pub generator_version: u32,
     pub source_version: u16,
-    pub width: u32,
-    pub height: u32,
-    pub radius_metres: u64,
-    pub seed: u32,
-    pub retry_index: u32,
-    pub target_land_fraction_ppm: u32,
-    pub sea_level_mm: i32,
-    pub sample_count: u32,
-    pub plate_count: u16,
-    pub continental_plate_count: u16,
-    pub tectonic_activity_ppm: u32,
-    pub island_activity_ppm: u32,
-    pub boundary_count: u32,
-    pub volcanic_center_count: u32,
+    pub engine_version: u32,
+    pub resolution: u32,
+    pub source_sha256: String,
+    pub elevation_hash: u64,
+    pub tectonics_hash: u64,
     pub reference_water_inventory_m3: u64,
-    pub evolution_preset: String,
     pub historical_forcing: HistoricalForcingParameters,
 }
 
@@ -77,9 +79,9 @@ fn push_manifest_string(bytes: &mut Vec<u8>, value: &str) {
     bytes.extend_from_slice(value);
 }
 
-/// Encode `PhysicalIdentityManifestV1` in its one locked byte representation.
+/// Encode `PhysicalIdentityManifestV2` in its one locked byte representation.
 #[must_use]
-pub fn encode_identity_manifest(manifest: &PhysicalIdentityManifestV1) -> Vec<u8> {
+pub fn encode_identity_manifest(manifest: &PhysicalIdentityManifestV2) -> Vec<u8> {
     let mut bytes = Vec::new();
     push_manifest_string(&mut bytes, &manifest.provider_id);
     push_manifest_string(&mut bytes, &manifest.source_format);
@@ -87,22 +89,12 @@ pub fn encode_identity_manifest(manifest: &PhysicalIdentityManifestV1) -> Vec<u8
     push_manifest_string(&mut bytes, &manifest.generator_id);
     push_manifest_u32(&mut bytes, manifest.generator_version);
     push_manifest_u16(&mut bytes, manifest.source_version);
-    push_manifest_u32(&mut bytes, manifest.width);
-    push_manifest_u32(&mut bytes, manifest.height);
-    push_manifest_u64(&mut bytes, manifest.radius_metres);
-    push_manifest_u32(&mut bytes, manifest.seed);
-    push_manifest_u32(&mut bytes, manifest.retry_index);
-    push_manifest_u32(&mut bytes, manifest.target_land_fraction_ppm);
-    push_manifest_i32(&mut bytes, manifest.sea_level_mm);
-    push_manifest_u32(&mut bytes, manifest.sample_count);
-    push_manifest_u16(&mut bytes, manifest.plate_count);
-    push_manifest_u16(&mut bytes, manifest.continental_plate_count);
-    push_manifest_u32(&mut bytes, manifest.tectonic_activity_ppm);
-    push_manifest_u32(&mut bytes, manifest.island_activity_ppm);
-    push_manifest_u32(&mut bytes, manifest.boundary_count);
-    push_manifest_u32(&mut bytes, manifest.volcanic_center_count);
+    push_manifest_u32(&mut bytes, manifest.engine_version);
+    push_manifest_u32(&mut bytes, manifest.resolution);
+    push_manifest_string(&mut bytes, &manifest.source_sha256);
+    push_manifest_u64(&mut bytes, manifest.elevation_hash);
+    push_manifest_u64(&mut bytes, manifest.tectonics_hash);
     push_manifest_u64(&mut bytes, manifest.reference_water_inventory_m3);
-    push_manifest_string(&mut bytes, &manifest.evolution_preset);
     push_manifest_u16(&mut bytes, manifest.historical_forcing.version);
     for component in manifest.historical_forcing.components {
         push_manifest_i32(&mut bytes, component.amplitude_centi_c);
@@ -132,14 +124,12 @@ pub fn encode_identity_manifest(manifest: &PhysicalIdentityManifestV1) -> Vec<u8
     bytes
 }
 
-fn physical_identity(manifest: &PhysicalIdentityManifestV1, source_bytes: &[u8]) -> String {
+fn physical_identity(manifest: &PhysicalIdentityManifestV2) -> String {
     let manifest_bytes = encode_identity_manifest(manifest);
-    let mut input = Vec::with_capacity(32 + manifest_bytes.len() + source_bytes.len());
-    input.extend_from_slice(b"daena-physical-identity-v1\0");
+    let mut input = Vec::with_capacity(32 + manifest_bytes.len());
+    input.extend_from_slice(b"daena-physical-identity-v2\0");
     push_manifest_u32(&mut input, manifest_bytes.len() as u32);
     input.extend_from_slice(&manifest_bytes);
-    push_manifest_u64(&mut input, source_bytes.len() as u64);
-    input.extend_from_slice(source_bytes);
     format!("sha256:{:x}", Sha256::digest(input))
 }
 
@@ -195,8 +185,8 @@ pub fn is_reserved_layer_id(id: &str) -> bool {
 }
 
 /// Locked physical renderer layers are persisted in the shared map layer
-/// field so authored vector layers can be added above them without making the
-/// physical source editable.
+/// field so authored vector layers can be added above them without making
+/// the physical source editable.
 #[must_use]
 pub fn initial_layers_value() -> Value {
     serde_json::json!({
@@ -230,7 +220,7 @@ fn parse_generation(value: &Value) -> Result<MapGeneration, CoreError> {
     let object = value
         .as_object()
         .ok_or_else(|| invalid(CODE_INVALID_GENERATION, "generation must be an object"))?;
-    for field in ["id", "version", "seed", "retryIndex", "settings"] {
+    for field in ["id", "version", "seed", "settings"] {
         if !object.contains_key(field) {
             return Err(invalid(
                 CODE_INVALID_GENERATION,
@@ -245,16 +235,13 @@ fn parse_generation(value: &Value) -> Result<MapGeneration, CoreError> {
         )
     })?;
     for field in [
-        "width",
-        "height",
+        "resolution",
         "radiusMetres",
         "targetLandFractionPpm",
         "referenceWaterInventoryM3",
-        "plateCount",
-        "continentalPlateCount",
-        "tectonicActivityPpm",
-        "islandActivityPpm",
-        "evolutionPreset",
+        "preset",
+        "engineVersion",
+        "sourceVersion",
         "historicalForcing",
     ] {
         if !settings.contains_key(field) {
@@ -268,31 +255,53 @@ fn parse_generation(value: &Value) -> Result<MapGeneration, CoreError> {
         .map_err(|error| invalid(CODE_INVALID_GENERATION, format!("generation: {error}")))
 }
 
-pub fn validate_generation(value: &Value) -> Result<PhysicalMapGenerationSettings, CoreError> {
-    let generation = parse_generation(value)?;
-    if generation.id != super::PHYSICAL_GENERATOR_ID
-        || generation.version != super::PHYSICAL_GENERATOR_VERSION
-        || generation.retry_index.is_none()
-    {
-        return Err(invalid(
-            CODE_UNSUPPORTED_GENERATOR_VERSION,
-            "generator id, version, and retryIndex are unsupported",
-        ));
-    }
-    let MapGenerationSettings::Physical(settings) = generation.settings else {
+fn generation_settings(
+    generation: &MapGeneration,
+) -> Result<PhysicalMapGenerationSettings, CoreError> {
+    let MapGenerationSettings::Physical(settings) = &generation.settings else {
         return Err(invalid(
             CODE_INVALID_GENERATION,
             "physical generation settings are required",
         ));
     };
-    daena_physical::Grid::new(settings.width, settings.height, settings.radius_metres)
-        .map_err(|error| invalid(CODE_INVALID_GENERATION, error))?;
-    if settings.width > PRODUCTION_MAX_WIDTH || settings.height > PRODUCTION_MAX_HEIGHT {
-        return Err(invalid(
+    Ok(settings.clone())
+}
+
+fn engine_settings(generation: &MapGeneration) -> Result<engine::Settings, CoreError> {
+    let settings = generation_settings(generation)?;
+    let preset = engine::WorldPreset::parse(&settings.preset).ok_or_else(|| {
+        invalid(
             CODE_INVALID_GENERATION,
-            format!(
-                "production grid is limited to {PRODUCTION_MAX_WIDTH}x{PRODUCTION_MAX_HEIGHT}; larger grids are preview-only"
-            ),
+            format!("unknown world preset {}", settings.preset),
+        )
+    })?;
+    Ok(engine::Settings::from_parts(
+        generation.seed,
+        preset,
+        settings.resolution,
+        settings.radius_metres,
+        settings.target_land_fraction_ppm,
+        settings.planetary,
+    ))
+}
+
+pub fn validate_generation(value: &Value) -> Result<PhysicalMapGenerationSettings, CoreError> {
+    let generation = parse_generation(value)?;
+    if generation.id != super::PHYSICAL_GENERATOR_ID
+        || generation.version != super::PHYSICAL_GENERATOR_VERSION
+    {
+        return Err(invalid(
+            CODE_UNSUPPORTED_GENERATOR_VERSION,
+            "generator id and version are unsupported",
+        ));
+    }
+    let settings = generation_settings(&generation)?;
+    if settings.engine_version != engine::WORLD_ENGINE_VERSION
+        || settings.source_version != engine::SOURCE_VERSION
+    {
+        return Err(invalid(
+            CODE_UNSUPPORTED_GENERATOR_VERSION,
+            "engine or source version is unsupported",
         ));
     }
     if settings.reference_water_inventory_m3 == 0 {
@@ -301,17 +310,25 @@ pub fn validate_generation(value: &Value) -> Result<PhysicalMapGenerationSetting
             "referenceWaterInventoryM3 must be positive",
         ));
     }
-    TectonicSettings {
-        plate_count: settings.plate_count,
-        continental_plate_count: settings.continental_plate_count,
-        tectonic_activity_ppm: settings.tectonic_activity_ppm,
-        island_activity_ppm: settings.island_activity_ppm,
-        style: daena_physical::tectonics::TectonicStyle::parse(&settings.tectonic_style)
-            .map_err(|error| invalid(CODE_INVALID_GENERATION, error.to_string()))?,
+    if settings.target_land_fraction_ppm == 0 || settings.target_land_fraction_ppm >= 1_000_000 {
+        return Err(invalid(
+            CODE_INVALID_GENERATION,
+            "targetLandFractionPpm must be the resolved fraction",
+        ));
     }
-    .validate()
-    .map_err(|error| invalid(CODE_INVALID_GENERATION, error.to_string()))?;
-    daena_physical::evolution::EvolutionPreset::parse(&settings.evolution_preset)
+    settings
+        .planetary
+        .validate()
+        .map_err(|error| invalid(CODE_INVALID_GENERATION, error.to_string()))?;
+    if settings.planetary.radius_metres != settings.radius_metres {
+        return Err(invalid(
+            CODE_INVALID_GENERATION,
+            "planetary.radiusMetres must match generation.settings.radiusMetres",
+        ));
+    }
+    let request = engine_settings(&generation)?;
+    request
+        .snapshot()
         .map_err(|error| invalid(CODE_INVALID_GENERATION, error.to_string()))?;
     if let Some(version) = settings.hazard_derivation_version {
         if version != daena_physical::hazards::HAZARD_DERIVATION_VERSION {
@@ -332,16 +349,6 @@ pub fn validate_generation(value: &Value) -> Result<PhysicalMapGenerationSetting
     historical_forcing(&settings)
         .validate()
         .map_err(|error| invalid(CODE_INVALID_GENERATION, error.to_string()))?;
-    settings
-        .planetary
-        .validate()
-        .map_err(|error| invalid(CODE_INVALID_GENERATION, error.to_string()))?;
-    if settings.planetary.radius_metres != settings.radius_metres {
-        return Err(invalid(
-            CODE_INVALID_GENERATION,
-            "planetary.radiusMetres must match generation.settings.radiusMetres",
-        ));
-    }
     Ok(settings)
 }
 
@@ -384,6 +391,14 @@ fn source_mismatch(field: &str) -> CoreError {
     )
 }
 
+fn decode_error(error: daena_physical::PhysicalError) -> CoreError {
+    let code = match error.code() {
+        daena_physical::CODE_SOURCE_UNSUPPORTED_VERSION => CODE_UNSUPPORTED_SOURCE_VERSION,
+        _ => CODE_INVALID_SOURCE,
+    };
+    invalid(code, error.to_string())
+}
+
 pub fn validate_source(
     bytes: &[u8],
     generation: &Value,
@@ -391,457 +406,155 @@ pub fn validate_source(
     // Decode the source first. This makes malformed or unsupported source data
     // authoritative over descriptor parsing and prevents descriptor defaults
     // from masking a corrupt canonical asset.
-    let parsed = decode_source(bytes).map_err(|error| {
-        let code = if error.contains("version is unsupported") {
-            CODE_UNSUPPORTED_SOURCE_VERSION
-        } else {
-            CODE_INVALID_SOURCE
-        };
-        invalid(code, error)
-    })?;
+    let decoded = engine::decode_source(bytes).map_err(decode_error)?;
     let settings = validate_generation(generation)?;
-    let field = parsed.physical_field();
     let parsed_generation = parse_generation(generation)?;
-    let retry_index = parsed_generation
-        .retry_index
-        .ok_or_else(|| invalid(CODE_INVALID_GENERATION, "generation.retryIndex is required"))?;
-    if parsed.seed != parsed_generation.seed {
+    if decoded.settings_snapshot().seed != parsed_generation.seed {
         return Err(source_mismatch("seed"));
     }
-    if parsed.retry_index != retry_index {
-        return Err(source_mismatch("retryIndex"));
+    if decoded.engine_version() != settings.engine_version {
+        return Err(source_mismatch("engineVersion"));
     }
-    if parsed.grid.width != settings.width {
-        return Err(source_mismatch("width"));
+    if decoded.source_version() != settings.source_version {
+        return Err(source_mismatch("sourceVersion"));
     }
-    if parsed.grid.height != settings.height {
-        return Err(source_mismatch("height"));
+    let expected = engine_settings(&parsed_generation).and_then(|request| {
+        request
+            .snapshot()
+            .map_err(|error| invalid(CODE_INVALID_GENERATION, error.to_string()))
+    })?;
+    let actual = decoded.settings_snapshot();
+    if let Some(field) = expected.mismatch(&actual) {
+        return Err(source_mismatch(field));
     }
-    if parsed.grid.radius_metres != settings.radius_metres {
-        return Err(source_mismatch("radiusMetres"));
-    }
-    if parsed.target_land_fraction_ppm != settings.target_land_fraction_ppm {
-        return Err(source_mismatch("targetLandFractionPpm"));
-    }
-    if parsed.settings.plate_count != settings.plate_count {
-        return Err(source_mismatch("plateCount"));
-    }
-    if parsed.settings.continental_plate_count != settings.continental_plate_count {
-        return Err(source_mismatch("continentalPlateCount"));
-    }
-    if parsed.settings.tectonic_activity_ppm != settings.tectonic_activity_ppm {
-        return Err(source_mismatch("tectonicActivityPpm"));
-    }
-    if parsed.settings.island_activity_ppm != settings.island_activity_ppm {
-        return Err(source_mismatch("islandActivityPpm"));
-    }
-    let report = validate_field_report(&field)
-        .map_err(|error| invalid(CODE_INVALID_SOURCE, error.to_string()))?;
-    if report.reference_water_inventory_m3 != settings.reference_water_inventory_m3 {
+    if decoded.reference_water_inventory_m3() != settings.reference_water_inventory_m3 {
         return Err(source_mismatch("referenceWaterInventoryM3"));
     }
-    let preset = daena_physical::evolution::EvolutionPreset::parse(&settings.evolution_preset)
-        .map_err(|error| invalid(CODE_INVALID_GENERATION, error.to_string()))?;
-    let manifest = PhysicalIdentityManifestV1 {
+    let report = decoded
+        .validation_report()
+        .map_err(|error| invalid(CODE_INVALID_SOURCE, error.to_string()))?;
+    let source_sha256 = format!("sha256:{:x}", Sha256::digest(bytes));
+    let manifest = PhysicalIdentityManifestV2 {
         provider_id: super::PHYSICAL_PROVIDER.into(),
         source_format: super::PHYSICAL_SOURCE_FORMAT.into(),
         adapter_version: super::PHYSICAL_ADAPTER_VERSION,
         generator_id: parsed_generation.id,
         generator_version: parsed_generation.version,
-        source_version: daena_physical::SOURCE_VERSION,
-        width: parsed.grid.width,
-        height: parsed.grid.height,
-        radius_metres: parsed.grid.radius_metres,
-        seed: parsed.seed,
-        retry_index: parsed.retry_index,
-        target_land_fraction_ppm: parsed.target_land_fraction_ppm,
-        sea_level_mm: parsed.sea_level_mm,
-        sample_count: parsed.grid.sample_count() as u32,
-        plate_count: parsed.settings.plate_count,
-        continental_plate_count: parsed.settings.continental_plate_count,
-        tectonic_activity_ppm: parsed.settings.tectonic_activity_ppm,
-        island_activity_ppm: parsed.settings.island_activity_ppm,
-        boundary_count: parsed.boundaries.len() as u32,
-        volcanic_center_count: parsed.volcanic_centers.len() as u32,
-        reference_water_inventory_m3: settings.reference_water_inventory_m3,
-        evolution_preset: preset.as_str().into(),
+        source_version: decoded.source_version(),
+        engine_version: decoded.engine_version(),
+        resolution: actual.resolution,
+        source_sha256,
+        elevation_hash: decoded.hashes().elevation_mm,
+        tectonics_hash: decoded.hashes().tectonics,
+        reference_water_inventory_m3: decoded.reference_water_inventory_m3(),
         historical_forcing: historical_forcing(&settings),
     };
-    let identity = physical_identity(&manifest, bytes);
+    let identity = physical_identity(&manifest);
     Ok(ValidatedPhysicalSource {
-        world: parsed,
+        source: decoded,
         report,
         identity,
+        legacy_world: None,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use daena_physical::engine::{Settings, WorldPreset};
+    use daena_physical::planetary::PlanetaryConfiguration;
+    use daena_physical::NoopProgress;
 
-    fn forcing_json(parameters: HistoricalForcingParameters) -> Value {
-        serde_json::json!({
-            "version": parameters.version,
-            "components": parameters.components.iter().map(|component| serde_json::json!({
-                "amplitudeCentiC": component.amplitude_centi_c,
-                "periodYears": component.period_years,
-                "phaseOffsetYears": component.phase_offset_years,
-            })).collect::<Vec<_>>(),
-            "sensitivityPpm": parameters.sensitivity_ppm,
-            "landIceAmplitudePpm": parameters.land_ice_amplitude_ppm,
-            "iceResponseYears": parameters.ice_response_years,
-            "iceMidpointCentiC": parameters.ice_midpoint_centi_c,
-            "iceTransitionWidthCentiC": parameters.ice_transition_width_centi_c,
-            "thermalExpansionPpmPerDegreeC": parameters.thermal_expansion_ppm_per_degree_c,
-        })
-    }
-
-    fn generation(forcing_value: Option<Value>) -> Value {
-        let mut settings = serde_json::json!({
-            "width": 8,
-            "height": 4,
-            "radiusMetres": daena_physical::DEFAULT_RADIUS_METRES,
-            "targetLandFractionPpm": 300_000,
-            "referenceWaterInventoryM3": 1_000_000,
-            "plateCount": 8,
-            "continentalPlateCount": 4,
-            "tectonicActivityPpm": 600_000,
-            "islandActivityPpm": 300_000,
-            "evolutionPreset": "mature",
-            "hazardDerivationVersion": daena_physical::hazards::HAZARD_DERIVATION_VERSION,
-        });
-        settings.as_object_mut().unwrap().insert(
-            "historicalForcing".into(),
-            forcing_value.unwrap_or_else(forcing),
+    fn products(resolution: u32) -> daena_physical::engine::Products {
+        let settings = Settings::from_parts(
+            831_429,
+            WorldPreset::Earthlike,
+            resolution,
+            6_371_000,
+            290_000,
+            PlanetaryConfiguration::earth_like(),
         );
-        serde_json::json!({
-            "id": super::super::PHYSICAL_GENERATOR_ID,
-            "version": super::super::PHYSICAL_GENERATOR_VERSION,
-            "seed": 831_429,
-            "retryIndex": 0,
-            "settings": settings,
-        })
+        engine::generate(settings, &mut NoopProgress).unwrap()
     }
 
-    fn forcing() -> Value {
-        forcing_json(HistoricalForcingParameters::default_for(831_429, 0))
+    fn generation(products: &daena_physical::engine::Products) -> Value {
+        products.generation().unwrap().clone()
     }
 
-    fn generated_pair() -> (Vec<u8>, Value) {
-        let settings = daena_physical::GenerationSettings {
-            width: 8,
-            height: 4,
-            radius_metres: daena_physical::DEFAULT_RADIUS_METRES,
-            target_land_fraction_ppm: 300_000,
-        };
-        let mut progress = daena_physical::NoopProgress;
-        let world = daena_physical::generate_world(settings, 831_429, 0, &mut progress).unwrap();
-        let parameters = HistoricalForcingParameters::default_for(831_429, 0);
-        let generation = serde_json::json!({
-            "id": super::super::PHYSICAL_GENERATOR_ID,
-            "version": super::super::PHYSICAL_GENERATOR_VERSION,
-            "seed": world.field.seed,
-            "retryIndex": world.field.retry_index,
-            "settings": {
-                "width": world.field.grid.width,
-                "height": world.field.grid.height,
-                "radiusMetres": world.field.grid.radius_metres,
-                "targetLandFractionPpm": world.field.target_land_fraction_ppm,
-                "referenceWaterInventoryM3": world.report.reference_water_inventory_m3,
-                "plateCount": world.tectonics.settings.plate_count,
-                "continentalPlateCount": world.tectonics.settings.continental_plate_count,
-                "tectonicActivityPpm": world.tectonics.settings.tectonic_activity_ppm,
-                "islandActivityPpm": world.tectonics.settings.island_activity_ppm,
-                "evolutionPreset": "mature",
-                "historicalForcing": forcing_json(parameters),
-            },
-        });
-        (world.source, generation)
+    #[test]
+    fn engine_generation_validates_and_has_a_stable_identity() {
+        let world = products(32);
+        let generation = generation(&world);
+        let first = validate_source(world.source(), &generation).unwrap();
+        let second = validate_source(world.source(), &generation).unwrap();
+        assert_eq!(first.identity, second.identity);
+        assert_eq!(
+            first.report.reference_water_inventory_m3,
+            world.reference_water_inventory_m3()
+        );
+        assert!(first.identity.starts_with("sha256:"));
     }
 
-    fn manifest_fixture() -> PhysicalIdentityManifestV1 {
-        PhysicalIdentityManifestV1 {
+    #[test]
+    fn old_source_magic_is_an_unsupported_version() {
+        let world = products(32);
+        let mut old = world.source().to_vec();
+        old[0..8].copy_from_slice(b"DAENAPW1");
+        let generation = generation(&world);
+        let error = validate_source(&old, &generation).unwrap_err();
+        assert!(error.to_string().contains(CODE_UNSUPPORTED_SOURCE_VERSION));
+    }
+
+    #[test]
+    fn source_and_generation_mismatches_are_invalid() {
+        let world = products(32);
+        let mut mismatched = generation(&world);
+        mismatched["settings"]["targetLandFractionPpm"] = serde_json::json!(300_001);
+        let error = validate_source(world.source(), &mismatched).unwrap_err();
+        assert!(error.to_string().contains("source provenance mismatch"));
+        assert!(error.to_string().contains(CODE_INVALID_SOURCE));
+
+        let mut incomplete = generation(&world);
+        incomplete["settings"]
+            .as_object_mut()
+            .unwrap()
+            .remove("referenceWaterInventoryM3");
+        let error = validate_source(world.source(), &incomplete).unwrap_err();
+        assert!(error.to_string().contains(CODE_INVALID_GENERATION));
+    }
+
+    #[test]
+    fn changed_source_bytes_fail_elevation_validation() {
+        let world = products(32);
+        let mut source = world.source().to_vec();
+        let last = source.len() - 1;
+        source[last] ^= 1;
+        let error = validate_source(&source, &generation(&world)).unwrap_err();
+        assert!(error.to_string().contains(CODE_INVALID_SOURCE));
+    }
+
+    #[test]
+    fn identity_manifest_is_deterministic() {
+        let world = products(32);
+        let validated = validate_source(world.source(), &generation(&world)).unwrap();
+        let manifest = PhysicalIdentityManifestV2 {
             provider_id: super::super::PHYSICAL_PROVIDER.into(),
             source_format: super::super::PHYSICAL_SOURCE_FORMAT.into(),
             adapter_version: super::super::PHYSICAL_ADAPTER_VERSION,
             generator_id: super::super::PHYSICAL_GENERATOR_ID.into(),
             generator_version: super::super::PHYSICAL_GENERATOR_VERSION,
-            source_version: daena_physical::SOURCE_VERSION,
-            width: 8,
-            height: 4,
-            radius_metres: daena_physical::DEFAULT_RADIUS_METRES,
-            seed: 831_429,
-            retry_index: 0,
-            target_land_fraction_ppm: 300_000,
-            sea_level_mm: 0,
-            sample_count: 32,
-            plate_count: 8,
-            continental_plate_count: 4,
-            tectonic_activity_ppm: 600_000,
-            island_activity_ppm: 300_000,
-            boundary_count: 16,
-            volcanic_center_count: 4,
-            reference_water_inventory_m3: 1_000_000,
-            evolution_preset: "mature".into(),
+            source_version: engine::SOURCE_VERSION,
+            engine_version: engine::WORLD_ENGINE_VERSION,
+            resolution: 32,
+            source_sha256: format!("sha256:{:x}", Sha256::digest(world.source())),
+            elevation_hash: validated.source.hashes().elevation_mm,
+            tectonics_hash: validated.source.hashes().tectonics,
+            reference_water_inventory_m3: validated.report.reference_water_inventory_m3,
             historical_forcing: HistoricalForcingParameters::default_for(831_429, 0),
-        }
-    }
-
-    #[test]
-    fn missing_planetary_configuration_defaults_to_earth_like() {
-        let validated = validate_generation(&generation(None)).unwrap();
-        assert_eq!(
-            validated.planetary,
-            daena_physical::planetary::PlanetaryConfiguration::earth_like()
-        );
-        let mut present = generation(None);
-        present["settings"]["planetary"] = serde_json::to_value(
-            daena_physical::planetary::PlanetaryConfiguration::from_preset(
-                daena_physical::planetary::PlanetaryPreset::HighTilt,
-            ),
-        )
-        .unwrap();
-        let high_tilt = validate_generation(&present).unwrap();
-        assert_eq!(
-            high_tilt.planetary.preset,
-            daena_physical::planetary::PlanetaryPreset::HighTilt
-        );
-        assert_eq!(high_tilt.planetary.axial_tilt_milli_deg, 40_000);
-        assert_eq!(high_tilt.planetary.radius_metres, high_tilt.radius_metres);
-
-        let mut mismatched = generation(None);
-        let mut mismatched_planet = daena_physical::planetary::PlanetaryConfiguration::earth_like();
-        mismatched_planet.radius_metres += 1;
-        mismatched["settings"]["planetary"] = serde_json::to_value(mismatched_planet).unwrap();
-        assert!(validate_generation(&mismatched).is_err());
-
-        let mut invalid = generation(None);
-        invalid["settings"]["planetary"] = serde_json::json!({
-            "version": 1,
-            "preset": "custom",
-            "starLuminosityPpm": 1_000_000,
-            "starMassPpm": 1_000_000,
-            "semiMajorAxisMilliAu": 1_000_000,
-            "eccentricityPpm": 900_000,
-            "axialTiltMilliDeg": 23_440,
-            "rotationPeriodSeconds": 86_400,
-            "retainedHeatCentiC": 1_400,
-            "bondAlbedoPpm": 306_000,
-            "meanDensityKgM3": 5_514,
-        });
-        assert!(validate_generation(&invalid).is_err());
-    }
-
-    #[test]
-    fn missing_tectonic_style_defaults_to_any() {
-        let validated = validate_generation(&generation(None)).unwrap();
-        assert_eq!(validated.tectonic_style, "any");
-        let mut mega = generation(None);
-        mega["settings"]["tectonicStyle"] = serde_json::json!("mega");
-        assert_eq!(validate_generation(&mega).unwrap().tectonic_style, "mega");
-        let mut invalid = generation(None);
-        invalid["settings"]["tectonicStyle"] = serde_json::json!("island-arc");
-        assert!(validate_generation(&invalid).is_err());
-    }
-
-    #[test]
-    fn identity_ignores_planetary_configuration() {
-        let (source, generation) = generated_pair();
-        let without = validate_source(&source, &generation).unwrap().identity;
-        let mut with = generation.clone();
-        with["settings"]["planetary"] = serde_json::to_value(
-            daena_physical::planetary::PlanetaryConfiguration::from_preset(
-                daena_physical::planetary::PlanetaryPreset::CloseOrbit,
-            ),
-        )
-        .unwrap();
-        assert_eq!(without, validate_source(&source, &with).unwrap().identity);
-    }
-
-    #[test]
-    fn historical_forcing_is_mandatory_validated_metadata() {
-        let validated = validate_generation(&generation(Some(forcing()))).unwrap();
-        assert_eq!(
-            validated.historical_forcing.version,
-            HistoricalForcingParameters::default_for(831_429, 0).version
-        );
-        let mut missing = generation(Some(forcing()));
-        missing["settings"]
-            .as_object_mut()
-            .unwrap()
-            .remove("historicalForcing");
-        assert!(validate_generation(&missing).is_err());
-
-        let mut invalid = forcing();
-        invalid["version"] = serde_json::json!(99);
-        assert!(validate_generation(&generation(Some(invalid))).is_err());
-
-        let mut invalid_hazard_version = generation(None);
-        invalid_hazard_version["settings"]["hazardDerivationVersion"] = serde_json::json!(99);
-        assert!(validate_generation(&invalid_hazard_version).is_err());
-    }
-
-    #[test]
-    fn identity_is_stable_for_semantic_json_and_changes_for_every_manifest_field() {
-        let (source, generation) = generated_pair();
-        let validated = validate_source(&source, &generation).unwrap();
-        assert!(validated.identity.starts_with("sha256:"));
-        assert!(validated.identity[7..]
-            .chars()
-            .all(|character| character.is_ascii_hexdigit() && !character.is_ascii_uppercase()));
-        assert_eq!(
-            physical_derived_cache_dir(
-                std::path::Path::new("/tmp/example-project"),
-                &validated.identity,
-                daena_physical::planetary::PlanetaryConfiguration::earth_like(),
-            )
-            .unwrap(),
-            std::path::PathBuf::from(format!(
-                "/tmp/example-project/.daena/cache/physical-derived/sha256-{}/{}",
-                &validated.identity[7..],
-                daena_physical::derived_cache::StaticDerivedPhysics::version_dir(
-                    daena_physical::planetary::PlanetaryConfiguration::earth_like(),
-                )
-            ))
-        );
-        assert!(PHYSICAL_DERIVED_CACHE_RELATIVE.starts_with(".daena/cache/"));
-
-        let reordered = serde_json::json!({
-            "settings": generation["settings"].clone(),
-            "retryIndex": generation["retryIndex"],
-            "seed": generation["seed"],
-            "version": generation["version"],
-            "id": generation["id"],
-        });
-        assert_eq!(
-            validated.identity,
-            validate_source(&source, &reordered).unwrap().identity
-        );
-
-        let base = manifest_fixture();
-        let base_identity = physical_identity(&base, &source);
-        let mut changed = base.clone();
-        changed.provider_id.push_str("-changed");
-        assert_ne!(base_identity, physical_identity(&changed, &source));
-        changed = base.clone();
-        changed.source_format.push_str("-changed");
-        assert_ne!(base_identity, physical_identity(&changed, &source));
-        changed = base.clone();
-        changed.adapter_version += 1;
-        assert_ne!(base_identity, physical_identity(&changed, &source));
-        changed = base.clone();
-        changed.generator_id.push_str("-changed");
-        assert_ne!(base_identity, physical_identity(&changed, &source));
-        changed = base.clone();
-        changed.generator_version += 1;
-        assert_ne!(base_identity, physical_identity(&changed, &source));
-        changed = base.clone();
-        changed.source_version += 1;
-        assert_ne!(base_identity, physical_identity(&changed, &source));
-        changed = base.clone();
-        changed.width += 1;
-        assert_ne!(base_identity, physical_identity(&changed, &source));
-        changed = base.clone();
-        changed.height += 1;
-        assert_ne!(base_identity, physical_identity(&changed, &source));
-        changed = base.clone();
-        changed.radius_metres += 1;
-        assert_ne!(base_identity, physical_identity(&changed, &source));
-        changed = base.clone();
-        changed.seed += 1;
-        assert_ne!(base_identity, physical_identity(&changed, &source));
-        changed = base.clone();
-        changed.retry_index += 1;
-        assert_ne!(base_identity, physical_identity(&changed, &source));
-        changed = base.clone();
-        changed.target_land_fraction_ppm += 1;
-        assert_ne!(base_identity, physical_identity(&changed, &source));
-        changed = base.clone();
-        changed.sea_level_mm += 1;
-        assert_ne!(base_identity, physical_identity(&changed, &source));
-        changed = base.clone();
-        changed.sample_count += 1;
-        assert_ne!(base_identity, physical_identity(&changed, &source));
-        changed = base.clone();
-        changed.plate_count += 1;
-        assert_ne!(base_identity, physical_identity(&changed, &source));
-        changed = base.clone();
-        changed.continental_plate_count += 1;
-        assert_ne!(base_identity, physical_identity(&changed, &source));
-        changed = base.clone();
-        changed.tectonic_activity_ppm += 1;
-        assert_ne!(base_identity, physical_identity(&changed, &source));
-        changed = base.clone();
-        changed.island_activity_ppm += 1;
-        assert_ne!(base_identity, physical_identity(&changed, &source));
-        changed = base.clone();
-        changed.boundary_count += 1;
-        assert_ne!(base_identity, physical_identity(&changed, &source));
-        changed = base.clone();
-        changed.volcanic_center_count += 1;
-        assert_ne!(base_identity, physical_identity(&changed, &source));
-        changed = base.clone();
-        changed.reference_water_inventory_m3 += 1;
-        assert_ne!(base_identity, physical_identity(&changed, &source));
-        changed = base.clone();
-        changed.evolution_preset = "young".into();
-        assert_ne!(base_identity, physical_identity(&changed, &source));
-        changed = base.clone();
-        changed.historical_forcing.components[0].amplitude_centi_c += 1;
-        assert_ne!(base_identity, physical_identity(&changed, &source));
-        changed = base.clone();
-        changed.historical_forcing.components[1].period_years += 1;
-        assert_ne!(base_identity, physical_identity(&changed, &source));
-        changed = base.clone();
-        changed.historical_forcing.sensitivity_ppm -= 1_000;
-        assert_ne!(base_identity, physical_identity(&changed, &source));
-
-        let mut changed_source = source.clone();
-        changed_source.push(0);
-        assert_ne!(base_identity, physical_identity(&base, &changed_source));
-    }
-
-    #[test]
-    fn pair_validation_reports_source_first_and_stable_duplicate_fields() {
-        let (source, generation) = generated_pair();
-        let mut malformed = source.clone();
-        malformed.truncate(malformed.len() - 1);
-        let error = validate_source(&malformed, &Value::Null)
-            .unwrap_err()
-            .to_string();
-        assert!(error.starts_with(CODE_INVALID_SOURCE));
-
-        let mut unsupported_v1 = source.clone();
-        let unsupported = daena_physical::SOURCE_VERSION.wrapping_add(1);
-        unsupported_v1[8..10].copy_from_slice(&unsupported.to_le_bytes());
-        let error = validate_source(&unsupported_v1, &Value::Null)
-            .unwrap_err()
-            .to_string();
-        assert!(error.starts_with(CODE_UNSUPPORTED_SOURCE_VERSION));
-
-        let mut mismatch = generation.clone();
-        mismatch["settings"]["targetLandFractionPpm"] = serde_json::json!(300_001);
-        let error = validate_source(&source, &mismatch).unwrap_err().to_string();
-        assert!(error.contains("source provenance mismatch: targetLandFractionPpm"));
-
-        let mut missing_water = generation.clone();
-        missing_water["settings"]
-            .as_object_mut()
-            .unwrap()
-            .remove("referenceWaterInventoryM3");
-        let error = validate_source(&source, &missing_water)
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("referenceWaterInventoryM3"));
-
-        let mut missing_forcing = generation;
-        missing_forcing["settings"]
-            .as_object_mut()
-            .unwrap()
-            .remove("historicalForcing");
-        let error = validate_source(&source, &missing_forcing)
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("historicalForcing"));
+        };
+        let first = encode_identity_manifest(&manifest);
+        let second = encode_identity_manifest(&manifest);
+        assert_eq!(first, second);
+        assert!(!first.is_empty());
     }
 }

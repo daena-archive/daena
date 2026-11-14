@@ -4792,11 +4792,17 @@ fn storm_current_factor(east_milli: i32, north_milli: i32) -> f64 {
     0.82 + 0.18 * unit_factor(speed, 200, 2_800)
 }
 
-fn land_distance_cells(field: &PhysicalField) -> Vec<u16> {
+fn land_distance_cells_with_cancel(
+    field: &PhysicalField,
+    cancelled: &(dyn Fn() -> bool + Sync),
+) -> Result<Vec<u16>, PhysicalError> {
     let count = field.grid.sample_count();
     let mut distance = vec![u16::MAX; count];
     let mut queue = Vec::with_capacity(count);
     for cell in 0..count {
+        if cell.is_multiple_of(4096) && cancelled() {
+            return Err(PhysicalError::Cancelled);
+        }
         if !is_ocean(field, cell) {
             distance[cell] = 0;
             queue.push(cell);
@@ -4804,6 +4810,9 @@ fn land_distance_cells(field: &PhysicalField) -> Vec<u16> {
     }
     let mut head = 0usize;
     while head < queue.len() {
+        if head.is_multiple_of(65_536) && cancelled() {
+            return Err(PhysicalError::Cancelled);
+        }
         let cell = queue[head];
         head += 1;
         let next = distance[cell].saturating_add(1);
@@ -4814,7 +4823,7 @@ fn land_distance_cells(field: &PhysicalField) -> Vec<u16> {
             }
         }
     }
-    distance
+    Ok(distance)
 }
 
 #[cfg(test)]
@@ -5244,24 +5253,78 @@ fn derive_storms(
     current_north: &[i32],
     current_geometry: &CurrentGeometry,
 ) -> StormFields {
+    let mut progress = super::NoopProgress;
+    derive_storms_with_progress(
+        field,
+        settings,
+        annual,
+        summers,
+        winters,
+        humidity_ppm,
+        wind_east,
+        wind_north,
+        wind_east_summer,
+        wind_north_summer,
+        wind_east_winter,
+        wind_north_winter,
+        wind_divergence,
+        wind_divergence_summer,
+        wind_divergence_winter,
+        current_east,
+        current_north,
+        current_geometry,
+        &mut progress,
+    )
+    .expect("never-cancelled storm derivation")
+}
+
+fn derive_storms_with_progress(
+    field: &PhysicalField,
+    settings: ClimateSettings,
+    annual: &[i32],
+    summers: &[i32],
+    winters: &[i32],
+    humidity_ppm: &[u32],
+    wind_east: &[i32],
+    wind_north: &[i32],
+    wind_east_summer: &[i32],
+    wind_north_summer: &[i32],
+    wind_east_winter: &[i32],
+    wind_north_winter: &[i32],
+    wind_divergence: &[i32],
+    wind_divergence_summer: &[i32],
+    wind_divergence_winter: &[i32],
+    current_east: &[i32],
+    current_north: &[i32],
+    current_geometry: &CurrentGeometry,
+    progress: &mut dyn ProgressSink,
+) -> Result<StormFields, PhysicalError> {
     let count = field.grid.sample_count();
     let planetary = settings.planetary;
     let coupling = StormCoupling::from_settings(settings);
     let coriolis = storm_coriolis_factor(planetary);
     let hadley = hadley_edge_radians(omega_ratio(planetary));
     let (sst_min, sst_full) = storm_sst_bounds(planetary);
-    let proximity = land_distance_cells(field);
+    let proximity =
+        land_distance_cells_with_cancel(field, &|| progress.check_cancelled().is_err())?;
+    progress.check_cancelled()?;
     let ocean = &current_geometry.ocean;
     let east_fetch = &current_geometry.east_distance;
     let west_fetch = &current_geometry.west_distance;
     let itcz_by_col = thermal_equator_by_column(field.grid, annual);
     let vorticity = wind_vorticity_ppm(field.grid, wind_east, wind_north);
+    progress.check_cancelled()?;
     let vorticity_summer = wind_vorticity_ppm(field.grid, wind_east_summer, wind_north_summer);
+    progress.check_cancelled()?;
     let vorticity_winter = wind_vorticity_ppm(field.grid, wind_east_winter, wind_north_winter);
+    progress.check_cancelled()?;
     let mut suitability_ppm = vec![0u32; count];
     let mut track_ppm = vec![0u32; count];
     let mut intensity_ppm = vec![0u32; count];
     for cell in 0..count {
+        if cell.is_multiple_of(4096) {
+            progress.check_cancelled()?;
+        }
         let (row, col) = field.grid.row_col(cell);
         let latitude = field.grid.center_radians(row, col).1;
         let itcz = itcz_by_col[col as usize];
@@ -5309,6 +5372,9 @@ fn derive_storms(
         intensity_ppm[cell] = intensity;
     }
     for origin in 0..count {
+        if origin.is_multiple_of(4096) {
+            progress.check_cancelled()?;
+        }
         if !ocean[origin] || !is_storm_track_seed(field.grid, &suitability_ppm, origin) {
             continue;
         }
@@ -5349,11 +5415,11 @@ fn derive_storms(
             }
         }
     }
-    StormFields {
+    Ok(StormFields {
         suitability_ppm,
         track_ppm,
         intensity_ppm,
-    }
+    })
 }
 
 fn apply_storm_metrics(
@@ -5459,6 +5525,7 @@ pub fn derive_current_climate(
         &winds.north,
         &current_geometry,
     );
+
     let mut climate = ClimateField {
         grid: field.grid,
         derivation_version: CLIMATE_DERIVATION_VERSION,
@@ -5513,6 +5580,7 @@ pub fn derive_current_climate(
         &moisture.precipitation,
         progress,
     )?;
+
     metrics.transport_iterations = moisture.iterations;
     apply_seasonal_metrics(
         field,
@@ -5569,7 +5637,7 @@ pub fn derive_current_climate(
         &climate.aridity_ppm,
     );
     apply_biome_metrics(field, &climate.biome_class, &mut metrics);
-    let storms = derive_storms(
+    let storms = derive_storms_with_progress(
         field,
         settings,
         &climate.temperature_centi_c,
@@ -5588,7 +5656,8 @@ pub fn derive_current_climate(
         &climate.current_east_milli,
         &climate.current_north_milli,
         &current_geometry,
-    );
+        progress,
+    )?;
     climate.storm_suitability_ppm = storms.suitability_ppm;
     climate.storm_track_ppm = storms.track_ppm;
     climate.storm_intensity_ppm = storms.intensity_ppm;

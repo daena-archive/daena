@@ -24,9 +24,9 @@ pub(super) struct PhysicalJobResult {
     pub(super) generation: serde_json::Value,
     pub(super) physical_identity: String,
     pub(super) derived_geojson: String,
+    /// Transitional E3 view climate. E4 replaces it with the engine-backed
+    /// product climate field.
     pub(super) climate: daena_physical::climate::ClimateField,
-    pub(super) evolution: daena_physical::evolution::EvolutionField,
-    pub(super) hydrology: daena_physical::hydrology::HydrologyField,
 }
 
 pub(super) struct PhysicalJob {
@@ -100,10 +100,10 @@ impl PhysicalJobManager {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct PhysicalGenerationSettingsInput {
-    pub(super) width: u32,
-    pub(super) height: u32,
+    pub(super) resolution: u32,
     pub(super) radius_metres: u64,
     pub(super) target_land_fraction_ppm: u32,
+    pub(super) preset: String,
     #[serde(default)]
     pub(super) planetary: daena_physical::planetary::PlanetaryConfiguration,
 }
@@ -111,12 +111,7 @@ pub(super) struct PhysicalGenerationSettingsInput {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct PhysicalGenerationInput {
-    pub(super) seed: u32,
-    pub(super) retry_index: u32,
-    #[serde(default)]
-    pub(super) evolution_preset: Option<String>,
-    #[serde(default)]
-    pub(super) tectonic_style: Option<String>,
+    pub(super) seed: u64,
     pub(super) settings: PhysicalGenerationSettingsInput,
 }
 

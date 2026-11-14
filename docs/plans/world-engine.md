@@ -1285,7 +1285,7 @@ Product `PlanetaryConfiguration` to `PlanetSettings`:
 | --- | --- | --- |
 | `star_luminosity_ppm` | `star_luminosity` | `/ 1_000_000` |
 | `star_mass_ppm` | `star_mass` | `/ 1_000_000`; sets year length |
-| `semi_major_axis_milli_au` | `orbit_au` | `/ 1_000` |
+| `semi_major_axis_milli_au` | `orbit_au` | `/ 1_000_000`; despite its name the field holds micro-AU (`ASTRONOMICAL_UNIT_MILLI = 1_000_000`) |
 | `eccentricity_ppm` | `eccentricity` | `/ 1_000_000` |
 | `axial_tilt_milli_deg` | `axial_tilt_deg` | `/ 1_000` |
 | `rotation_period_seconds` | `rotation_hours` | `/ 3_600` |
@@ -1889,7 +1889,78 @@ Every item is removed in E3–E8 as part of the hard cut; none is synthesized.
 | E7 | Frontend. Remove humidity, current, evolution, terrain-age and tectonic-style views/controls; add world preset and resolution; 26-class biome legend; hazard layers and source metadata; show engine-derived metrics; update Find Place, routes, claims and epoch UI; Atlas studio surface samples lose humidity/current/thickness; Atlas humidity style is not offered. | `npm run check` and the Maps/Atlas frontend tests; Tauri command tests for new input/result shapes; rendered desktop checks for preset/resolution, layer toggles, biome legend, no removed overlays, claim/epoch labels, Atlas studio inspection and detach; no UI reads a removed field. |
 | E8 | Clean-up and budgets. Delete uncalled old generator code, old source codec, old types and constants; measure full generation, memory, source size, epoch time, GeoJSON at 1024×512/2048×1024; set `GENERATION_TIME_BUDGET_MS`, `WORKING_MEMORY_BUDGET_BYTES`, `MAX_SOURCE_BYTES`, production resolution constants and GeoJSON limits from the measured envelopes; update ADR 0004 decision history and `MAPS.md` in the same commit; regenerate Atlas/engine golden fixtures with reasons. | Full `cargo test --workspace --locked --offline`; no reference to deleted generator/source symbols; measured budget table recorded; ADR/MAPS constants match code; clean checkpoint export, delete `.daena/`, rebuild, and compare physical identity/products; malformed source, external checkpoint edit and missing `.daena` recovery; packaged Tauri desktop lifecycle check for generate/accept/reload/export. |
 
-#### Open questions
+#### E3 notes
+
+Implemented in E3 on top of the E2 engine API.
+
+- `daena-physical/src/engine.rs` is the only module that names
+  `daena-worldgen` types. It maps product settings and `PlanetaryConfiguration`
+  to `WorldSettings`, maps `Stage` to `ProgressPhase` with no independent
+  product phases, and cancels through `Progress::cancelled` via the existing
+  `ProgressSink`.
+- `DAENAPW2` is encoded and decoded once, in the same module. Decode checks
+  magic, format version, engine version, ranges, the exact record length,
+  elevation hash, rebuilt tectonics and its hash, then the recomputed
+  reference inventory. Old magic or a wrong format/engine version is
+  `physical.source.unsupported-version`; every other mismatch is
+  `physical.source.invalid`.
+- Generation calls `generate`, encodes the source, builds the explicit
+  1024×512 cell-centred equirect view and the generation JSON. Reload decodes,
+  rebuilds tectonics with `generate_tectonics`, derives with `derive_world`,
+  and compares climate, hydrology, biome and hazard hashes before returning
+  products.
+- `PhysicalIdentityManifestV2` and `GENERATOR_VERSION = 2` replace V1. The
+  manifest covers resolution, engine version, the source SHA-256, elevation
+  and tectonic hashes, the reference inventory and the historical forcing
+  block. The product generation JSON now carries `resolution`, `preset`,
+  `engineVersion`, `sourceVersion`, the resolved land fraction and the
+  reference inventory; `width`, `height`, `retryIndex`, `evolutionPreset`
+  and `tectonicStyle` are gone.
+- Accept writes the source asset and descriptor through the existing core
+  transaction and no longer pre-populates the derived cache. The product
+  accept command rejects resolutions other than 512 and 1024.
+
+Transitional state until E4–E7:
+
+- **`ClimateField` (a).** The old `climate::derive_current_climate` runs on the
+  engine-backed 1024×512 elevation view. It derives from elevation, the
+  planetary block and the view grid, so it does not need engine climate state
+  and does not fabricate one. E4 replaces it with the engine summary, wind,
+  maritime and hazard inputs. Job climate and `project_physical_derived_climate`
+  use this path; `project_physical_derived_geojson` reloads the engine world and
+  emits the coastline preview from the view.
+- Cancellation covers the product tail as well as the engine. The engine gains
+  `World::equirect_elevation_with_cancel`, which is exactly the elevation
+  subset of `equirect_view` and checks between row batches; the product view no
+  longer builds unused monthly climate fields. Contour extraction, GeoJSON
+  formatting and the old view-climate storm and land-distance passes check the
+  sink. A release deadline sweep at `n = 512` and `n = 1024` keeps the worst
+  lateness under the 100 ms budget.
+- `target_land_fraction_ppm = 0` means "use the preset land fraction"; a
+  non-zero value is an explicit override. The E7 UI must send 0 by default.
+- **Current UI.** The generation input now requires `resolution` and `preset`
+  and rejects unknown fields, so the unchanged frontend's generate request
+  (width, height, retry index, evolution preset, tectonic style) fails until
+  E7. When it is updated it must send `targetLandFractionPpm = 0`; today it
+  sends 300,000, which would give every preset 30 % land.
+- **No derived cache.** `project_physical_derived_geojson` and
+  `project_physical_derived_climate` reload and re-derive the world on every
+  call (about 2.7 s at `n = 512`). E4 adds the engine-backed derived cache.
+- **`HydrologyField` (b).** Job hydrology and the derived hydrology command
+  return a clear "not available until phase E4" error. No zero or placeholder
+  field is published.
+- **`EvolutionField` / `DrainageField` (b).** The evolution job result and the
+  derived evolution command are not populated; the old erosion is never run on
+  an engine world. E4 removes them from the command result and E8 deletes the
+  old generator.
+- **Hazard field (b).** E4/E6 build it from the engine hazard pass. E3 has no
+  product hazard field and publishes none.
+- **Events, epochs, Find Place, routes, regions and Atlas (b).** These consumers
+  still name the retired `DAENAPW1` `TectonicWorld`; for a `DAENAPW2` source
+  they fail with a clear unsupported-version error until E4–E6 move them to
+  engine products. Atlas reads the new source in E5. Materialized events are
+  never touched by generation or acceptance.
+
 
 Decided 2026-11-11:
 

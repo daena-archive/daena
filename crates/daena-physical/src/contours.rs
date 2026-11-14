@@ -84,7 +84,17 @@ pub fn isolines_at(
     scalar: &[i32],
     threshold: i32,
 ) -> Result<Vec<Vec<[i32; 2]>>, PhysicalError> {
-    Ok(extract(grid, scalar, threshold, true)?.isolines)
+    isolines_at_with_cancel(grid, scalar, threshold, &|| false)
+}
+
+/// `isolines_at` with a cancellation check in the long contour loops.
+pub fn isolines_at_with_cancel(
+    grid: Grid,
+    scalar: &[i32],
+    threshold: i32,
+    cancelled: &(dyn Fn() -> bool + Sync),
+) -> Result<Vec<Vec<[i32; 2]>>, PhysicalError> {
+    Ok(extract_with_cancel(grid, scalar, threshold, true, cancelled)?.isolines)
 }
 
 pub fn polygons_above(
@@ -208,13 +218,29 @@ pub fn extract(
     threshold: i32,
     inside_is_greater: bool,
 ) -> Result<ContourTopology, PhysicalError> {
+    extract_with_cancel(grid, scalar, threshold, inside_is_greater, &|| false)
+}
+
+pub fn extract_with_cancel(
+    grid: Grid,
+    scalar: &[i32],
+    threshold: i32,
+    inside_is_greater: bool,
+    cancelled: &(dyn Fn() -> bool + Sync),
+) -> Result<ContourTopology, PhysicalError> {
     if scalar.len() != grid.sample_count() {
         return Err(PhysicalError::coded(
             PhysicalErrorCode::GeometryInvalid,
             "contour scalar does not match the physical grid",
         ));
     }
-    let mut segments = marching_squares_segments(grid, scalar, threshold, inside_is_greater);
+    let mut segments = marching_squares_segments_with_cancel(
+        grid,
+        scalar,
+        threshold,
+        inside_is_greater,
+        cancelled,
+    )?;
     segments.extend(polar_segments(
         grid,
         scalar,
@@ -229,18 +255,22 @@ pub fn extract(
         inside_is_greater,
         false,
     ));
-    assemble(grid, segments)
+    assemble_with_cancel(grid, segments, cancelled)
 }
 
-fn marching_squares_segments(
+fn marching_squares_segments_with_cancel(
     grid: Grid,
     scalar: &[i32],
     threshold: i32,
     inside_is_greater: bool,
-) -> Vec<RawSegment> {
+    cancelled: &(dyn Fn() -> bool + Sync),
+) -> Result<Vec<RawSegment>, PhysicalError> {
     let value = |row: u32, col: u32| scalar[grid.index(row, col % grid.width)];
     let mut segments = Vec::new();
     for row in 0..grid.height.saturating_sub(1) {
+        if cancelled() {
+            return Err(PhysicalError::Cancelled);
+        }
         for col in 0..grid.width {
             push_marching_square_segments(
                 grid,
@@ -253,7 +283,7 @@ fn marching_squares_segments(
             );
         }
     }
-    segments
+    Ok(segments)
 }
 
 fn push_marching_square_segments(
@@ -541,6 +571,14 @@ fn radial_crossing(
 }
 
 fn assemble(grid: Grid, segments: Vec<RawSegment>) -> Result<ContourTopology, PhysicalError> {
+    assemble_with_cancel(grid, segments, &|| false)
+}
+
+fn assemble_with_cancel(
+    grid: Grid,
+    segments: Vec<RawSegment>,
+    cancelled: &(dyn Fn() -> bool + Sync),
+) -> Result<ContourTopology, PhysicalError> {
     let mut by_edge: HashMap<EdgeKey, Vec<usize>> = HashMap::with_capacity(segments.len() * 2);
     for (index, segment) in segments.iter().enumerate() {
         by_edge.entry(segment.first.key).or_default().push(index);
@@ -550,6 +588,9 @@ fn assemble(grid: Grid, segments: Vec<RawSegment>) -> Result<ContourTopology, Ph
     let mut rings = Vec::new();
     let mut opens = Vec::new();
     for start in 0..segments.len() {
+        if cancelled() {
+            return Err(PhysicalError::Cancelled);
+        }
         if used[start] {
             continue;
         }
@@ -557,7 +598,12 @@ fn assemble(grid: Grid, segments: Vec<RawSegment>) -> Result<ContourTopology, Ph
         used[start] = true;
         let mut current_key = segments[start].second.key;
         let start_key = segments[start].first.key;
+        let mut steps = 0usize;
         while let Some(candidates) = by_edge.get(&current_key) {
+            steps += 1;
+            if steps.is_multiple_of(4096) && cancelled() {
+                return Err(PhysicalError::Cancelled);
+            }
             let next = candidates.iter().copied().find(|index| !used[*index]);
             let Some(next) = next else { break };
             used[next] = true;
@@ -610,7 +656,7 @@ fn assemble(grid: Grid, segments: Vec<RawSegment>) -> Result<ContourTopology, Ph
             );
         }
     }
-    let polygons = assign_holes(grid, rings)?;
+    let polygons = assign_holes_with_cancel(grid, rings, cancelled)?;
     let mut isolines = opens;
     for polygon in &polygons {
         for ring in polygon {
@@ -621,9 +667,10 @@ fn assemble(grid: Grid, segments: Vec<RawSegment>) -> Result<ContourTopology, Ph
     Ok(ContourTopology { isolines, polygons })
 }
 
-fn assign_holes(
+fn assign_holes_with_cancel(
     grid: Grid,
     rings: Vec<Vec<[i32; 2]>>,
+    cancelled: &(dyn Fn() -> bool + Sync),
 ) -> Result<Vec<Vec<Vec<[i32; 2]>>>, PhysicalError> {
     if rings.is_empty() {
         return Ok(Vec::new());
@@ -642,6 +689,9 @@ fn assign_holes(
     });
     let mut parent = vec![None; rings.len()];
     for (index, &child) in order.iter().enumerate() {
+        if index.is_multiple_of(32) && cancelled() {
+            return Err(PhysicalError::Cancelled);
+        }
         for &candidate in &order[..index] {
             if ring_contains(grid, &rings[candidate], &rings[child]) {
                 parent[child] = Some(candidate);
@@ -659,6 +709,9 @@ fn assign_holes(
         .collect::<Vec<_>>();
     let mut flattened = Vec::new();
     for outer in outer_ids {
+        if cancelled() {
+            return Err(PhysicalError::Cancelled);
+        }
         let mut polygon = Vec::new();
         let mut ring = rings[outer].clone();
         if signed_ring_area(&ring) < 0 {

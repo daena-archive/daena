@@ -100,6 +100,30 @@ fn monthly_point_sample_matches_the_fine_month_field() {
 }
 
 #[test]
+fn elevation_only_view_matches_full_view_and_cancels() {
+    let settings = settings(32);
+    let world = generate(&settings, &mut NoProgress).unwrap();
+    let full = world.equirect_view(64, 32).unwrap();
+    let only = world
+        .equirect_elevation_with_cancel(64, 32, &|| false)
+        .unwrap();
+    assert_eq!(only.len(), full.elevation_m.len());
+    for (index, value) in only.iter().enumerate() {
+        assert_eq!(
+            value.to_bits(),
+            full.elevation_m[index].to_bits(),
+            "at {index}"
+        );
+    }
+    assert_eq!(
+        world
+            .equirect_elevation_with_cancel(64, 32, &|| true)
+            .unwrap_err(),
+        crate::WorldError::Cancelled
+    );
+}
+
+#[test]
 fn equirect_view_reports_memory_at_1024_by_512() {
     let settings = settings(32);
     let world = generate(&settings, &mut NoProgress).unwrap();

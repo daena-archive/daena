@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 pub mod climate;
 pub mod contours;
 pub mod derived_cache;
+pub mod engine;
 pub mod events;
 pub mod evolution;
 pub mod find_place;
@@ -26,9 +27,9 @@ pub mod resolution;
 pub mod routing;
 pub mod tectonics;
 
-pub const SOURCE_MAGIC: [u8; 8] = *b"DAENAPW1";
-pub const SOURCE_VERSION: u16 = tectonics::TECTONIC_SOURCE_VERSION;
-pub const SOURCE_HEADER_BYTES: usize = tectonics::TECTONIC_SOURCE_HEADER_BYTES;
+pub const SOURCE_MAGIC: [u8; 8] = engine::SOURCE_MAGIC;
+pub const SOURCE_VERSION: u16 = engine::SOURCE_VERSION;
+pub const SOURCE_HEADER_BYTES: usize = engine::SOURCE_HEADER_BYTES;
 pub const DEFAULT_WIDTH: u32 = 64;
 pub const DEFAULT_HEIGHT: u32 = 32;
 pub const DEFAULT_RADIUS_METRES: u64 = 6_371_000;
@@ -52,7 +53,7 @@ pub const CANCELLATION_LATENCY_BUDGET_MS: u128 = 100;
 pub const GENERATION_TIME_BUDGET_MS: u128 = 8_000;
 pub const WORKING_MEMORY_BUDGET_BYTES: usize = 128 * 1024 * 1024;
 pub const GENERATOR_ID: &str = "daena-physical-world";
-pub const GENERATOR_VERSION: u32 = 1;
+pub const GENERATOR_VERSION: u32 = 2;
 
 pub const CODE_GENERATOR_INVALID_SETTINGS: &str = "physical.generator.invalid-settings";
 pub const CODE_GENERATOR_UNSUPPORTED_VERSION: &str = "physical.generator.unsupported-version";
@@ -220,7 +221,7 @@ pub struct ValidationReport {
     pub coastline_segments: usize,
 }
 
-pub trait ProgressSink {
+pub trait ProgressSink: Send + Sync {
     fn report(
         &mut self,
         phase: ProgressPhase,
@@ -248,7 +249,7 @@ impl ProgressSink for NoopProgress {
 
 pub struct CancellationProgress<'a> {
     pub cancelled: &'a AtomicBool,
-    pub on_progress: &'a mut dyn FnMut(ProgressPhase, u32, u32),
+    pub on_progress: &'a (dyn Fn(ProgressPhase, u32, u32) + Sync),
 }
 
 impl ProgressSink for CancellationProgress<'_> {
@@ -906,6 +907,19 @@ pub fn coastline_paths(field: &PhysicalField) -> Result<Vec<Vec<[i32; 2]>>, Phys
     contours::isolines_at(field.grid, &field.elevations_mm, field.sea_level_mm)
 }
 
+pub fn coastline_paths_with_progress(
+    field: &PhysicalField,
+    progress: &dyn ProgressSink,
+) -> Result<Vec<Vec<[i32; 2]>>, PhysicalError> {
+    field.validate().map_err(PhysicalError::InvalidSource)?;
+    contours::isolines_at_with_cancel(
+        field.grid,
+        &field.elevations_mm,
+        field.sea_level_mm,
+        &|| progress.check_cancelled().is_err(),
+    )
+}
+
 pub fn coastline_segments(field: &PhysicalField) -> Vec<Segment> {
     coastline_paths(field)
         .map(|paths| contours::segments_from_paths(&paths))
@@ -914,11 +928,32 @@ pub fn coastline_segments(field: &PhysicalField) -> Vec<Segment> {
 
 pub fn to_geojson(field: &PhysicalField) -> Result<String, String> {
     let paths = coastline_paths(field).map_err(|error| error.to_string())?;
+    format_coastline_geojson(&paths, &|| false).map_err(|error| error.to_string())
+}
+
+pub fn to_geojson_with_progress(
+    field: &PhysicalField,
+    progress: &dyn ProgressSink,
+) -> Result<String, PhysicalError> {
+    let paths = coastline_paths_with_progress(field, progress)?;
+    format_coastline_geojson(&paths, &|| progress.check_cancelled().is_err())
+}
+
+fn format_coastline_geojson(
+    paths: &[Vec<[i32; 2]>],
+    cancelled: &(dyn Fn() -> bool + Sync),
+) -> Result<String, PhysicalError> {
     if paths.len() > MAX_GEOJSON_FEATURES {
-        return Err("derived coastline exceeds the iteration-0 feature budget".into());
+        return Err(PhysicalError::coded(
+            PhysicalErrorCode::LimitExceeded,
+            "derived coastline exceeds the iteration-0 feature budget",
+        ));
     }
     let mut output = String::from(r#"{"type":"FeatureCollection","features":["#);
     for (index, path) in paths.iter().enumerate() {
+        if index.is_multiple_of(64) && cancelled() {
+            return Err(PhysicalError::Cancelled);
+        }
         if path.len() < 2 {
             continue;
         }
@@ -939,7 +974,12 @@ pub fn to_geojson(field: &PhysicalField) -> Result<String, String> {
                 format_micro(point[0]),
                 format_micro(point[1])
             )
-            .map_err(|_| "failed to format derived GeoJSON".to_string())?;
+            .map_err(|_| {
+                PhysicalError::coded(
+                    PhysicalErrorCode::GeometryInvalid,
+                    "failed to format derived GeoJSON",
+                )
+            })?;
         }
         output.push_str("]}}");
     }
@@ -1183,17 +1223,17 @@ mod tests {
     }
 
     #[test]
-    fn source_round_trip_is_byte_exact_and_strict() {
+    fn legacy_v1_source_round_trip_is_byte_exact_and_strict() {
         let world = fixture();
         let encoded = encode_source(&world.tectonics).unwrap();
         assert_eq!(encoded, world.source);
         assert_eq!(
             u16::from_le_bytes(encoded[8..10].try_into().unwrap()),
-            SOURCE_VERSION
+            tectonics::TECTONIC_SOURCE_VERSION
         );
         assert_eq!(
             u16::from_le_bytes(encoded[10..12].try_into().unwrap()) as usize,
-            SOURCE_HEADER_BYTES
+            tectonics::TECTONIC_SOURCE_HEADER_BYTES
         );
         assert_eq!(decode_source(&encoded).unwrap(), world.tectonics);
         assert_eq!(
@@ -1208,7 +1248,7 @@ mod tests {
         duplicate_header[0] = b'X';
         assert!(decode_source(&duplicate_header).is_err());
         let mut old_version = encoded.clone();
-        let unsupported = SOURCE_VERSION.wrapping_add(1);
+        let unsupported = tectonics::TECTONIC_SOURCE_VERSION.wrapping_add(1);
         old_version[8..10].copy_from_slice(&unsupported.to_le_bytes());
         assert!(decode_source(&old_version).is_err());
     }
@@ -1277,10 +1317,10 @@ mod tests {
         assert!(world.derived_geojson.contains("physical coastline"));
 
         let cancelled = AtomicBool::new(true);
-        let mut updates = |_phase: ProgressPhase, _completed: u32, _total: u32| {};
+        let updates = |_phase: ProgressPhase, _completed: u32, _total: u32| {};
         let mut progress = CancellationProgress {
             cancelled: &cancelled,
-            on_progress: &mut updates,
+            on_progress: &updates,
         };
         assert_eq!(
             generate_world(settings, 831_429, 0, &mut progress),
@@ -1294,10 +1334,10 @@ mod tests {
             target_land_fraction_ppm: 300_000,
         };
         let cancelled = AtomicBool::new(false);
-        let mut updates = |_: ProgressPhase, _, _| cancelled.store(true, Ordering::Relaxed);
+        let updates = |_: ProgressPhase, _, _| cancelled.store(true, Ordering::Relaxed);
         let mut progress = CancellationProgress {
             cancelled: &cancelled,
-            on_progress: &mut updates,
+            on_progress: &updates,
         };
         let started = std::time::Instant::now();
         assert_eq!(

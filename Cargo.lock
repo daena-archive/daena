@@ -995,8 +995,10 @@ dependencies = [
 name = "daena-physical"
 version = "0.1.0"
 dependencies = [
+ "daena-worldgen",
  "rayon",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

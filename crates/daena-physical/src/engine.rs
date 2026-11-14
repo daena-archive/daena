@@ -474,6 +474,19 @@ impl DecodedSource {
             .map_err(|error| invalid(error.to_string()))
     }
 
+    /// Centre of one canonical cube cell in microdegrees.
+    pub fn cell_center_microdegrees(&self, cell: u32) -> Result<[i32; 2], PhysicalError> {
+        let grid = self.cube_grid()?;
+        if cell as usize >= grid.cell_count() {
+            return Err(invalid("cell is outside the canonical grid"));
+        }
+        let (latitude, longitude) = grid.lat_lon(cell);
+        Ok([
+            (longitude.to_degrees() * 1_000_000.0).round() as i32,
+            (latitude.to_degrees() * 1_000_000.0).round() as i32,
+        ])
+    }
+
     /// Ocean volume samples on the canonical cube grid.
     pub fn ocean_volume_curve(&self) -> Result<Vec<OceanVolumePoint>, PhysicalError> {
         let grid = self.cube_grid()?;
@@ -592,6 +605,65 @@ impl DecodedSource {
             Some(self.hashes),
             progress,
         )
+    }
+
+    /// Sample bounded natural events from one engine world.
+    ///
+    /// Earthquakes and eruptions always read the present world, because
+    /// tectonic hazards do not change with epoch. Storms and floods read the
+    /// epoch world when `epoch` is present and its normalized epoch is not
+    /// zero. A present derive verifies every source generation hash before it
+    /// samples; an epoch derive is not hash-checked because its climate,
+    /// hydrology, biome and hazard outputs are expected to move. The world is
+    /// dropped before this returns.
+    pub fn sample_events(
+        &self,
+        epoch: Option<&crate::history::EpochSolve>,
+        request: &crate::events::EventMaterializationRequest,
+        progress: &mut dyn ProgressSink,
+    ) -> Result<crate::events::EventSample, PhysicalError> {
+        request.validate().map_err(PhysicalError::Validation)?;
+        let present = match request.event_kind {
+            crate::events::NaturalEventKind::Earthquake
+            | crate::events::NaturalEventKind::Eruption => true,
+            crate::events::NaturalEventKind::Storm | crate::events::NaturalEventKind::Flood => {
+                match epoch {
+                    None => true,
+                    Some(solve) => solve.normalized_epoch == 0,
+                }
+            }
+        };
+        let mut adapter = EngineProgress::new(progress);
+        let derived = if present {
+            worldgen::derive_world(
+                &self.settings,
+                &self.tectonics,
+                &self.elevation_mm,
+                &mut adapter,
+            )
+        } else {
+            let solve = epoch.expect("a non-present event epoch has a solve");
+            worldgen::derive_epoch(
+                &self.settings,
+                &self.tectonics,
+                &self.elevation_mm,
+                solve.sea_level_mm,
+                f64::from(solve.temperature_offset_centi_c) / 100.0,
+                &mut adapter,
+            )
+        };
+        adapter.finish()?;
+        let world = derived.map_err(|error| map_world_error(error, true))?;
+        if present {
+            let computed =
+                source_hashes_with_cancel(&world, &world.source_elevation_mm(), progress)?;
+            if let Some(field) = computed.mismatch(&self.hashes) {
+                return Err(invalid(format!(
+                    "derived generation hash does not match the source: {field}"
+                )));
+            }
+        }
+        crate::events::sample_world_events(&world, request)
     }
 }
 
@@ -2500,9 +2572,12 @@ mod tests {
             derived_geojson: generated.derived_geojson().to_string(),
             hashes: generated.hashes(),
         };
+        // E6 changed `HAZARD_DERIVATION_VERSION` and
+        // `VOLCANIC_SOURCE_DERIVATION_VERSION` from 1 to 2; the hazard metrics
+        // carry both values, so the pinned digest moved with them.
         assert_eq!(
             digest(&derived),
-            10_454_396_990_133_207_394,
+            12_582_050_379_977_442_768,
             "build_world_products output changed; regenerate only with a written reason"
         );
     }

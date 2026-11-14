@@ -12,8 +12,8 @@ use super::{
     Grid, PhysicalError, PhysicalErrorCode,
 };
 
-pub const HAZARD_DERIVATION_VERSION: u16 = 1;
-pub const VOLCANIC_SOURCE_DERIVATION_VERSION: u16 = 1;
+pub const HAZARD_DERIVATION_VERSION: u16 = 2;
+pub const VOLCANIC_SOURCE_DERIVATION_VERSION: u16 = 2;
 pub const MAX_HAZARD_FEATURES: usize = 512;
 pub const RATE_NANO: u64 = 1_000_000_000;
 const EARTHQUAKE_DISTANCE_SCALE_PPM: u32 = 180_000;

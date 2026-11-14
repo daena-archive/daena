@@ -993,7 +993,7 @@ and add no hash field.
 
 | Consumer | Reads today (verified) | Reads after the cut | Access | Step |
 | --- | --- | --- | --- | --- |
-| `src-tauri/src/physical_commands.rs` | `GeneratedWorld.field: PhysicalField`, `tectonics: TectonicWorld`, `climate: ClimateField`, `evolution: EvolutionField`, `hydrology: HydrologyField`, `source`, `derived_geojson`, `report`; commands for generate, preview, accept, derived climate/evolution/hydrology, epochs, events, Find Place, routes, regions | engine `World` through `daena_physical::engine::Products`; source v2; no evolution; hazards added; event and epoch commands use `World` + derived products | mixed: raster for preview/GeoJSON, point for tools | E3–E6 |
+| `src-tauri/src/physical_commands.rs` | `GeneratedWorld.field: PhysicalField`, `tectonics: TectonicWorld`, `climate: ClimateField`, `evolution: EvolutionField`, `hydrology: HydrologyField`, `source`, `derived_geojson`, `report`; commands for generate, preview, accept, derived climate/evolution/hydrology, epochs, events, Find Place, routes, regions | engine `World` through `daena_physical::engine::Products`; source v2; no evolution; hazards added; event commands call `DecodedSource::sample_events` and keep the world inside `daena-physical`; epoch commands use derived products | mixed: raster for preview/GeoJSON, point for tools | E3–E6 |
 | `src-tauri/src/physical_jobs.rs` | `PhysicalJobResult` carries source, generation JSON, derived GeoJSON, `ClimateField`, `EvolutionField`, `HydrologyField`; progress goes through `ProgressSink` | source, generation JSON, derived GeoJSON, climate, hydrology, hazards; no evolution; `Stage` maps to `ProgressPhase` | mixed | E3, E4 |
 | `crates/daena-physical/src/lib.rs` and its generator modules | `GeneratedWorld` of `PhysicalField`, `TectonicWorld`, `ClimateField`, `EvolutionField`, `HydrologyField`; `generate_world_with_evolution`; old source codec; `PhysicalIdentityManifestV1` inputs | source codec v2, engine facade, product adapters; old generator modules deleted in E8 | mixed | E3, E4, E8 |
 | `src-tauri/src/atlas_studio.rs` | `hydro_claim::claim_at`, `landmass_claim::claim_at`, `hydro_claim::overflowing_at`, `region::propose_region` over `HydrologyField`; surface sample fields | `hydro_claim::claim_at_canonical`, `landmass_claim::claim_at_canonical`, `overflowing_at_canonical`, `region::propose_region_canonical` over `ToolSurface`; no humidity/current/thickness sample fields | point | E5b, E7 |
@@ -2022,8 +2022,8 @@ product types.
   Derived and reload commands fill on a miss and read the cache on a hit.
 - **Versions.** `CLIMATE_DERIVATION_VERSION = 3`,
   `HYDROLOGY_DERIVATION_VERSION = 2`, `HISTORICAL_DERIVATION_VERSION = 3`,
-  `CACHE_FORMAT_VERSION = 3`. Hazard derivation versions stay at their E6
-  values (`1`) but are already in the cache key.
+  `CACHE_FORMAT_VERSION = 3`. Hazard derivation versions stay at `1` in E4
+  but are already in the cache key; E6 bumps them to `2`.
 - **Epochs.** `history::derive_historical_products` takes `I_ref` from the
   source, computes `ΔI_ice = I_eq(t) − I_eq(0)` and
   `ΔE = E(t) − E(0)`, solves the canonical cube sea level once with
@@ -2435,6 +2435,134 @@ Doubts:
 - Rendered desktop behavior, the Tauri studio tile path and the frontend
   removed-field cleanup are E7 work; this phase verifies the Rust library and
   command adapters through tests.
+
+#### E6 notes
+
+Implemented on `world-engine-v2` on top of E5b (`fde26ac`). Event
+materialization now samples the engine world; no event path reads a
+`DAENAPW1` world or the retired product fields.
+
+- **One entry.** `engine::DecodedSource::sample_events(epoch, request,
+  progress)` derives one world (`derive_world`, every source hash checked, for
+  the present; `derive_epoch` for a non-zero solve), calls
+  `events::sample_world_events(&world, request)` and drops the world before it
+  returns. Earthquakes and eruptions always read the present world. Storms and
+  floods use the supplied epoch solve, and a solve whose normalized epoch is
+  zero falls back to the hash-checked present derive. The command solves the
+  midpoint epoch with `history::solve_epoch` and the generation forcing, as the
+  tool surface does.
+- **Earthquake.** The per-cell rate is
+  `earthquake_rate_nano(hazards.quake_rate_km2[c], cell_area_m2(c))`, the
+  canonical M ≥ 4 rate. `Λ = mass / 1e9 · years`; the cell is drawn from a
+  prefix sum with `partition_point`. `hazard_ppm` comes from `quake_hazard`,
+  `annual_rate_nano` is the cell rate, `rate_per_million_years_ppm` uses the
+  product helper, and `sampled_center_id` is absent. The rate mass equals the
+  E4 `earthquake_rate_mass_nano` metric because that metric also sums canonical
+  cube areas; both were checked against an independent sum.
+- **Eruption.** Sources are sorted by id and weighted by
+  `round(eruptions_per_yr · 1e9)`. The event cell is `source.cell`, the
+  sampled center is the engine `u64` source id, hazard comes from
+  `volcanic_hazard`, and magnitude from the source rate. A world with no
+  sources returns zero events; the old `sample_cell` cell-0 fallback is gone.
+- **Storm.** The genesis weight is
+  `genesis_km2 · coarse area km² · 1e9`; the month is drawn from
+  `genesis_monthly_km2` (all-zero weights are an error, not month 0); the track
+  is `worldgen::trace_storm`. Each coarse step is mapped to the canonical cell
+  that contains the coarse cell centre, and consecutive duplicates are
+  dropped. `hazard_ppm` is the maximum carried intensity in ppm and
+  `sampled_center_id` is the canonical genesis cell. The notable policy is
+  `Λ = census · STORM_NOTABLE_FRACTION · years`; the constant is `3.24e-7`.
+  Calibration: the retired 384×192 generator at seed 831429 reports
+  `mean_ocean_storm_suitability_ppm = 55_708`, so its old notable rate was
+  `55_708 / 1e6 · 0.00035 = 1.94978e-5` per year. The engine Earthlike seed
+  831429 census at `n = 512` is `60.219666` storms per year, so
+  `1.94978e-5 / 60.219666 = 3.23778e-7` reproduces the old rate; `3.24e-7` is
+  0.07 % away. The `n = 1024` census is `59.784407`.
+- **Flood.** Candidates are every fresh engine lake with `outflow_m3 > 0`,
+  sorted by `minimum_cell` and truncated to `maxEvents`. `cell` is
+  `spill_cell`, the center is `minimum_cell`, the track is
+  `[minimum_cell, spill_cell]` (or one cell when equal), fill is `1_000_000`
+  because the lake is at its spill level, `year_offset` is the interval
+  midpoint, and `expected_lambda` is the candidate count before truncation.
+  The materialization key uses `products::HYDROLOGY_DERIVATION_VERSION` (3), so
+  old flood keys never match; existing entities stay as authored history.
+- **Ids and JSON.** `MaterializedEvent.sampled_center_id` is `Option<u64>` and
+  serializes as a decimal string, or `null` when absent. Deserialization
+  accepts the string and rejects a bare JSON number. Cells and track cells stay
+  `u32`, with debug assertions against the canonical cell count. The
+  TypeScript type is `sampledCenterId: string | null`; no consumer does
+  arithmetic on it.
+- **Provenance.** `sampledCenterId` is written as the decimal string. Two
+  fields are new: `cellKind: "canonical-cube"` and `sourceResolution: n`.
+  `generatorId` is `daena_physical::GENERATOR_ID`, `generatorVersion` is
+  `WORLD_ENGINE_VERSION`, and `sourceRetryIndex` is gone because a v2 source has
+  no retry index. Flood `featureId` is
+  `hydro_claim::canonical_lake_id(minimum_cell)` and resolves with
+  `hydro_claim::resolve_canonical` on the epoch `ToolSurface`; the fallback
+  point is the spill-cell centre. Track points come from
+  `DecodedSource::cell_center_microdegrees`, not a view grid.
+- **Labels and versions.** The earthquake label stays
+  `poisson-gutenberg-richter-v2`: the Poisson draw and Gutenberg–Richter
+  magnitude model did not change. The eruption label is
+  `engine-volcanic-source-v3` (a source is drawn, not a cell), the storm label
+  is `engine-storm-tracer-v3` (census plus the shared tracer, not a
+  climatology suitability draw), and the flood label is
+  `engine-lake-spill-v3` (an engine spill cell, not a basin threshold).
+  Materialization versions are earthquake 2, eruption 2, storm 3, flood 3, and
+  `EVENT_MATERIALIZATION_VERSION = 3`. `HAZARD_DERIVATION_VERSION = 2` and
+  `VOLCANIC_SOURCE_DERIVATION_VERSION = 2`; both are already in
+  `derived_cache::version_dir` (`z` and `v`) and in `historical_cache_key`
+  (`hazards-v`, `volcanic-v`), so old caches miss and refill. This was checked
+  by reading both key builders, not by a new test.
+- **Legacy.** `ValidatedPhysicalSource.legacy_world` and
+  `ValidatedPhysicalSource::legacy_world` had no readers after the command
+  moved, so both are deleted. The command no longer has the old static-derived
+  event path. The remaining `TectonicWorld` names in `src-tauri` are test-only
+  helpers of the retired generator.
+- **Tests.** Fourteen events unit tests (two restored in review: the Poisson
+  ensemble mean against the eruption rate mass and the Gutenberg–Richter
+  M ≥ 5 share) cover determinism and byte-identical
+  JSON, bounds, each kind's ids and fields, earthquake and eruption rate mass,
+  the M ≥ 5 → M ≥ 4 conversion through the product helper, tracer parity, the
+  coarse/canonical mapping at `n = 128` (where the climate grid is 64), zero
+  mass worlds, the all-zero month error, u64 JSON beyond `2^53`, and a
+  tampered source rejected on a normalized-zero epoch. One command test
+  accepts an `n = 64` engine map, materializes floods and earthquakes, checks
+  provenance, `cellKind`, engine generator fields and the canonical flood
+  anchor resolving on the epoch surface, reruns floods for no new entities, then
+  deletes `.daena/` and reopens with the events intact.
+- **Measured timings** (release, 12-thread M4 Pro, seed 831429, Earthlike,
+  interval −100000..100000, `max_events = 128`, median of three, sample only;
+  source generation excluded):
+
+  | Kind | Epoch | n=512 | n=1024 |
+  | --- | --- | ---: | ---: |
+  | Earthquake | present | 0.68 s | 1.75 s |
+  | Storm | −8000 | 0.49 s | 1.29 s |
+  | Flood | −8000 | 0.50 s | 1.28 s |
+
+  The storm and flood rows pass an explicit −8000 solve, as the brief asks;
+  the command derives the epoch from the request midpoint. The first run of
+  each measured 1.04 s (earthquake, `n = 512`) and 1.78 s (`n = 1024`); later
+  runs settled at the table values. No row is near 5 s.
+
+Doubts:
+
+- Earthquake `expected_lambda` over the full interval is about `3.0e9` events
+  (`≈ 15,000` M ≥ 4 events per year × 200,001 years). The Poisson draw clamps
+  the count and `maxEvents` truncates to 128, but the reported mean stays the
+  unbounded rate mass. This is the existing `expected_lambda` contract.
+- The generation JSON now records `hazardDerivationVersion = 2`. The first
+  draft made `validate_source` reject an E5b map that records `1`, which would
+  have locked every accepted engine map out after any hazard change. Fixed in
+  review: the recorded value is the version at accept time, hazards are always
+  re-derived at the current version (the derived cache and epoch keys carry
+  it), so `1..=current` validates and only `0` or a future version is
+  rejected. The physical identity does not include it.
+- The storm census is resolution-dependent (`60.219666` at `n = 512`,
+  `59.784407` at `n = 1024`), while the notable fraction is one constant
+  calibrated at 512. The product rate therefore moves by about 0.7 % between
+  the two accepted resolutions.
 
 ## Known realism gaps, deferred to after E8
 

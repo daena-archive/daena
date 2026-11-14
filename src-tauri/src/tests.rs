@@ -6029,3 +6029,201 @@ fn e5a_release_timing_table() {
         clear_tool_surface_cache().unwrap();
     }
 }
+
+#[test]
+fn physical_event_materialization_uses_engine_events_and_survives_rebuild() {
+    let root = std::env::temp_dir().join(format!("daena-engine-events-{}", uuid::Uuid::new_v4()));
+    let store = ProjectStore::open_directory(&root).unwrap();
+    let products = engine_products(64);
+    let generation = products.generation().unwrap().clone();
+    let accepted = store
+        .accept_physical_map(
+            "Engine events".into(),
+            products.source().to_vec(),
+            generation.clone(),
+            Some("00000000-0000-4000-8000-0000000000e6"),
+        )
+        .unwrap();
+    let map_id = accepted.entity.id.clone();
+    let validated =
+        daena_core::maps::physical::validate_source(products.source(), &generation).unwrap();
+    let flood_request = daena_physical::events::EventMaterializationRequest {
+        event_kind: daena_physical::events::NaturalEventKind::Flood,
+        interval_start_years: -100,
+        interval_end_years: 100,
+        max_events: 16,
+        hazard_seed: 7,
+    };
+    let floods = physical_materialize_events_response(
+        &store,
+        &map_id,
+        &flood_request,
+        Some(uuid::Uuid::new_v4().to_string()),
+    )
+    .unwrap();
+    assert!(!floods.events.is_empty());
+    assert_eq!(floods.materialization_version, 3);
+    let surface = tool_surface_for_source(
+        &accepted.physical_identity,
+        &validated.source,
+        &generation,
+        0,
+    )
+    .unwrap();
+    let provenance = |entity_id: &str| {
+        store
+            .list_fields(entity_id.to_string())
+            .unwrap()
+            .into_iter()
+            .find(|field| {
+                field.namespace == daena_core::maps::PHYSICAL_EVENT_NAMESPACE
+                    && field.key == "provenance"
+            })
+            .unwrap()
+            .value
+    };
+    for event in &floods.events {
+        let value = serde_json::to_value(event).unwrap();
+        let minimum_cell = event.event.sampled_center_id.unwrap();
+        let lake_id =
+            daena_physical::hydro_claim::canonical_lake_id(u32::try_from(minimum_cell).unwrap());
+        assert_eq!(
+            value["sampledCenterId"],
+            serde_json::json!(minimum_cell.to_string())
+        );
+        let locations = store.map_locations(event.entity_id.clone()).unwrap();
+        assert_eq!(locations.len(), 1);
+        match &locations[0].anchor {
+            daena_core::maps::Anchor::ProviderFeature { feature_id, .. } => {
+                assert_eq!(feature_id, &lake_id);
+                assert!(daena_physical::hydro_claim::resolve_canonical(
+                    &surface,
+                    daena_physical::hydro_claim::KIND_LAKE,
+                    feature_id
+                )
+                .is_some());
+            }
+            other => panic!("flood anchor is {other:?}"),
+        }
+        let provenance = provenance(&event.entity_id);
+        assert_eq!(provenance["cellKind"], "canonical-cube");
+        assert_eq!(provenance["sourceResolution"], 64);
+        assert_eq!(
+            provenance["sampledCenterId"],
+            serde_json::json!(minimum_cell.to_string())
+        );
+        assert_eq!(provenance["eventModel"], "engine-lake-spill-v3");
+        assert_eq!(provenance["generatorId"], daena_physical::GENERATOR_ID);
+        assert_eq!(
+            provenance["generatorVersion"],
+            u64::from(daena_physical::engine::WORLD_ENGINE_VERSION)
+        );
+        assert!(provenance.get("sourceRetryIndex").is_none());
+        assert_eq!(provenance["fillPpm"], 1_000_000);
+    }
+
+    let earthquake_request = daena_physical::events::EventMaterializationRequest {
+        event_kind: daena_physical::events::NaturalEventKind::Earthquake,
+        interval_start_years: 0,
+        interval_end_years: 1_000,
+        max_events: 8,
+        hazard_seed: 11,
+    };
+    let earthquakes = physical_materialize_events_response(
+        &store,
+        &map_id,
+        &earthquake_request,
+        Some(uuid::Uuid::new_v4().to_string()),
+    )
+    .unwrap();
+    assert!(!earthquakes.events.is_empty());
+    let earthquake_provenance = provenance(&earthquakes.events[0].entity_id);
+    assert_eq!(earthquake_provenance["cellKind"], "canonical-cube");
+    assert_eq!(
+        earthquake_provenance["sampledCenterId"],
+        serde_json::Value::Null
+    );
+    assert_eq!(
+        earthquake_provenance["eventModel"],
+        "poisson-gutenberg-richter-v2"
+    );
+    let years = (earthquake_request.interval_end_years - earthquake_request.interval_start_years
+        + 1) as f64;
+    let sampled_mass = validated
+        .source
+        .sample_events(None, &earthquake_request, &mut daena_physical::NoopProgress)
+        .unwrap()
+        .expected_lambda;
+    assert!(
+        (sampled_mass - products.hazards().metrics.earthquake_rate_mass_nano as f64 / 1e9 * years)
+            .abs()
+            < 1e-9
+    );
+    let eruption_request = daena_physical::events::EventMaterializationRequest {
+        event_kind: daena_physical::events::NaturalEventKind::Eruption,
+        interval_start_years: 0,
+        interval_end_years: 1_000,
+        max_events: 8,
+        hazard_seed: 11,
+    };
+    let eruption_mass = validated
+        .source
+        .sample_events(None, &eruption_request, &mut daena_physical::NoopProgress)
+        .unwrap()
+        .expected_lambda;
+    assert!(
+        (eruption_mass - products.hazards().metrics.volcanic_rate_mass_nano as f64 / 1e9 * years)
+            .abs()
+            < 1e-9
+    );
+
+    let entity_count = store.list_entities().unwrap().len();
+    let first_ids = floods
+        .events
+        .iter()
+        .map(|event| event.entity_id.clone())
+        .collect::<Vec<_>>();
+    let rerun = physical_materialize_events_response(
+        &store,
+        &map_id,
+        &flood_request,
+        Some(uuid::Uuid::new_v4().to_string()),
+    )
+    .unwrap();
+    assert_eq!(
+        rerun
+            .events
+            .iter()
+            .map(|event| event.entity_id.clone())
+            .collect::<Vec<_>>(),
+        first_ids
+    );
+    assert_eq!(store.list_entities().unwrap().len(), entity_count);
+
+    let event_ids = floods
+        .events
+        .iter()
+        .chain(earthquakes.events.iter())
+        .map(|event| event.entity_id.clone())
+        .collect::<Vec<_>>();
+    store
+        .flush_checkpoint("physical event materialization test")
+        .unwrap();
+    drop(store);
+    std::fs::remove_dir_all(root.join(".daena")).unwrap();
+    let reopened = ProjectStore::open_directory(&root).unwrap();
+    let entities = reopened.list_entities().unwrap();
+    for id in &event_ids {
+        assert!(entities.iter().any(|entity| &entity.id == id));
+        assert!(reopened
+            .list_fields(id.clone())
+            .unwrap()
+            .iter()
+            .any(|field| {
+                field.namespace == daena_core::maps::PHYSICAL_EVENT_NAMESPACE
+                    && field.key == "provenance"
+            }));
+    }
+    drop(reopened);
+    std::fs::remove_dir_all(root).unwrap();
+}

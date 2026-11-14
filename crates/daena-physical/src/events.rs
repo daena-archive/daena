@@ -1,31 +1,43 @@
-//! Bounded, deterministic natural-event sampling from the generated hazard fields.
+//! Bounded, deterministic natural-event sampling from the engine world.
 //!
 //! This module only produces an explicit materialization result. It does not
 //! persist anything and it does not modify the accepted physical source.
 //! Event rates are events per physical model year.
 //!
-//! Storm sampling uses climatology as location weights. Expected count is a
-//! sparse notable-event rate, not the annual cyclone census shown on climate
-//! overlays. Floods are not a rate process: overflowing basins at epoch `t`
-//! (water at the outlet) become events. Earthquake and eruption provenance
-//! stay on materialization v1; storms and floods use v2.
+//! Every cell in a [`MaterializedEvent`] is a canonical cube cell. Cells are
+//! never view or coarse-climate cells: the storm tracer works on coarse cells,
+//! so each traced step is mapped to the canonical cell that contains it.
+//!
+//! Earthquakes draw from the engine M ≥ 4 canonical rate mass, eruptions draw
+//! a volcanic source, storms draw from the engine genesis census and trace with
+//! the shared tracer, and floods list engine lakes that spill. The notable
+//! storm rate is a product policy applied to the physical census, not a hazard
+//! field.
 
-use serde::{Deserialize, Serialize};
+use daena_worldgen as worldgen;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::{
-    climate::{self, ClimateField},
-    hazards::{self, HazardField, RATE_NANO, VOLCANIC_SOURCE_DERIVATION_VERSION},
-    hydrology::{HydrologyField, HYDROLOGY_DERIVATION_VERSION},
-    splitmix64,
-    tectonics::TectonicWorld,
-    Grid, PhysicalField,
+    hazards::{RATE_NANO, VOLCANIC_SOURCE_DERIVATION_VERSION},
+    products::{
+        earthquake_rate_nano, fraction_ppm, hazard_ppm, rate_per_million_years_ppm,
+        CLIMATE_DERIVATION_VERSION, HYDROLOGY_DERIVATION_VERSION,
+    },
+    splitmix64, PhysicalError,
 };
 
-pub const EVENT_MATERIALIZATION_VERSION: u16 = 2;
+pub const EVENT_MATERIALIZATION_VERSION: u16 = 3;
 pub const MAX_INTERVAL_OFFSET_YEARS: i64 = 100_000;
 pub const MAX_EVENTS: u32 = 128;
 const MAX_EXPECTED_EVENTS: f64 = 1_024.0;
-const STORM_NOTABLE_PER_YEAR: f64 = 0.00035;
+/// Earthlike seed 831429, `n = 512`: the retired 384×192 product generator
+/// reports `mean_ocean_storm_suitability_ppm = 55_708`, so its notable rate is
+/// `55_708 / 1e6 · 0.00035 = 1.94978e-5` events per year. The engine genesis
+/// census for the same seed and resolution is 60.219666 storms per year, so
+/// `1.94978e-5 / 60.219666 = 3.23778e-7`. This constant keeps that rate within
+/// 10 % of the retired product on the calibration world.
+const STORM_NOTABLE_FRACTION: f64 = 3.24e-7;
+const STORM_MONTH_SEED_TAG: u64 = 0x6d6f_6e74_6800_0005;
 const EARTHQUAKE_MIN_MAGNITUDE_MILLI: u32 = 4_000;
 const EARTHQUAKE_MAX_MAGNITUDE_MILLI: u32 = 8_500;
 const GUTENBERG_RICHTER_B_VALUE: f64 = 0.9;
@@ -61,16 +73,16 @@ impl NaturalEventKind {
     pub const fn model_label(self) -> &'static str {
         match self {
             Self::Earthquake => "poisson-gutenberg-richter-v2",
-            Self::Eruption => "persistent-rate-v2",
-            Self::Storm => "tropical-cyclone-climatology-v1",
-            Self::Flood => "basin-outlet-threshold-v1",
+            Self::Eruption => "engine-volcanic-source-v3",
+            Self::Storm => "engine-storm-tracer-v3",
+            Self::Flood => "engine-lake-spill-v3",
         }
     }
 
     pub const fn materialization_version(self) -> u16 {
         match self {
-            Self::Earthquake | Self::Eruption => 1,
-            Self::Storm | Self::Flood => 2,
+            Self::Earthquake | Self::Eruption => 2,
+            Self::Storm | Self::Flood => 3,
         }
     }
 }
@@ -114,12 +126,20 @@ impl EventMaterializationRequest {
     }
 }
 
+/// Events plus the Poisson mean used for their draw.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EventSample {
+    pub events: Vec<MaterializedEvent>,
+    pub expected_lambda: f64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct MaterializedEvent {
     pub event_kind: NaturalEventKind,
     pub ordinal: u32,
     pub year_offset: i64,
+    /// Canonical cube cell.
     pub cell: u32,
     pub longitude_microdegrees: i32,
     pub latitude_microdegrees: i32,
@@ -127,7 +147,12 @@ pub struct MaterializedEvent {
     pub hazard_ppm: u32,
     pub annual_rate_nano: u64,
     pub rate_per_million_years_ppm: u32,
-    pub sampled_center_id: Option<u32>,
+    #[serde(
+        default,
+        serialize_with = "serialize_optional_decimal_u64",
+        deserialize_with = "deserialize_optional_decimal_u64"
+    )]
+    pub sampled_center_id: Option<u64>,
     pub volcanic_source_derivation_version: u16,
     #[serde(default, skip_serializing_if = "u16_is_zero")]
     pub hydrology_derivation_version: u16,
@@ -137,6 +162,29 @@ pub struct MaterializedEvent {
 
 fn u16_is_zero(value: &u16) -> bool {
     *value == 0
+}
+
+fn serialize_optional_decimal_u64<S>(value: &Option<u64>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    match value {
+        Some(id) => serializer.serialize_some(&id.to_string()),
+        None => serializer.serialize_none(),
+    }
+}
+
+fn deserialize_optional_decimal_u64<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let text = Option::<String>::deserialize(deserializer)?;
+    text.map(|value| {
+        value
+            .parse::<u64>()
+            .map_err(|_| serde::de::Error::custom("sampledCenterId must be a decimal u64 string"))
+    })
+    .transpose()
 }
 
 #[must_use]
@@ -173,8 +221,8 @@ fn poisson(lambda: f64, seed: u64) -> u32 {
     count
 }
 
-fn center_microdegrees(grid: Grid, cell: usize) -> [i32; 2] {
-    let (longitude, latitude) = grid.center_radians(grid.row_col(cell).0, grid.row_col(cell).1);
+fn center_microdegrees(grid: &worldgen::CubeSphere, cell: u32) -> [i32; 2] {
+    let (latitude, longitude) = grid.lat_lon(cell);
     [
         (longitude.to_degrees() * 1_000_000.0).round() as i32,
         (latitude.to_degrees() * 1_000_000.0).round() as i32,
@@ -206,295 +254,407 @@ fn flood_magnitude_milli(outflow_m3_per_year: u64) -> u32 {
     (1_000.0 + log * 500.0).round().clamp(1_000.0, 8_000.0) as u32
 }
 
-fn flood_fill_ppm(water_volume_m3: u64, volume_to_spill_m3: u64) -> u32 {
-    if volume_to_spill_m3 == 0 {
-        return 1_000_000;
+fn prefix_sums(weights: &[u64]) -> (Vec<u64>, u64) {
+    let mut prefix = Vec::with_capacity(weights.len());
+    let mut mass = 0u64;
+    for weight in weights {
+        mass = mass.saturating_add(*weight);
+        prefix.push(mass);
     }
-    u32::try_from(
-        (u128::from(water_volume_m3) * 1_000_000 / u128::from(volume_to_spill_m3)).min(1_000_000),
-    )
-    .unwrap_or(1_000_000)
+    (prefix, mass)
 }
 
-fn sample_flood_events(
-    hydrology: &HydrologyField,
-    request: &EventMaterializationRequest,
-) -> Vec<MaterializedEvent> {
-    let basins = hydrology.overflowing_event_basins();
-    let year = request.interval_midpoint_years();
-    basins
-        .into_iter()
-        .take(request.max_events as usize)
-        .enumerate()
-        .map(|(ordinal, basin)| {
-            let cell = basin.spill_cell.unwrap_or(basin.minimum_cell);
-            let point = center_microdegrees(hydrology.grid, cell);
-            MaterializedEvent {
-                event_kind: NaturalEventKind::Flood,
-                ordinal: ordinal as u32,
-                year_offset: year,
-                cell: cell as u32,
-                longitude_microdegrees: point[0],
-                latitude_microdegrees: point[1],
-                magnitude_milli: flood_magnitude_milli(basin.outflow_m3_per_year),
-                hazard_ppm: flood_fill_ppm(basin.water_volume_m3, basin.volume_to_spill_m3),
-                annual_rate_nano: 0,
-                rate_per_million_years_ppm: 0,
-                sampled_center_id: Some(basin.minimum_cell as u32),
-                volcanic_source_derivation_version: 0,
-                hydrology_derivation_version: HYDROLOGY_DERIVATION_VERSION,
-                track_cells: if cell == basin.minimum_cell {
-                    vec![cell as u32]
-                } else {
-                    vec![basin.minimum_cell as u32, cell as u32]
-                },
-            }
-        })
-        .collect()
-}
-
-fn sample_cell(rates: &[u64], mass: u64, seed: u64) -> usize {
+fn sample_prefix(prefix: &[u64], mass: u64, seed: u64) -> Option<usize> {
     if mass == 0 {
-        return 0;
+        return None;
     }
-    let mut remaining = (splitmix64(seed) % mass) + 1;
-    for (cell, rate) in rates.iter().enumerate() {
-        if *rate == 0 {
-            continue;
-        }
-        if remaining <= *rate {
-            return cell;
-        }
-        remaining -= *rate;
-    }
-    rates.len().saturating_sub(1)
+    let remaining = splitmix64(seed) % mass;
+    let index = prefix.partition_point(|value| *value <= remaining);
+    (index < prefix.len()).then_some(index)
 }
 
-/// Samples occurrences from the complete annual-rate field. `N ~ Poisson(Λ)`
-/// with `Λ = total_annual_rate * years`, then each location is drawn from the
-/// normalized rate mass. `maxEvents` only truncates the persisted list.
-/// `epoch_field` supplies the coastline used for storm tracks; omit it to use
-/// the accepted present-day field. Floods skip Poisson sampling and list
-/// overflowing basins from `hydrology` at the interval midpoint.
-pub fn sample_events(
-    world: &TectonicWorld,
-    hazards: Option<&HazardField>,
-    climate: Option<&ClimateField>,
-    epoch_field: Option<&PhysicalField>,
-    hydrology: Option<&HydrologyField>,
+fn sample_weighted(weights: &[u64], seed: u64) -> Option<usize> {
+    let (prefix, mass) = prefix_sums(weights);
+    sample_prefix(&prefix, mass, seed)
+}
+
+fn event_year(request: &EventMaterializationRequest, event_seed: u64) -> i64 {
+    request.interval_start_years
+        + (splitmix64(event_seed ^ 0x7469_6d65) % request.interval_length()) as i64
+}
+
+fn event_seed(request: &EventMaterializationRequest, ordinal: u32) -> u64 {
+    request.hazard_seed
+        ^ request.event_kind.tag()
+        ^ u64::from(ordinal).wrapping_mul(0x9e37_79b9_7f4a_7c15)
+}
+
+/// Draw every event for one engine world.
+///
+/// The world is read only. The caller decides whether it is the present world
+/// or an epoch world. `max_events` only truncates the returned list;
+/// `expected_lambda` is the draw mean before that cap.
+pub fn sample_world_events(
+    world: &worldgen::World,
     request: &EventMaterializationRequest,
-) -> Result<Vec<MaterializedEvent>, String> {
-    request.validate()?;
-    if request.event_kind == NaturalEventKind::Flood {
-        let hydrology = hydrology.ok_or("flood materialization requires derived hydrology")?;
-        if hydrology.grid != world.grid {
-            return Err("flood hydrology grid must match the physical world".into());
-        }
-        return Ok(sample_flood_events(hydrology, request));
+) -> Result<EventSample, PhysicalError> {
+    request.validate().map_err(PhysicalError::Validation)?;
+    match request.event_kind {
+        NaturalEventKind::Earthquake => Ok(sample_earthquakes(world, request)),
+        NaturalEventKind::Eruption => Ok(sample_eruptions(world, request)),
+        NaturalEventKind::Storm => sample_storms(world, request),
+        NaturalEventKind::Flood => Ok(sample_floods(world, request)),
     }
-    let hazards = hazards.ok_or("event materialization requires derived hazards")?;
-    hazards
-        .validate(world.grid)
-        .map_err(|error| error.to_string())?;
-    if request.event_kind == NaturalEventKind::Storm && climate.is_none() {
-        return Err("storm materialization requires derived climate".into());
+}
+
+fn sample_earthquakes(
+    world: &worldgen::World,
+    request: &EventMaterializationRequest,
+) -> EventSample {
+    let mut rates = Vec::with_capacity(world.hazards.quake_rate_km2.len());
+    let mut mass = 0u64;
+    for (cell, rate) in world.hazards.quake_rate_km2.iter().enumerate() {
+        let annual = earthquake_rate_nano(*rate, world.cell_area_m2(cell as u32));
+        mass = mass.saturating_add(annual);
+        rates.push(annual);
     }
-    let present = world.physical_field();
-    let track_field = epoch_field.unwrap_or(&present);
-    let storm_rates = climate.map(|field| {
-        field
-            .storm_suitability_ppm
-            .iter()
-            .enumerate()
-            .map(|(cell, value)| {
-                if track_field.elevations_mm[cell] <= track_field.sea_level_mm {
-                    climate::storm_annual_rate_nano(*value)
-                } else {
-                    0
-                }
-            })
-            .collect::<Vec<_>>()
-    });
-    let storm_million = climate.map(|field| {
-        field
-            .storm_suitability_ppm
-            .iter()
-            .enumerate()
-            .map(|(cell, value)| {
-                if track_field.elevations_mm[cell] <= track_field.sea_level_mm {
-                    u32::try_from(u64::from(*value) * 1_000 / 1_000_000).unwrap_or(u32::MAX)
-                } else {
-                    0
-                }
-            })
-            .collect::<Vec<_>>()
-    });
-    let rates: &[u64] = match request.event_kind {
-        NaturalEventKind::Earthquake => &hazards.earthquake_annual_rate_nano,
-        NaturalEventKind::Eruption => &hazards.volcanic_annual_rate_nano,
-        NaturalEventKind::Storm => storm_rates.as_deref().unwrap_or(&[]),
-        NaturalEventKind::Flood => &[],
-    };
-    let hazard_values: &[u32] = match request.event_kind {
-        NaturalEventKind::Earthquake => &hazards.earthquake_hazard_ppm,
-        NaturalEventKind::Eruption => &hazards.volcanic_hazard_ppm,
-        NaturalEventKind::Storm => climate
-            .map(|field| field.storm_suitability_ppm.as_slice())
-            .unwrap_or(&[]),
-        NaturalEventKind::Flood => &[],
-    };
-    let million_year_rates: &[u32] = match request.event_kind {
-        NaturalEventKind::Earthquake => &hazards.earthquake_rate_per_million_years_ppm,
-        NaturalEventKind::Eruption => &hazards.eruption_rate_per_million_years_ppm,
-        NaturalEventKind::Storm => storm_million.as_deref().unwrap_or(&[]),
-        NaturalEventKind::Flood => &[],
-    };
-    let interval_length = request.interval_length();
-    let mass = rates.iter().copied().fold(0u64, u64::saturating_add);
-    let lambda = match (request.event_kind, climate) {
-        (NaturalEventKind::Storm, Some(field)) => storm_notable_lambda(field, interval_length),
-        _ => (mass as f64 / RATE_NANO as f64) * interval_length as f64,
-    };
+    let (prefix, prefix_mass) = prefix_sums(&rates);
+    debug_assert_eq!(mass, prefix_mass);
+    let lambda = (mass as f64 / RATE_NANO as f64) * request.interval_length() as f64;
     let count = poisson(
         lambda,
         request.hazard_seed ^ request.event_kind.tag() ^ 0x506f_6973_736f_6e31,
     )
     .min(request.max_events);
-    let notable_nano = climate
-        .map(|field| {
-            ((f64::from(field.metrics.mean_ocean_storm_suitability_ppm) / 1_000_000.0)
-                * STORM_NOTABLE_PER_YEAR
-                * RATE_NANO as f64)
-                .round() as u64
-        })
-        .unwrap_or(0);
     let mut events = Vec::with_capacity(count as usize);
+    if mass == 0 {
+        return EventSample {
+            events,
+            expected_lambda: lambda,
+        };
+    }
     for ordinal in 0..count {
-        let event_seed = request.hazard_seed
-            ^ request.event_kind.tag()
-            ^ u64::from(ordinal).wrapping_mul(0x9e37_79b9_7f4a_7c15);
-        let genesis = sample_cell(rates, mass, event_seed ^ 0x6c6f_6361_7469_6f6e);
-        let track_cells = match (request.event_kind, climate) {
-            (NaturalEventKind::Storm, Some(field)) => {
-                climate::collect_storm_track(track_field, field, genesis)
-            }
-            _ => vec![genesis],
+        let event_seed = event_seed(request, ordinal);
+        let Some(genesis) = sample_prefix(&prefix, mass, event_seed ^ 0x6c6f_6361_7469_6f6e) else {
+            break;
         };
-        let cell = *track_cells.last().unwrap_or(&genesis);
-        let point = center_microdegrees(world.grid, cell);
-        let year = request.interval_start_years
-            + (splitmix64(event_seed ^ 0x7469_6d65) % interval_length) as i64;
-        let magnitude_milli = match request.event_kind {
-            NaturalEventKind::Earthquake => earthquake_magnitude_milli(event_seed ^ 0x4551),
-            NaturalEventKind::Eruption => {
-                eruption_magnitude_milli(rates[genesis], event_seed ^ 0x4552)
-            }
-            NaturalEventKind::Storm => storm_magnitude_milli(
-                climate
-                    .and_then(|field| field.storm_intensity_ppm.get(genesis).copied())
-                    .unwrap_or(0),
-                event_seed ^ 0x4553,
-            ),
-            NaturalEventKind::Flood => 0,
-        };
-        let sampled_center_id = match request.event_kind {
-            NaturalEventKind::Eruption => {
-                hazards::nearest_volcanic_source(hazards, cell).map(|source| source.stable_id)
-            }
-            NaturalEventKind::Storm => Some(genesis as u32),
-            NaturalEventKind::Earthquake | NaturalEventKind::Flood => None,
-        };
-        let annual_rate_nano = match request.event_kind {
-            NaturalEventKind::Storm if mass > 0 => {
-                notable_nano.saturating_mul(rates[genesis]) / mass
-            }
-            _ => rates[genesis],
-        };
+        let cell = u32::try_from(genesis).expect("canonical cell index fits in u32");
+        debug_assert!((cell as usize) < world.grid.cell_count());
+        let point = center_microdegrees(&world.grid, cell);
         events.push(MaterializedEvent {
             event_kind: request.event_kind,
             ordinal,
-            year_offset: year,
-            cell: cell as u32,
+            year_offset: event_year(request, event_seed),
+            cell,
             longitude_microdegrees: point[0],
             latitude_microdegrees: point[1],
-            magnitude_milli,
-            hazard_ppm: hazard_values[genesis],
-            annual_rate_nano,
-            rate_per_million_years_ppm: million_year_rates[genesis],
-            sampled_center_id,
-            volcanic_source_derivation_version: match request.event_kind {
-                NaturalEventKind::Storm => climate::CLIMATE_DERIVATION_VERSION,
-                _ => VOLCANIC_SOURCE_DERIVATION_VERSION,
-            },
+            magnitude_milli: earthquake_magnitude_milli(event_seed ^ 0x4551),
+            hazard_ppm: hazard_ppm(world.hazards.quake_hazard[genesis]),
+            annual_rate_nano: rates[genesis],
+            rate_per_million_years_ppm: rate_per_million_years_ppm(rates[genesis]),
+            sampled_center_id: None,
+            volcanic_source_derivation_version: VOLCANIC_SOURCE_DERIVATION_VERSION,
             hydrology_derivation_version: 0,
-            track_cells: track_cells.into_iter().map(|cell| cell as u32).collect(),
+            track_cells: vec![cell],
         });
     }
-    Ok(events)
+    EventSample {
+        events,
+        expected_lambda: lambda,
+    }
 }
 
-fn storm_notable_lambda(climate: &ClimateField, years: u64) -> f64 {
-    let mean = f64::from(climate.metrics.mean_ocean_storm_suitability_ppm) / 1_000_000.0;
-    (mean * STORM_NOTABLE_PER_YEAR * years as f64).clamp(0.0, MAX_EXPECTED_EVENTS)
+fn sample_eruptions(world: &worldgen::World, request: &EventMaterializationRequest) -> EventSample {
+    let mut sources = world.hazards.volcanic_sources.iter().collect::<Vec<_>>();
+    sources.sort_by_key(|source| source.id);
+    let rates = sources
+        .iter()
+        .map(|source| {
+            (f64::from(source.eruptions_per_yr) * RATE_NANO as f64)
+                .round()
+                .clamp(0.0, u64::MAX as f64) as u64
+        })
+        .collect::<Vec<_>>();
+    let (prefix, mass) = prefix_sums(&rates);
+    let lambda = (mass as f64 / RATE_NANO as f64) * request.interval_length() as f64;
+    let count = poisson(
+        lambda,
+        request.hazard_seed ^ request.event_kind.tag() ^ 0x506f_6973_736f_6e31,
+    )
+    .min(request.max_events);
+    let mut events = Vec::with_capacity(count as usize);
+    if mass == 0 {
+        return EventSample {
+            events,
+            expected_lambda: lambda,
+        };
+    }
+    for ordinal in 0..count {
+        let event_seed = event_seed(request, ordinal);
+        let Some(source_index) = sample_prefix(&prefix, mass, event_seed ^ 0x6c6f_6361_7469_6f6e)
+        else {
+            break;
+        };
+        let source = sources[source_index];
+        debug_assert!((source.cell as usize) < world.grid.cell_count());
+        let point = center_microdegrees(&world.grid, source.cell);
+        events.push(MaterializedEvent {
+            event_kind: request.event_kind,
+            ordinal,
+            year_offset: event_year(request, event_seed),
+            cell: source.cell,
+            longitude_microdegrees: point[0],
+            latitude_microdegrees: point[1],
+            magnitude_milli: eruption_magnitude_milli(rates[source_index], event_seed ^ 0x4552),
+            hazard_ppm: hazard_ppm(world.hazards.volcanic_hazard[source.cell as usize]),
+            annual_rate_nano: rates[source_index],
+            rate_per_million_years_ppm: rate_per_million_years_ppm(rates[source_index]),
+            sampled_center_id: Some(source.id),
+            volcanic_source_derivation_version: VOLCANIC_SOURCE_DERIVATION_VERSION,
+            hydrology_derivation_version: 0,
+            track_cells: vec![source.cell],
+        });
+    }
+    EventSample {
+        events,
+        expected_lambda: lambda,
+    }
 }
 
-pub fn expected_lambda(
-    hazards: &HazardField,
-    climate: Option<&ClimateField>,
-    hydrology: Option<&HydrologyField>,
+fn storm_census(world: &worldgen::World, areas_km2: &[f64]) -> f64 {
+    world
+        .hazards
+        .storms
+        .genesis_km2
+        .iter()
+        .zip(areas_km2)
+        .map(|(genesis, area)| f64::from(*genesis) * area)
+        .sum()
+}
+
+fn sample_storms(
+    world: &worldgen::World,
     request: &EventMaterializationRequest,
-) -> f64 {
-    match (request.event_kind, climate, hydrology) {
-        (NaturalEventKind::Storm, Some(field), _) => {
-            storm_notable_lambda(field, request.interval_length())
+) -> Result<EventSample, PhysicalError> {
+    let coarse = &world.climate_field.grid;
+    let coarse_cells = coarse.cell_count();
+    let storms = &world.hazards.storms;
+    if storms.genesis_km2.len() != coarse_cells
+        || storms.genesis_monthly_km2.len() != 12 * coarse_cells
+    {
+        return Err(PhysicalError::Validation(
+            "storm climatology does not match the coarse climate grid".into(),
+        ));
+    }
+    let areas_km2 = (0..coarse_cells)
+        .map(|cell| coarse.area_m2(cell as u32) / 1.0e6)
+        .collect::<Vec<_>>();
+    let weights = storms
+        .genesis_km2
+        .iter()
+        .zip(&areas_km2)
+        .map(|(genesis, area)| {
+            (f64::from(*genesis) * area * RATE_NANO as f64)
+                .round()
+                .clamp(0.0, u64::MAX as f64) as u64
+        })
+        .collect::<Vec<_>>();
+    let (prefix, mass) = prefix_sums(&weights);
+    let census = storm_census(world, &areas_km2);
+    let lambda = (census * STORM_NOTABLE_FRACTION * request.interval_length() as f64)
+        .clamp(0.0, MAX_EXPECTED_EVENTS);
+    let count = poisson(
+        lambda,
+        request.hazard_seed ^ request.event_kind.tag() ^ 0x506f_6973_736f_6e31,
+    )
+    .min(request.max_events);
+    let notable_nano = (census * STORM_NOTABLE_FRACTION * RATE_NANO as f64)
+        .round()
+        .clamp(0.0, u64::MAX as f64) as u64;
+    let ocean_fraction = world.coarse_ocean_fraction();
+    let mut events = Vec::with_capacity(count as usize);
+    if mass == 0 {
+        return Ok(EventSample {
+            events,
+            expected_lambda: lambda,
+        });
+    }
+    for ordinal in 0..count {
+        let event_seed = event_seed(request, ordinal);
+        let Some(genesis) = sample_prefix(&prefix, mass, event_seed ^ 0x6c6f_6361_7469_6f6e) else {
+            break;
+        };
+        let month_weights = (0..12)
+            .map(|month| {
+                let value = f64::from(storms.genesis_monthly_km2[month * coarse_cells + genesis]);
+                (value * RATE_NANO as f64)
+                    .round()
+                    .clamp(0.0, u64::MAX as f64) as u64
+            })
+            .collect::<Vec<_>>();
+        let month_mass = month_weights
+            .iter()
+            .copied()
+            .fold(0u64, u64::saturating_add);
+        if month_mass == 0 {
+            return Err(PhysicalError::Validation(format!(
+                "storm genesis cell {genesis} has no monthly genesis weights"
+            )));
         }
-        (NaturalEventKind::Flood, _, Some(field)) => field.overflowing_event_basins().len() as f64,
-        _ => {
-            let rates: &[u64] = match request.event_kind {
-                NaturalEventKind::Earthquake => &hazards.earthquake_annual_rate_nano,
-                NaturalEventKind::Eruption => &hazards.volcanic_annual_rate_nano,
-                NaturalEventKind::Storm | NaturalEventKind::Flood => &[],
-            };
-            let mass = rates.iter().copied().fold(0u64, u64::saturating_add);
-            (mass as f64 / RATE_NANO as f64) * request.interval_length() as f64
+        let Some(month) = sample_weighted(&month_weights, event_seed ^ STORM_MONTH_SEED_TAG) else {
+            return Err(PhysicalError::Validation(
+                "storm genesis month could not be sampled".into(),
+            ));
+        };
+        let track = worldgen::trace_storm(
+            &world.climate_field,
+            &ocean_fraction,
+            u32::try_from(genesis).expect("coarse cell index fits in u32"),
+            u32::try_from(month).expect("month fits in u32"),
+        )
+        .map_err(|error| PhysicalError::Validation(error.to_string()))?;
+        let mut track_cells = Vec::new();
+        let mut maximum_intensity = 0.0f64;
+        for step in &track.steps {
+            maximum_intensity = maximum_intensity.max(step.intensity);
+            let cell = world.grid.cell_at(coarse.position(step.cell));
+            debug_assert!((cell as usize) < world.grid.cell_count());
+            if track_cells.last() != Some(&cell) {
+                track_cells.push(cell);
+            }
         }
+        let Some(&cell) = track_cells.last() else {
+            return Err(PhysicalError::Validation(
+                "storm tracer returned an empty track".into(),
+            ));
+        };
+        let canonical_genesis = world.grid.cell_at(
+            coarse.position(u32::try_from(genesis).expect("coarse cell index fits in u32")),
+        );
+        debug_assert!((canonical_genesis as usize) < world.grid.cell_count());
+        let point = center_microdegrees(&world.grid, cell);
+        let hazard_ppm = fraction_ppm(maximum_intensity);
+        let annual_rate_nano = notable_nano.saturating_mul(weights[genesis]) / mass;
+        events.push(MaterializedEvent {
+            event_kind: request.event_kind,
+            ordinal,
+            year_offset: event_year(request, event_seed),
+            cell,
+            longitude_microdegrees: point[0],
+            latitude_microdegrees: point[1],
+            magnitude_milli: storm_magnitude_milli(hazard_ppm, event_seed ^ 0x4553),
+            hazard_ppm,
+            annual_rate_nano,
+            rate_per_million_years_ppm: rate_per_million_years_ppm(annual_rate_nano),
+            sampled_center_id: Some(u64::from(canonical_genesis)),
+            volcanic_source_derivation_version: CLIMATE_DERIVATION_VERSION,
+            hydrology_derivation_version: 0,
+            track_cells,
+        });
+    }
+    Ok(EventSample {
+        events,
+        expected_lambda: lambda,
+    })
+}
+
+fn sample_floods(world: &worldgen::World, request: &EventMaterializationRequest) -> EventSample {
+    let mut lakes = world
+        .hydrology
+        .lakes
+        .iter()
+        .filter(|lake| lake.kind == worldgen::LakeKind::Fresh && lake.outflow_m3 > 0.0)
+        .collect::<Vec<_>>();
+    lakes.sort_by_key(|lake| lake.minimum_cell);
+    let expected_lambda = lakes.len() as f64;
+    let year = request.interval_midpoint_years();
+    let events = lakes
+        .into_iter()
+        .take(request.max_events as usize)
+        .enumerate()
+        .map(|(ordinal, lake)| {
+            let cell = lake.spill_cell;
+            debug_assert!((cell as usize) < world.grid.cell_count());
+            debug_assert!((lake.minimum_cell as usize) < world.grid.cell_count());
+            let point = center_microdegrees(&world.grid, cell);
+            let outflow = lake.outflow_m3.round().clamp(0.0, u64::MAX as f64) as u64;
+            MaterializedEvent {
+                event_kind: request.event_kind,
+                ordinal: ordinal as u32,
+                year_offset: year,
+                cell,
+                longitude_microdegrees: point[0],
+                latitude_microdegrees: point[1],
+                magnitude_milli: flood_magnitude_milli(outflow),
+                hazard_ppm: 1_000_000,
+                annual_rate_nano: 0,
+                rate_per_million_years_ppm: 0,
+                sampled_center_id: Some(u64::from(lake.minimum_cell)),
+                volcanic_source_derivation_version: 0,
+                hydrology_derivation_version: HYDROLOGY_DERIVATION_VERSION,
+                track_cells: if cell == lake.minimum_cell {
+                    vec![cell]
+                } else {
+                    vec![lake.minimum_cell, cell]
+                },
+            }
+        })
+        .collect();
+    EventSample {
+        events,
+        expected_lambda,
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::hydrology::BasinStatus;
-    use crate::{generate_world, GenerationSettings, NoopProgress, DEFAULT_RADIUS_METRES};
+    use std::sync::OnceLock;
 
-    fn fixture() -> (TectonicWorld, HazardField) {
-        let settings = GenerationSettings {
-            width: 16,
-            height: 8,
-            radius_metres: DEFAULT_RADIUS_METRES,
-            target_land_fraction_ppm: 300_000,
-        };
-        let mut progress = NoopProgress;
-        let world = generate_world(settings, 831_429, 0, &mut progress)
-            .unwrap()
-            .tectonics;
-        let hazards = crate::hazards::derive_hazards(&world).unwrap();
-        (world, hazards)
+    use super::*;
+    use crate::NoopProgress;
+
+    fn engine_world(n: u32, preset: worldgen::Preset) -> worldgen::World {
+        let mut settings = preset.settings();
+        settings.seed = 831_429;
+        settings.resolution = n;
+        worldgen::generate(&settings, &mut worldgen::NoProgress).unwrap()
+    }
+
+    fn earthlike_64() -> &'static worldgen::World {
+        static WORLD: OnceLock<worldgen::World> = OnceLock::new();
+        WORLD.get_or_init(|| engine_world(64, worldgen::Preset::Earthlike))
+    }
+
+    fn earthlike_128() -> &'static worldgen::World {
+        static WORLD: OnceLock<worldgen::World> = OnceLock::new();
+        WORLD.get_or_init(|| engine_world(128, worldgen::Preset::Earthlike))
     }
 
     fn request(
         kind: NaturalEventKind,
-        years: i64,
-        seed: u64,
+        start_years: i64,
+        end_years: i64,
+        hazard_seed: u64,
         max_events: u32,
     ) -> EventMaterializationRequest {
         EventMaterializationRequest {
             event_kind: kind,
-            interval_start_years: 0,
-            interval_end_years: years.saturating_sub(1).max(0),
+            interval_start_years: start_years,
+            interval_end_years: end_years,
             max_events,
-            hazard_seed: seed,
+            hazard_seed,
         }
+    }
+
+    fn event_center(world: &worldgen::World, cell: u32) -> (f64, f64) {
+        let (latitude, longitude) = world.grid.lat_lon(cell);
+        (latitude.to_degrees(), longitude.to_degrees())
+    }
+
+    fn angular_distance(world: &worldgen::World, a: u32, b: [f64; 3]) -> f64 {
+        let first = world.grid.position(a);
+        let dot = (first[0] * b[0] + first[1] * b[1] + first[2] * b[2]).clamp(-1.0, 1.0);
+        dot.acos()
     }
 
     #[test]
@@ -512,476 +672,535 @@ mod tests {
     }
 
     #[test]
-    fn event_sampling_is_deterministic_bounded_and_seam_safe() {
-        let (world, hazards) = fixture();
-        let request = EventMaterializationRequest {
-            event_kind: NaturalEventKind::Earthquake,
-            interval_start_years: -100_000,
-            interval_end_years: 100_000,
-            max_events: MAX_EVENTS,
-            hazard_seed: 7_331,
-        };
-        let first = sample_events(&world, Some(&hazards), None, None, None, &request).unwrap();
-        let second = sample_events(&world, Some(&hazards), None, None, None, &request).unwrap();
-        assert_eq!(first, second);
-        assert!(first.len() <= MAX_EVENTS as usize);
-        assert!(first.iter().all(|event| {
-            (-180_000_000..=180_000_000).contains(&event.longitude_microdegrees)
-                && (-90_000_000..=90_000_000).contains(&event.latitude_microdegrees)
-                && (EARTHQUAKE_MIN_MAGNITUDE_MILLI..=EARTHQUAKE_MAX_MAGNITUDE_MILLI)
-                    .contains(&event.magnitude_milli)
-                && event.sampled_center_id.is_none()
-        }));
-    }
-
-    #[test]
-    fn eruptions_use_persistent_rates_and_distinct_model_label() {
-        let (world, hazards) = fixture();
-        let request = EventMaterializationRequest {
-            event_kind: NaturalEventKind::Eruption,
-            interval_start_years: -100_000,
-            interval_end_years: 100_000,
-            max_events: MAX_EVENTS,
-            hazard_seed: 7_331,
-        };
-        let events = sample_events(&world, Some(&hazards), None, None, None, &request).unwrap();
-        assert_eq!(
-            NaturalEventKind::Eruption.model_label(),
-            "persistent-rate-v2"
+    fn earthquakes_are_deterministic_bounded_and_rate_massed() {
+        let world = earthlike_64();
+        let request = request(
+            NaturalEventKind::Earthquake,
+            -100_000,
+            100_000,
+            7_331,
+            MAX_EVENTS,
         );
-        assert!(events.iter().all(|event| {
-            event.event_kind == NaturalEventKind::Eruption
-                && event.magnitude_milli >= 1_000
-                && event.volcanic_source_derivation_version == VOLCANIC_SOURCE_DERIVATION_VERSION
-        }));
-    }
-
-    #[test]
-    fn display_cap_does_not_change_event_samples() {
-        let (world, hazards) = fixture();
-        let request = request(NaturalEventKind::Earthquake, 80_000, 99, 32);
-        let first = sample_events(&world, Some(&hazards), None, None, None, &request).unwrap();
-        let limited = crate::hazards::to_geojson_with_limit(&world, &hazards, 4).unwrap();
-        let second = sample_events(&world, Some(&hazards), None, None, None, &request).unwrap();
+        let first = sample_world_events(world, &request).unwrap();
+        let second = sample_world_events(world, &request).unwrap();
         assert_eq!(first, second);
-        assert!(limited.contains("earthquake-hazard"));
-    }
-
-    #[test]
-    fn poisson_mean_tracks_rate_mass_lambda() {
-        let (world, hazards) = fixture();
-        let request = request(NaturalEventKind::Earthquake, 20_000, 1, MAX_EVENTS);
-        let lambda = expected_lambda(&hazards, None, None, &request);
-        assert!(lambda > 0.0);
-        let mut total = 0u64;
-        let ensemble = 48u32;
-        for seed in 0..ensemble {
-            let mut seeded = request.clone();
-            seeded.hazard_seed = u64::from(seed + 11);
-            total += sample_events(&world, Some(&hazards), None, None, None, &seeded)
-                .unwrap()
-                .len() as u64;
+        assert_eq!(
+            serde_json::to_string(&first.events).unwrap(),
+            serde_json::to_string(&second.events).unwrap()
+        );
+        assert!(first.events.len() <= MAX_EVENTS as usize);
+        let mass = world
+            .hazards
+            .quake_rate_km2
+            .iter()
+            .enumerate()
+            .map(|(cell, rate)| earthquake_rate_nano(*rate, world.cell_area_m2(cell as u32)))
+            .fold(0u64, u64::saturating_add);
+        let years = request.interval_length() as f64;
+        assert!((first.expected_lambda - mass as f64 / RATE_NANO as f64 * years).abs() < 1e-9);
+        assert!(first.expected_lambda > 0.0);
+        for event in &first.events {
+            assert_eq!(event.event_kind, NaturalEventKind::Earthquake);
+            assert!(event.sampled_center_id.is_none());
+            assert_eq!(event.track_cells, vec![event.cell]);
+            assert!((event.cell as usize) < world.grid.cell_count());
+            assert!((-180_000_000..=180_000_000).contains(&event.longitude_microdegrees));
+            assert!((-90_000_000..=90_000_000).contains(&event.latitude_microdegrees));
+            assert!(
+                (EARTHQUAKE_MIN_MAGNITUDE_MILLI..=EARTHQUAKE_MAX_MAGNITUDE_MILLI)
+                    .contains(&event.magnitude_milli)
+            );
+            assert!(event.annual_rate_nano > 0);
+            assert_eq!(
+                event.rate_per_million_years_ppm,
+                rate_per_million_years_ppm(event.annual_rate_nano)
+            );
+            assert_eq!(
+                event.hazard_ppm,
+                hazard_ppm(world.hazards.quake_hazard[event.cell as usize])
+            );
+            let (latitude, longitude) = event_center(world, event.cell);
+            assert_eq!(
+                event.latitude_microdegrees,
+                (latitude * 1_000_000.0).round() as i32
+            );
+            assert_eq!(
+                event.longitude_microdegrees,
+                (longitude * 1_000_000.0).round() as i32
+            );
         }
-        let mean = total as f64 / f64::from(ensemble);
-        assert!((mean - lambda.min(MAX_EVENTS as f64)).abs() < lambda.max(1.0) * 0.75 + 1.5);
     }
 
     #[test]
-    fn magnitude_frequency_prefers_smaller_earthquakes() {
-        let (world, hazards) = fixture();
-        let request = EventMaterializationRequest {
-            event_kind: NaturalEventKind::Earthquake,
-            interval_start_years: 0,
-            interval_end_years: 100_000,
-            max_events: MAX_EVENTS,
-            hazard_seed: 17,
-        };
-        let mut small = 0u32;
-        let mut large = 0u32;
-        for seed in 0..24 {
-            let mut seeded = request.clone();
-            seeded.hazard_seed = 100 + seed;
-            for event in sample_events(&world, Some(&hazards), None, None, None, &seeded).unwrap() {
-                if event.magnitude_milli < 5_500 {
-                    small += 1;
-                } else {
-                    large += 1;
+    fn poisson_mean_tracks_the_eruption_rate_mass() {
+        let world = earthlike_64();
+        let base = request(NaturalEventKind::Eruption, 0, 0, 1, MAX_EVENTS);
+        let lambda = sample_world_events(world, &base).unwrap().expected_lambda;
+        assert!(
+            lambda > 0.5 && lambda < f64::from(MAX_EVENTS) / 2.0,
+            "{lambda}"
+        );
+        let ensemble = 200u64;
+        let total = (0..ensemble)
+            .map(|seed| {
+                let mut seeded = base.clone();
+                seeded.hazard_seed = seed + 11;
+                sample_world_events(world, &seeded).unwrap().events.len() as u64
+            })
+            .sum::<u64>();
+        let mean = total as f64 / ensemble as f64;
+        // Standard error of the mean is sqrt(lambda / ensemble).
+        let tolerance = 4.0 * (lambda / ensemble as f64).sqrt() + 0.05;
+        assert!(
+            (mean - lambda).abs() <= tolerance,
+            "mean {mean} vs lambda {lambda}"
+        );
+    }
+
+    #[test]
+    fn earthquake_magnitudes_follow_gutenberg_richter() {
+        // b = 0.9: P(M >= 5 | M >= 4) = 10^-0.9, about 0.126.
+        let draws = 20_000u64;
+        let large = (0..draws)
+            .filter(|seed| earthquake_magnitude_milli(seed.wrapping_mul(0x9e37_79b9)) >= 5_000)
+            .count() as f64;
+        let share = large / draws as f64;
+        assert!((share - 10f64.powf(-0.9)).abs() < 0.01, "{share}");
+    }
+
+    #[test]
+    fn earthquake_rate_converts_magnitude_five_to_four_through_the_product_helper() {
+        let rate_m5_km2 = 0.013_880_39f32;
+        let area_m2 = 1.2e10f64;
+        let got = earthquake_rate_nano(rate_m5_km2, area_m2);
+        let expected = (f64::from(rate_m5_km2)
+            * (area_m2 / 1_000_000.0)
+            * 10.0f64.powf(0.9)
+            * RATE_NANO as f64)
+            .round() as u64;
+        assert_eq!(got, expected);
+        let m5 = (f64::from(rate_m5_km2) * (area_m2 / 1_000_000.0) * RATE_NANO as f64).round();
+        assert!((got as f64 / m5 - 7.943_282_347_242_816).abs() < 1e-9);
+    }
+
+    #[test]
+    fn eruptions_sample_engine_sources_and_versions() {
+        let world = earthlike_64();
+        let request = request(
+            NaturalEventKind::Eruption,
+            -100_000,
+            100_000,
+            7_331,
+            MAX_EVENTS,
+        );
+        let sample = sample_world_events(world, &request).unwrap();
+        let second = sample_world_events(world, &request).unwrap();
+        assert_eq!(
+            serde_json::to_string(&sample.events).unwrap(),
+            serde_json::to_string(&second.events).unwrap()
+        );
+        assert!(world
+            .hazards
+            .volcanic_sources
+            .windows(2)
+            .all(|pair| pair[0].id < pair[1].id));
+        assert!(!sample.events.is_empty());
+        let mass = world
+            .hazards
+            .volcanic_sources
+            .iter()
+            .map(|source| {
+                (f64::from(source.eruptions_per_yr) * RATE_NANO as f64)
+                    .round()
+                    .clamp(0.0, u64::MAX as f64) as u64
+            })
+            .fold(0u64, u64::saturating_add);
+        assert!(
+            (sample.expected_lambda
+                - mass as f64 / RATE_NANO as f64 * request.interval_length() as f64)
+                .abs()
+                < 1e-9
+        );
+        for event in &sample.events {
+            let source = world
+                .hazards
+                .volcanic_sources
+                .iter()
+                .find(|source| Some(source.id) == event.sampled_center_id)
+                .expect("eruption samples a volcanic source");
+            assert_eq!(event.cell, source.cell);
+            assert_eq!(event.track_cells, vec![source.cell]);
+            assert_eq!(
+                event.annual_rate_nano,
+                (f64::from(source.eruptions_per_yr) * RATE_NANO as f64).round() as u64
+            );
+            assert_eq!(
+                event.hazard_ppm,
+                hazard_ppm(world.hazards.volcanic_hazard[source.cell as usize])
+            );
+            assert!(event.magnitude_milli >= 1_000);
+            assert_eq!(
+                event.volcanic_source_derivation_version,
+                VOLCANIC_SOURCE_DERIVATION_VERSION
+            );
+        }
+    }
+
+    #[test]
+    fn storms_use_canonical_cells_and_match_the_engine_tracer() {
+        let world = earthlike_128();
+        let request = request(NaturalEventKind::Storm, 0, 100_000, 42, MAX_EVENTS);
+        let sample = sample_world_events(world, &request).unwrap();
+        let second = sample_world_events(world, &request).unwrap();
+        assert_eq!(
+            serde_json::to_string(&sample.events).unwrap(),
+            serde_json::to_string(&second.events).unwrap()
+        );
+        assert!(!sample.events.is_empty());
+        let coarse = &world.climate_field.grid;
+        assert_ne!(world.grid.n, coarse.n);
+        let ocean_fraction = world.coarse_ocean_fraction();
+        let coarse_spacing = std::f64::consts::FRAC_PI_2 / f64::from(coarse.n);
+        let n_c = coarse.cell_count();
+        for event in &sample.events {
+            assert!(!event.track_cells.is_empty());
+            assert_eq!(event.cell, *event.track_cells.last().unwrap());
+            for cell in &event.track_cells {
+                assert!((*cell as usize) < world.grid.cell_count());
+            }
+            let canonical_genesis =
+                u32::try_from(event.sampled_center_id.unwrap()).expect("canonical cell id");
+            assert!((canonical_genesis as usize) < world.grid.cell_count());
+            let genesis = coarse.cell_at(world.grid.position(canonical_genesis));
+            let genesis_canonical = world.grid.cell_at(coarse.position(genesis));
+            assert_eq!(canonical_genesis, genesis_canonical);
+            let month_weights = (0..12)
+                .map(|month| {
+                    let value = f64::from(
+                        world.hazards.storms.genesis_monthly_km2[month * n_c + genesis as usize],
+                    );
+                    (value * RATE_NANO as f64)
+                        .round()
+                        .clamp(0.0, u64::MAX as f64) as u64
+                })
+                .collect::<Vec<_>>();
+            let ordinal_seed = event_seed(&request, event.ordinal);
+            let month = sample_weighted(&month_weights, ordinal_seed ^ STORM_MONTH_SEED_TAG)
+                .expect("storm month");
+            let trace =
+                worldgen::trace_storm(&world.climate_field, &ocean_fraction, genesis, month as u32)
+                    .unwrap();
+            let mut expected = Vec::new();
+            let mut maximum = 0.0f64;
+            for step in &trace.steps {
+                maximum = maximum.max(step.intensity);
+                let cell = world.grid.cell_at(coarse.position(step.cell));
+                if expected.last() != Some(&cell) {
+                    expected.push(cell);
                 }
             }
+            assert_eq!(event.track_cells, expected);
+            assert_eq!(event.hazard_ppm, fraction_ppm(maximum));
+            assert_eq!(
+                event.magnitude_milli,
+                storm_magnitude_milli(event.hazard_ppm, ordinal_seed ^ 0x4553)
+            );
+            assert_eq!(
+                event.volcanic_source_derivation_version,
+                CLIMATE_DERIVATION_VERSION
+            );
+            // Dropping consecutive duplicates shifts indices, so each stored
+            // cell is checked against its nearest traced coarse position. A
+            // coarse id stored as a canonical cell lands far from every step.
+            for track_cell in &event.track_cells {
+                let distance = trace
+                    .steps
+                    .iter()
+                    .map(|step| angular_distance(world, *track_cell, coarse.position(step.cell)))
+                    .fold(f64::INFINITY, f64::min);
+                assert!(
+                    distance <= coarse_spacing,
+                    "canonical cell {track_cell} is {distance} rad from every traced coarse cell"
+                );
+            }
         }
-        assert!(small + large > 0);
-        assert!(small >= large);
-    }
-
-    #[test]
-    fn rate_mass_used_for_sampling_matches_the_field() {
-        let (_world, hazards) = fixture();
-        let mass: u64 = hazards
-            .earthquake_annual_rate_nano
+        let areas = (0..n_c)
+            .map(|cell| coarse.area_m2(cell as u32) / 1.0e6)
+            .collect::<Vec<_>>();
+        let census = world
+            .hazards
+            .storms
+            .genesis_km2
             .iter()
-            .copied()
-            .fold(0u64, u64::saturating_add);
-        assert_eq!(mass, hazards.metrics.earthquake_rate_mass_nano);
+            .zip(areas)
+            .map(|(genesis, area)| f64::from(*genesis) * area)
+            .sum::<f64>();
+        let expected_lambda = (census * STORM_NOTABLE_FRACTION * request.interval_length() as f64)
+            .clamp(0.0, MAX_EXPECTED_EVENTS);
+        assert!((sample.expected_lambda - expected_lambda).abs() < 1e-9);
+        let one = sample_world_events(
+            world,
+            &self::request(NaturalEventKind::Storm, 0, 100_000, 42, 1),
+        )
+        .unwrap();
+        assert_eq!(one.expected_lambda, sample.expected_lambda);
+        assert!(one.events.len() <= 1);
     }
 
     #[test]
-    fn storms_sample_from_climate_and_stay_stable() {
-        let settings = GenerationSettings {
-            width: 16,
-            height: 8,
-            radius_metres: DEFAULT_RADIUS_METRES,
-            target_land_fraction_ppm: 300_000,
-        };
-        let generated = generate_world(settings, 831_429, 0, &mut NoopProgress).unwrap();
-        let hazards = crate::hazards::derive_hazards(&generated.tectonics).unwrap();
-        let request = EventMaterializationRequest {
-            event_kind: NaturalEventKind::Storm,
-            interval_start_years: 0,
-            interval_end_years: 100_000,
-            max_events: MAX_EVENTS,
-            hazard_seed: 42,
-        };
-        assert!(sample_events(
-            &generated.tectonics,
-            Some(&hazards),
-            None,
-            None,
-            None,
-            &request
-        )
-        .is_err());
-        let first = sample_events(
-            &generated.tectonics,
-            Some(&hazards),
-            Some(&generated.climate),
-            None,
-            None,
-            &request,
+    fn floods_follow_fresh_spilling_lakes_in_minimum_cell_order() {
+        let world = earthlike_64();
+        let request = request(NaturalEventKind::Flood, -8_000, 8_000, 1, MAX_EVENTS);
+        let sample = sample_world_events(world, &request).unwrap();
+        let second = sample_world_events(world, &request).unwrap();
+        assert_eq!(
+            serde_json::to_string(&sample.events).unwrap(),
+            serde_json::to_string(&second.events).unwrap()
+        );
+        let mut lakes = world
+            .hydrology
+            .lakes
+            .iter()
+            .filter(|lake| lake.kind == worldgen::LakeKind::Fresh && lake.outflow_m3 > 0.0)
+            .collect::<Vec<_>>();
+        lakes.sort_by_key(|lake| lake.minimum_cell);
+        assert_eq!(sample.expected_lambda, lakes.len() as f64);
+        assert_eq!(sample.events.len(), lakes.len().min(MAX_EVENTS as usize));
+        for (event, lake) in sample.events.iter().zip(lakes) {
+            assert_eq!(event.event_kind, NaturalEventKind::Flood);
+            assert_eq!(event.year_offset, request.interval_midpoint_years());
+            assert_eq!(event.cell, lake.spill_cell);
+            assert_eq!(event.sampled_center_id, Some(u64::from(lake.minimum_cell)));
+            assert_eq!(event.hazard_ppm, 1_000_000);
+            assert_eq!(event.annual_rate_nano, 0);
+            assert_eq!(event.rate_per_million_years_ppm, 0);
+            assert_eq!(
+                event.track_cells,
+                if lake.spill_cell == lake.minimum_cell {
+                    vec![lake.minimum_cell]
+                } else {
+                    vec![lake.minimum_cell, lake.spill_cell]
+                }
+            );
+            assert_eq!(
+                event.magnitude_milli,
+                flood_magnitude_milli(lake.outflow_m3.round() as u64)
+            );
+            assert_eq!(
+                event.hydrology_derivation_version,
+                HYDROLOGY_DERIVATION_VERSION
+            );
+        }
+    }
+
+    #[test]
+    fn zero_mass_worlds_return_no_events() {
+        let mut world = earthlike_64().clone();
+        world.hazards.quake_rate_km2.fill(0.0);
+        let earthquakes = sample_world_events(
+            &world,
+            &request(NaturalEventKind::Earthquake, 0, 100_000, 3, MAX_EVENTS),
         )
         .unwrap();
-        let second = sample_events(
-            &generated.tectonics,
-            Some(&hazards),
-            Some(&generated.climate),
-            None,
-            None,
-            &request,
+        assert!(earthquakes.events.is_empty());
+        assert_eq!(earthquakes.expected_lambda, 0.0);
+
+        world.hazards.volcanic_sources.clear();
+        let eruptions = sample_world_events(
+            &world,
+            &request(NaturalEventKind::Eruption, 0, 100_000, 3, MAX_EVENTS),
         )
         .unwrap();
-        assert_eq!(first, second);
+        assert!(eruptions.events.is_empty());
+        assert_eq!(eruptions.expected_lambda, 0.0);
+
+        let mut dry = earthlike_64().clone();
+        for lake in &mut dry.hydrology.lakes {
+            lake.outflow_m3 = 0.0;
+        }
+        let floods = sample_world_events(
+            &dry,
+            &request(NaturalEventKind::Flood, 0, 1_000, 3, MAX_EVENTS),
+        )
+        .unwrap();
+        assert!(floods.events.is_empty());
+        assert_eq!(floods.expected_lambda, 0.0);
+    }
+
+    #[test]
+    fn storm_genesis_with_all_zero_months_is_an_error() {
+        let mut world = earthlike_64().clone();
+        let n_c = world.climate_field.grid.cell_count();
+        world.hazards.storms.genesis_monthly_km2.fill(0.0);
+        world.hazards.storms.genesis_km2.fill(0.0);
+        world.hazards.storms.genesis_km2[0] = 1.0e6;
+        let error = sample_world_events(
+            &world,
+            &request(NaturalEventKind::Storm, 0, 100, 9, MAX_EVENTS),
+        )
+        .unwrap_err();
+        assert!(matches!(error, PhysicalError::Validation(_)));
+        assert_eq!(world.hazards.storms.genesis_monthly_km2.len(), 12 * n_c);
+    }
+
+    #[test]
+    fn sampled_center_id_round_trips_beyond_two_to_the_53_and_rejects_numbers() {
+        let id = (1u64 << 53) + 1;
+        let event = MaterializedEvent {
+            event_kind: NaturalEventKind::Eruption,
+            ordinal: 0,
+            year_offset: 0,
+            cell: 1,
+            longitude_microdegrees: 0,
+            latitude_microdegrees: 0,
+            magnitude_milli: 1_000,
+            hazard_ppm: 0,
+            annual_rate_nano: 1,
+            rate_per_million_years_ppm: 1,
+            sampled_center_id: Some(id),
+            volcanic_source_derivation_version: VOLCANIC_SOURCE_DERIVATION_VERSION,
+            hydrology_derivation_version: 0,
+            track_cells: vec![1],
+        };
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["sampledCenterId"], serde_json::json!(id.to_string()));
+        let decoded: MaterializedEvent = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(decoded.sampled_center_id, Some(id));
+
+        let mut numeric = json;
+        numeric["sampledCenterId"] = serde_json::json!(id);
+        assert!(serde_json::from_value::<MaterializedEvent>(numeric).is_err());
+    }
+
+    #[test]
+    fn present_derive_rejects_a_tampered_source_before_sampling() {
+        let settings = crate::engine::Settings::from_parts(
+            831_429,
+            crate::engine::WorldPreset::Earthlike,
+            32,
+            crate::DEFAULT_RADIUS_METRES,
+            290_000,
+            crate::planetary::PlanetaryConfiguration::earth_like(),
+        );
+        let products = crate::engine::generate(settings, &mut NoopProgress).unwrap();
+        let mut source = products.source().to_vec();
+        let schedule_count = u32::from_le_bytes(source[64..68].try_into().unwrap()) as usize;
+        let base = 68 + schedule_count * 16;
+        // Climate hash. Decoding does not check it; a present derive does.
+        source[base + 152] ^= 0x01;
+        let decoded = crate::engine::decode_source(&source).unwrap();
+        let epoch_zero = crate::history::EpochSolve {
+            normalized_epoch: 0,
+            temperature_offset_centi_c: 0,
+            lagged_temperature_offset_centi_c: 0,
+            land_ice_equilibrium_m3: 0,
+            land_ice_m3: 0,
+            thermal_expansion_m3: 0,
+            target_ocean_water_m3: decoded.reference_water_inventory_m3(),
+            sea_level_mm: 0,
+        };
+        let error = decoded
+            .sample_events(
+                Some(&epoch_zero),
+                &request(NaturalEventKind::Storm, 0, 1_000, 5, 8),
+                &mut NoopProgress,
+            )
+            .unwrap_err();
+        assert_eq!(error.code(), crate::CODE_SOURCE_INVALID);
+    }
+
+    #[test]
+    #[ignore = "wall-clock: release-only E6 event timings at n=512 and n=1024"]
+    fn e6_release_event_timings() {
+        for n in [512u32, 1024] {
+            let settings = crate::engine::Settings::from_parts(
+                831_429,
+                crate::engine::WorldPreset::Earthlike,
+                n,
+                crate::DEFAULT_RADIUS_METRES,
+                290_000,
+                crate::planetary::PlanetaryConfiguration::earth_like(),
+            );
+            let source = crate::engine::generate(settings, &mut NoopProgress)
+                .unwrap()
+                .source()
+                .to_vec();
+            let decoded = crate::engine::decode_source(&source).unwrap();
+            let forcing =
+                crate::history::HistoricalForcingParameters::default_for_seed(decoded.seed());
+            let solve =
+                crate::history::solve_epoch(&decoded, forcing, -8_000, &NoopProgress).unwrap();
+            for (kind, epoch) in [
+                (NaturalEventKind::Earthquake, None),
+                (NaturalEventKind::Storm, Some(&solve)),
+                (NaturalEventKind::Flood, Some(&solve)),
+            ] {
+                let request = request(kind, -100_000, 100_000, 7, MAX_EVENTS);
+                let started = std::time::Instant::now();
+                let sample = decoded
+                    .sample_events(epoch, &request, &mut NoopProgress)
+                    .unwrap();
+                println!(
+                    "E6 n={n} {}: {:?}, {} events",
+                    kind.label(),
+                    started.elapsed(),
+                    sample.events.len()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn changed_models_have_versioned_labels_and_materialization_versions() {
+        assert_eq!(EVENT_MATERIALIZATION_VERSION, 3);
+        assert_eq!(NaturalEventKind::Earthquake.materialization_version(), 2);
+        assert_eq!(NaturalEventKind::Eruption.materialization_version(), 2);
+        assert_eq!(NaturalEventKind::Storm.materialization_version(), 3);
+        assert_eq!(NaturalEventKind::Flood.materialization_version(), 3);
+        assert_eq!(
+            NaturalEventKind::Earthquake.model_label(),
+            "poisson-gutenberg-richter-v2"
+        );
+        assert_eq!(
+            NaturalEventKind::Eruption.model_label(),
+            "engine-volcanic-source-v3"
+        );
         assert_eq!(
             NaturalEventKind::Storm.model_label(),
-            "tropical-cyclone-climatology-v1"
+            "engine-storm-tracer-v3"
         );
-        assert!(first.iter().all(|event| {
-            event.event_kind == NaturalEventKind::Storm
-                && event.sampled_center_id.is_some()
-                && !event.track_cells.is_empty()
-                && event.volcanic_source_derivation_version == climate::CLIMATE_DERIVATION_VERSION
-        }));
-        assert_eq!(NaturalEventKind::Earthquake.materialization_version(), 1);
-        assert_eq!(NaturalEventKind::Storm.materialization_version(), 2);
-    }
-
-    fn overflowing_hydrology() -> HydrologyField {
-        use crate::hydrology::{Basin, BasinDestination, WaterBalanceMetrics};
-        use crate::{Grid, Segment, DEFAULT_RADIUS_METRES};
-
-        let grid = Grid::new(16, 8, DEFAULT_RADIUS_METRES).unwrap();
-        let count = grid.sample_count();
-        let pit = grid.index(3, 8);
-        let spill = grid.index(3, 9);
-        let dry = grid.index(4, 2);
-        HydrologyField {
-            grid,
-            derivation_version: HYDROLOGY_DERIVATION_VERSION,
-            sea_level_mm: 0,
-            water_level_mm: vec![-2_000_000; count],
-            lake_level_mm: vec![0; count],
-            slope_ppm: vec![0; count],
-            hillshade_ppm: vec![0; count],
-            bathymetry_mm: vec![2_000_000; count],
-            watershed_id: vec![u32::MAX; count],
-            basin_by_cell: vec![0; count],
-            lake_cells: vec![false; count],
-            ice_cells: vec![false; count],
-            ice_thickness_mm: vec![0; count],
-            shelf_cells: vec![false; count],
-            island_id: vec![u32::MAX; count],
-            basins: vec![
-                Basin {
-                    id: 0,
-                    minimum_cell: pit,
-                    minimum_elevation_mm: 40,
-                    cell_count: 2,
-                    spill_cell: Some(spill),
-                    spill_elevation_mm: Some(200),
-                    volume_to_spill_m3: 1_000,
-                    parent_basin: None,
-                    children: Vec::new(),
-                    destination: BasinDestination::Ocean,
-                    water_level_mm: 200,
-                    water_volume_m3: 1_000,
-                    inflow_m3_per_year: 50_000,
-                    direct_precipitation_m3_per_year: 0,
-                    evaporation_m3_per_year: 0,
-                    outflow_m3_per_year: 40_000,
-                    status: BasinStatus::Overflowing,
-                },
-                Basin {
-                    id: 1,
-                    minimum_cell: dry,
-                    minimum_elevation_mm: 80,
-                    cell_count: 1,
-                    spill_cell: Some(grid.index(4, 3)),
-                    spill_elevation_mm: Some(120),
-                    volume_to_spill_m3: 500,
-                    parent_basin: None,
-                    children: Vec::new(),
-                    destination: BasinDestination::Ocean,
-                    water_level_mm: 80,
-                    water_volume_m3: 0,
-                    inflow_m3_per_year: 0,
-                    direct_precipitation_m3_per_year: 0,
-                    evaporation_m3_per_year: 0,
-                    outflow_m3_per_year: 0,
-                    status: BasinStatus::Dry,
-                },
-            ],
-            rivers: Vec::new(),
-            river_coordinates: Vec::new(),
-            coastline_segments: Vec::<Segment>::new(),
-            lake_polygons: Vec::new(),
-            watershed_polygons: Vec::new(),
-            land_polygons: Vec::new(),
-            ocean_polygons: Vec::new(),
-            shelf_polygons: Vec::new(),
-            island_polygons: Vec::new(),
-            ice_polygons: Vec::new(),
-            bathymetry_contours: Vec::new(),
-            metrics: WaterBalanceMetrics {
-                total_water_m3: 0,
-                ocean_water_m3: 0,
-                inland_water_m3: 0,
-                land_ice_m3: 0,
-                balance_error_m3: 0,
-                tolerance_m3: 0,
-                fixed_point_iterations: 0,
-                converged: true,
-                lake_count: 0,
-                river_count: 0,
-                watershed_count: 0,
-                coastline_segment_count: 0,
-                land_polygon_count: 0,
-                ocean_polygon_count: 0,
-                shelf_cell_count: 0,
-                bathymetry_contour_count: 0,
-                island_count: 0,
-            },
-        }
-    }
-
-    #[test]
-    fn floods_follow_basin_outlet_threshold_not_hazard_seed() {
-        let (world, hazards) = fixture();
-        let hydrology = overflowing_hydrology();
-        let request = EventMaterializationRequest {
-            event_kind: NaturalEventKind::Flood,
-            interval_start_years: -8_000,
-            interval_end_years: 8_000,
-            max_events: MAX_EVENTS,
-            hazard_seed: 1,
-        };
-        assert!(sample_events(&world, None, None, None, None, &request).is_err());
-        let mut mismatched = hydrology.clone();
-        mismatched.grid = crate::Grid::new(8, 4, crate::DEFAULT_RADIUS_METRES).unwrap();
-        assert!(sample_events(&world, None, None, None, Some(&mismatched), &request).is_err());
-        let first = sample_events(&world, None, None, None, Some(&hydrology), &request).unwrap();
-        let mut other_seed = request.clone();
-        other_seed.hazard_seed = 99_999;
-        let second =
-            sample_events(&world, None, None, None, Some(&hydrology), &other_seed).unwrap();
-        assert_eq!(first, second);
-        assert_eq!(first.len(), 1);
         assert_eq!(
             NaturalEventKind::Flood.model_label(),
-            "basin-outlet-threshold-v1"
+            "engine-lake-spill-v3"
         );
-        assert_eq!(NaturalEventKind::Flood.materialization_version(), 2);
-        let event = &first[0];
-        assert_eq!(event.event_kind, NaturalEventKind::Flood);
-        assert_eq!(event.year_offset, 0);
-        assert_eq!(event.cell, hydrology.basins[0].spill_cell.unwrap() as u32);
-        assert_eq!(
-            event.sampled_center_id,
-            Some(hydrology.basins[0].minimum_cell as u32)
-        );
-        assert_eq!(event.annual_rate_nano, 0);
-        assert_eq!(event.volcanic_source_derivation_version, 0);
-        assert_eq!(
-            event.hydrology_derivation_version,
-            HYDROLOGY_DERIVATION_VERSION
-        );
-        assert_eq!(
-            expected_lambda(&hazards, None, Some(&hydrology), &request),
-            1.0
-        );
-        let mut closed = hydrology.clone();
-        closed.basins[0].status = BasinStatus::Endorheic;
-        closed.basins[0].outflow_m3_per_year = 0;
-        let none = sample_events(&world, None, None, None, Some(&closed), &request).unwrap();
-        assert!(none.is_empty());
-    }
-
-    #[test]
-    fn floods_follow_historical_hydrology_at_each_epoch() {
-        use std::collections::BTreeSet;
-
-        use crate::history::{derive_historical_world_with_planet, HistoricalForcingParameters};
-
-        let settings = GenerationSettings {
-            width: 16,
-            height: 8,
-            radius_metres: DEFAULT_RADIUS_METRES,
-            target_land_fraction_ppm: 300_000,
-        };
-        let mut progress = NoopProgress;
-        let world = generate_world(settings, 831_429, 0, &mut progress).unwrap();
-        let parameters =
-            HistoricalForcingParameters::default_for(world.field.seed, world.field.retry_index);
-        let cold = derive_historical_world_with_planet(
-            &world.field,
-            world.report.reference_water_inventory_m3,
-            Some(&world.tectonics.crust_by_cell),
-            parameters,
-            -8_000,
-            world.climate.planetary,
-            &mut progress,
-        )
-        .unwrap();
-        let warm = derive_historical_world_with_planet(
-            &world.field,
-            world.report.reference_water_inventory_m3,
-            Some(&world.tectonics.crust_by_cell),
-            parameters,
-            8_000,
-            world.climate.planetary,
-            &mut progress,
-        )
-        .unwrap();
-        for (epoch, hydrology) in [(-8_000i64, &cold.hydrology), (8_000, &warm.hydrology)] {
-            let request = EventMaterializationRequest {
-                event_kind: NaturalEventKind::Flood,
-                interval_start_years: epoch,
-                interval_end_years: epoch,
-                max_events: MAX_EVENTS,
-                hazard_seed: 0,
-            };
-            let events = sample_events(
-                &world.tectonics,
-                None,
-                None,
-                None,
-                Some(hydrology),
-                &request,
-            )
-            .unwrap();
-            let expected: BTreeSet<_> = hydrology
-                .overflowing_event_basins()
-                .into_iter()
-                .map(|basin| basin.minimum_cell as u32)
-                .collect();
-            let got: BTreeSet<_> = events
-                .iter()
-                .filter_map(|event| event.sampled_center_id)
-                .collect();
-            assert_eq!(got, expected);
-            assert!(events.iter().all(|event| event.year_offset == epoch
-                && event.event_kind == NaturalEventKind::Flood
-                && event.volcanic_source_derivation_version == 0
-                && event.hydrology_derivation_version == HYDROLOGY_DERIVATION_VERSION));
-        }
-        let cold_ids: BTreeSet<_> = cold
-            .hydrology
-            .overflowing_event_basins()
-            .into_iter()
-            .map(|basin| basin.minimum_cell)
-            .collect();
-        let warm_ids: BTreeSet<_> = warm
-            .hydrology
-            .overflowing_event_basins()
-            .into_iter()
-            .map(|basin| basin.minimum_cell)
-            .collect();
-        if cold_ids != warm_ids {
-            let cold_events = sample_events(
-                &world.tectonics,
-                None,
-                None,
-                None,
-                Some(&cold.hydrology),
-                &EventMaterializationRequest {
-                    event_kind: NaturalEventKind::Flood,
-                    interval_start_years: -8_000,
-                    interval_end_years: -8_000,
-                    max_events: MAX_EVENTS,
-                    hazard_seed: 0,
-                },
-            )
-            .unwrap();
-            let warm_events = sample_events(
-                &world.tectonics,
-                None,
-                None,
-                None,
-                Some(&warm.hydrology),
-                &EventMaterializationRequest {
-                    event_kind: NaturalEventKind::Flood,
-                    interval_start_years: 8_000,
-                    interval_end_years: 8_000,
-                    max_events: MAX_EVENTS,
-                    hazard_seed: 0,
-                },
-            )
-            .unwrap();
-            let cold_got: BTreeSet<_> = cold_events
-                .iter()
-                .filter_map(|event| event.sampled_center_id)
-                .collect();
-            let warm_got: BTreeSet<_> = warm_events
-                .iter()
-                .filter_map(|event| event.sampled_center_id)
-                .collect();
-            assert_ne!(cold_got, warm_got);
-        }
     }
 
     #[test]
     fn flood_materialization_key_is_scoped_to_map_world_version_cell_and_year() {
-        let base = flood_materialization_key("map-a", "world-1", 1, 12, -8000);
+        let base = flood_materialization_key("map-a", "world-1", 3, 12, -8000);
         assert_eq!(
             base,
-            flood_materialization_key("map-a", "world-1", 1, 12, -8000)
+            flood_materialization_key("map-a", "world-1", 3, 12, -8000)
         );
         assert_ne!(
             base,
-            flood_materialization_key("map-b", "world-1", 1, 12, -8000)
+            flood_materialization_key("map-b", "world-1", 3, 12, -8000)
         );
         assert_ne!(
             base,
-            flood_materialization_key("map-a", "world-2", 1, 12, -8000)
+            flood_materialization_key("map-a", "world-2", 3, 12, -8000)
         );
         assert_ne!(
             base,
-            flood_materialization_key("map-a", "world-1", 2, 12, -8000)
+            flood_materialization_key("map-a", "world-1", 4, 12, -8000)
         );
         assert_ne!(
             base,
-            flood_materialization_key("map-a", "world-1", 1, 13, -8000)
+            flood_materialization_key("map-a", "world-1", 3, 13, -8000)
         );
         assert_ne!(
             base,
-            flood_materialization_key("map-a", "world-1", 1, 12, 8000)
+            flood_materialization_key("map-a", "world-1", 3, 12, 8000)
         );
     }
 }

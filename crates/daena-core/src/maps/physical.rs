@@ -1,8 +1,6 @@
 use super::{MapGeneration, MapGenerationSettings, PhysicalMapGenerationSettings};
 use crate::error::CoreError;
-use daena_physical::{
-    engine, history::HistoricalForcingParameters, tectonics::TectonicWorld, ValidationReport,
-};
+use daena_physical::{engine, history::HistoricalForcingParameters, ValidationReport};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
@@ -23,21 +21,6 @@ pub struct ValidatedPhysicalSource {
     pub source: engine::DecodedSource,
     pub report: ValidationReport,
     pub identity: String,
-    /// Transitional slot for consumers that still read the retired `DAENAPW1`
-    /// tectonic type. It is always `None` for a `DAENAPW2` source; those
-    /// consumers fail honestly until their engine-backed replacement lands.
-    pub legacy_world: Option<TectonicWorld>,
-}
-
-impl ValidatedPhysicalSource {
-    pub fn legacy_world(&self) -> Result<&TectonicWorld, CoreError> {
-        self.legacy_world.as_ref().ok_or_else(|| {
-            invalid(
-                CODE_UNSUPPORTED_SOURCE_VERSION,
-                "this consumer reads the retired DAENAPW1 tectonic type and moves to the engine in a later phase",
-            )
-        })
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -338,8 +321,12 @@ pub fn validate_generation(value: &Value) -> Result<PhysicalMapGenerationSetting
     request
         .snapshot()
         .map_err(|error| invalid(CODE_INVALID_GENERATION, error.to_string()))?;
+    // The recorded value is the hazard version at accept time. Hazards are
+    // re-derived from the source at the current version (the derived cache and
+    // epoch keys carry it), so an older map stays readable. Only a version this
+    // build does not know is rejected.
     if let Some(version) = settings.hazard_derivation_version {
-        if version != daena_physical::hazards::HAZARD_DERIVATION_VERSION {
+        if version == 0 || version > daena_physical::hazards::HAZARD_DERIVATION_VERSION {
             return Err(invalid(
                 CODE_INVALID_GENERATION,
                 format!("unsupported hazardDerivationVersion {version}"),
@@ -462,7 +449,6 @@ pub fn validate_source(
         source: decoded,
         report,
         identity,
-        legacy_world: None,
     })
 }
 
@@ -529,6 +515,24 @@ mod tests {
             .remove("referenceWaterInventoryM3");
         let error = validate_source(world.source(), &incomplete).unwrap_err();
         assert!(error.to_string().contains(CODE_INVALID_GENERATION));
+    }
+
+    #[test]
+    fn older_hazard_versions_stay_readable_and_future_ones_are_rejected() {
+        let world = products(32);
+        let current = daena_physical::hazards::HAZARD_DERIVATION_VERSION;
+        let mut older = generation(&world);
+        older["settings"]["hazardDerivationVersion"] = serde_json::json!(1);
+        assert!(current > 1);
+        let validated = validate_source(world.source(), &older).unwrap();
+        let present = validate_source(world.source(), &generation(&world)).unwrap();
+        assert_eq!(validated.identity, present.identity);
+        for unknown in [0, current + 1] {
+            let mut rejected = generation(&world);
+            rejected["settings"]["hazardDerivationVersion"] = serde_json::json!(unknown);
+            let error = validate_source(world.source(), &rejected).unwrap_err();
+            assert!(error.to_string().contains(CODE_INVALID_GENERATION));
+        }
     }
 
     #[test]

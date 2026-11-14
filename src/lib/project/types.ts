@@ -804,7 +804,7 @@ export interface PhysicalMaterializedEvent {
   hazardPpm: number;
   annualRateNano: number;
   ratePerMillionYearsPpm: number;
-  sampledCenterId: number | null;
+  sampledCenterId: string | null;
   volcanicSourceDerivationVersion: number;
   hydrologyDerivationVersion?: number;
   trackCells: number[];

@@ -1088,16 +1088,16 @@ pub async fn project_atlas_studio_inspect(
         }
     }
     let mut hits = hit_test_features(&features, input.lon_micro, input.lat_micro, radius, 32);
-    let claim = daena_physical::hydro_claim::claim_at(
-        &prepared.hydrology,
+    let claim = daena_physical::hydro_claim::claim_at_canonical(
+        &prepared.surface,
         input.lon_micro,
         input.lat_micro,
         radius,
     )
     .map(|claim| (claim.id, claim.layer_id, claim.kind, claim.label))
     .or_else(|| {
-        daena_physical::landmass_claim::claim_at(
-            &prepared.hydrology,
+        daena_physical::landmass_claim::claim_at_canonical(
+            &prepared.surface,
             input.lon_micro,
             input.lat_micro,
         )
@@ -1122,8 +1122,8 @@ pub async fn project_atlas_studio_inspect(
         }
     }
     let mut flood_hit = false;
-    if let Some(flood) = daena_physical::hydro_claim::overflowing_at(
-        &prepared.hydrology,
+    if let Some(flood) = daena_physical::hydro_claim::overflowing_at_canonical(
+        &prepared.surface,
         input.lon_micro,
         input.lat_micro,
     ) {
@@ -1202,11 +1202,13 @@ pub async fn project_atlas_studio_propose_region(
             .ok_or_else(|| format!("{CODE_STUDIO_EXPIRED}: atlas studio session expired"))?;
         session.prepared.clone()
     };
-    let proposal = daena_physical::region::propose_region(
-        &prepared.hydrology,
+    let proposal = daena_physical::region::propose_region_canonical(
+        &prepared.surface,
         input.lon_micro,
         input.lat_micro,
         &input.detector,
+        daena_physical::engine::PRODUCT_VIEW_WIDTH,
+        daena_physical::engine::PRODUCT_VIEW_HEIGHT,
     )
     .map_err(|error| error.to_string())?;
     region_proposal_geometry(proposal)
@@ -1316,21 +1318,23 @@ mod tests {
     #[test]
     fn session_registry_caps_and_replaces_per_map() {
         let mut manager = AtlasStudioManager::default();
-        let settings = daena_physical::GenerationSettings {
-            width: 16,
-            height: 8,
-            radius_metres: daena_physical::DEFAULT_RADIUS_METRES,
-            target_land_fraction_ppm: 300_000,
-        };
+        let settings = daena_physical::engine::Settings::from_parts(
+            831_429,
+            daena_physical::engine::WorldPreset::Earthlike,
+            128,
+            daena_physical::DEFAULT_RADIUS_METRES,
+            300_000,
+            daena_physical::planetary::PlanetaryConfiguration::earth_like(),
+        );
         let world =
-            daena_physical::generate_world(settings, 831_429, 0, &mut daena_physical::NoopProgress)
-                .unwrap();
-        let identity = daena_atlas::spike_identity_from_source(&world.source);
+            daena_physical::engine::generate(settings, &mut daena_physical::NoopProgress).unwrap();
+        let source = world.source().to_vec();
+        let identity = daena_atlas::spike_identity_from_source(&source);
         let scene = AtlasStudioSceneRequestV1::spike().normalize().unwrap();
         let request = scene.as_render_request(STUDIO_TILE_SIZE).unwrap();
         let prepared = Arc::new(
             daena_atlas::prepare_from_source(
-                &world.source,
+                &source,
                 &identity,
                 &request,
                 None,

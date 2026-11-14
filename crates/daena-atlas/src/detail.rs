@@ -388,11 +388,6 @@ mod tests {
     use crate::amplify::build_amplification_model;
     use crate::control::ControlFields;
     use crate::golden_world;
-    use crate::spike_identity_from_source;
-    use daena_physical::history::{
-        derive_historical_world_with_planet, HistoricalForcingParameters,
-    };
-    use daena_physical::NoopProgress as PhysicalNoop;
 
     #[test]
     fn sample_cell_field_mm_returns_stored_value_at_cell_centres() {
@@ -427,35 +422,19 @@ mod tests {
 
     fn model() -> (AtlasDetailModel, i32, Vec<i32>, Vec<u8>) {
         let world = golden_world();
-        let identity = spike_identity_from_source(&world.source);
-        let historical = derive_historical_world_with_planet(
-            &world.field,
-            world.report.reference_water_inventory_m3,
-            Some(&world.tectonics.crust_by_cell),
-            HistoricalForcingParameters::default_for(world.field.seed, world.field.retry_index),
-            0,
-            world.climate.planetary,
-            &mut PhysicalNoop,
-        )
-        .unwrap();
-        let controls = ControlFields::from_accepted(
-            &world.field,
-            &world.tectonics,
-            &historical.climate,
-            &historical.hydrology,
-        )
-        .unwrap();
+        let identity = world.identity.clone();
+        let controls = ControlFields::from_atlas_inputs(&world.inputs).unwrap();
         let mut cancel = || Ok(());
         let model =
             build_amplification_model(&controls, &identity, 0, DetailLevel::Detailed, &mut cancel)
                 .unwrap()
                 .detail;
         let sdf = signed_coastal_distance_ppm(
-            world.field.grid,
-            &world.field.elevations_mm,
-            historical.metrics.sea_level_mm,
+            world.inputs.view.grid,
+            &world.inputs.view.elevations_mm,
+            world.inputs.hydrology.sea_level_mm,
         );
-        (model, historical.metrics.sea_level_mm, sdf, identity)
+        (model, world.inputs.hydrology.sea_level_mm, sdf, identity)
     }
 
     #[test]
@@ -548,23 +527,7 @@ mod tests {
         let mut cancel = || Ok(());
         let other = {
             let world = golden_world();
-            let historical = derive_historical_world_with_planet(
-                &world.field,
-                world.report.reference_water_inventory_m3,
-                Some(&world.tectonics.crust_by_cell),
-                HistoricalForcingParameters::default_for(world.field.seed, world.field.retry_index),
-                0,
-                world.climate.planetary,
-                &mut PhysicalNoop,
-            )
-            .unwrap();
-            let controls = ControlFields::from_accepted(
-                &world.field,
-                &world.tectonics,
-                &historical.climate,
-                &historical.hydrology,
-            )
-            .unwrap();
+            let controls = ControlFields::from_atlas_inputs(&world.inputs).unwrap();
             build_amplification_model(&controls, &identity, 0, DetailLevel::Standard, &mut cancel)
                 .unwrap()
                 .detail

@@ -1,4 +1,6 @@
-use daena_physical::hydrology::HydrologyField;
+use daena_physical::engine::{TectonicView, ToolSurface};
+use daena_physical::products::HazardField;
+use daena_physical::products::HydrologyField;
 use daena_physical::Grid;
 
 use crate::detail::{
@@ -9,12 +11,11 @@ use crate::overlay::composite_overlays;
 use crate::projection::wrap_lon_micro;
 use crate::request::{AtlasRenderRequest, TILE_HALO, TILE_SIZE};
 use crate::style::{
-    apply_shade, aridity_fill, biome_fill, freeze_fill, humidity_fill, hypsometric, mix_rgb,
-    precipitation_fill, storm_fill, storm_mix_ppm, temperature_fill, AtlasStyle, ARIDITY_STYLE_ID,
-    BIOME_STYLE_ID, FREEZE_STYLE_ID, HUMIDITY_STYLE_ID, PRECIPITATION_NH_SUMMER_STYLE_ID,
-    PRECIPITATION_NH_WINTER_STYLE_ID, PRECIPITATION_STYLE_ID, STORMS_STYLE_ID,
-    STORM_TRACKS_STYLE_ID, TEMPERATURE_NH_SUMMER_STYLE_ID, TEMPERATURE_NH_WINTER_STYLE_ID,
-    TEMPERATURE_STYLE_ID,
+    apply_shade, aridity_fill, biome_fill, freeze_fill, hypsometric, mix_rgb, precipitation_fill,
+    storm_fill, storm_mix_ppm, temperature_fill, AtlasStyle, ARIDITY_STYLE_ID, BIOME_STYLE_ID,
+    FREEZE_STYLE_ID, PRECIPITATION_NH_SUMMER_STYLE_ID, PRECIPITATION_NH_WINTER_STYLE_ID,
+    PRECIPITATION_STYLE_ID, STORMS_STYLE_ID, STORM_TRACKS_STYLE_ID, TEMPERATURE_NH_SUMMER_STYLE_ID,
+    TEMPERATURE_NH_WINTER_STYLE_ID, TEMPERATURE_STYLE_ID,
 };
 use crate::{AtlasError, AtlasPhase, AtlasProgress, ATLAS_DETAIL_ALGORITHM_VERSION};
 
@@ -50,21 +51,19 @@ fn cardinal_neighbors(width: u32, height: u32, index: usize) -> [Option<usize>; 
 
 #[derive(Debug, Clone, Copy)]
 pub struct PaintFields<'a> {
-    pub climate_class: &'a [i32],
+    /// Canonical surface for per-pixel biome groups and flood shading.
+    pub surface: &'a ToolSurface,
     pub temperature_centi_c: &'a [i32],
     pub temperature_nh_summer_centi_c: &'a [i32],
     pub temperature_nh_winter_centi_c: &'a [i32],
     pub precipitation_mm: &'a [i32],
     pub precipitation_nh_summer_mm: &'a [i32],
     pub precipitation_nh_winter_mm: &'a [i32],
-    pub humidity_ppm: &'a [i32],
     pub aridity_ppm: &'a [i32],
     pub storm_suitability_ppm: &'a [i32],
     pub storm_track_ppm: &'a [i32],
     pub wind_east_milli: &'a [i32],
     pub wind_north_milli: &'a [i32],
-    pub current_east_milli: &'a [i32],
-    pub current_north_milli: &'a [i32],
 }
 
 fn flood_component(
@@ -192,8 +191,9 @@ fn mask_at(grid: Grid, mask: &[bool], lon_micro: i32, lat_micro: i32) -> bool {
     sample_mask_ppm(grid, mask, lon_micro, lat_micro) >= 500_000
 }
 
-fn overflowing_at(hydrology: &HydrologyField, lon_micro: i32, lat_micro: i32) -> bool {
-    daena_physical::hydro_claim::overflowing_at(hydrology, lon_micro, lat_micro).is_some()
+fn overflowing_at(surface: &ToolSurface, lon_micro: i32, lat_micro: i32) -> bool {
+    let cell = surface.cell_at_microdegrees(lon_micro, lat_micro);
+    surface.overflowing_lake(cell)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -280,7 +280,6 @@ enum RasterTheme {
     Precipitation,
     PrecipitationNhSummer,
     PrecipitationNhWinter,
-    Humidity,
     Aridity,
     Storms,
     StormTracks,
@@ -309,7 +308,6 @@ impl RasterOptions {
             PRECIPITATION_STYLE_ID => RasterTheme::Precipitation,
             PRECIPITATION_NH_SUMMER_STYLE_ID => RasterTheme::PrecipitationNhSummer,
             PRECIPITATION_NH_WINTER_STYLE_ID => RasterTheme::PrecipitationNhWinter,
-            HUMIDITY_STYLE_ID => RasterTheme::Humidity,
             ARIDITY_STYLE_ID => RasterTheme::Aridity,
             STORMS_STYLE_ID => RasterTheme::Storms,
             STORM_TRACKS_STYLE_ID => RasterTheme::StormTracks,
@@ -493,7 +491,7 @@ fn paint_pixel(
     }
     let inland = mask_at(grid, &water.inland, lon, lat);
     if options.lakes && inland {
-        let color = if overflowing_at(hydrology, lon, lat) {
+        let color = if overflowing_at(paint.surface, lon, lat) {
             mix_rgb(style.lake, [255, 255, 255], 280_000)
         } else {
             style.lake
@@ -520,17 +518,16 @@ fn paint_pixel(
     let painted = if land { elevation.max(sea) } else { elevation };
     let base = hypsometric(style, painted, sea);
     let mut rgb = if land && options.theme == RasterTheme::Biome {
-        let mut class = daena_physical::climate::classify_biome_cell(
-            true,
-            painted,
-            sea,
-            sample_cell_field_mm(grid, paint.temperature_centi_c, lon, lat),
-            sample_cell_field_mm(grid, paint.temperature_nh_summer_centi_c, lon, lat),
-            sample_cell_field_mm(grid, paint.temperature_nh_winter_centi_c, lon, lat),
-            sample_cell_field_mm(grid, paint.precipitation_mm, lon, lat).max(0) as u32,
-            sample_cell_field_mm(grid, paint.humidity_ppm, lon, lat).max(0) as u32,
-            sample_cell_field_mm(grid, paint.aridity_ppm, lon, lat).max(0) as u32,
-        ) as i32;
+        let surface_cell = paint
+            .surface
+            .cell_at_degrees(f64::from(lat) / 1_000_000.0, f64::from(lon) / 1_000_000.0);
+        let engine_biome = paint
+            .surface
+            .biome_class
+            .get(surface_cell as usize)
+            .copied()
+            .unwrap_or(0);
+        let mut class = crate::control::biome_group(i32::from(engine_biome));
         if !options.ice && class == crate::control::CLIMATE_CLASS_ICE {
             class = crate::control::CLIMATE_CLASS_TUNDRA;
         }
@@ -595,15 +592,6 @@ fn paint_pixel(
             ),
             STYLE_OVERLAY_MIX_PPM,
         )
-    } else if land && options.theme == RasterTheme::Humidity {
-        mix_rgb(
-            base,
-            humidity_fill(
-                style,
-                sample_cell_field_mm(grid, paint.humidity_ppm, lon, lat),
-            ),
-            STYLE_OVERLAY_MIX_PPM,
-        )
     } else if land && options.theme == RasterTheme::Aridity {
         mix_rgb(
             base,
@@ -653,13 +641,14 @@ pub fn render_rgba(
     request: &AtlasRenderRequest,
     model: &AtlasDetailModel,
     hydrology: &HydrologyField,
+    hazards: &HazardField,
     sdf: &[i32],
     style: &AtlasStyle,
     identity: &[u8],
     tile_order: &[u32],
     overlays: &[crate::overlay::AuthoredFeature],
     tributaries: &[crate::drainage::DerivedTributary],
-    tectonics: &daena_physical::tectonics::TectonicWorld,
+    tectonics: &TectonicView,
     water: &VisibleWater,
     paint: PaintFields<'_>,
     debug: Option<crate::overlay::OverlayDebug<'_>>,
@@ -712,11 +701,12 @@ pub fn render_rgba(
         style,
         hydrology,
         tectonics,
+        hazards,
+        paint.surface,
         identity,
         overlays,
         tributaries,
         Some((paint.wind_east_milli, paint.wind_north_milli)),
-        Some((paint.current_east_milli, paint.current_north_milli)),
         debug,
     );
     Ok(buffer)

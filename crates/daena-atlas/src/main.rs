@@ -7,10 +7,7 @@ use daena_atlas::studio::{
 use daena_atlas::{
     prepare_from_source, render_from_source_cached, spike_identity_from_source, NoopProgress,
 };
-use daena_physical::{
-    decode_source, generate_world, GenerationSettings, NoopProgress as PhysicalNoop,
-    DEFAULT_HEIGHT, DEFAULT_RADIUS_METRES, DEFAULT_WIDTH,
-};
+use daena_physical::{engine, NoopProgress as PhysicalNoop, DEFAULT_RADIUS_METRES};
 use std::env;
 use std::fs;
 use std::time::Instant;
@@ -40,24 +37,26 @@ fn main() -> Result<(), String> {
             })
             .transpose()
     };
-    let width = parse_u32("--width")?.unwrap_or(2048);
-    let height = parse_u32("--height")?.unwrap_or(1024);
+    let resolution = parse_u32("--resolution")?.unwrap_or(128);
+    let width = 2048;
+    let height = 1024;
     let output = option("--output");
     let source_path = option("--source");
     let started = Instant::now();
     let source = if let Some(path) = source_path {
         fs::read(path).map_err(|error| error.to_string())?
     } else {
-        let settings = GenerationSettings {
-            width: DEFAULT_WIDTH,
-            height: DEFAULT_HEIGHT,
-            radius_metres: DEFAULT_RADIUS_METRES,
-            target_land_fraction_ppm: 300_000,
-        };
-        let world = generate_world(settings, 831_429, 0, &mut PhysicalNoop)
-            .map_err(|error| error.to_string())?;
-        decode_source(&world.source)?;
-        world.source
+        let settings = engine::Settings::from_parts(
+            831_429,
+            engine::WorldPreset::Earthlike,
+            resolution,
+            DEFAULT_RADIUS_METRES,
+            300_000,
+            daena_physical::planetary::PlanetaryConfiguration::earth_like(),
+        );
+        let world =
+            engine::generate(settings, &mut PhysicalNoop).map_err(|error| error.to_string())?;
+        world.source().to_vec()
     };
     let identity = spike_identity_from_source(&source);
     let mut request =

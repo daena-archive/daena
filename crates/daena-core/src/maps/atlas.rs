@@ -346,7 +346,6 @@ fn role_name(role: &str) -> String {
         "relief" => "Relief".into(),
         "ice" => "Ice".into(),
         "winds" => "Winds".into(),
-        "currents" => "Currents".into(),
         "lakes" => "Lakes".into(),
         "rivers" => "Rivers".into(),
         "coastlines" => "Islands".into(),
@@ -1344,7 +1343,7 @@ mod tests {
         assert!(supported
             .styles
             .contains(&"daena-atlas-precipitation-nh-winter".into()));
-        assert!(supported.styles.contains(&"daena-atlas-humidity".into()));
+        assert!(!supported.styles.contains(&"daena-atlas-humidity".into()));
         assert!(supported.styles.contains(&"daena-atlas-aridity".into()));
         assert!(supported.styles.contains(&"daena-atlas-storms".into()));
         assert!(supported

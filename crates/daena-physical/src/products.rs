@@ -229,6 +229,14 @@ pub fn biome_legend() -> Vec<(u32, &'static str, String)> {
         .collect()
 }
 
+/// Display name of one engine biome id.
+#[must_use]
+pub fn biome_name(class: u32) -> &'static str {
+    Biome::from_u8(class.min(u8::MAX as u32) as u8)
+        .map(Biome::name)
+        .unwrap_or("unknown")
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BasinStatus {
     Dry,
@@ -337,6 +345,13 @@ pub struct HydrologyField {
 }
 
 impl HydrologyField {
+    /// Basin record for a lake id. `basin_by_cell` stores `Basin.id`, not an
+    /// index into `basins`.
+    #[must_use]
+    pub fn basin(&self, basin_id: u32) -> Option<&Basin> {
+        self.basins.iter().find(|basin| basin.id == basin_id)
+    }
+
     pub fn validate(&self, field: &PhysicalField) -> Result<(), PhysicalError> {
         let count = field.grid.sample_count();
         if self.derivation_version != HYDROLOGY_DERIVATION_VERSION

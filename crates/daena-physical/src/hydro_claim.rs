@@ -244,6 +244,10 @@ fn river_at_canonical(
     radius: i64,
 ) -> Option<HydroClaim> {
     let radius2 = radius.saturating_mul(radius);
+    let cos_lat = (f64::from(lat_micro) / 1_000_000.0)
+        .to_radians()
+        .cos()
+        .clamp(0.0, 1.0);
     let mut best: Option<(i64, HydroClaim)> = None;
     for river in &surface.rivers {
         let Some(distance2) = river
@@ -251,7 +255,7 @@ fn river_at_canonical(
             .iter()
             .map(|cell| {
                 let [river_lon, river_lat] = surface.center_microdegrees(*cell);
-                distance2(river_lon, river_lat, lon_micro, lat_micro)
+                ground_distance2(river_lon, river_lat, lon_micro, lat_micro, cos_lat)
             })
             .min()
         else {
@@ -423,6 +427,14 @@ fn distance2(lon_a: i32, lat_a: i32, lon_b: i32, lat_b: i32) -> i64 {
     let dlat = i64::from(lat_a) - i64::from(lat_b);
     dlon.saturating_mul(dlon)
         .saturating_add(dlat.saturating_mul(dlat))
+}
+
+/// Square distance in micro-degrees of latitude: the longitude difference is
+/// wrapped across the antimeridian and scaled by `cos(latitude)`.
+fn ground_distance2(lon_a: i32, lat_a: i32, lon_b: i32, lat_b: i32, cos_lat: f64) -> i64 {
+    let dlon = wrap_dlon(lon_a, lon_b) as f64 * cos_lat;
+    let dlat = f64::from(lat_a) - f64::from(lat_b);
+    (dlon * dlon + dlat * dlat).round() as i64
 }
 
 #[cfg(test)]
@@ -707,6 +719,67 @@ mod canonical_tests {
         assert!(!is_valid_id(KIND_RIVER, "river:7"));
         let epoch = land_surface(16);
         assert!(resolve_canonical(&epoch, KIND_RIVER, "river:c7").is_none());
+    }
+
+    #[test]
+    fn river_pick_wraps_the_antimeridian_and_scales_longitude_by_latitude() {
+        let mut surface = land_surface(128);
+        let cell = surface.cell_at_degrees(0.0, 179.9);
+        let [_river_lon, river_lat] = surface.center_microdegrees(cell);
+        surface.rivers.push(SurfaceRiver {
+            source_cell: cell,
+            mouth_cell: cell,
+            strahler_order: 1,
+            cells: vec![cell],
+        });
+        let claim = claim_at_canonical(&surface, -179_900_000, river_lat, 500_000)
+            .expect("river across the antimeridian");
+        assert_eq!(claim.id, canonical_river_id(cell));
+
+        let high = surface.cell_at_degrees(70.0, 0.0);
+        let [high_lon, high_lat] = surface.center_microdegrees(high);
+        surface.rivers.clear();
+        surface.rivers.push(SurfaceRiver {
+            source_cell: high,
+            mouth_cell: high,
+            strahler_order: 1,
+            cells: vec![high],
+        });
+        let cos_lat = (f64::from(high_lat) / 1_000_000.0)
+            .to_radians()
+            .cos()
+            .max(0.01);
+        let mut last_picked = None;
+        for delta in (0..3_000_000).step_by(20_000) {
+            if claim_at_canonical(&surface, high_lon.saturating_add(delta), high_lat, 500_000)
+                .is_some()
+            {
+                last_picked = Some(delta);
+            }
+        }
+        let picked = last_picked.expect("east-west reach at 70 N");
+        assert!(
+            picked > 1_000_000,
+            "longitude reach {picked} did not scale by cos(latitude)"
+        );
+        assert!(
+            f64::from(picked) * cos_lat <= 520_000.0,
+            "picked longitude {picked} is beyond the ground radius"
+        );
+        assert!(
+            f64::from(picked + 1_000_000) * cos_lat > 500_000.0,
+            "picker accepted a longitude far beyond the ground radius"
+        );
+        assert!(
+            claim_at_canonical(
+                &surface,
+                high_lon,
+                high_lat.saturating_add(400_000),
+                500_000
+            )
+            .is_some(),
+            "0.4 degrees north is inside the radius"
+        );
     }
 
     #[test]

@@ -514,6 +514,32 @@ impl DecodedSource {
             .map_err(|error| invalid(error.to_string()))
     }
 
+    /// Product display configuration reconstructed from the source planet.
+    ///
+    /// The source stores `PlanetSettings`, not a product
+    /// `PlanetaryConfiguration`. Values the source does not carry keep the
+    /// Earth-like defaults, and the preset is `Custom`.
+    pub fn planetary_configuration(&self) -> PlanetaryConfiguration {
+        let planet = self.settings.planet;
+        let mut configuration = PlanetaryConfiguration::earth_like();
+        configuration.preset = crate::planetary::PlanetaryPreset::Custom;
+        configuration.star_luminosity_ppm =
+            (planet.star_luminosity * 1_000_000.0).round().max(0.0) as u32;
+        configuration.star_mass_ppm = (planet.star_mass * 1_000_000.0).round().max(0.0) as u32;
+        configuration.semi_major_axis_milli_au =
+            (planet.orbit_au * 1_000_000.0).round().max(0.0) as u32;
+        configuration.eccentricity_ppm =
+            (planet.eccentricity * 1_000_000.0).round().max(0.0) as u32;
+        configuration.axial_tilt_milli_deg =
+            (planet.axial_tilt_deg * 1_000.0).round().max(0.0) as u32;
+        configuration.rotation_period_seconds =
+            (planet.rotation_hours * 3_600.0).round().max(0.0) as u32;
+        configuration.retained_heat_centi_c =
+            (planet.temperature_offset_c * 100.0 + 1_400.0).round() as i32;
+        configuration.radius_metres = self.settings.radius_m.round() as u64;
+        configuration
+    }
+
     /// Re-derive the present world and build the engine-backed products.
     pub fn derive_products(
         &self,
@@ -579,6 +605,8 @@ const FLAG_ICE: u8 = 4;
 const FLAG_FRESH_LAKE: u8 = 8;
 /// Cell of a fresh or saline lake that holds water (not a dry salt flat).
 const FLAG_WET_LAKE: u8 = 16;
+/// Cell of a fresh lake that spills: the lake overflows at this surface epoch.
+const FLAG_OVERFLOWING_LAKE: u8 = 32;
 
 /// One lake at the surface epoch. Cells are canonical cube cells.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -610,6 +638,7 @@ pub struct SurfaceRiver {
 /// exists. Elevations are reference elevations (relative to the reference sea
 /// level), and `sea_level_mm` moves them for an epoch. Every other field is the
 /// value at the surface epoch.
+#[derive(Debug)]
 pub struct ToolSurface {
     grid: worldgen::CubeSphere,
     pub sea_level_mm: i32,
@@ -637,9 +666,22 @@ pub struct ToolSurface {
     pub receiver: Vec<u32>,
     pub lakes: Vec<SurfaceLake>,
     pub rivers: Vec<SurfaceRiver>,
+    lake_index: BTreeMap<u32, usize>,
+    lake_minimum_index: BTreeMap<u32, usize>,
 }
 
 impl ToolSurface {
+    fn rebuild_lake_indexes(&mut self) {
+        self.lake_index.clear();
+        self.lake_minimum_index.clear();
+        for (index, lake) in self.lakes.iter().enumerate() {
+            self.lake_index.entry(lake.id).or_insert(index);
+            self.lake_minimum_index
+                .entry(lake.minimum_cell)
+                .or_insert(index);
+        }
+    }
+
     pub fn cell_count(&self) -> usize {
         self.elevation_mm.len()
     }
@@ -702,6 +744,13 @@ impl ToolSurface {
             .is_some_and(|flags| flags & FLAG_WET_LAKE != 0)
     }
 
+    /// Cell of a fresh lake that spills at the surface epoch.
+    pub fn overflowing_lake(&self, cell: u32) -> bool {
+        self.flags
+            .get(cell as usize)
+            .is_some_and(|flags| flags & FLAG_OVERFLOWING_LAKE != 0)
+    }
+
     pub fn landmass_id(&self, cell: u32) -> u32 {
         self.landmass_id
             .get(cell as usize)
@@ -717,13 +766,21 @@ impl ToolSurface {
     }
 
     pub fn lake(&self, lake_id: u32) -> Option<&SurfaceLake> {
-        self.lakes.iter().find(|lake| lake.id == lake_id)
+        self.lake_index
+            .get(&lake_id)
+            .and_then(|index| self.lakes.get(*index))
+            .or_else(|| self.lakes.iter().find(|lake| lake.id == lake_id))
     }
 
     pub fn lake_at_minimum_cell(&self, minimum_cell: u32) -> Option<&SurfaceLake> {
-        self.lakes
-            .iter()
-            .find(|lake| lake.minimum_cell == minimum_cell)
+        self.lake_minimum_index
+            .get(&minimum_cell)
+            .and_then(|index| self.lakes.get(*index))
+            .or_else(|| {
+                self.lakes
+                    .iter()
+                    .find(|lake| lake.minimum_cell == minimum_cell)
+            })
     }
 
     pub fn river_at_source_cell(&self, source_cell: u32) -> Option<&SurfaceRiver> {
@@ -846,69 +903,90 @@ fn add_saturating_i32(value: i32, delta: i32) -> i32 {
         .clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
 }
 
-fn tool_surface_slope(grid: &worldgen::CubeSphere, elevation_mm: &[i32]) -> Vec<u32> {
-    (0..elevation_mm.len())
-        .into_par_iter()
-        .map(|cell| {
-            let cell = cell as u32;
-            let neighbors = grid.neighbors(cell);
-            let height = |index: usize| {
-                let neighbor = neighbors[index];
-                if neighbor == worldgen::NONE {
-                    None
-                } else {
-                    Some(f64::from(elevation_mm[neighbor as usize]))
-                }
-            };
-            let axis = |first: usize, second: usize| -> f64 {
-                let low = height(first);
-                let high = height(second);
-                let centre = f64::from(elevation_mm[cell as usize]);
-                match (low, high) {
-                    (Some(low), Some(high)) => {
-                        let distance = f64::from(grid.neighbor_distance(cell, first))
-                            + f64::from(grid.neighbor_distance(cell, second));
-                        if distance <= 0.0 {
-                            0.0
-                        } else {
-                            (high - low) / distance
-                        }
+fn tool_surface_slope(
+    grid: &worldgen::CubeSphere,
+    elevation_mm: &[i32],
+    cancelled: &(dyn Fn() -> bool + Sync),
+) -> Result<Vec<u32>, PhysicalError> {
+    let count = elevation_mm.len();
+    let mut out = vec![0u32; count];
+    let chunk = 65_536usize;
+    for start in (0..count).step_by(chunk) {
+        if cancelled() {
+            return Err(PhysicalError::Cancelled);
+        }
+        let end = (start + chunk).min(count);
+        out[start..end]
+            .par_iter_mut()
+            .enumerate()
+            .for_each(|(offset, slot)| {
+                let cell = (start + offset) as u32;
+                let neighbors = grid.neighbors(cell);
+                let height = |index: usize| {
+                    let neighbor = neighbors[index];
+                    if neighbor == worldgen::NONE {
+                        None
+                    } else {
+                        Some(f64::from(elevation_mm[neighbor as usize]))
                     }
-                    (Some(low), None) => {
-                        let distance = f64::from(grid.neighbor_distance(cell, first));
-                        if distance <= 0.0 {
-                            0.0
-                        } else {
-                            (centre - low) / distance
+                };
+                let axis = |first: usize, second: usize| -> f64 {
+                    let low = height(first);
+                    let high = height(second);
+                    let centre = f64::from(elevation_mm[cell as usize]);
+                    match (low, high) {
+                        (Some(low), Some(high)) => {
+                            let distance = f64::from(grid.neighbor_distance(cell, first))
+                                + f64::from(grid.neighbor_distance(cell, second));
+                            if distance <= 0.0 {
+                                0.0
+                            } else {
+                                (high - low) / distance
+                            }
                         }
-                    }
-                    (None, Some(high)) => {
-                        let distance = f64::from(grid.neighbor_distance(cell, second));
-                        if distance <= 0.0 {
-                            0.0
-                        } else {
-                            (high - centre) / distance
+                        (Some(low), None) => {
+                            let distance = f64::from(grid.neighbor_distance(cell, first));
+                            if distance <= 0.0 {
+                                0.0
+                            } else {
+                                (centre - low) / distance
+                            }
                         }
+                        (None, Some(high)) => {
+                            let distance = f64::from(grid.neighbor_distance(cell, second));
+                            if distance <= 0.0 {
+                                0.0
+                            } else {
+                                (high - centre) / distance
+                            }
+                        }
+                        (None, None) => 0.0,
                     }
-                    (None, None) => 0.0,
-                }
-            };
-            // Neighbour order is E, NE, N, NW, W, SW, S, SE. A cube-grid
-            // central difference uses the true distance across both sides.
-            let east_west = axis(4, 0);
-            let north_south = axis(6, 2);
-            (east_west.hypot(north_south) * 1000.0)
-                .round()
-                .clamp(0.0, f64::from(u32::MAX)) as u32
-        })
-        .collect()
+                };
+                // Neighbour order is E, NE, N, NW, W, SW, S, SE. A cube-grid
+                // central difference uses the true distance across both sides.
+                let east_west = axis(4, 0);
+                let north_south = axis(6, 2);
+                *slot = (east_west.hypot(north_south) * 1000.0)
+                    .round()
+                    .clamp(0.0, f64::from(u32::MAX)) as u32;
+            });
+    }
+    Ok(out)
 }
 
-fn tool_surface_landmasses(world: &worldgen::World) -> Vec<u32> {
+fn tool_surface_landmasses(
+    world: &worldgen::World,
+    cancelled: &(dyn Fn() -> bool + Sync),
+) -> Result<Vec<u32>, PhysicalError> {
     let count = world.ocean.len();
     let mut ids = vec![worldgen::NONE; count];
     let mut queue = VecDeque::new();
+    let mut visited = 0usize;
     for start in 0..count {
+        if start.is_multiple_of(65_536) && cancelled() {
+            return Err(PhysicalError::Cancelled);
+        }
         if world.ocean[start] != 0 || ids[start] != worldgen::NONE {
             continue;
         }
@@ -916,6 +994,10 @@ fn tool_surface_landmasses(world: &worldgen::World) -> Vec<u32> {
         ids[start] = id;
         queue.push_back(id);
         while let Some(cell) = queue.pop_front() {
+            visited += 1;
+            if visited.is_multiple_of(65_536) && cancelled() {
+                return Err(PhysicalError::Cancelled);
+            }
             for neighbor in world.grid.neighbors(cell) {
                 let neighbor = neighbor as usize;
                 if neighbor < count && world.ocean[neighbor] == 0 && ids[neighbor] == worldgen::NONE
@@ -926,16 +1008,30 @@ fn tool_surface_landmasses(world: &worldgen::World) -> Vec<u32> {
             }
         }
     }
-    ids
+    Ok(ids)
 }
 
-fn tool_surface_storm_genesis(world: &worldgen::World) -> Vec<u32> {
+fn tool_surface_storm_genesis(
+    world: &worldgen::World,
+    cancelled: &(dyn Fn() -> bool + Sync),
+) -> Result<Vec<u32>, PhysicalError> {
     let coarse = &world.climate_field.grid;
     let genesis = &world.hazards.storms.genesis_km2;
-    let mut values = (0..world.grid.cell_count())
-        .into_par_iter()
-        .map(|cell| coarse.sample_bilinear(genesis, world.grid.position(cell as u32)))
-        .collect::<Vec<_>>();
+    let count = world.grid.cell_count();
+    let mut values = vec![0f32; count];
+    for start in (0..count).step_by(65_536) {
+        if cancelled() {
+            return Err(PhysicalError::Cancelled);
+        }
+        let end = (start + 65_536).min(count);
+        values[start..end]
+            .par_iter_mut()
+            .enumerate()
+            .for_each(|(offset, slot)| {
+                let cell = (start + offset) as u32;
+                *slot = coarse.sample_bilinear(genesis, world.grid.position(cell));
+            });
+    }
     let maximum = values.iter().copied().fold(0.0f32, f32::max);
     for value in &mut values {
         *value = if maximum > 0.0 {
@@ -944,14 +1040,26 @@ fn tool_surface_storm_genesis(world: &worldgen::World) -> Vec<u32> {
             0.0
         };
     }
-    values
+    Ok(values
         .into_iter()
         .map(|value| value.clamp(0.0, 1_000_000.0) as u32)
-        .collect()
+        .collect())
 }
 
 fn build_tool_surface(world: &worldgen::World, sea_level_mm: i32) -> ToolSurface {
+    build_tool_surface_with_cancel(world, sea_level_mm, &|| false)
+        .expect("non-cancellable tool surface build")
+}
+
+fn build_tool_surface_with_cancel(
+    world: &worldgen::World,
+    sea_level_mm: i32,
+    cancelled: &(dyn Fn() -> bool + Sync),
+) -> Result<ToolSurface, PhysicalError> {
     let count = world.grid.cell_count();
+    if cancelled() {
+        return Err(PhysicalError::Cancelled);
+    }
     let mut elevation_mm = world.source_elevation_mm();
     for value in &mut elevation_mm {
         *value = add_saturating_i32(*value, sea_level_mm);
@@ -963,14 +1071,29 @@ fn build_tool_surface(world: &worldgen::World, sea_level_mm: i32) -> ToolSurface
         .iter()
         .map(|lake| (lake.id, lake.kind))
         .collect::<BTreeMap<_, _>>();
+    let overflowing_lakes = world
+        .hydrology
+        .lakes
+        .iter()
+        .filter(|lake| lake.kind == worldgen::LakeKind::Fresh && lake.outflow_m3 > 0.0)
+        .map(|lake| lake.id)
+        .collect::<std::collections::BTreeSet<_>>();
     let mut flags = Vec::with_capacity(count);
     for cell in 0..count {
+        if cell.is_multiple_of(65_536) && cancelled() {
+            return Err(PhysicalError::Cancelled);
+        }
         let mut value = 0u8;
         if world.ocean[cell] != 0 {
             value |= FLAG_OCEAN;
         }
         match lake_kinds.get(&world.hydrology.lake_id[cell]) {
-            Some(worldgen::LakeKind::Fresh) => value |= FLAG_FRESH_LAKE | FLAG_WET_LAKE,
+            Some(worldgen::LakeKind::Fresh) => {
+                value |= FLAG_FRESH_LAKE | FLAG_WET_LAKE;
+                if overflowing_lakes.contains(&world.hydrology.lake_id[cell]) {
+                    value |= FLAG_OVERFLOWING_LAKE;
+                }
+            }
             Some(worldgen::LakeKind::Saline) => value |= FLAG_WET_LAKE,
             _ => {}
         }
@@ -983,6 +1106,9 @@ fn build_tool_surface(world: &worldgen::World, sea_level_mm: i32) -> ToolSurface
             value |= FLAG_ICE;
         }
         flags.push(value);
+    }
+    if cancelled() {
+        return Err(PhysicalError::Cancelled);
     }
     let mut lake_cell_counts = BTreeMap::<u32, u32>::new();
     for id in &world.hydrology.lake_id {
@@ -1008,36 +1134,44 @@ fn build_tool_surface(world: &worldgen::World, sea_level_mm: i32) -> ToolSurface
     let river_order = products::river_strahler_orders(
         &world.hydrology.receiver,
         &world.hydrology.rivers,
-        &|| false,
-    )
-    .unwrap_or_else(|_| vec![0; count]);
-    let rivers = world
-        .hydrology
-        .rivers
-        .iter()
-        .filter_map(|river| {
-            let source_cell = *river.cells.first()?;
-            let mouth_cell = *river.cells.last()?;
-            Some(SurfaceRiver {
-                source_cell,
-                mouth_cell,
-                strahler_order: river
-                    .cells
-                    .iter()
-                    .map(|cell| river_order.get(*cell as usize).copied().unwrap_or(0))
-                    .max()
-                    .unwrap_or(1)
-                    .max(1),
-                cells: river.cells.clone(),
-            })
-        })
-        .collect::<Vec<_>>();
-    ToolSurface {
+        cancelled,
+    )?;
+    let mut rivers = Vec::with_capacity(world.hydrology.rivers.len());
+    for river in &world.hydrology.rivers {
+        if cancelled() {
+            return Err(PhysicalError::Cancelled);
+        }
+        let Some(source_cell) = river.cells.first().copied() else {
+            continue;
+        };
+        let Some(mouth_cell) = river.cells.last().copied() else {
+            continue;
+        };
+        rivers.push(SurfaceRiver {
+            source_cell,
+            mouth_cell,
+            strahler_order: river
+                .cells
+                .iter()
+                .map(|cell| river_order.get(*cell as usize).copied().unwrap_or(0))
+                .max()
+                .unwrap_or(1)
+                .max(1),
+            cells: river.cells.clone(),
+        });
+    }
+    let slope_ppm = tool_surface_slope(&world.grid, &elevation_mm, cancelled)?;
+    let storm_genesis_ppm = tool_surface_storm_genesis(world, cancelled)?;
+    let landmass_id = tool_surface_landmasses(world, cancelled)?;
+    if cancelled() {
+        return Err(PhysicalError::Cancelled);
+    }
+    let mut surface = ToolSurface {
         grid: world.grid.clone(),
         sea_level_mm,
         elevation_mm: elevation_mm.clone(),
         flags,
-        slope_ppm: tool_surface_slope(&world.grid, &elevation_mm),
+        slope_ppm,
         lake_id: world.hydrology.lake_id.clone(),
         biome_class: world.biome.clone(),
         temperature_centi_c: world
@@ -1060,12 +1194,16 @@ fn build_tool_surface(world: &worldgen::World, sea_level_mm: i32) -> ToolSurface
             .collect(),
         earthquake_hazard: world.hazards.quake_hazard.clone(),
         volcanic_hazard: world.hazards.volcanic_hazard.clone(),
-        storm_genesis_ppm: tool_surface_storm_genesis(world),
-        landmass_id: tool_surface_landmasses(world),
+        storm_genesis_ppm,
+        landmass_id,
         receiver: world.hydrology.receiver.clone(),
         lakes,
         rivers,
-    }
+        lake_index: BTreeMap::new(),
+        lake_minimum_index: BTreeMap::new(),
+    };
+    surface.rebuild_lake_indexes();
+    Ok(surface)
 }
 
 impl DecodedSource {
@@ -1114,6 +1252,79 @@ impl DecodedSource {
         let world = derived.map_err(|error| map_world_error(error, true))?;
         Ok(build_tool_surface(&world, epoch_sea_level_mm))
     }
+
+    /// Derive the world for one Atlas epoch and build its product inputs.
+    ///
+    /// `None`, or a solve whose normalized epoch is zero, uses `derive_world`
+    /// and verifies every source hash. An epoch uses `derive_epoch` with the
+    /// solve's sea level and temperature offset and is not hash-checked. The
+    /// view keeps reference elevations; `hydrology.sea_level_mm` carries the
+    /// epoch sea level. The world is dropped before this returns.
+    pub fn derive_atlas_inputs(
+        &self,
+        epoch: Option<&crate::history::EpochSolve>,
+        view_width: u32,
+        view_height: u32,
+        planetary: PlanetaryConfiguration,
+        progress: &mut dyn ProgressSink,
+    ) -> Result<AtlasInputs, PhysicalError> {
+        let present = match epoch {
+            None => true,
+            Some(solve) => solve.normalized_epoch == 0,
+        };
+        let mut adapter = EngineProgress::new(progress);
+        let derived = if present {
+            worldgen::derive_world(
+                &self.settings,
+                &self.tectonics,
+                &self.elevation_mm,
+                &mut adapter,
+            )
+        } else {
+            let solve = epoch.expect("epoch solve");
+            worldgen::derive_epoch(
+                &self.settings,
+                &self.tectonics,
+                &self.elevation_mm,
+                solve.sea_level_mm,
+                f64::from(solve.temperature_offset_centi_c) / 100.0,
+                &mut adapter,
+            )
+        };
+        adapter.finish()?;
+        let world = derived.map_err(|error| map_world_error(error, true))?;
+        if present {
+            let computed =
+                source_hashes_with_cancel(&world, &world.source_elevation_mm(), progress)?;
+            if let Some(field) = computed.mismatch(&self.hashes) {
+                return Err(invalid(format!(
+                    "derived generation hash does not match the source: {field}"
+                )));
+            }
+        }
+        let sea_level_mm = epoch.map_or(0, |solve| solve.sea_level_mm);
+        let fields = build_world_product_fields(
+            &world,
+            sea_level_mm,
+            planetary,
+            view_width,
+            view_height,
+            progress,
+        )?;
+        let tectonics = tectonic_view(&world, view_width, view_height)?;
+        progress.check_cancelled()?;
+        let surface = build_tool_surface_with_cancel(&world, sea_level_mm, &|| {
+            progress.check_cancelled().is_err()
+        })?;
+        Ok(AtlasInputs {
+            view: fields.view,
+            climate: fields.climate,
+            hydrology: fields.hydrology,
+            hazards: fields.hazards,
+            tectonics,
+            surface,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -1140,6 +1351,8 @@ impl ToolSurface {
             receiver: (0..count as u32).collect(),
             lakes: Vec::new(),
             rivers: Vec::new(),
+            lake_index: BTreeMap::new(),
+            lake_minimum_index: BTreeMap::new(),
         }
     }
 
@@ -1168,6 +1381,105 @@ impl ToolSurface {
     }
 }
 
+/// Boundary kind in an [`TectonicView`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TectonicBoundaryKind {
+    Convergent,
+    Divergent,
+    Transform,
+}
+
+/// One plate boundary as two micro-degree points on the product view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TectonicBoundarySegment {
+    pub kind: TectonicBoundaryKind,
+    /// `[longitude, latitude]` in micro-degrees of the boundary cell.
+    pub first: [i32; 2],
+    /// `[longitude, latitude]` in micro-degrees of the neighbour cell.
+    pub second: [i32; 2],
+    pub first_continental: bool,
+    pub second_continental: bool,
+}
+
+/// Product tectonic data for Atlas: continental cells and boundary segments.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TectonicView {
+    /// Continental crust per view cell, nearest canonical sampling.
+    pub continental: Vec<bool>,
+    pub boundaries: Vec<TectonicBoundarySegment>,
+}
+
+/// One engine derive shaped for Atlas at an explicit equirectangular view size.
+///
+/// Elevations are the reference datum; `hydrology.sea_level_mm` is the epoch
+/// sea level. The world is dropped before this returns.
+pub struct AtlasInputs {
+    pub view: PhysicalField,
+    pub climate: products::ClimateField,
+    pub hydrology: products::HydrologyField,
+    pub hazards: products::HazardField,
+    pub tectonics: TectonicView,
+    pub surface: ToolSurface,
+}
+
+fn view_cell_direction(row: u32, col: u32, width: u32, height: u32) -> [f64; 3] {
+    let lat = -90.0 + 180.0 * (f64::from(row) + 0.5) / f64::from(height);
+    let lon = -180.0 + 360.0 * (f64::from(col) + 0.5) / f64::from(width);
+    direction(lat, lon)
+}
+
+fn tectonic_view(
+    world: &worldgen::World,
+    width: u32,
+    height: u32,
+) -> Result<TectonicView, PhysicalError> {
+    let count = (width as usize)
+        .checked_mul(height as usize)
+        .ok_or_else(|| invalid("atlas view cell count overflowed"))?;
+    let mut continental = vec![false; count];
+    continental
+        .par_iter_mut()
+        .enumerate()
+        .for_each(|(index, slot)| {
+            let row = (index / width as usize) as u32;
+            let col = (index % width as usize) as u32;
+            let cell = world
+                .grid
+                .cell_at(view_cell_direction(row, col, width, height));
+            *slot = world.crust.get(cell as usize).copied().unwrap_or(0) == 1;
+        });
+    let boundaries = world
+        .tectonics
+        .boundaries
+        .iter()
+        .map(|boundary| {
+            let (first_lat, first_lon) = world.grid.lat_lon(boundary.cell);
+            let (second_lat, second_lon) = world.grid.lat_lon(boundary.neighbor);
+            TectonicBoundarySegment {
+                kind: match boundary.kind {
+                    worldgen::BoundaryKind::Convergent => TectonicBoundaryKind::Convergent,
+                    worldgen::BoundaryKind::Divergent => TectonicBoundaryKind::Divergent,
+                    worldgen::BoundaryKind::Transform => TectonicBoundaryKind::Transform,
+                },
+                first: [
+                    (first_lon.to_degrees() * 1_000_000.0).round() as i32,
+                    (first_lat.to_degrees() * 1_000_000.0).round() as i32,
+                ],
+                second: [
+                    (second_lon.to_degrees() * 1_000_000.0).round() as i32,
+                    (second_lat.to_degrees() * 1_000_000.0).round() as i32,
+                ],
+                first_continental: boundary.crust_a == 1,
+                second_continental: boundary.crust_b == 1,
+            }
+        })
+        .collect::<Vec<_>>();
+    Ok(TectonicView {
+        continental,
+        boundaries,
+    })
+}
+
 /// Products built from one engine world.
 pub struct Products {
     source: Vec<u8>,
@@ -1191,7 +1503,7 @@ pub struct OceanVolumePoint {
 }
 
 /// Derive the engine-backed product fields without a source envelope.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct DerivedProducts {
     pub view: PhysicalField,
     pub climate: products::ClimateField,
@@ -1563,6 +1875,41 @@ pub fn build_world_products_with_view(
     height: u32,
     progress: &mut dyn ProgressSink,
 ) -> Result<DerivedProducts, PhysicalError> {
+    let fields =
+        build_world_product_fields(world, sea_level_mm, planetary, width, height, progress)?;
+    let derived_geojson = crate::to_geojson_with_progress(&fields.view, progress)?;
+    let hashes = match hashes {
+        Some(hashes) => hashes,
+        None => source_hashes_with_cancel(world, &world.source_elevation_mm(), progress)?,
+    };
+    Ok(DerivedProducts {
+        view: fields.view,
+        climate: fields.climate,
+        hydrology: fields.hydrology,
+        hazards: fields.hazards,
+        derived_geojson,
+        hashes,
+    })
+}
+
+struct WorldProductFields {
+    view: PhysicalField,
+    climate: products::ClimateField,
+    hydrology: products::HydrologyField,
+    hazards: products::HazardField,
+}
+
+/// The view, climate, hydrology and hazard products of one world, without
+/// GeoJSON. Shared by [`build_world_products_with_view`] and the Atlas inputs
+/// so the two derivations cannot drift.
+fn build_world_product_fields(
+    world: &worldgen::World,
+    sea_level_mm: i32,
+    planetary: PlanetaryConfiguration,
+    width: u32,
+    height: u32,
+    progress: &mut dyn ProgressSink,
+) -> Result<WorldProductFields, PhysicalError> {
     if progress.check_cancelled().is_err() {
         return Err(PhysicalError::Cancelled);
     }
@@ -1590,18 +1937,11 @@ pub fn build_world_products_with_view(
     progress.check_cancelled()?;
     let hazards = products::build_hazards(world, &raster, &cancelled)?;
     progress.check_cancelled()?;
-    let derived_geojson = crate::to_geojson_with_progress(&view, progress)?;
-    let hashes = match hashes {
-        Some(hashes) => hashes,
-        None => source_hashes_with_cancel(world, &world.source_elevation_mm(), progress)?,
-    };
-    Ok(DerivedProducts {
+    Ok(WorldProductFields {
         view,
         climate,
         hydrology,
         hazards,
-        derived_geojson,
-        hashes,
     })
 }
 
@@ -2139,6 +2479,32 @@ mod tests {
             .open(path)
             .expect("measurement file");
         writeln!(file, "{line}").expect("measurement line");
+    }
+
+    #[test]
+    fn build_world_products_stays_byte_identical() {
+        fn digest(products: &DerivedProducts) -> u64 {
+            let mut hash = FNV_OFFSET;
+            for byte in format!("{products:?}").bytes() {
+                hash ^= u64::from(byte);
+                hash = hash.wrapping_mul(FNV_PRIME);
+            }
+            hash
+        }
+        let generated = generate(settings(64), &mut NoopProgress).unwrap();
+        let derived = DerivedProducts {
+            view: generated.view().clone(),
+            climate: generated.climate().clone(),
+            hydrology: generated.hydrology().clone(),
+            hazards: generated.hazards().clone(),
+            derived_geojson: generated.derived_geojson().to_string(),
+            hashes: generated.hashes(),
+        };
+        assert_eq!(
+            digest(&derived),
+            10_454_396_990_133_207_394,
+            "build_world_products output changed; regenerate only with a written reason"
+        );
     }
 
     #[test]

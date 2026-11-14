@@ -1,6 +1,6 @@
 //! Map-owned Atlas constraints. Authored records, not generator state.
 
-use daena_physical::hydrology::HydrologyField;
+use daena_physical::products::HydrologyField;
 use daena_physical::Grid;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};

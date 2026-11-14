@@ -620,11 +620,12 @@ pub fn render_studio_tile_with_style_overlays(
             style,
             &scene.hydrology,
             &scene.tectonics,
+            &scene.hazards,
+            &scene.surface,
             &scene.identity,
             overlays,
             &scene.drainage.tributaries,
             Some((&scene.wind_east_milli, &scene.wind_north_milli)),
-            Some((&scene.current_east_milli, &scene.current_north_milli)),
             overlay_request
                 .debug_layers_enabled()
                 .then(|| crate::overlay::OverlayDebug {

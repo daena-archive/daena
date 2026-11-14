@@ -32,7 +32,6 @@ pub const THERMAL_SLOPE_PPM: i32 = 180_000;
 pub const FAN_SLOPE_PPM: i32 = 40_000;
 pub const FLOODPLAIN_SLOPE_PPM: i32 = 18_000;
 const PRECIP_REF_MM: i32 = 4_000;
-const ICE_REF_MM: i32 = 400_000;
 const CANCELLATION_STRIDE: usize = 4_096;
 pub const NO_FLOW: u32 = u32::MAX;
 pub const DIRS: [(i32, i32); 8] = [
@@ -145,9 +144,9 @@ pub fn neighbor_at(
 }
 
 #[must_use]
-pub fn vegetation_resistance_ppm(humidity_ppm: i32, precip_mm: i32, temp_centi: i32) -> i32 {
+pub fn vegetation_resistance_ppm(moisture_ppm: i32, precip_mm: i32, temp_centi: i32) -> i32 {
     let wet = (i64::from(precip_mm.clamp(0, PRECIP_REF_MM)) * 1_000_000) / i64::from(PRECIP_REF_MM);
-    let humid = i64::from(humidity_ppm.clamp(0, 1_000_000));
+    let humid = i64::from(moisture_ppm.clamp(0, 1_000_000));
     let comfort = if temp_centi <= -500 || temp_centi >= 4_000 {
         0
     } else if temp_centi < 1_000 {
@@ -217,11 +216,10 @@ pub fn freeze_thaw_ppm(summer_centi: i32, winter_centi: i32) -> i32 {
 }
 
 #[must_use]
-pub fn glacial_work_ppm(ice_mm: i32, summer_centi: i32) -> i32 {
-    if ice_mm <= 0 {
+pub fn glacial_work_ppm(ice_present: bool, summer_centi: i32) -> i32 {
+    if !ice_present {
         return 0;
     }
-    let ice = (i64::from(ice_mm.clamp(0, ICE_REF_MM)) * 1_000_000) / i64::from(ICE_REF_MM);
     let cold = if summer_centi <= 0 {
         1_000_000
     } else if summer_centi >= 1_200 {
@@ -229,7 +227,7 @@ pub fn glacial_work_ppm(ice_mm: i32, summer_centi: i32) -> i32 {
     } else {
         i64::from(1_200 - summer_centi) * 1_000_000 / 1_200
     };
-    (ice * cold / 1_000_000) as i32
+    cold as i32
 }
 
 #[must_use]
@@ -928,8 +926,8 @@ mod tests {
         assert!(lush > frozen);
         assert_eq!(freeze_thaw_ppm(1_200, -800), 1_000_000);
         assert!(freeze_thaw_ppm(2_400, 1_800) < freeze_thaw_ppm(1_200, -800));
-        assert!(glacial_work_ppm(200_000, -200) > glacial_work_ppm(200_000, 1_500));
-        assert_eq!(glacial_work_ppm(0, -400), 0);
+        assert!(glacial_work_ppm(true, -200) > glacial_work_ppm(true, 1_500));
+        assert_eq!(glacial_work_ppm(false, -400), 0);
         let wet = fluvial_gain_ppm(2_000, 2_400, desert);
         let dry = fluvial_gain_ppm(200, 80, lush);
         assert!(wet > dry);

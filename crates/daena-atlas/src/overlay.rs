@@ -1,7 +1,8 @@
 //! Vector overlays, graticule, frame, and style-only paper grain.
 
-use daena_physical::hydrology::HydrologyField;
-use daena_physical::tectonics::TectonicWorld;
+use daena_physical::engine::{TectonicView, ToolSurface};
+use daena_physical::products::HazardField;
+use daena_physical::products::HydrologyField;
 use daena_physical::Grid;
 
 use serde::{Deserialize, Serialize};
@@ -104,28 +105,6 @@ fn arrow_step(size: u32) -> u32 {
     (size / 16).max(4).min(size.max(1))
 }
 
-pub(crate) fn current_tint(east_milli: i32, north_milli: i32) -> [u8; 3] {
-    let speed = (east_milli as f32).hypot(north_milli as f32).max(1.0);
-    let u = east_milli as f32 / speed;
-    let v = north_milli as f32 / speed;
-    let westward = [72_u8, 112, 220];
-    let eastward = [48_u8, 196, 196];
-    let northward = [232_u8, 148, 64];
-    let southward = [64_u8, 188, 168];
-    let zonal = [
-        mix_channel(westward[0], eastward[0], (u + 1.0) / 2.0),
-        mix_channel(westward[1], eastward[1], (u + 1.0) / 2.0),
-        mix_channel(westward[2], eastward[2], (u + 1.0) / 2.0),
-    ];
-    let meridional = if v >= 0.0 { northward } else { southward };
-    let t = v.abs() * 0.7;
-    [
-        mix_channel(zonal[0], meridional[0], t),
-        mix_channel(zonal[1], meridional[1], t),
-        mix_channel(zonal[2], meridional[2], t),
-    ]
-}
-
 pub(crate) fn draw_wind_arrows(
     buffer: &mut [u8],
     view: ProjectedView,
@@ -134,16 +113,6 @@ pub(crate) fn draw_wind_arrows(
     north: &[i32],
 ) {
     draw_flow_arrows(buffer, view, grid, east, north, wind_tint);
-}
-
-pub(crate) fn draw_current_arrows(
-    buffer: &mut [u8],
-    view: ProjectedView,
-    grid: Grid,
-    east: &[i32],
-    north: &[i32],
-) {
-    draw_flow_arrows(buffer, view, grid, east, north, current_tint);
 }
 
 fn draw_flow_arrows(
@@ -331,19 +300,6 @@ pub(crate) fn fill_closed_path(
     }
 }
 
-fn cell_center(grid: Grid, cell: usize) -> [i32; 2] {
-    if cell >= grid.sample_count() {
-        return [0, 0];
-    }
-    let (row, col) = grid.row_col(cell);
-    [
-        (-180_000_000i64 + 360_000_000i64 * (i64::from(col) * 2 + 1) / i64::from(grid.width * 2))
-            as i32,
-        (-90_000_000i64 + 180_000_000i64 * (i64::from(row) * 2 + 1) / i64::from(grid.height * 2))
-            as i32,
-    ]
-}
-
 pub(crate) fn put_pixel(
     buffer: &mut [u8],
     width: u32,
@@ -432,12 +388,13 @@ pub fn composite_overlays(
     request: &AtlasRenderRequest,
     style: &AtlasStyle,
     hydrology: &HydrologyField,
-    tectonics: &TectonicWorld,
+    tectonics: &TectonicView,
+    hazards: &HazardField,
+    surface: &ToolSurface,
     identity: &[u8],
     overlays: &[AuthoredFeature],
     tributaries: &[DerivedTributary],
     winds: Option<(&[i32], &[i32])>,
-    currents: Option<(&[i32], &[i32])>,
     debug: Option<OverlayDebug<'_>>,
 ) {
     let view = request.view().unwrap_or(ProjectedView {
@@ -503,16 +460,16 @@ pub fn composite_overlays(
             draw_geodesic_segment(
                 buffer,
                 view,
-                cell_center(tectonics.grid, boundary.first_cell),
-                cell_center(tectonics.grid, boundary.second_cell),
+                boundary.first,
+                boundary.second,
                 style.political,
                 alpha,
             );
         }
     }
     if request.layer_enabled("volcanic-centers") {
-        for center in &tectonics.volcanic_centers {
-            let point = cell_center(tectonics.grid, center.cell);
+        for source in &hazards.volcanic_sources {
+            let point = surface.center_microdegrees(source.cell);
             if let Some((x, y)) = project_point(view, point[0], point[1]) {
                 for dx in -1..=1 {
                     for dy in -1..=1 {
@@ -533,11 +490,6 @@ pub fn composite_overlays(
     if request.layer_enabled("winds") {
         if let Some((east, north)) = winds {
             draw_wind_arrows(buffer, view, hydrology.grid, east, north);
-        }
-    }
-    if request.layer_enabled("currents") {
-        if let Some((east, north)) = currents {
-            draw_current_arrows(buffer, view, hydrology.grid, east, north);
         }
     }
     if request.layer_enabled("graticule") {
@@ -593,7 +545,7 @@ pub fn composite_overlays(
                 });
             }
         }
-        for claim in daena_physical::hydro_claim::overflowing_claims(hydrology)
+        for claim in daena_physical::hydro_claim::overflowing_claims_canonical(surface)
             .into_iter()
             .take(32)
         {
@@ -832,16 +784,14 @@ pub struct AtlasSurfaceSample {
     pub wind_north_nh_summer_milli: i32,
     pub wind_east_nh_winter_milli: i32,
     pub wind_north_nh_winter_milli: i32,
-    pub wind_divergence_ppm: i32,
-    pub wind_divergence_nh_summer_ppm: i32,
-    pub wind_divergence_nh_winter_ppm: i32,
+    /// Horizontal wind divergence in 1e-9 s⁻¹; negative is convergence.
+    pub wind_divergence_nano_per_s: i32,
+    pub wind_divergence_nh_summer_nano_per_s: i32,
+    pub wind_divergence_nh_winter_nano_per_s: i32,
     pub wind_band: String,
     pub wind_band_nh_summer: String,
     pub wind_band_nh_winter: String,
-    pub current_east_milli: i32,
-    pub current_north_milli: i32,
     pub precipitation_mm: i32,
-    pub humidity_ppm: i32,
     pub aridity_ppm: i32,
     pub precipitation_nh_summer_mm: i32,
     pub precipitation_nh_winter_mm: i32,
@@ -852,7 +802,6 @@ pub struct AtlasSurfaceSample {
     pub storm_intensity_ppm: i32,
     pub storm_reason: String,
     pub surface: String,
-    pub ice_thickness_mm: i32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1066,15 +1015,6 @@ mod tests {
         assert!(
             westerly[0] > westerly[2],
             "westerly should lean amber: {westerly:?}"
-        );
-    }
-
-    #[test]
-    fn poleward_current_tint_is_warm() {
-        let rgb = current_tint(0, 1_500);
-        assert!(
-            rgb[0] > rgb[2],
-            "northward current should lean amber: {rgb:?}"
         );
     }
 

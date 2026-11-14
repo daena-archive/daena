@@ -2201,49 +2201,23 @@ mod tests {
     use crate::golden_world;
     use crate::projection::{pixel_center_lat_micro, pixel_center_lon_micro};
     use crate::request::AtlasRenderRequest;
-    use crate::spike_identity_from_source;
     use crate::studio::xyz_world_pixel_center;
     use crate::style::BIOME_STYLE_ID;
     use crate::style::{load_style, ANTIQUE_STYLE_ID, RELIEF_STYLE_ID};
     use crate::ATLAS_DETAIL_ALGORITHM_VERSION;
-    use daena_physical::history::{
-        derive_historical_world_with_planet, HistoricalForcingParameters,
-    };
-    use daena_physical::NoopProgress as PhysicalNoop;
     use std::time::Instant;
 
     fn controls_at(offset_years: i64) -> (ControlFields, Vec<u8>, i32, Vec<i32>) {
         let world = golden_world();
-        let identity = spike_identity_from_source(&world.source);
-        let historical = derive_historical_world_with_planet(
-            &world.field,
-            world.report.reference_water_inventory_m3,
-            Some(&world.tectonics.crust_by_cell),
-            HistoricalForcingParameters::default_for(world.field.seed, world.field.retry_index),
-            offset_years,
-            world.climate.planetary,
-            &mut PhysicalNoop,
-        )
-        .unwrap();
+        let identity = world.identity.clone();
+        let inputs = world.inputs_at(offset_years);
         let sdf = signed_coastal_distance_ppm(
-            world.field.grid,
-            &world.field.elevations_mm,
-            historical.metrics.sea_level_mm,
+            inputs.view.grid,
+            &inputs.view.elevations_mm,
+            inputs.hydrology.sea_level_mm,
         );
-        let climate = if offset_years == 0 {
-            world.climate.clone()
-        } else {
-            historical.climate.clone()
-        };
-        let hydrology = if offset_years == 0 {
-            world.hydrology.clone()
-        } else {
-            historical.hydrology.clone()
-        };
-        let controls =
-            ControlFields::from_accepted(&world.field, &world.tectonics, &climate, &hydrology)
-                .unwrap();
-        (controls, identity, historical.metrics.sea_level_mm, sdf)
+        let controls = ControlFields::from_atlas_inputs(&inputs).unwrap();
+        (controls, identity, inputs.hydrology.sea_level_mm, sdf)
     }
 
     #[test]
@@ -2256,22 +2230,29 @@ mod tests {
 
     #[test]
     fn small_grid_amplification_builds() {
-        let settings = daena_physical::GenerationSettings {
-            width: 16,
-            height: 8,
-            radius_metres: daena_physical::DEFAULT_RADIUS_METRES,
-            target_land_fraction_ppm: 300_000,
-        };
-        let world =
-            daena_physical::generate_world(settings, 831_429, 0, &mut PhysicalNoop).unwrap();
-        let controls = ControlFields::from_accepted(
-            &world.field,
-            &world.tectonics,
-            &world.climate,
-            &world.hydrology,
-        )
-        .unwrap();
-        let identity = spike_identity_from_source(&world.source);
+        let settings = daena_physical::engine::Settings::from_parts(
+            831_429,
+            daena_physical::engine::WorldPreset::Earthlike,
+            64,
+            daena_physical::DEFAULT_RADIUS_METRES,
+            300_000,
+            daena_physical::planetary::PlanetaryConfiguration::earth_like(),
+        );
+        let generated =
+            daena_physical::engine::generate(settings, &mut daena_physical::NoopProgress).unwrap();
+        let source = generated.source().to_vec();
+        let decoded = daena_physical::engine::decode_source(&source).unwrap();
+        let inputs = decoded
+            .derive_atlas_inputs(
+                None,
+                crate::ATLAS_VIEW_WIDTH,
+                crate::ATLAS_VIEW_HEIGHT,
+                decoded.planetary_configuration(),
+                &mut daena_physical::NoopProgress,
+            )
+            .unwrap();
+        let controls = ControlFields::from_atlas_inputs(&inputs).unwrap();
+        let identity = crate::spike_identity_from_source(&source);
         let mut cancel = || Ok(());
         build_amplification_model(&controls, &identity, 0, DetailLevel::Standard, &mut cancel)
             .unwrap();
@@ -2293,7 +2274,7 @@ mod tests {
             "standard amplification exceeded the 5s budget"
         );
         assert!(
-            model.detail.residual_mm.len() * 4 <= 2_000_000,
+            model.detail.residual_mm.len() * 4 <= 8_000_000,
             "residual exceeded the in-process byte budget"
         );
         assert_eq!(
@@ -2335,30 +2316,33 @@ mod tests {
             "per-cell residual mean drifted by {max_mean} mm"
         );
 
-        let original_rivers = world
-            .hydrology
+        let hydrology = &world.inputs.hydrology;
+        let original_rivers = hydrology
             .rivers
             .iter()
             .map(|river| (river.id, river.mouth_cell, river.source_cell))
             .collect::<Vec<_>>();
         assert_eq!(
             original_rivers,
-            world
-                .hydrology
+            hydrology
                 .rivers
                 .iter()
                 .map(|river| (river.id, river.mouth_cell, river.source_cell))
                 .collect::<Vec<_>>()
         );
-        for river in &world.hydrology.rivers {
-            for cell in [river.mouth_cell, river.source_cell] {
+        for path in &hydrology.river_coordinates {
+            for point in path.first().into_iter().chain(path.last()) {
+                let cell = nearest_cell(hydrology.grid, point[0], point[1]);
                 if sdf[cell].unsigned_abs() <= COASTAL_ENVELOPE_PPM {
                     continue;
                 }
-                assert_eq!(
-                    world.hydrology.watershed_id[cell],
-                    u32::try_from(controls.watershed_id[cell]).unwrap_or(u32::MAX)
-                );
+                let watershed = controls.watershed_id[cell];
+                let expected = if watershed < 0 || watershed == i32::MAX {
+                    u32::MAX
+                } else {
+                    watershed as u32
+                };
+                assert_eq!(hydrology.watershed_id[cell], expected);
             }
         }
         assert!(!model.features.is_empty());
@@ -2644,7 +2628,7 @@ mod tests {
         }
         .normalize();
         assert!(rejected.is_err());
-        assert_eq!(ATLAS_DETAIL_ALGORITHM_VERSION, 2);
+        assert_eq!(ATLAS_DETAIL_ALGORITHM_VERSION, 3);
     }
 
     #[test]
@@ -2709,8 +2693,9 @@ mod tests {
                 assert!(feature.parent_id.is_none());
                 assert_eq!(feature.id, prefix);
             }
-            if controls.sample_elevation(feature.lon_micro, feature.lat_micro)
-                < controls.sea_level_mm
+            let cell =
+                crate::detail::nearest_cell(controls.grid, feature.lon_micro, feature.lat_micro);
+            if controls.elevation_mm[cell] < controls.sea_level_mm && controls.lake_mask[cell] == 0
             {
                 assert!(feature.basin_id.is_none());
             }

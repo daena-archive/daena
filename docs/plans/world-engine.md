@@ -996,11 +996,11 @@ and add no hash field.
 | `src-tauri/src/physical_commands.rs` | `GeneratedWorld.field: PhysicalField`, `tectonics: TectonicWorld`, `climate: ClimateField`, `evolution: EvolutionField`, `hydrology: HydrologyField`, `source`, `derived_geojson`, `report`; commands for generate, preview, accept, derived climate/evolution/hydrology, epochs, events, Find Place, routes, regions | engine `World` through `daena_physical::engine::Products`; source v2; no evolution; hazards added; event and epoch commands use `World` + derived products | mixed: raster for preview/GeoJSON, point for tools | E3–E6 |
 | `src-tauri/src/physical_jobs.rs` | `PhysicalJobResult` carries source, generation JSON, derived GeoJSON, `ClimateField`, `EvolutionField`, `HydrologyField`; progress goes through `ProgressSink` | source, generation JSON, derived GeoJSON, climate, hydrology, hazards; no evolution; `Stage` maps to `ProgressPhase` | mixed | E3, E4 |
 | `crates/daena-physical/src/lib.rs` and its generator modules | `GeneratedWorld` of `PhysicalField`, `TectonicWorld`, `ClimateField`, `EvolutionField`, `HydrologyField`; `generate_world_with_evolution`; old source codec; `PhysicalIdentityManifestV1` inputs | source codec v2, engine facade, product adapters; old generator modules deleted in E8 | mixed | E3, E4, E8 |
-| `src-tauri/src/atlas_studio.rs` | `hydro_claim::claim_at`, `landmass_claim::claim_at`, `hydro_claim::overflowing_at`, `region::propose_region` over `HydrologyField`; surface sample fields | same operations over engine hydrology/claims through the adapter; no humidity/current sample fields | point | E5, E7 |
-| `src-tauri/src/atlas_jobs.rs` | source bytes, identity, generation forcing; no direct physical types | unchanged contract; source v2 and identity v2 | – | E3, E5 |
-| `crates/daena-atlas/src` | `decode_source`, `validate_field_report`, `TectonicWorld`, `PhysicalField`, `ClimateField`, `HydrologyField`, `HistoricalWorld`, claim ids, basin/lake fields | engine-backed product view from `PhysicalField(width,height)`; same coarse-to-detail transform, styles and tile cache; humidity/current inputs removed | raster plus point inspect | E5, E7 |
+| `src-tauri/src/atlas_studio.rs` | `hydro_claim::claim_at`, `landmass_claim::claim_at`, `hydro_claim::overflowing_at`, `region::propose_region` over `HydrologyField`; surface sample fields | `hydro_claim::claim_at_canonical`, `landmass_claim::claim_at_canonical`, `overflowing_at_canonical`, `region::propose_region_canonical` over `ToolSurface`; no humidity/current/thickness sample fields | point | E5b, E7 |
+| `src-tauri/src/atlas_jobs.rs` | source bytes, identity, generation forcing; no direct physical types | unchanged contract; source v2 and identity v2 | – | E3, E5b |
+| `crates/daena-atlas/src` | `decode_source`, `validate_field_report`, `TectonicWorld`, `PhysicalField`, `ClimateField`, `HydrologyField`, `HistoricalWorld`, claim ids, basin/lake fields | engine `DecodedSource` and `AtlasInputs` at an explicit 384×192 view; 26→10 biome adapter; canonical `ToolSurface` for claims; no humidity/current/ice-thickness inputs; same coarse-to-detail transform, styles and tile cache | raster plus point inspect | E5b, E7 |
 | `crates/daena-core/src/maps.rs`, `maps/physical.rs` | `SOURCE_MAGIC DAENAPW1`, `SOURCE_VERSION 1`, `TectonicWorld`, `PhysicalIdentityManifestV1`, width/height, retry index, evolution preset, tectonic style | `DAENAPW2`, version 2, `PhysicalIdentityManifestV2` with resolution, engine version, source/elevation/tectonic hashes and reference inventory; old magic/version rejected | – | E3 |
-| `crates/daena-core/src/maps/atlas.rs` | `validate_source`, source bytes, generation forcing, `source_sha256`, cache keys | source v2 through `validate_source`; identity and forcing unchanged in meaning; Atlas cache keys include the new identity/engine version | raster | E3, E5 |
+| `crates/daena-core/src/maps/atlas.rs` | `validate_source`, source bytes, generation forcing, `source_sha256`, cache keys | source v2 through `validate_source`; identity and forcing unchanged in meaning; Atlas cache keys include the v2 physical identity (engine version, source format and hashes) | raster | E3, E5b |
 | `crates/daena-core/src/maps/calendar.rs` | `history::MAX_HISTORICAL_OFFSET_YEARS`, calendar binding | unchanged; epoch offset range and calendar math stay | point | – |
 | `crates/daena-core/src/project/store_map_locations.rs` | `hydro_claim::is_valid_id`, `landmass_claim::is_valid_id`, `hydro_claim::resolve` over view hydrology | `lake:c…`, `river:c…`, `landmass:c…`, `flood:c…` with a canonical cube cell; old view-cell ids are unresolved under the hard cut | point | E5 |
 | `src-tauri/src/tests.rs`, `crates/daena-core/src/project/tests.rs` | old generated fixtures, recovery, event and epoch expectations | v2 fixtures at small `n`; accept/reload, delete `.daena/` rebuild, old-source rejection, cancellation latency | mixed | E3, E4, E8 |
@@ -2295,6 +2295,146 @@ The questions as raised:
     the logistic volume in the solve, epoch zero no longer equals present and
     the epoch-zero shortcut must be redefined; that is a behavior change, not
     a detail.
+
+#### E5b notes
+
+Implemented on `world-engine-v2` on top of E5a (`cb49d2d`). Atlas now reads
+`DAENAPW2` through `daena_physical::engine` and no longer names an old
+generator or product type.
+
+- **One entry.** `engine::DecodedSource::derive_atlas_inputs` makes one derive
+  per call: `derive_world` with every source hash checked for the present, or
+  `derive_epoch` with the solved sea level and temperature offset. It returns
+  the view, product climate/hydrology/hazards, a product `TectonicView` and a
+  canonical `ToolSurface`, then drops the world. `build_world_products` and
+  Atlas share one inner product-field builder; a pinned FNV digest test keeps
+  `build_world_products` output byte-identical.
+- **Planet label.** The source carries `PlanetSettings`, not a product
+  `PlanetaryConfiguration`. Atlas reconstructs the display configuration from
+  those fields (`preset = Custom`, Earth-like bond albedo and density because
+  the source does not carry them) instead of assuming `earth_like()`.
+- **View.** Atlas uses `ATLAS_VIEW_WIDTH = 384`, `ATLAS_VIEW_HEIGHT = 192`
+  (the old production grid), cell-centred with row 0 at −90°. Standard (×4)
+  and Detailed (×8) pass the 96 MB refine budget; Print (×16) fails at 384×192
+  and is not offered, as before. The cell-centre orientation test maps an
+  engine interior land cell to a land view cell at the same lon/lat and checks
+  its row; latitude is not flipped.
+- **Epochs.** `history::solve_epoch` supplies the sea level and temperature
+  offset. The present derive is still joined with the epoch derive when
+  `offset_years != 0`. View elevations stay in the reference datum: the cold
+  and present views are equal bit for bit (0 mm maximum difference, so the f32
+  round trip did not move a value) and only `hydrology.sea_level_mm` differs.
+- **Cancellation.** `AtlasProgress` is adapted to `daena_physical::ProgressSink`
+  (the trait now requires `Send + Sync`), and source decode and the epoch solve
+  run through the same adapter. `ToolSurface` construction takes a cancellation
+  callback and checks in the slope, flags, storm, landmass and river passes.
+  The ignored release sweep at n=512 reports **48.6 ms worst lateness** against
+  the 100 ms budget. A cancelled prepare writes no cache entry.
+- **Mixed indexing.** `products::HydrologyField.basin_by_cell` stores
+  `Basin.id`, not an index; `refine::is_wet_basin` now looks the record up by
+  id. River `mouth_cell`/`source_cell` are canonical ids; `refine` converts the
+  handful of mouth and deposition checks through `river_coordinates` before
+  indexing view arrays. Tests cover ocean river mouths reaching view sea
+  through their paths (745 of 868 at the golden world, against 458 of 868
+  when the canonical id is misused as a view index) and a wet basin's view
+  minimum cell being a lake cell (at n=64, where the canonical grid is below
+  the view count). In review, a tautological river-path test was replaced by
+  the mouth test, and the progress adapter now reports decode as
+  `validating` instead of `deriving-epoch`.
+- **Biomes.** One adapter maps the 26 engine ids to the ten existing Atlas
+  groups. The Biome style paints each land pixel from the canonical cell under
+  it (`ToolSurface::biome_class`), so `classify_biome_cell` and humidity are no
+  longer read. The `!ice` Ice→Tundra downgrade stays.
+- **Surface samples.** `AtlasSurfaceSample` drops humidity, currents and ice
+  thickness. Divergence fields are renamed to
+  `wind_divergence_*_nano_per_s` (1e-9 s⁻¹). No Atlas threshold or scale
+  consumed divergence, so there was nothing to rescale; the studio only
+  displayed it. Biome and storm explanations are written in Atlas from the
+  sampled seasonal temperature, precipitation, aridity, elevation, shear and
+  storm indices, with no humidity.
+- **Claims, floods, regions.** Studio inspect uses
+  `hydro_claim::claim_at_canonical`, `landmass_claim::claim_at_canonical` and
+  `overflowing_at_canonical`; region proposals use
+  `region::propose_region_canonical` at 1024×512. Flood labels use
+  `overflowing_claims_canonical`. `ToolSurface` carries an
+  `overflowing_lake(cell)` flag for O(1) render shading and indexes lakes by id
+  and minimum cell with a linear fallback for synthetic tests. The river pick
+  now wraps longitude across ±180° and scales east–west degrees by
+  `cos(latitude)`, with the radius still in micro-degrees of latitude; tests
+  cover the antimeridian and 70°N.
+- **Removed inputs.** The humidity style, current rasters/arrows and the
+  `currents` layer are gone from the registry and request validation; a request
+  naming either fails with `atlas.request.invalid`. Erosion vegetation uses
+  `1_000_000 − aridity_ppm` as moisture. Ice thickness is gone; glacial work
+  uses ice presence with the same cold curve (a removal, not a new model).
+- **Versions.** `ATLAS_DETAIL_ALGORITHM_VERSION` 2→3,
+  `ATLAS_DERIVED_DRAINAGE_VERSION` 2→3, `ATLAS_RENDERER_VERSION` 1→2. The core
+  Atlas cache keys were already covered: the physical identity is
+  `PhysicalIdentityManifestV2` (engine version, source format, source SHA-256,
+  elevation and tectonic hashes, reference inventory), and the residual,
+  drainage and artifact keys add the Atlas algorithm, drainage and renderer
+  versions plus the source SHA-256.
+- **Goldens and fixtures.** `golden_world()` is generated by
+  `engine::generate` at n=128 and decoded back to a source; the studio test
+  world is the same shape. Regenerated tests and reasons:
+  - every old `GeneratedWorld`/`HistoricalWorld` fixture: the old generator is
+    replaced and the view is engine-backed at 384×192;
+  - `ATLAS_DETAIL_ALGORITHM_VERSION` assertions: 2→3;
+  - `ATLAS_DERIVED_DRAINAGE_VERSION`: 2→3;
+  - bundled style count: 17→16 (humidity style removed);
+  - amplification/refine residual byte bounds: the golden view grew from
+    64×32 to 384×192, so Standard residuals are now 4.7 MB; the bounds were
+    raised to 8 MB;
+  - the refine peak-RSS guard: the engine golden plus the 384×192 view reaches
+    about 1.3 GB process peak in the test process; the guard is now 2 GiB;
+  - the macro-erosion mean guard: fluvial and thermal deltas are bounded
+    separately per scale, and the engine fixture reaches the combined bound;
+    the guard is now three combined steps;
+  - the studio detail-chunk cell budget: a 16× chunk of a 384×192 view needs
+    more than 256² cells, so the budget is 512²;
+  - orometry basin assertions: a coastline system feature can sit over a lake
+    cell in the engine fixture, so the no-basin check applies only to non-lake
+    ocean cells.
+- **Atlas test suite.** Before (base `cb49d2d`, 102 tests): 6.5 s. After
+  (111 tests including the new E5b cases): about 161 s single-threaded, 80 s
+  with the default test threads. The growth is the n=128 engine golden and the
+  384×192 view, not per-test work.
+
+Measured timings (release, 12-thread M4 Pro; wall time, seed 831429, Earthlike,
+29 % land; `atlas-map` not used):
+
+| Step | n=512 | n=1024 |
+| --- | ---: | ---: |
+| Generation through products (excluded from the table below) | 2.16 s | 3.88 s |
+| Cold prepare, present | 2.59 s | 3.87 s |
+| Cold prepare, epoch (both derives) | 2.97 s | 4.82 s |
+| Standard 1024×512 render, cold cache | 2.85 s | 4.26 s |
+| Standard 1024×512 render, warm cache | 0.019 s | 0.052 s |
+| Detailed 1024×512 render, cold | 2.75 s | 4.10 s |
+| Biome style 1024×512 render, cold | 2.77 s | 4.14 s |
+| Studio pick (`sample_surface`) | 0.7 µs | 0.7 µs |
+| Studio landmass region at 1024×512 | 9.4 ms | 11.5 ms |
+| Prepared scene bytes (surface reported separately) | 59.9 MB + 63.1 MB surface | 59.9 MB + 252.0 MB surface |
+
+`TectonicView` has **9,038 boundary segments at n=512** (the same count at
+n=1024 for this seed); the overlay draws them as two-point segments, and no
+decimation was needed. The Biome style render is within measurement noise of
+the relief render; the canonical-cell lookup added no measurable render time.
+
+Doubts:
+
+- The Atlas debug test suite is much slower (6.5 s → ~160 s) because the
+  golden world is now a real n=128 engine world at 384×192. A smaller golden
+  would speed it up but would not exercise the production view.
+- Epoch prepare builds two full `ToolSurface`s (epoch and year 0), about 63 MB
+  each at n=512 and 252 MB each at n=1024. The year-0 surface is dropped after
+  the structure controls are built, but peak memory is higher than E5a.
+- Ice thickness removal is represented by ice presence at full glacial
+  strength in `glacial_work_ppm`; the old thickness-scaled term cannot be
+  reconstructed from the engine.
+- Rendered desktop behavior, the Tauri studio tile path and the frontend
+  removed-field cleanup are E7 work; this phase verifies the Rust library and
+  command adapters through tests.
 
 ## Known realism gaps, deferred to after E8
 

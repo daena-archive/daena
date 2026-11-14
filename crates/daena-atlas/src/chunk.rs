@@ -18,7 +18,7 @@ use crate::{AtlasError, AtlasPreparedScene, ATLAS_DETAIL_ALGORITHM_VERSION};
 pub const STUDIO_CHUNK_HALO: u32 = 8;
 pub const STUDIO_CHUNK_DETAILED_ZOOM: u32 = 4;
 pub const STUDIO_CHUNK_PRINT_ZOOM: u32 = 7;
-const MAX_CHUNK_CELLS: usize = 256 * 256;
+const MAX_CHUNK_CELLS: usize = 512 * 512;
 
 #[derive(Clone, Copy)]
 struct ChunkCoast<'a> {
@@ -316,32 +316,11 @@ mod tests {
     use crate::detail::{lattice_lat_micro, lattice_lon_micro};
     use crate::golden_world;
     use crate::request::DetailLevel;
-    use crate::spike_identity_from_source;
-    use daena_physical::history::{
-        derive_historical_world_with_planet, HistoricalForcingParameters,
-    };
-    use daena_physical::NoopProgress as PhysicalNoop;
 
     fn controls() -> (ControlFields, Vec<u8>) {
         let world = golden_world();
-        let identity = spike_identity_from_source(&world.source);
-        let historical = derive_historical_world_with_planet(
-            &world.field,
-            world.report.reference_water_inventory_m3,
-            Some(&world.tectonics.crust_by_cell),
-            HistoricalForcingParameters::default_for(world.field.seed, world.field.retry_index),
-            0,
-            world.climate.planetary,
-            &mut PhysicalNoop,
-        )
-        .unwrap();
-        let controls = ControlFields::from_accepted(
-            &world.field,
-            &world.tectonics,
-            &historical.climate,
-            &historical.hydrology,
-        )
-        .unwrap();
+        let identity = world.identity.clone();
+        let controls = ControlFields::from_atlas_inputs(&world.inputs).unwrap();
         (controls, identity)
     }
 

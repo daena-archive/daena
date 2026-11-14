@@ -187,10 +187,10 @@ fn storms_follow_climate_and_recurve() {
     let phi_h = earth.climate_field.phi_h_deg;
     let mut poleward_track = 0.0;
     let mut all_track = 0.0;
-    for cell in 0..n {
+    for (cell, &track_cell) in earth.hazards.storms.track_km2.iter().enumerate().take(n) {
         let area = grid.area_m2(cell as u32) / 1.0e6;
         let (lat, _) = grid.lat_lon(cell as u32);
-        let track = f64::from(earth.hazards.storms.track_km2[cell]) * area;
+        let track = f64::from(track_cell) * area;
         all_track += track;
         if lat.to_degrees().abs() > phi_h - 5.0 {
             poleward_track += track;

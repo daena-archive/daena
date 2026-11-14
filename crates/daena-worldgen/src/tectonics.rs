@@ -350,6 +350,8 @@ pub fn build(
         volcano_seed: derive_seed(seed, SeedDomain::ArcVolcano),
         xform_seed: derive_seed(seed, SeedDomain::TransformRidged),
         mod_seed: derive_seed(seed, SeedDomain::UpliftModulation),
+        rift_seed: derive_seed(seed, SeedDomain::RiftSegment),
+        rift_offset_seed: derive_seed(seed, SeedDomain::RiftOffset),
     };
     let chunk = crate::scaled_chunk(FIELD_CHUNK);
     for start in (0..ncells).step_by(chunk) {
@@ -420,6 +422,8 @@ struct FieldCtx<'a> {
     volcano_seed: u64,
     xform_seed: u64,
     mod_seed: u64,
+    rift_seed: u64,
+    rift_offset_seed: u64,
 }
 
 fn make_plates(settings: &WorldSettings) -> Vec<Plate> {
@@ -1418,6 +1422,20 @@ fn eval_cell(ctx: &FieldCtx<'_>, i: usize) -> (f32, f32, f32) {
             base += platform + 5000.0 * s_trench.min(1.2) * band * cones;
         }
     }
+    if let Some((d, rec)) = seeded(ctx.boundaries, ctx.collision, i) {
+        let s = (f64::from(rec.convergence_m_yr) / 0.05).clamp(0.3, 1.5);
+        let texture = 0.55 + 0.45 * fbm(ctx.surface_seed, p, 7.0, 3, 2.0, 0.5);
+        base += 2200.0 * s * texture * gauss(d, 720_000.0);
+    }
+    if crust == 1 {
+        if let Some((d, rec)) = seeded(ctx.boundaries, ctx.arc, i) {
+            let s = (f64::from(rec.convergence_m_yr) / 0.05).clamp(0.3, 1.5);
+            if rec.crust_a == 1 && rec.crust_b == 0 {
+                let texture = 0.55 + 0.45 * fbm(ctx.surface_seed, p, 6.0, 3, 2.0, 0.5);
+                base += 1600.0 * s * texture * bump((d - 420_000.0) / 430_000.0);
+            }
+        }
+    }
     add_hotspot_base(ctx, p, crust, &mut base);
     let uplift = uplift_at(ctx, i, p, crust, d_edge);
     let mut k = (0.5 * fbm(ctx.lith_seed, p, 6.0, 8, 2.0, 0.55)).exp();
@@ -1451,17 +1469,36 @@ fn uplift_at(ctx: &FieldCtx<'_>, i: usize, p: [f64; 3], crust: u8, d_edge: f64) 
     if let Some((d, rec)) = seeded(ctx.boundaries, ctx.collision, i) {
         let s = (f64::from(rec.convergence_m_yr) / 0.05).clamp(0.3, 1.5);
         boundary += 4.0e-3 * s * gauss(d, 250_000.0) + 1.0e-3 * s * gauss(d, 500_000.0);
+        // Crustal thickening behind the collision keeps a broad plateau up
+        // against erosion instead of letting it wear to a ridge.
+        boundary += 1.5e-3 * s * gauss(d, 750_000.0);
     }
     if let Some((d, rec)) = seeded(ctx.boundaries, ctx.arc, i) {
         let s = (f64::from(rec.convergence_m_yr) / 0.05).clamp(0.3, 1.5);
         if rec.crust_a == 1 && rec.crust_b == 0 {
             boundary += 3.0e-3 * s * bump((d - 200_000.0) / 120_000.0);
+            boundary += 1.0e-3 * s * bump((d - 450_000.0) / 400_000.0);
         } else if rec.crust_a == 0 && rec.crust_b == 0 {
             boundary += 1.5e-3 * s * bump((d - 150_000.0) / 60_000.0);
         }
     }
     if let Some((d, _)) = seeded(ctx.boundaries, ctx.rift, i) {
-        boundary += -1.0e-3 * gauss(d, 40_000.0) + 0.8e-3 * bump((d - 90_000.0) / 40_000.0);
+        if crust == 1 {
+            // Continental rifts break into en-echelon basins 100-300 km long.
+            // The along-strike noise closes the axis in gaps, and the lateral
+            // offset staggers neighbouring basins. Oceanic rifts stay whole.
+            let along = fbm(ctx.rift_seed, p, 18.0, 2, 2.0, 0.5);
+            let on = smoothstep(-0.12, 0.18, along);
+            let offset = 55_000.0 * fbm(ctx.rift_offset_seed, p, 8.0, 1, 2.0, 0.5);
+            let axis = d - offset;
+            boundary += on
+                * (-1.25e-3 * gauss(axis, 18_000.0) + 0.6e-3 * bump((axis - 65_000.0) / 32_000.0));
+            // The gaps are sills, not merely absent subsidence: a small uplift
+            // keeps neighbouring lake basins from merging at their spill.
+            boundary += (1.0 - on) * 0.8e-3 * gauss(axis, 55_000.0);
+        } else {
+            boundary += -1.0e-3 * gauss(d, 40_000.0) + 0.8e-3 * bump((d - 90_000.0) / 40_000.0);
+        }
     }
     if let Some((d, _)) = seeded(ctx.boundaries, ctx.transform, i) {
         if d < 400_000.0 {

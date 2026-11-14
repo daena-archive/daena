@@ -20,7 +20,7 @@ use crate::noise::{
 };
 use crate::routing::{
     accumulate_with_weight, fold_cells_mut, fold_cells_zip_mut, route_with_cancel,
-    run_basin_kernel_gather, run_basin_kernel_keep, BasinBalance, BasinView, CellIndex,
+    run_basin_kernel_gather, run_basin_kernel_keep, BasinBalance, BasinView, CarveStats, CellIndex,
     DomainIndex, RoutingScratch, SlotIndex,
 };
 use crate::sealevel;
@@ -147,6 +147,7 @@ pub(crate) fn evolve(
     let mut timings = Vec::new();
     let mut final_fields: Option<LevelFields> = None;
     let mut final_scratch: Option<RoutingScratch> = None;
+    let mut carved = CarveStats::default();
     let mut driving: Option<climate::ClimateField> = None;
     let mut passes = Vec::new();
     // Prepared fields of finer levels, built beside the erosion climate pass.
@@ -308,6 +309,19 @@ pub(crate) fn evolve(
             progress,
         )?;
         if index + 1 == levels.len() {
+            // The last routing pass already found every pit and its spill.
+            // Overflowing basins get a visible outlet before the sea-level
+            // shift, so the canonical surface is the breached one. Only active
+            // subsidence and glacial overdeepening keep a basin closed.
+            carved = scratch.carve_overflow_outlets(
+                &domain_index,
+                &mut prepared.h,
+                &prepared.uplift,
+                water.map(|water| (water.runoff_m_yr, water.evap_m_yr)),
+                Some(&buffers.glaciated),
+            );
+        }
+        if index + 1 == levels.len() {
             final_scratch = Some(scratch);
         }
         drop(buffers);
@@ -325,6 +339,10 @@ pub(crate) fn evolve(
             clamped_cells: report.clamped_last,
             closed_basins: report.closed_last,
             glaciated_cells: report.glaciated_last,
+            breached_basins: carved.carved,
+            kept_subsiding_basins: carved.kept_subsiding,
+            kept_glacial_basins: carved.kept_glacial,
+            kept_arid_basins: carved.kept_arid,
             wall_ms,
         });
         timings.push((level_timing_name(n), wall_ms));

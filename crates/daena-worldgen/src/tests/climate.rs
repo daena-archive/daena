@@ -230,7 +230,7 @@ fn spin_note(world: &World) -> String {
     let mut worst = 0.0f32;
     let mut note = format!("residual {}", field.spinup_residual_k);
     for month in 0..12 {
-        for cell in 0..n {
+        for (cell, ocean) in world.ocean.iter().enumerate().take(n) {
             let idx = month * n + cell;
             let delta = (pair[12 * n + idx] - pair[idx]).abs();
             if delta >= worst {
@@ -241,7 +241,7 @@ fn spin_note(world: &World) -> String {
                     field.spinup_residual_k,
                     pair[idx],
                     pair[12 * n + idx],
-                    world.ocean[cell]
+                    ocean
                 );
             }
         }

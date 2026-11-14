@@ -526,6 +526,18 @@ fn report_json(world: &World, preset: Option<Preset>) -> String {
         out.push(',');
         push_u32(&mut out, "closed_basins", level.closed_basins);
         out.push(',');
+        push_u32(&mut out, "breached_basins", level.breached_basins);
+        out.push(',');
+        push_u32(
+            &mut out,
+            "kept_subsiding_basins",
+            level.kept_subsiding_basins,
+        );
+        out.push(',');
+        push_u32(&mut out, "kept_glacial_basins", level.kept_glacial_basins);
+        out.push(',');
+        push_u32(&mut out, "kept_arid_basins", level.kept_arid_basins);
+        out.push(',');
         push_u32(&mut out, "glaciated_cells", level.glaciated_cells);
         out.push(',');
         push_f64(&mut out, "wall_ms", level.wall_ms);

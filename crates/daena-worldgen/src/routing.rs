@@ -152,6 +152,22 @@ pub struct BasinBalance<'a> {
     pub evap_m_yr: &'a [f32],
 }
 
+/// Outcome of the final-level outlet cut, one count per rule.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct CarveStats {
+    /// Overflowing basins whose outlet was cut.
+    pub carved: u32,
+    /// Basins left because at least a fifth of their cells subside.
+    pub kept_subsiding: u32,
+    /// Basins left because the last level's ice covers them.
+    pub kept_glacial: u32,
+    /// Basins left because evaporation beats inflow.
+    pub kept_arid: u32,
+}
+
+/// Basin cells that must be glaciated for the glacial exemption. Percent.
+const GLACIAL_KEEP_PERCENT: usize = 10;
+
 /// Pit count before carving, and how many basins were carved.
 pub struct RouteStats {
     /// Domain roots before carving, including closed pits.
@@ -208,6 +224,105 @@ impl RoutingScratch {
             self.domain[slot] = domain[cell as usize];
         }
         self.has_outside = domain.contains(&0);
+    }
+
+    /// Carve a through-outlet for every overflowing closed basin left by the
+    /// last routing pass. `h` is the full-grid elevation; `runoff` and `evap`
+    /// are metres per year in slot order; `glaciated` is the last level's
+    /// glacier mask in slot order.
+    ///
+    /// This is the geological breach: the outlet is lowered through the rim to
+    /// below the basin floor, so the basin drains and the channel is visible.
+    /// Basins kept open by active subsidence or glacial overdeepening stay.
+    pub(crate) fn carve_overflow_outlets(
+        &self,
+        index: &DomainIndex,
+        h: &mut [f32],
+        uplift: &[f32],
+        water: Option<(&[f32], &[f32])>,
+        glaciated: Option<&[u8]>,
+    ) -> CarveStats {
+        let mut stats = CarveStats::default();
+        for seg in &self.segs {
+            let start = seg.start as usize;
+            let end = seg.end as usize;
+            if start >= end {
+                continue;
+            }
+            let cells = &self.stack[start..end];
+            let mut floor = f32::INFINITY;
+            let mut spill = f32::NEG_INFINITY;
+            for &slot in cells {
+                let cell = index.cell(slot as usize);
+                let height = h[cell as usize];
+                floor = floor.min(height);
+                let level = self.lake_level[slot as usize];
+                if level.is_finite() {
+                    spill = spill.max(level);
+                }
+            }
+            if !spill.is_finite() {
+                continue;
+            }
+            // An actively subsiding rift basin outpaces its outlet; leave it.
+            let mut subsiding = 0usize;
+            let mut glacial = 0usize;
+            for &slot in cells {
+                let cell = index.cell(slot as usize);
+                if uplift[cell as usize] < 0.0 {
+                    subsiding += 1;
+                }
+                if glaciated.is_some_and(|mask| mask[slot as usize] != 0) {
+                    glacial += 1;
+                }
+            }
+            if subsiding * 5 >= cells.len() {
+                stats.kept_subsiding += 1;
+                continue;
+            }
+            // A basin under the last level's ice is glacially overdeepened.
+            if glacial * 100 >= cells.len() * GLACIAL_KEEP_PERCENT {
+                stats.kept_glacial += 1;
+                continue;
+            }
+            if let Some((runoff, evap)) = water {
+                let mut net = 0.0f64;
+                for &slot in cells {
+                    net += f64::from(runoff[slot as usize]) - f64::from(evap[slot as usize]);
+                }
+                if net <= 0.0 {
+                    stats.kept_arid += 1;
+                    continue;
+                }
+            }
+            // Follow the reversed receiver path from the pit through the spill
+            // and one cell beyond it, cutting a monotonic channel.
+            let mut slot = seg.root as usize;
+            let mut step = 0usize;
+            loop {
+                let cell = index.cell(slot);
+                let target = floor - 0.5 - 0.02 * step as f32;
+                if h[cell as usize] > target {
+                    h[cell as usize] = target;
+                }
+                let next = self.receiver[slot] as usize;
+                if next == slot || step >= 4096 {
+                    break;
+                }
+                let next_cell = index.cell(next);
+                if h[next_cell as usize] < floor {
+                    let target = floor - 0.5 - 0.02 * (step + 1) as f32;
+                    if h[next_cell as usize] > target {
+                        h[next_cell as usize] = target;
+                    }
+                    break;
+                }
+                slot = next;
+                step += 1;
+            }
+            stats.carved += 1;
+        }
+        stats
     }
 
     /// True when the basin passes use stack-order chunks in parallel.

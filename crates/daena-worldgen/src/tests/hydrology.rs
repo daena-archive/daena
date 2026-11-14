@@ -1,5 +1,6 @@
 use crate::grid::{CubeSphere, NONE};
 use crate::hydrology::{self, LakeKind, RiverEnd};
+use crate::routing::{route, DomainIndex, RoutingScratch};
 use crate::{generate, ClimateStats, ClimateSummary, NoProgress, PlanetSettings, WorldSettings};
 
 const RADIUS: f64 = 6_371_000.0;
@@ -70,6 +71,169 @@ fn bowl() -> (CubeSphere, Vec<f32>, Vec<u8>, u32) {
     h[id(5, 0) as usize] = 110.0;
     h[id(5, 1) as usize] = 150.0;
     (grid, h, ocean, spill)
+}
+
+/// A synthetic closed basin behind a 300 m spill. `floor` sets its depth.
+fn synthetic_basin(floor: f32) -> (CubeSphere, Vec<f32>, Vec<u8>, Vec<f32>, Vec<f32>) {
+    let grid = CubeSphere::new(16, RADIUS).unwrap();
+    let n = grid.cell_count();
+    let mut h = vec![800.0f32; n];
+    let mut domain = vec![1u8; n];
+    let id = |i, j| grid.id(0, i, j);
+    let mouth = id(0, 0);
+    domain[mouth as usize] = 0;
+    h[mouth as usize] = 0.0;
+    h[id(1, 0) as usize] = 100.0;
+    h[id(2, 0) as usize] = 200.0;
+    h[id(3, 0) as usize] = 300.0;
+    h[id(4, 0) as usize] = floor;
+    h[id(4, 1) as usize] = floor;
+    h[id(5, 0) as usize] = floor;
+    h[id(5, 1) as usize] = floor;
+    let runoff = vec![1000.0f32; n];
+    let evap = vec![0.0f32; n];
+    (grid, h, domain, runoff, evap)
+}
+
+fn basin_cells(grid: &CubeSphere) -> [u32; 4] {
+    [
+        grid.id(0, 4, 0),
+        grid.id(0, 4, 1),
+        grid.id(0, 5, 0),
+        grid.id(0, 5, 1),
+    ]
+}
+
+/// The breach rule: every overflowing basin drains with a visible outlet
+/// unless it subsides or was glacially overdeepened. Arid basins keep water.
+#[test]
+fn breach_rule_drains_overflowing_basins_only() {
+    // Wet and shallow: floor 200, spill 300, 100 m deep.
+    let (grid, mut h, domain, runoff, _) = synthetic_basin(200.0);
+    let n = grid.cell_count();
+    let index = DomainIndex::full(n);
+    let mut scratch = RoutingScratch::with_index(&index);
+    let _ = route(&grid, &h, &domain, None, &mut scratch, None);
+    let uplift = vec![0.0f32; n];
+    let carved = scratch.carve_overflow_outlets(
+        &index,
+        &mut h,
+        &uplift,
+        Some((&runoff, &vec![0.0f32; n])),
+        None,
+    );
+    assert_eq!(carved.carved, 1, "wet shallow basin should be breached");
+    let lowest = basin_cells(&grid)
+        .iter()
+        .map(|&cell| h[cell as usize])
+        .fold(f32::INFINITY, f32::min);
+    assert!(
+        lowest < 200.0,
+        "outlet must cut below the basin floor, got {lowest}"
+    );
+    let ocean: Vec<u8> = domain.iter().map(|flag| 1 - *flag).collect();
+    let climate = climate_runoff(&vec![1000.0f32; n], 100.0, 0.0);
+    let hydro = hydrology::build(&grid, &h, &ocean, &climate, 100.0, None, &|| false).unwrap();
+    assert!(hydro.lakes.is_empty(), "drained basin must not hold a lake");
+
+    // Wet and deep: floor 50, spill 300, 250 m deep. Depth is no defence.
+    let (grid, mut h, domain, runoff, _) = synthetic_basin(50.0);
+    let n = grid.cell_count();
+    let index = DomainIndex::full(n);
+    let mut scratch = RoutingScratch::with_index(&index);
+    let _ = route(&grid, &h, &domain, None, &mut scratch, None);
+    let uplift = vec![0.0f32; n];
+    let carved = scratch.carve_overflow_outlets(
+        &index,
+        &mut h,
+        &uplift,
+        Some((&runoff, &vec![0.0f32; n])),
+        None,
+    );
+    assert_eq!(
+        carved.carved, 1,
+        "wet deep basin must drain when it overflows"
+    );
+    let lowest = basin_cells(&grid)
+        .iter()
+        .map(|&cell| h[cell as usize])
+        .fold(f32::INFINITY, f32::min);
+    assert!(
+        lowest < 50.0,
+        "outlet must cut below the deep basin floor, got {lowest}"
+    );
+
+    // Wet and deep, but actively subsiding: keep the rift lake.
+    let (grid, mut h, domain, runoff, _) = synthetic_basin(50.0);
+    let n = grid.cell_count();
+    let index = DomainIndex::full(n);
+    let mut scratch = RoutingScratch::with_index(&index);
+    let _ = route(&grid, &h, &domain, None, &mut scratch, None);
+    let mut uplift = vec![0.0f32; n];
+    for cell in basin_cells(&grid) {
+        uplift[cell as usize] = -1.0e-3;
+    }
+    let carved = scratch.carve_overflow_outlets(
+        &index,
+        &mut h,
+        &uplift,
+        Some((&runoff, &vec![0.0f32; n])),
+        None,
+    );
+    assert_eq!(carved.kept_subsiding, 1, "subsiding basin must be kept");
+    assert_eq!(carved.carved, 0);
+    let ocean: Vec<u8> = domain.iter().map(|flag| 1 - *flag).collect();
+    let climate = climate_runoff(&vec![1000.0f32; n], 100.0, 0.0);
+    let hydro = hydrology::build(&grid, &h, &ocean, &climate, 100.0, None, &|| false).unwrap();
+    assert_eq!(hydro.lakes.len(), 1, "subsiding basin keeps its lake");
+
+    // Wet and deep, but glacially overdeepened: keep the glacial lake.
+    let (grid, mut h, domain, runoff, _) = synthetic_basin(50.0);
+    let n = grid.cell_count();
+    let index = DomainIndex::full(n);
+    let mut scratch = RoutingScratch::with_index(&index);
+    let _ = route(&grid, &h, &domain, None, &mut scratch, None);
+    let uplift = vec![0.0f32; n];
+    let mut glaciated = vec![0u8; n];
+    for cell in basin_cells(&grid) {
+        glaciated[cell as usize] = 1;
+    }
+    let carved = scratch.carve_overflow_outlets(
+        &index,
+        &mut h,
+        &uplift,
+        Some((&runoff, &vec![0.0f32; n])),
+        Some(&glaciated),
+    );
+    assert_eq!(carved.kept_glacial, 1, "glacial basin must be kept");
+    assert_eq!(carved.carved, 0);
+    let ocean: Vec<u8> = domain.iter().map(|flag| 1 - *flag).collect();
+    let climate = climate_runoff(&vec![1000.0f32; n], 100.0, 0.0);
+    let hydro = hydrology::build(&grid, &h, &ocean, &climate, 100.0, None, &|| false).unwrap();
+    assert_eq!(hydro.lakes.len(), 1, "glacial basin keeps its lake");
+
+    // Arid and shallow: floor 200, spill 300, but evaporation wins.
+    let (grid, mut h, domain, _, _) = synthetic_basin(200.0);
+    let n = grid.cell_count();
+    let index = DomainIndex::full(n);
+    let mut scratch = RoutingScratch::with_index(&index);
+    let _ = route(&grid, &h, &domain, None, &mut scratch, None);
+    let runoff = vec![5.0f32; n];
+    let evap = vec![10.0f32; n];
+    let uplift = vec![0.0f32; n];
+    let carved =
+        scratch.carve_overflow_outlets(&index, &mut h, &uplift, Some((&runoff, &evap)), None);
+    assert_eq!(carved.kept_arid, 1, "arid basin must not be breached");
+    assert_eq!(carved.carved, 0);
+    let ocean: Vec<u8> = domain.iter().map(|flag| 1 - *flag).collect();
+    let climate = climate_runoff(&runoff, 100.0, 3000.0);
+    let hydro = hydrology::build(&grid, &h, &ocean, &climate, 100.0, None, &|| false).unwrap();
+    assert_eq!(hydro.lakes.len(), 1, "arid basin keeps a lake");
+    assert!(
+        matches!(hydro.lakes[0].kind, LakeKind::Saline | LakeKind::SaltFlat),
+        "arid lake should be saline or a salt flat, got {:?}",
+        hydro.lakes[0].kind
+    );
 }
 
 fn balance(

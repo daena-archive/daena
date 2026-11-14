@@ -39,8 +39,11 @@ fn land_component_sizes(world: &World) -> Vec<usize> {
 }
 
 /// Ocean-ocean arcs and oceanic hotspots must leave small islands above sea level.
-/// Measured at n=128 on the archipelago preset: 94 (seed 1) and 82 (seed 7) small
-/// islands before arc volcanoes; 132 and 133 after, with the thin-shell volcanoes.
+/// At n=128 on the archipelago preset `4d88ade` gave 132 (seed 1) and 133
+/// (seed 7) small components. Segmented rift sills and plateau uplift raise the
+/// land fraction, and the fixed land target lifts sea level over the lowest
+/// volcanoes, so the counts are now 119 and 104. The floor guards that arc
+/// volcanism still leaves many small islands.
 #[test]
 fn arc_volcanoes_make_small_islands() {
     for seed in [1u64, 7] {
@@ -55,8 +58,8 @@ fn arc_volcanoes_make_small_islands() {
             .filter(|&&s| s < 40)
             .count();
         assert!(
-            small >= 115,
-            "seed {seed}: {small} land components under 40 cells, expected at least 115"
+            small >= 95,
+            "seed {seed}: {small} land components under 40 cells, expected at least 95"
         );
     }
 }

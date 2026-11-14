@@ -424,11 +424,15 @@ which add detail noise above `n_t`'s resolution.
     that sink with age on oceanic crust, broad domes on continents.
 - **Rock uplift `U`** (m/yr) drives erosion:
   - collision orogens (continent–continent): wide, strong, with a plateau
-    component;
+    component (a broad 750 km crustal-thickening term and a 720 km base
+    plateau behind the suture);
   - Andean arcs (ocean under continent): a belt 150–250 km inland of the
-    trench;
+    trench, plus a 450 km plateau term on the overriding continent;
   - continental rifts: subsidence along the axis, uplifted shoulders, which
-    makes rift basins and later rift lakes;
+    makes rift basins and later rift lakes. Along-strike noise breaks the
+    subsidence into en-echelon basins about 100–300 km long, and the gaps
+    carry a sill uplift so neighbouring basins do not merge into one long
+    trough. Oceanic rifts stay continuous and may remain marine;
   - background epeirogenic uplift over continental crust with low-frequency
     noise, so interiors keep freeboard instead of eroding to sea level;
   - old orogen belts as low ridged-noise uplift, for worn ranges inside
@@ -542,7 +546,13 @@ windward/leeward corrections.
   partial lake settles at the level where inflow equals evaporation over its
   area (from the depression's hypsometry), with no outflow (saline). Tiny
   inflow gives a playa or salt flat. Rift and glacial basins become lakes in
-  wet climates and salt pans in dry ones.
+  wet climates and salt pans in dry ones. On the final erosion level, every
+  overflowing basin gets a visible outlet unless at least 20 % of its cells
+  subsides or at least 10 % were glaciated on that level: the reversed
+  depression path is cut through the rim to just below the basin floor, so the
+  basin drains and the channel is part of the canonical surface. Actively
+  subsiding rift basins are left alone, and arid basins keep their saline lake
+  or salt flat. There is no lake count or area cap.
 - **Rivers**: discharge per cell; river cells above a discharge threshold,
   traced from heads to mouths with identities by mouth.
 - **Biomes**: from annual temperature, precipitation, aridity (P/PET) and
@@ -1968,6 +1978,63 @@ The questions as raised:
     the logistic volume in the solve, epoch zero no longer equals present and
     the epoch-zero shortcut must be redefined; that is a behavior change, not
     a detail.
+
+## Known realism gaps, deferred to after E8
+
+These were measured against Earth data at `n = 512` (Earthlike seeds 1–7) and
+are not fixed in realism batch 1. The numbers and sources are in
+`.agents/realism-check.md`, which is not tracked.
+
+**Islands.** Large islands should come from tectonics: island arcs on
+subduction zones and continental fragments rifted off a margin. Two attempts
+looked artificial: first as random blobs in open ocean, then as islands strung
+along the plate boundaries in straight lines. The root cause is that plate
+boundaries are smooth, straight-edged Voronoi edges, so anything tied to them
+inherits that shape. Revisit islands after boundaries become curved and
+irregular, and perhaps after adding plate history, so arcs and fragments can
+follow realistic arcs, ridges and transforms. Oceanic arcs and hotspots still
+produce only small islands, and island counts stay below Earth's 18 islands
+above 100,000 km² and 57 above 10,000 km².
+
+**Climate.** Four gaps remain:
+
+- **Cold land winters at 30–40°.** The engine's coldest month is −7.8 to
+  +0.6 °C (mean −3.2) against Earth's +2.3, and 52–89 % of that land is below
+  0 °C against Earth's 33 %. Summers are 1–5 K too warm (24.5–28.2 °C
+  against 23.4), so the seasonal range is 27–33 K against 21 K. At 20–30° the
+  coldest month is +3.2 to +9.0 °C against +13.7. The cause is that land
+  couples to the ocean only through zonal mixing and heat capacity;
+  temperature is not advected, so westerly ocean air never reaches continents
+  in winter.
+- **Too little hot desert and rainforest.** `BWh` is 1.3–4.4 % of land
+  against Earth's 15.2 %, and `Af` is 0.3–3.6 % against 5.7 %; all of `A` is
+  4.5–23 % against 21.8 %. The arid area is Earth-like or larger, but the
+  winter bias classifies it as cold desert (`BWk` 4.4–22 % against 3.7 %).
+- **Dry high latitudes.** Land at 60–70° gets 132–287 mm/yr against Earth's
+  423. The storm-track eddy flux fades to zero at the pole, and cold air
+  holds little vapour; part of this follows from the winter bias.
+- **No east–west coast asymmetry.** The east-to-west coastal rain ratio at
+  15–35° is 0.84–2.60 (median 1.22) against Earth's 3.07, and arid shares in
+  the west/middle/east thirds of continents are about 49/38/42 % against
+  Earth's 78/58/41 %. Wind, subsidence and evaporation depend only on
+  latitude, with no per-basin subtropical highs and no cool eastern-boundary
+  currents.
+
+These need the phase-B climate work: an implicit upwind-ocean relaxation for
+maritime winters, then recalibration of the dry belts, the eddy profile and
+the subtropical highs.
+
+**What remains after this batch.** Land above 1 km is still below Earth's
+22 % on some Earthlike seeds, and rift lakes are mostly round (`L²/A` below
+the 8–20 target) because erosion rounds the segmented basins. Lakes still
+cover 2.3–5.9 % of land with 6–17 lakes over 100,000 km² (Earth: 1.8 % and
+one): most of the remaining giants are arid closed basins on flat continental
+interiors. The outlet rule calls a basin arid from its summed runoff minus
+evaporation; routing's own lake-balance closure test would be the consistent
+criterion, and erosion has no sediment infill to fill flat basins.
+On some seeds thin, one-cell sea channels remain along continental rift
+traces (seed 5 at `n = 512`): rift-segment axes or carved outlets that end
+below sea level and flood from the ocean.
 
 ## Determinism
 

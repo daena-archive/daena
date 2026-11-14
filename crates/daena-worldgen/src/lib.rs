@@ -8,7 +8,7 @@
 #![deny(unsafe_code)]
 
 /// Engine output contract version. Any output change bumps this.
-pub const WORLD_ENGINE_VERSION: u32 = 1;
+pub const WORLD_ENGINE_VERSION: u32 = 2;
 
 mod biome;
 mod climate;
@@ -404,6 +404,14 @@ pub struct LevelStats {
     pub clamped_cells: u32,
     /// Pit basins closed by evaporation in the last iteration.
     pub closed_basins: u32,
+    /// Overflowing closed basins drained by the final-level outlet cut.
+    pub breached_basins: u32,
+    /// Basins kept closed by active subsidence.
+    pub kept_subsiding_basins: u32,
+    /// Basins kept closed by glacial overdeepening.
+    pub kept_glacial_basins: u32,
+    /// Basins kept closed because evaporation beats inflow.
+    pub kept_arid_basins: u32,
     /// Domain cells with positive ice discharge in the last iteration.
     pub glaciated_cells: u32,
     /// Wall time for the level, milliseconds. Excludes the climate pass.

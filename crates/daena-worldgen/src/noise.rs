@@ -54,6 +54,10 @@ pub enum SeedDomain {
     ArcVolcano,
     /// Rift and ocean-ridge volcano lattice: site occupancy and jitter.
     RiftVolcano,
+    /// Along-strike segmentation of continental rift subsidence.
+    RiftSegment,
+    /// En-echelon lateral offset of rift basins.
+    RiftOffset,
 }
 
 impl SeedDomain {
@@ -84,6 +88,8 @@ impl SeedDomain {
             Self::ContinentalSurface => 0x1016,
             Self::ArcVolcano => 0x1017,
             Self::RiftVolcano => 0x1018,
+            Self::RiftSegment => 0x1019,
+            Self::RiftOffset => 0x101A,
         }
     }
 }

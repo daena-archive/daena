@@ -43,6 +43,7 @@ import {
   type FieldValue,
   type PhysicalHistoricalProgress,
   type PhysicalClimateProducts,
+  type PhysicalHazardProducts,
   type PhysicalHistoricalProducts,
   type PhysicalHydrologyProducts,
   type PhysicalNaturalEventKind,
@@ -66,7 +67,14 @@ import type { RuntimeBackground } from "../openlayers/background-registry";
 import type { RasterLayerSource } from "../openlayers/layer-registry";
 import { maxZoomForCoordinateSpace } from "../openlayers/projection";
 import { registerNativeVectorSession } from "./session";
-import { collectionBytes, featureCountForLayer, parseVectorCollection, parseVectorLayers, sha256Hex } from "./source";
+import {
+  collectionBytes,
+  dropRetiredPhysicalLayers,
+  featureCountForLayer,
+  parseVectorCollection,
+  parseVectorLayers,
+  sha256Hex,
+} from "./source";
 import {
   initialVectorEditorState,
   parseVectorDiagnostic,
@@ -238,6 +246,7 @@ let canRedo = $state(false);
 let derivedPhysical = $state<VectorFeatureCollection>({ type: "FeatureCollection", features: [] });
 let physicalHydrology = $state<PhysicalHydrologyProducts | null>(null);
 let physicalClimate = $state<PhysicalClimateProducts | null>(null);
+let physicalHazards = $state<PhysicalHazardProducts | null>(null);
 let draft = $state<VectorFeatureCollection>({ type: "FeatureCollection", features: [] });
 let loaded = $state<VectorFeatureCollection>({ type: "FeatureCollection", features: [] });
 let layers = $state<MapLayerDefinition[]>([]);
@@ -556,11 +565,12 @@ function clearRasterAssets() {
   rasterAssets = new Map();
   physicalHydrology = null;
   physicalClimate = null;
+  physicalHazards = null;
 }
 
 function ensurePhysicalLockedClimateLayers(parsed: MapLayerDefinition[]): MapLayerDefinition[] {
   if (!physicalMap) return parsed;
-  let next = parsed;
+  let next = dropRetiredPhysicalLayers(parsed);
   if (!next.some((layer) => layer.id === "winds")) {
     next = [
       ...next,
@@ -578,20 +588,54 @@ function ensurePhysicalLockedClimateLayers(parsed: MapLayerDefinition[]): MapLay
       },
     ];
   }
-  if (!next.some((layer) => layer.id === "currents")) {
+  if (!next.some((layer) => layer.id === "earthquake-hazard")) {
     next = [
       ...next,
       {
-        id: "currents",
+        id: "earthquake-hazard",
         kind: "vector",
-        name: "Currents",
-        order: 15,
+        name: "Earthquake hazard",
+        order: 16,
         defaultVisible: false,
         locked: true,
         opacity: 1,
         blendMode: "normal",
         selector: {},
-        style: { fill: "#3ab8c4", fillOpacity: 0.18, stroke: "#9ee7ee", strokeWidth: 0.7, pointRadius: 2 },
+        style: { fill: "#d86a5c", fillOpacity: 0.2, stroke: "#f0b0a6", strokeWidth: 0.6, pointRadius: 2 },
+      },
+    ];
+  }
+  if (!next.some((layer) => layer.id === "volcanic-hazard")) {
+    next = [
+      ...next,
+      {
+        id: "volcanic-hazard",
+        kind: "vector",
+        name: "Volcanic hazard",
+        order: 17,
+        defaultVisible: false,
+        locked: true,
+        opacity: 1,
+        blendMode: "normal",
+        selector: {},
+        style: { fill: "#e09a4a", fillOpacity: 0.2, stroke: "#f3cf9a", strokeWidth: 0.6, pointRadius: 2 },
+      },
+    ];
+  }
+  if (!next.some((layer) => layer.id === "volcanic-centers")) {
+    next = [
+      ...next,
+      {
+        id: "volcanic-centers",
+        kind: "vector",
+        name: "Volcanoes",
+        order: 18,
+        defaultVisible: false,
+        locked: true,
+        opacity: 1,
+        blendMode: "normal",
+        selector: {},
+        style: { fill: "#f0a050", fillOpacity: 0.8, stroke: "#3a2418", strokeWidth: 0.7, pointRadius: 2.4 },
       },
     ];
   }
@@ -600,19 +644,26 @@ function ensurePhysicalLockedClimateLayers(parsed: MapLayerDefinition[]): MapLay
 
 function physicalRasterPaintOptions(): PhysicalRasterPaintOptions {
   const climate = physicalClimate;
+  const hazards = physicalHazards;
   return {
     iceVisible: layers.find((layer) => layer.id === "ice")?.defaultVisible ?? true,
     lakesVisible: layers.find((layer) => layer.id === "lakes")?.defaultVisible ?? true,
     windsVisible: Boolean(climate) && (layers.find((layer) => layer.id === "winds")?.defaultVisible ?? false),
-    currentsVisible: Boolean(climate) && (layers.find((layer) => layer.id === "currents")?.defaultVisible ?? false),
+    earthquakeHazardVisible:
+      Boolean(hazards) && (layers.find((layer) => layer.id === "earthquake-hazard")?.defaultVisible ?? false),
+    volcanicHazardVisible:
+      Boolean(hazards) && (layers.find((layer) => layer.id === "volcanic-hazard")?.defaultVisible ?? false),
+    volcanicSourcesVisible:
+      Boolean(hazards) && (layers.find((layer) => layer.id === "volcanic-centers")?.defaultVisible ?? false),
     climateWindEastMilli: climate?.windEastMilli,
     climateWindNorthMilli: climate?.windNorthMilli,
     climateWindEastNhSummerMilli: climate?.windEastNhSummerMilli,
     climateWindNorthNhSummerMilli: climate?.windNorthNhSummerMilli,
     climateWindEastNhWinterMilli: climate?.windEastNhWinterMilli,
     climateWindNorthNhWinterMilli: climate?.windNorthNhWinterMilli,
-    climateCurrentEastMilli: climate?.currentEastMilli,
-    climateCurrentNorthMilli: climate?.currentNorthMilli,
+    earthquakeHazardPpm: hazards?.earthquakeHazardPpm,
+    volcanicHazardPpm: hazards?.volcanicHazardPpm,
+    volcanicSources: hazards?.volcanicSources,
   };
 }
 
@@ -630,12 +681,14 @@ const physicalRasterLayerVisibility = $derived.by(() => ({
   ice: layers.find((layer) => layer.id === "ice")?.defaultVisible ?? true,
   lakes: layers.find((layer) => layer.id === "lakes")?.defaultVisible ?? true,
   winds: layers.find((layer) => layer.id === "winds")?.defaultVisible ?? false,
-  currents: layers.find((layer) => layer.id === "currents")?.defaultVisible ?? false,
+  earthquakes: layers.find((layer) => layer.id === "earthquake-hazard")?.defaultVisible ?? false,
+  volcanoes: layers.find((layer) => layer.id === "volcanic-hazard")?.defaultVisible ?? false,
+  sources: layers.find((layer) => layer.id === "volcanic-centers")?.defaultVisible ?? false,
 }));
 
 function iceLakesVisibilityKey(): string {
-  const { ice, lakes, winds, currents } = physicalRasterLayerVisibility;
-  return `${ice}:${lakes}:${winds}:${currents}`;
+  const { ice, lakes, winds, earthquakes, volcanoes, sources } = physicalRasterLayerVisibility;
+  return `${ice}:${lakes}:${winds}:${earthquakes}:${volcanoes}:${sources}`;
 }
 
 let lastIceLakesVisibilityKey = "";
@@ -1222,6 +1275,7 @@ function applyHistoricalProducts(products: PhysicalHistoricalProducts) {
   derivedPhysical = physical;
   physicalHydrology = products.hydrology;
   physicalClimate = products.climate;
+  physicalHazards = products.hazards;
   rebuildPhysicalRaster();
   epochOffsetYears = products.epochOffsetYears;
   appliedEpochOffsetYears = products.epochOffsetYears;
@@ -1288,7 +1342,11 @@ async function materializePhysicalEvents() {
       { requestId },
     );
     eventNotice = result.events.length
-      ? `Committed ${result.events.length} ${eventKind} event${result.events.length === 1 ? "" : "s"} as durable history.`
+      ? `Committed ${result.events.length} ${eventKind} event${result.events.length === 1 ? "" : "s"} · model ${result.modelLabel} · ${
+          eventKind === "flood"
+            ? formatEpoch(floodEpochYears)
+            : `${formatEpoch(eventStartYears)} to ${formatEpoch(eventEndYears)}`
+        }.`
       : eventKind === "flood"
         ? "No overflowing basins at this epoch."
         : "No events sampled for this bounded interval and hazard seed.";
@@ -1493,7 +1551,9 @@ async function load() {
         "islands",
         "ice",
         "winds",
-        "currents",
+        "earthquake-hazard",
+        "volcanic-hazard",
+        "volcanic-centers",
       ]);
       syncEpochFields(0);
       const requestId = crypto.randomUUID();
@@ -1513,6 +1573,7 @@ async function load() {
       epochNotice = `Showing ${formatEpoch(historical.epochOffsetYears)} · deterministic derived playback`;
       physicalHydrology = historical.hydrology;
       physicalClimate = historical.climate;
+      physicalHazards = historical.hazards;
       rebuildPhysicalRaster();
       epochBusy = false;
       epochPhase = "";
@@ -1624,13 +1685,13 @@ async function save() {
     commandStack.setBaseline(
       createMapDocument({
         descriptor: applied.map.value,
-        layers: parseVectorLayers(applied.layers.value),
+        layers: ensurePhysicalLockedClimateLayers(parseVectorLayers(applied.layers.value)),
         collection: snapshot,
       }),
     );
     draft = renderedCollection(snapshot);
     loaded = cloneCollection(snapshot);
-    layers = parseVectorLayers(applied.layers.value);
+    layers = ensurePhysicalLockedClimateLayers(parseVectorLayers(applied.layers.value));
     canUndo = false;
     canRedo = false;
     recoveryPath = "";
@@ -2819,7 +2880,9 @@ onMount(() => {
               <span class="panel-kicker">Map layers</span>
               <strong>{listedLayers.length} layers · {uiFeatureCollection().features.length} features</strong>
               <small class="map-panel-subtitle"
-                >{unitsLabel}{listedRasters.length ? ` · ${listedRasters.length} ${listedRasters.length === 1 ? "raster" : "rasters"}` : ""}</small>
+                >{unitsLabel}{listedRasters.length
+                  ? ` · ${listedRasters.length} ${listedRasters.length === 1 ? "raster" : "rasters"}`
+                  : ""}</small>
             </div>
             <button
               type="button"

@@ -256,8 +256,6 @@ export interface FindPlaceQuery {
   temperatureCentiCMax?: number | null;
   precipitationMmMin?: number | null;
   precipitationMmMax?: number | null;
-  humidityPpmMin?: number | null;
-  humidityPpmMax?: number | null;
   aridityPpmMin?: number | null;
   aridityPpmMax?: number | null;
   biomeClass?: number | null;
@@ -296,7 +294,6 @@ export interface FindPlaceCandidate {
     altitudeM: number;
     temperatureCentiC: number;
     precipitationMm: number;
-    humidityPpm: number;
     aridityPpm: number;
     slopePpm: number;
     latitudeMilliDeg: number;
@@ -350,7 +347,6 @@ export interface PhysicalClimateProducts {
   temperatureCentiC: number[];
   temperatureNhSummerCentiC: number[];
   temperatureNhWinterCentiC: number[];
-  moistureMmPerYear: number[];
   precipitationMmPerYear: number[];
   runoffMmPerYear: number[];
   runoffVolumeM3PerYear: number[];
@@ -361,20 +357,17 @@ export interface PhysicalClimateProducts {
   windNorthNhSummerMilli: number[];
   windEastNhWinterMilli: number[];
   windNorthNhWinterMilli: number[];
-  windDivergencePpm: number[];
-  windDivergenceNhSummerPpm: number[];
-  windDivergenceNhWinterPpm: number[];
+  windDivergenceNanoPerS: number[];
+  windDivergenceNhSummerNanoPerS: number[];
+  windDivergenceNhWinterNanoPerS: number[];
   windBand: number[];
   windBandNhSummer: number[];
   windBandNhWinter: number[];
-  currentEastMilli: number[];
-  currentNorthMilli: number[];
-  humidityPpm: number[];
   aridityPpm: number[];
   precipitationNhSummerMm: number[];
   precipitationNhWinterMm: number[];
   biomeClass: number[];
-  biomeLegend: { id: number; name: string; reason: string; fill: [number, number, number] }[];
+  biomeLegend: { id: number; name: string; reason: string; fill: string }[];
   stormSuitabilityPpm: number[];
   stormTrackPpm: number[];
   stormIntensityPpm: number[];
@@ -388,7 +381,7 @@ export interface PhysicalClimateProducts {
     meanRunoffMmPerYear: number;
     wettestCellPrecipitationMmPerYear: number;
     driestLandCellPrecipitationMmPerYear: number;
-    transportIterations: number;
+    climateSpinupYears: number;
     meanSeasonalRangeCentiC: number;
     minimumSeasonalTemperatureCentiC: number;
     maximumSeasonalTemperatureCentiC: number;
@@ -398,8 +391,6 @@ export interface PhysicalClimateProducts {
     itczLatitudeMilliDeg: number;
     easterlyCellPpm: number;
     convergingCellPpm: number;
-    meanCurrentSpeedMilli: number;
-    meanHumidityPpm: number;
     meanLandAridityPpm: number;
     meanSeasonalPrecipitationRangeMm: number;
     dominantLandBiome: number;
@@ -416,48 +407,6 @@ export interface PhysicalClimateProducts {
     meanLandWetSeasonPpm: number;
   };
 }
-export interface PhysicalEvolutionProducts {
-  derivationVersion: number;
-  preset: "young" | "mature" | "old";
-  width: number;
-  height: number;
-  beforeElevationsMm: number[];
-  elevationsMm: number[];
-  routingElevationMm: number[];
-  fillDepthMm: number[];
-  slopePpm: number[];
-  accumulationM3PerYear: number[];
-  outletCells: number[];
-  edges: Array<{
-    sourceCell: number;
-    destinationCell: number;
-    weightPpm: number;
-    distanceMetres: number;
-  }>;
-  drainageMetrics: {
-    directRunoffM3PerYear: number;
-    routedRunoffM3PerYear: number;
-    routedEdgeCount: number;
-    drainageDensityPpm: number;
-    gridAnisotropyPpm: number;
-    convergencePpm: number;
-    outletCount: number;
-    routingSurfaceRaiseMaxMm: number;
-  };
-  evolutionMetrics: {
-    initialReliefSpanMm: number;
-    finalReliefSpanMm: number;
-    reliefChangeMm: number;
-    meanAbsoluteElevationChangeMm: number;
-    erosionWorkM3: number;
-    upliftWorkM3: number;
-    maxStepReliefLossMm: number;
-    drainageDensityPpm: number;
-    gridAnisotropyPpm: number;
-    convergencePpm: number;
-    tectonicRangeOrientationPpm: number;
-  };
-}
 export interface PhysicalHydrologyProducts {
   derivationVersion: number;
   width: number;
@@ -472,7 +421,6 @@ export interface PhysicalHydrologyProducts {
   basinByCell: number[];
   lakeCells: boolean[];
   iceCells: boolean[];
-  iceThicknessMm: number[];
   shelfCells: boolean[];
   islandId: number[];
   basins: Array<{
@@ -480,38 +428,25 @@ export interface PhysicalHydrologyProducts {
     minimumCell: number;
     minimumElevationMm: number;
     cellCount: number;
-    spillCell: number | null;
+    spillCell: number;
     spillElevationMm: number | null;
-    volumeToSpillM3: number;
-    parentBasin: number | null;
-    children: number[];
-    destination: "ocean" | "basin" | "endorheic" | "junction";
     waterLevelMm: number;
     waterVolumeM3: number;
     inflowM3PerYear: number;
-    directPrecipitationM3PerYear: number;
     evaporationM3PerYear: number;
     outflowM3PerYear: number;
-    status: "dry" | "endorheic" | "active" | "overflowing" | "merged";
+    status: "dry" | "endorheic" | "active" | "overflowing";
   }>;
   rivers: Array<{
     id: number;
     sourceCell: number;
     mouthCell: number;
     strahlerOrder: number;
-    destination: "ocean" | "basin" | "endorheic" | "junction";
+    destination: "ocean" | "basin" | "junction";
     spillOutlet: boolean;
     coordinateCount: number;
   }>;
   metrics: {
-    totalWaterM3: number;
-    oceanWaterM3: number;
-    inlandWaterM3: number;
-    landIceM3: number;
-    balanceErrorM3: number;
-    toleranceM3: number;
-    fixedPointIterations: number;
-    converged: boolean;
     lakeCount: number;
     riverCount: number;
     watershedCount: number;
@@ -521,6 +456,66 @@ export interface PhysicalHydrologyProducts {
     shelfCellCount: number;
     bathymetryContourCount: number;
     islandCount: number;
+  };
+}
+export interface PhysicalHazardProducts {
+  derivationVersion: number;
+  volcanicSourceDerivationVersion: number;
+  earthquakeHazardPpm: number[];
+  volcanicHazardPpm: number[];
+  earthquakeAnnualRateNano: number[];
+  volcanicAnnualRateNano: number[];
+  earthquakeRatePerMillionYearsPpm: number[];
+  eruptionRatePerMillionYearsPpm: number[];
+  volcanicSources: Array<{
+    stableId: string;
+    cell: number;
+    longitudeMicro: number;
+    latitudeMicro: number;
+    origin: "hotspot" | "subduction-arc" | "rift";
+    activityClass: "dormant" | "moderate" | "vigorous";
+    eruptionsPerModelYearNano: number;
+  }>;
+  metrics: {
+    volcanicSourceCount: number;
+    nonDormantSourceCount: number;
+    earthquakeMeanPpm: number;
+    earthquakeMaxPpm: number;
+    volcanicMeanPpm: number;
+    volcanicMaxPpm: number;
+    earthquakeRateMassNano: number;
+    volcanicRateMassNano: number;
+  };
+}
+export interface PhysicalHistoricalForcing {
+  version: number;
+  components: Array<{
+    amplitudeCentiC: number;
+    periodYears: number;
+    phaseOffsetYears: number;
+  }>;
+  sensitivityPpm: number;
+  landIceAmplitudePpm: number;
+  iceResponseYears: number;
+  iceMidpointCentiC: number;
+  iceTransitionWidthCentiC: number;
+  thermalExpansionPpmPerDegreeC: number;
+}
+export interface PhysicalGeneration {
+  id: string;
+  version: number;
+  seed: number;
+  settings: {
+    resolution: number;
+    radiusMetres: number;
+    targetLandFractionPpm: number;
+    referenceWaterInventoryM3: number;
+    preset: string;
+    engineVersion: number;
+    sourceVersion: number;
+    planetary: PlanetaryConfiguration;
+    historicalForcing: PhysicalHistoricalForcing;
+    hazardDerivationVersion: number;
   };
 }
 export interface PhysicalHistoricalProducts {
@@ -533,12 +528,7 @@ export interface PhysicalHistoricalProducts {
   geojson: string;
   climate: PhysicalClimateProducts;
   hydrology: PhysicalHydrologyProducts;
-  hazards: {
-    derivationVersion: number;
-    model: "relative-generated-v1";
-    volcanicSourceDerivationVersion: number;
-    prediction: false;
-  };
+  hazards: PhysicalHazardProducts;
   derivedHashes: {
     canonicalSource: string;
     finalElevation: string;
@@ -547,20 +537,7 @@ export interface PhysicalHistoricalProducts {
     climate: string;
     hydrology: string;
   };
-  forcing: {
-    version: number;
-    components: Array<{
-      amplitudeCentiC: number;
-      periodYears: number;
-      phaseOffsetYears: number;
-    }>;
-    sensitivityPpm: number;
-    landIceAmplitudePpm: number;
-    iceResponseYears: number;
-    iceMidpointCentiC: number;
-    iceTransitionWidthCentiC: number;
-    thermalExpansionPpmPerDegreeC: number;
-  };
+  forcing: PhysicalHistoricalForcing;
   history: {
     derivationVersion: number;
     epochOffsetYears: number;
@@ -736,16 +713,13 @@ export interface AtlasStudioSurfaceSample {
   windNorthNhSummerMilli: number;
   windEastNhWinterMilli: number;
   windNorthNhWinterMilli: number;
-  windDivergencePpm: number;
-  windDivergenceNhSummerPpm: number;
-  windDivergenceNhWinterPpm: number;
+  windDivergenceNanoPerS: number;
+  windDivergenceNhSummerNanoPerS: number;
+  windDivergenceNhWinterNanoPerS: number;
   windBand: string;
   windBandNhSummer: string;
   windBandNhWinter: string;
-  currentEastMilli: number;
-  currentNorthMilli: number;
   precipitationMm: number;
-  humidityPpm: number;
   aridityPpm: number;
   precipitationNhSummerMm: number;
   precipitationNhWinterMm: number;
@@ -756,7 +730,6 @@ export interface AtlasStudioSurfaceSample {
   stormIntensityPpm: number;
   stormReason: string;
   surface: string;
-  iceThicknessMm: number;
 }
 export interface AtlasStudioInspectResult {
   hits: AtlasStudioInspectHit[];
@@ -773,14 +746,11 @@ export interface AtlasRegionProposal {
 export type { PlanetaryConfiguration, PlanetaryPreset };
 export interface PhysicalGenerationInput {
   seed: number;
-  retryIndex: number;
-  evolutionPreset?: "young" | "mature" | "old";
-  tectonicStyle?: "any" | "mega" | "giant-scraps" | "dual" | "scattered";
   settings: {
-    width: number;
-    height: number;
+    resolution: 512 | 1024;
     radiusMetres: number;
     targetLandFractionPpm: number;
+    preset: string;
     planetary?: PlanetaryConfiguration;
   };
 }
@@ -815,6 +785,7 @@ export interface PhysicalEventMaterializationResult {
   materializationVersion: number;
   hazardDerivationVersion: number;
   hydrologyDerivationVersion?: number;
+  modelLabel: string;
   prediction: false;
   events: PhysicalMaterializedEvent[];
 }

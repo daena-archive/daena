@@ -48,3 +48,10 @@ export function physicalGridRowForRasterRow(canvasRow: number, canvasHeight: num
   const row = Math.floor(((canvasRow + 0.5) / canvasHeight) * sourceHeight);
   return Math.max(0, Math.min(sourceHeight - 1, sourceHeight - 1 - row));
 }
+
+/** Index of the south-origin product view cell (row 0 is the south pole band) that contains a lon/lat point. */
+export function physicalViewIndex(longitude: number, latitude: number, width: number, height: number): number {
+  const column = Math.min(width - 1, Math.max(0, Math.floor(((longitude + 180) / 360) * width)));
+  const row = Math.min(height - 1, Math.max(0, Math.floor(((latitude + 90) / 180) * height)));
+  return row * width + column;
+}

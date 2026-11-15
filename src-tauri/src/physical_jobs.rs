@@ -134,6 +134,7 @@ pub(super) struct PhysicalEventMaterializationResult {
     pub(super) hazard_derivation_version: u16,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) hydrology_derivation_version: Option<u16>,
+    pub(super) model_label: String,
     pub(super) prediction: bool,
     pub(super) events: Vec<MaterializedPhysicalEvent>,
 }

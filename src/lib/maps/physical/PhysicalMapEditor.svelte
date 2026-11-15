@@ -7,6 +7,7 @@ import {
   type Entity,
   type PhysicalGenerationInput,
   type PhysicalClimateProducts,
+  type PhysicalHazardProducts,
   type PhysicalHydrologyProducts,
   type PhysicalJobStatus,
 } from "$lib/project/client";
@@ -28,6 +29,7 @@ import type { MapAnchor } from "../../../../packages/plugin-sdk/src/maps";
 import PhysicalWorldView from "./PhysicalWorldView.svelte";
 import NativeVectorMapEditor from "../native-vector/NativeVectorMapEditor.svelte";
 import { parseVectorCollection } from "../native-vector/source";
+import { physicalViewIndex } from "../native-vector/coordinates";
 import {
   BASE_LAYER_ID,
   DEFAULT_VECTOR_LAYER_STYLE,
@@ -53,31 +55,53 @@ function nextPhysicalSeed(fallback = 0) {
   return values[0] ?? fallback;
 }
 
-function tectonicStyleHint(style: "any" | "mega" | "giant-scraps" | "dual" | "scattered") {
-  switch (style) {
-    case "mega":
-      return "One dominant landmass with a large interior.";
-    case "giant-scraps":
-      return "One huge continent plus smaller scraps.";
-    case "dual":
-      return "Two major continents.";
-    case "scattered":
-      return "Many smaller lands and islands.";
+function worldPresetHint(preset: string) {
+  switch (preset) {
+    case "earthlike":
+      return "Temperate oceans and continents, close to Earth.";
+    case "frozen":
+      return "A cold world with wide ice sheets and tundra.";
+    case "hothouse":
+      return "A hot, humid world with warm poles.";
+    case "desert":
+      return "Dry continents with little rainfall.";
+    case "archipelago":
+      return "Scattered islands and shallow seas.";
+    case "water-world":
+      return "Mostly ocean with small island groups.";
+    case "pangea":
+      return "One broad supercontinent.";
+    case "shattered":
+      return "Many fragments separated by narrow seaways.";
     default:
-      return "Each seed picks a different continent arrangement.";
+      return "Pick the land fraction yourself.";
   }
 }
 
+const WORLD_PRESETS = [
+  "earthlike",
+  "frozen",
+  "hothouse",
+  "desert",
+  "archipelago",
+  "water-world",
+  "pangea",
+  "shattered",
+  "custom",
+] as const;
+
 let name = $state("Physical World");
 let seed = $state(nextPhysicalSeed());
-let evolutionPreset = $state<"young" | "mature" | "old">("mature");
-let tectonicStyle = $state<"any" | "mega" | "giant-scraps" | "dual" | "scattered">("any");
+let worldPreset = $state<string>("earthlike");
+let resolution = $state<"512" | "1024">("512");
+let landFractionPercent = $state(30);
 let planetary = $state<PlanetaryConfiguration>(earthLikePlanetary());
 let advancedPlanet = $state(false);
 let yearLengthError = $state<string | null>(null);
 let status = $state<PhysicalJobStatus | null>(null);
 let hydrology = $state<PhysicalHydrologyProducts | null>(null);
 let climate = $state<PhysicalClimateProducts | null>(null);
+let hazards = $state<PhysicalHazardProducts | null>(null);
 let climateOverlay = $state<ClimateOverlayMode>("annual");
 let climateSample = $state<string>("");
 let raster = $state<HTMLCanvasElement | null>(null);
@@ -125,16 +149,40 @@ let layers = $state<VectorLayerDefinition[]>([
     style: { fill: "#d69434", fillOpacity: 0.18, stroke: "#f2d9a8", strokeWidth: 0.7, pointRadius: 2 },
   },
   {
-    id: "currents",
+    id: "earthquake-hazard",
     kind: "vector",
-    name: "Currents",
-    order: 15,
+    name: "Earthquake hazard",
+    order: 16,
     defaultVisible: false,
     locked: true,
     opacity: 1,
     blendMode: "normal",
     selector: {},
-    style: { fill: "#3ab8c4", fillOpacity: 0.18, stroke: "#9ee7ee", strokeWidth: 0.7, pointRadius: 2 },
+    style: { fill: "#d86a5c", fillOpacity: 0.2, stroke: "#f0b0a6", strokeWidth: 0.6, pointRadius: 2 },
+  },
+  {
+    id: "volcanic-hazard",
+    kind: "vector",
+    name: "Volcanic hazard",
+    order: 17,
+    defaultVisible: false,
+    locked: true,
+    opacity: 1,
+    blendMode: "normal",
+    selector: {},
+    style: { fill: "#e09a4a", fillOpacity: 0.2, stroke: "#f3cf9a", strokeWidth: 0.6, pointRadius: 2 },
+  },
+  {
+    id: "volcanic-centers",
+    kind: "vector",
+    name: "Volcanoes",
+    order: 18,
+    defaultVisible: false,
+    locked: true,
+    opacity: 1,
+    blendMode: "normal",
+    selector: {},
+    style: { fill: "#f0a050", fillOpacity: 0.8, stroke: "#3a2418", strokeWidth: 0.7, pointRadius: 2.4 },
   },
   {
     id: "ocean",
@@ -207,7 +255,12 @@ function physicalRasterPaintOptions(): PhysicalRasterPaintOptions {
     iceVisible: layers.find((layer) => layer.id === "ice")?.defaultVisible ?? false,
     lakesVisible: layers.find((layer) => layer.id === "lakes")?.defaultVisible ?? false,
     windsVisible: Boolean(climate) && (layers.find((layer) => layer.id === "winds")?.defaultVisible ?? false),
-    currentsVisible: Boolean(climate) && (layers.find((layer) => layer.id === "currents")?.defaultVisible ?? false),
+    earthquakeHazardVisible:
+      Boolean(hazards) && (layers.find((layer) => layer.id === "earthquake-hazard")?.defaultVisible ?? false),
+    volcanicHazardVisible:
+      Boolean(hazards) && (layers.find((layer) => layer.id === "volcanic-hazard")?.defaultVisible ?? false),
+    volcanicSourcesVisible:
+      Boolean(hazards) && (layers.find((layer) => layer.id === "volcanic-centers")?.defaultVisible ?? false),
     climateOverlay: climate ? climateOverlay : "off",
     climateAnnualCentiC: climate?.temperatureCentiC,
     climateNhSummerCentiC: climate?.temperatureNhSummerCentiC,
@@ -218,17 +271,17 @@ function physicalRasterPaintOptions(): PhysicalRasterPaintOptions {
     climateWindNorthNhSummerMilli: climate?.windNorthNhSummerMilli,
     climateWindEastNhWinterMilli: climate?.windEastNhWinterMilli,
     climateWindNorthNhWinterMilli: climate?.windNorthNhWinterMilli,
-    climateCurrentEastMilli: climate?.currentEastMilli,
-    climateCurrentNorthMilli: climate?.currentNorthMilli,
     climatePrecipitationMm: climate?.precipitationMmPerYear,
     climatePrecipitationNhSummerMm: climate?.precipitationNhSummerMm,
     climatePrecipitationNhWinterMm: climate?.precipitationNhWinterMm,
-    climateHumidityPpm: climate?.humidityPpm,
     climateAridityPpm: climate?.aridityPpm,
     climateBiomeClass: climate?.biomeClass,
     climateBiomeFill: climateBiomeFills(),
     climateStormSuitabilityPpm: climate?.stormSuitabilityPpm,
     climateStormTrackPpm: climate?.stormTrackPpm,
+    earthquakeHazardPpm: hazards?.earthquakeHazardPpm,
+    volcanicHazardPpm: hazards?.volcanicHazardPpm,
+    volcanicSources: hazards?.volcanicSources,
   };
 }
 
@@ -250,7 +303,6 @@ function climateSummary() {
   const strength =
     metrics.meanWindSpeedMilli < 400 ? "light" : metrics.meanWindSpeedMilli < 1_200 ? "moderate" : "strong";
   const rain = `${metrics.meanPrecipitationMmPerYear.toLocaleString("en-US")} mm/year typical rainfall`;
-  const humidity = `${Math.round(metrics.meanHumidityPpm / 10_000)}% of saturation`;
   const dryness =
     metrics.meanLandAridityPpm < 200_000
       ? "humid land"
@@ -269,7 +321,7 @@ function climateSummary() {
     metrics.stormProneOceanPpm > 50_000
       ? ` Tropical-cyclone-like genesis covers about ${Math.round(metrics.stormProneOceanPpm / 10_000)}% of ocean, about ${stormsPerYear.toFixed(1)} storms per year.`
       : " Tropical-cyclone genesis is limited.";
-  return `Warmest ${formatCentiC(metrics.maximumSeasonalTemperatureCentiC)}, coldest ${formatCentiC(metrics.minimumSeasonalTemperatureCentiC)}, typical annual range ${formatCentiC(metrics.meanSeasonalRangeCentiC)}. High land stays colder than its latitude. Northern-summer solstice is the warmer-orbit season. Prevailing ${strength} winds (not local weather): ITCZ near ${itcz}, easterlies over ${easterlies}% of the globe. ${rain}; humidity ${humidity}; ${dryness}.${seasonRain} Typical land biome is ${biome}.${storms} Rainfall follows winds, mountains, and warmer seas. Humidity is remaining moisture versus local saturation. Aridity is evaporative demand unmet by rain. Biomes are a derived reading of those conditions, not painted decoration. Storm fields are climatology, not a weather forecast. ${freeze}`;
+  return `Warmest ${formatCentiC(metrics.maximumSeasonalTemperatureCentiC)}, coldest ${formatCentiC(metrics.minimumSeasonalTemperatureCentiC)}, typical annual range ${formatCentiC(metrics.meanSeasonalRangeCentiC)}. High land stays colder than its latitude. Northern-summer solstice is the warmer-orbit season. Prevailing ${strength} winds (not local weather): ITCZ near ${itcz}, easterlies over ${easterlies}% of the globe. ${rain}; ${dryness}.${seasonRain} Typical land biome is ${biome}.${storms} Rainfall follows winds, mountains, and warmer seas. Aridity is evaporative demand unmet by rain. Biomes are a derived reading of those conditions, not painted decoration. Storm fields are climatology, not a weather forecast. ${freeze}`;
 }
 
 function formatAridityLabel(ppm: number) {
@@ -290,7 +342,6 @@ function climateStats(): Array<{ label: string; value: string }> {
     { label: "Coldest", value: formatCentiC(metrics.minimumSeasonalTemperatureCentiC) },
     { label: "Range", value: formatCentiC(metrics.meanSeasonalRangeCentiC) },
     { label: "Rainfall", value: `${metrics.meanPrecipitationMmPerYear.toLocaleString("en-US")} mm/yr` },
-    { label: "Humidity", value: `${Math.round(metrics.meanHumidityPpm / 10_000)}% saturation` },
     { label: "Land", value: formatAridityLabel(metrics.meanLandAridityPpm) },
     { label: "Winds", value: strength },
     { label: "Biome", value: biomeLegendEntry(metrics.dominantLandBiome).name },
@@ -306,6 +357,29 @@ function climateStats(): Array<{ label: string; value: string }> {
   ];
 }
 
+function hydrologyStats(): Array<{ label: string; value: string }> {
+  if (!hydrology) return [];
+  const metrics = hydrology.metrics;
+  return [
+    { label: "Lakes", value: metrics.lakeCount.toLocaleString("en-US") },
+    { label: "Rivers", value: metrics.riverCount.toLocaleString("en-US") },
+    { label: "Watersheds", value: metrics.watershedCount.toLocaleString("en-US") },
+    { label: "Coast", value: `${metrics.coastlineSegmentCount.toLocaleString("en-US")} seg` },
+    { label: "Islands", value: metrics.islandCount.toLocaleString("en-US") },
+  ];
+}
+
+function hazardStats(): Array<{ label: string; value: string }> {
+  if (!hazards) return [];
+  const metrics = hazards.metrics;
+  return [
+    { label: "Volcanoes", value: metrics.volcanicSourceCount.toLocaleString("en-US") },
+    { label: "Active", value: metrics.nonDormantSourceCount.toLocaleString("en-US") },
+    { label: "Quake peak", value: `${Math.round(metrics.earthquakeMaxPpm / 10_000)}%` },
+    { label: "Eruption peak", value: `${Math.round(metrics.volcanicMaxPpm / 10_000)}%` },
+  ];
+}
+
 function climateOverlayHint(): string | null {
   const hints: string[] = [];
   const windsOn =
@@ -313,15 +387,9 @@ function climateOverlayHint(): string | null {
     climateOverlay === "wind" ||
     climateOverlay === "wind-nh-summer" ||
     climateOverlay === "wind-nh-winter";
-  const currentsOn = layers.find((layer) => layer.id === "currents")?.defaultVisible ?? false;
   if (windsOn) {
     hints.push(
       "Blue is easterly, amber is westerly. Arrows are prevailing direction on this coarse grid, not a weather forecast.",
-    );
-  }
-  if (currentsOn) {
-    hints.push(
-      "Ocean arrows are surface currents. Amber is northward, teal is southward. Major gyres only, not a shipping chart.",
     );
   }
   if (
@@ -330,22 +398,29 @@ function climateOverlayHint(): string | null {
     climateOverlay === "precipitation-nh-winter"
   ) {
     hints.push("Tan is dry, teal is wet. Rainfall follows winds, mountains, and warmer seas, not a weather forecast.");
-  } else if (climateOverlay === "humidity") {
-    hints.push("Humidity is remaining atmospheric moisture versus local saturation. Teal is moister air.");
   } else if (climateOverlay === "aridity") {
     hints.push("Aridity is evaporative demand unmet by rainfall. Green is humid, tan is dry.");
   } else if (climateOverlay === "biome") {
     hints.push(
-      "Biomes are classified from temperature, rainfall, humidity, aridity, seasonality, and elevation. Permanent ice is climate freeze, not ice-sheet cover. Click a cell to see why.",
+      "Biomes are classified from temperature, rainfall, aridity, seasonality, and elevation. Permanent ice is climate freeze, not ice-sheet cover. Click a cell to see its class and sampled conditions.",
     );
   } else if (climateOverlay === "storm") {
     hints.push(
-      "Formation zones only: warm, moist tropical ocean with enough rotation, fetch from land, and surface currents. Seasonal wind-vector shear can suppress genesis. Amber is potential. Climatology, not a forecast.",
+      "Formation zones only: warm tropical ocean with enough rotation and fetch from land. Seasonal wind-vector shear can suppress genesis. Amber is potential. Climatology, not a forecast.",
     );
   } else if (climateOverlay === "storm-track") {
     hints.push(
-      "Track corridors only: winds plus surface currents with a poleward drift, then decay inland. Not a specific storm.",
+      "Track corridors only: prevailing winds with a poleward drift, then decay inland. Not a specific storm.",
     );
+  }
+  if (layers.find((layer) => layer.id === "earthquake-hazard")?.defaultVisible) {
+    hints.push("Earthquake hazard is the long-run M ≥ 4 potential on this view. Redder is higher.");
+  }
+  if (layers.find((layer) => layer.id === "volcanic-hazard")?.defaultVisible) {
+    hints.push("Volcanic hazard is the long-run eruption potential. Amber is higher.");
+  }
+  if (layers.find((layer) => layer.id === "volcanic-centers")?.defaultVisible) {
+    hints.push("Triangles mark engine volcanic sources. Colour shows activity class.");
   }
   return hints.length ? hints.join(" ") : null;
 }
@@ -355,16 +430,22 @@ function biomeLegendEntry(biomeClass: number) {
     climate?.biomeLegend?.find((entry) => entry.id === biomeClass) ?? {
       id: biomeClass,
       name: "unclassified",
-      reason: "biome class is outside the versioned legend",
-      fill: [120, 120, 124] as [number, number, number],
+      reason: "",
+      fill: "#78787c",
     }
   );
+}
+
+function biomeFill(entry: { fill: string }): [number, number, number] {
+  const match = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(entry.fill);
+  if (!match) return [120, 120, 124];
+  return [parseInt(match[1], 16), parseInt(match[2], 16), parseInt(match[3], 16)];
 }
 
 function climateBiomeFills() {
   const fills: [number, number, number][] = [];
   for (const entry of climate?.biomeLegend ?? []) {
-    fills[entry.id] = entry.fill;
+    fills[entry.id] = biomeFill(entry);
   }
   return fills;
 }
@@ -377,34 +458,29 @@ function inspectClimate(anchor: MapAnchor) {
   const point =
     anchor.kind === "point" ? anchor.point : anchor.kind === "provider-feature" ? anchor.fallbackPoint : null;
   if (!point) return;
-  const width = climate.width;
-  const height = climate.height;
-  const col = Math.min(width - 1, Math.max(0, Math.floor(((point[0] + 180) / 360) * width)));
-  const row = Math.min(height - 1, Math.max(0, Math.floor(((90 - point[1]) / 180) * height)));
-  const index = row * width + col;
+  const index = physicalViewIndex(point[0], point[1], climate.width, climate.height);
   const rain = climate.precipitationMmPerYear[index] ?? 0;
-  const summer = climate.precipitationNhSummerMm[index] ?? rain;
-  const winter = climate.precipitationNhWinterMm[index] ?? rain;
-  const humidity = Math.round((climate.humidityPpm[index] ?? 0) / 10_000);
-  const aridity = formatAridityLabel(climate.aridityPpm[index] ?? 0);
+  const annualT = climate.temperatureCentiC[index] ?? 0;
+  const aridityPpm = climate.aridityPpm[index] ?? 0;
+  const aridity = formatAridityLabel(aridityPpm);
   const biomeClass = climate.biomeClass[index] ?? 99;
   const entry = biomeLegendEntry(biomeClass);
-  const summerT = climate.temperatureNhSummerCentiC[index] ?? climate.temperatureCentiC[index] ?? 0;
-  const winterT = climate.temperatureNhWinterCentiC[index] ?? climate.temperatureCentiC[index] ?? 0;
   const heightM = Math.round(
     ((hydrology?.waterLevelMm[index] ?? hydrology?.seaLevelMm ?? 0) - (hydrology?.seaLevelMm ?? 0)) / 1_000,
   );
   const iceCover = hydrology?.iceCells?.[index] ?? false;
-  const iceNote = iceCover ? " Ice cover is present." : biomeClass === 1 ? " No ice cover on this cell." : "";
+  const iceNote = iceCover ? " Ice cover is present." : "";
   const storm = Math.round((climate.stormSuitabilityPpm[index] ?? 0) / 10_000);
   const track = Math.round((climate.stormTrackPpm[index] ?? 0) / 10_000);
   const intensity = Math.round((climate.stormIntensityPpm[index] ?? 0) / 10_000);
-  climateSample = `${entry.name} because ${entry.reason}. Warmer solstice ${formatCentiC(Math.max(summerT, winterT))}, colder ${formatCentiC(Math.min(summerT, winterT))}, ${heightM} m above sea, ${rain.toLocaleString("en-US")} mm/year, humidity ${humidity}% of saturation, ${aridity}. Storm genesis ${storm}%, track ${track}%, intensity ${intensity}%.${iceNote}`;
+  const quake = Math.round((hazards?.earthquakeHazardPpm[index] ?? 0) / 10_000);
+  const volcano = Math.round((hazards?.volcanicHazardPpm[index] ?? 0) / 10_000);
+  climateSample = `${entry.name}. Annual temperature ${formatCentiC(annualT)}, rainfall ${rain.toLocaleString("en-US")} mm/year, ${aridity} (${Math.round(aridityPpm / 10_000)}% aridity). ${heightM} m above sea.${iceNote} Storm genesis ${storm}%, track ${track}%, intensity ${intensity}%. Earthquake hazard ${quake}%, volcanic ${volcano}%.`;
 }
 
 function headline() {
-  if (status?.state === "completed") return "Preview ready — accept this world";
-  return "Generate a globe, then accept it";
+  if (status?.state === "completed") return "World ready — accept to save it";
+  return "Generate a world, then accept it";
 }
 
 function randomSeed() {
@@ -514,6 +590,7 @@ async function loadSavedMap() {
     preview = parseDerivedVectorCollection(await project.physicalMapDerivedGeoJson(mapId));
     hydrology = await project.physicalMapDerivedHydrology(mapId);
     climate = await project.physicalMapDerivedClimate(mapId);
+    hazards = await project.physicalMapDerivedHazards(mapId);
     await mountPreview();
   } catch (cause) {
     notice = cause instanceof Error ? cause.message : String(cause);
@@ -544,6 +621,7 @@ async function poll(jobId: string) {
       preview = parseDerivedVectorCollection(await project.physicalMapPreview(jobId));
       hydrology = await project.physicalMapHydrology(jobId);
       climate = await project.physicalMapClimate(jobId);
+      hazards = await project.physicalMapHazards(jobId);
       await mountPreview();
       publish("preview-ready", { jobId });
     } else if (status.state !== "cancelled") {
@@ -571,19 +649,18 @@ async function generate() {
   notice = "";
   hydrology = null;
   climate = null;
+  hazards = null;
   preview = { type: "FeatureCollection", features: [] };
   destroyPreview();
   try {
     const input: PhysicalGenerationInput = {
       seed,
-      retryIndex: 0,
-      evolutionPreset,
-      tectonicStyle,
       settings: {
-        width: 384,
-        height: 192,
+        resolution: resolution === "1024" ? 1024 : 512,
         radiusMetres: planetary.radiusMetres,
-        targetLandFractionPpm: 300_000,
+        targetLandFractionPpm:
+          worldPreset === "custom" ? Math.round(Math.min(95, Math.max(5, landFractionPercent)) * 10_000) : 0,
+        preset: worldPreset,
         planetary,
       },
     };
@@ -660,22 +737,39 @@ onMount(() => {
               title="Pick a new random seed">Reroll seed</button>
           </div>
           <label class="physical-field"
-            >Terrain age<select bind:value={evolutionPreset} disabled={busy}>
-              <option value="young">Young</option>
-              <option value="mature">Mature</option>
-              <option value="old">Old</option>
+            >World preset<select bind:value={worldPreset} disabled={busy}>
+              {#each WORLD_PRESETS as preset}
+                <option value={preset}
+                  >{preset === "custom"
+                    ? "Custom land fraction"
+                    : preset
+                        .split("-")
+                        .map((part) => part[0].toUpperCase() + part.slice(1))
+                        .join(" ")}</option>
+              {/each}
             </select></label>
+          <p class="physical-hint">{worldPresetHint(worldPreset)}</p>
           <label class="physical-field"
-            >Continent layout<select bind:value={tectonicStyle} disabled={busy}>
-              <option value="any">Surprise me</option>
-              <option value="mega">One continent</option>
-              <option value="giant-scraps">Continent and islands</option>
-              <option value="dual">Two continents</option>
-              <option value="scattered">Island world</option>
+            >Resolution<select bind:value={resolution} disabled={busy}>
+              <option value="512">512 (standard)</option>
+              <option value="1024">1024 (detailed)</option>
             </select></label>
-          <p class="physical-hint">{tectonicStyleHint(tectonicStyle)}</p>
+          {#if worldPreset === "custom"}
+            <label class="physical-field"
+              >Land fraction<input
+                type="number"
+                bind:value={landFractionPercent}
+                disabled={busy}
+                min="5"
+                max="95"
+                step="1" /></label>
+            <p class="physical-hint">
+              Percent of the surface above sea level. Named presets use their own land fraction.
+            </p>
+          {/if}
           <p class="physical-hint">
-            Preview is low resolution. Accepting locks coasts, elevation, climate, ice, and rivers.
+            The generated world is the world you accept: coasts, elevation, climate, ice, rivers, and hazards are final.
+            Generation takes about 2 seconds at 512 and about 4 seconds at 1024.
           </p>
         </section>
         <section class="physical-section" aria-labelledby="physical-planet-heading">
@@ -707,7 +801,6 @@ onMount(() => {
                 <option value="precipitation">Annual rainfall</option>
                 <option value="precipitation-nh-summer">Northern-summer rainfall</option>
                 <option value="precipitation-nh-winter">Northern-winter rainfall</option>
-                <option value="humidity">Humidity</option>
                 <option value="aridity">Aridity</option>
                 <option value="biome">Biome</option>
                 <option value="storm">Storm genesis</option>
@@ -725,23 +818,71 @@ onMount(() => {
                     rebuildRaster(hydrology);
                   }} />
                 Winds</label>
-              <label class="physical-check"
-                ><input
-                  type="checkbox"
-                  checked={layers.find((layer) => layer.id === "currents")?.defaultVisible ?? false}
-                  disabled={busy}
-                  onchange={(event) => {
-                    const next = event.currentTarget.checked;
-                    layers = layers.map((layer) =>
-                      layer.id === "currents" ? { ...layer, defaultVisible: next } : layer,
-                    );
-                    rebuildRaster(hydrology);
-                  }} />
-                Currents</label>
+              {#if hazards}
+                <label class="physical-check"
+                  ><input
+                    type="checkbox"
+                    checked={layers.find((layer) => layer.id === "earthquake-hazard")?.defaultVisible ?? false}
+                    disabled={busy}
+                    onchange={(event) => {
+                      const next = event.currentTarget.checked;
+                      layers = layers.map((layer) =>
+                        layer.id === "earthquake-hazard" ? { ...layer, defaultVisible: next } : layer,
+                      );
+                      rebuildRaster(hydrology);
+                    }} />
+                  Earthquakes</label>
+                <label class="physical-check"
+                  ><input
+                    type="checkbox"
+                    checked={layers.find((layer) => layer.id === "volcanic-hazard")?.defaultVisible ?? false}
+                    disabled={busy}
+                    onchange={(event) => {
+                      const next = event.currentTarget.checked;
+                      layers = layers.map((layer) =>
+                        layer.id === "volcanic-hazard" ? { ...layer, defaultVisible: next } : layer,
+                      );
+                      rebuildRaster(hydrology);
+                    }} />
+                  Volcanic hazard</label>
+                <label class="physical-check"
+                  ><input
+                    type="checkbox"
+                    checked={layers.find((layer) => layer.id === "volcanic-centers")?.defaultVisible ?? false}
+                    disabled={busy}
+                    onchange={(event) => {
+                      const next = event.currentTarget.checked;
+                      layers = layers.map((layer) =>
+                        layer.id === "volcanic-centers" ? { ...layer, defaultVisible: next } : layer,
+                      );
+                      rebuildRaster(hydrology);
+                    }} />
+                  Volcanoes</label>
+              {/if}
             </div>
             {#if climateStats().length > 0}
               <dl class="physical-stat-grid">
                 {#each climateStats() as stat}
+                  <div class="physical-stat">
+                    <dt>{stat.label}</dt>
+                    <dd>{stat.value}</dd>
+                  </div>
+                {/each}
+              </dl>
+            {/if}
+            {#if hydrologyStats().length > 0}
+              <dl class="physical-stat-grid">
+                {#each hydrologyStats() as stat}
+                  <div class="physical-stat">
+                    <dt>{stat.label}</dt>
+                    <dd>{stat.value}</dd>
+                  </div>
+                {/each}
+              </dl>
+            {/if}
+            {#if hazardStats().length > 0}
+              <dl class="physical-stat-grid">
+                {#each hazardStats() as stat}
                   <div class="physical-stat">
                     <dt>{stat.label}</dt>
                     <dd>{stat.value}</dd>
@@ -754,12 +895,9 @@ onMount(() => {
             {/if}
             {#if climateOverlay === "biome" && climate.biomeLegend}
               <p class="physical-planet-readout physical-biome-legend">
-                {#each climate.biomeLegend.filter((entry) => entry.id !== 0) as entry}
+                {#each climate.biomeLegend as entry}
                   <span
-                    ><span
-                      class="physical-biome-swatch"
-                      style={`background: rgb(${entry.fill[0]}, ${entry.fill[1]}, ${entry.fill[2]})`}></span
-                    >{entry.name}</span>
+                    ><span class="physical-biome-swatch" style={`background: ${entry.fill}`}></span>{entry.name}</span>
                 {/each}
               </p>
             {/if}
@@ -782,8 +920,8 @@ onMount(() => {
           {#if advancedPlanet}
             <div class="physical-planet-panel">
               <p class="physical-planet-readout">
-                Stored with the world. These settings now drive temperature, seasons, prevailing winds, and surface
-                currents. Figures are generated world physics, not a precise scientific prediction.
+                Stored with the world. These settings now drive temperature, seasons, and prevailing winds. Figures are
+                generated world physics, not a precise scientific prediction.
               </p>
               <label
                 >Seasons (tilt)
@@ -952,7 +1090,7 @@ onMount(() => {
                 {status.completed} / {status.total}{/if}</span>
           {:else if status?.state === "completed"}
             <span class="physical-status-progress"
-              >Seed {seed} · {evolutionPreset} terrain · {preview.features.length} features</span>
+              >Seed {seed} · {worldPreset} · {resolution} · {preview.features.length} features</span>
           {:else}
             <span class="physical-status-progress">Choose a seed and planet, then generate.</span>
           {/if}
@@ -967,7 +1105,7 @@ onMount(() => {
               class:unread={!helpSeen}
               aria-expanded={helpOpen}
               aria-controls="physical-map-help-panel"
-              aria-label="About this preview"
+              aria-label="About this world"
               onclick={toggleHelp}>?</button>
             {#if helpOpen}
               <div
@@ -976,15 +1114,16 @@ onMount(() => {
                 role="dialog"
                 aria-labelledby="physical-map-help-title"
                 aria-modal="false">
-                <strong id="physical-map-help-title">About this preview</strong>
+                <strong id="physical-map-help-title">About this world</strong>
                 <p>
-                  This low-resolution view locks the world’s physical shape—coasts, elevation, climate, ice, and rivers.
-                  Pan and zoom to explore before you accept.
+                  This view is the generated world at the chosen resolution. Accepting saves these coasts, elevation,
+                  climate, ice, rivers, and hazards as the map’s physical shape. Pan and zoom to explore before you
+                  accept.
                 </p>
                 <p class="physical-map-help-note">
-                  The accepted map is a separate high-resolution render with much more detail. You can’t edit the base
-                  world directly; copy any region into an editable layer to change it. Planet settings drive temperature
-                  and seasons; results are generated world physics, not precise scientific prediction.
+                  You can’t edit the base world directly; copy any region into an editable layer to change it. Planet
+                  settings drive temperature and seasons; results are generated world physics, not precise scientific
+                  prediction.
                 </p>
                 <button type="button" class="physical-map-help-dismiss" onclick={closeHelp}>Got it</button>
               </div>
@@ -994,7 +1133,7 @@ onMount(() => {
         {#if notice}<p class="map-reconcile-notice" role="alert">{notice}</p>{/if}
         {#if climate}
           <p class="physical-inspector">
-            {climateSample || "Click the map to inspect rainfall, humidity, aridity, biome, and storms at a cell."}
+            {climateSample || "Click the map to inspect temperature, rainfall, aridity, biome, and hazards at a cell."}
           </p>
         {/if}
         <div class="native-vector-map">
@@ -1014,7 +1153,8 @@ onMount(() => {
           {:else if preview.features.length === 0 && !raster}
             <div class="physical-map-empty-hint">
               <p>
-                No preview yet. Set the seed and planet on the left, then click <strong>Generate world</strong> below.
+                No world yet. Set the seed, preset, and planet on the left, then click
+                <strong>Generate world</strong> below.
               </p>
             </div>
           {/if}
@@ -1023,7 +1163,7 @@ onMount(() => {
     </div>
     <footer class="physical-map-actions">
       <span class="physical-actions-status" role="status">
-        {#if status?.state === "completed"}Preview ready — review, reroll, or accept.{:else if busy}Generating…{:else}Not
+        {#if status?.state === "completed"}World ready — review, reroll, or accept.{:else if busy}Generating…{:else}Not
           generated yet.{/if}
       </span>
       {#if status?.state === "completed"}

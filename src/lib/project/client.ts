@@ -66,8 +66,8 @@ import type {
   PhysicalClimateProducts,
   PhysicalEventMaterializationRequest,
   PhysicalEventMaterializationResult,
-  PhysicalEvolutionProducts,
   PhysicalGenerationInput,
+  PhysicalHazardProducts,
   PhysicalHistoricalProducts,
   PhysicalHydrologyProducts,
   PhysicalJobStatus,
@@ -385,8 +385,8 @@ export const project = {
   physicalMapStatus: (jobId: string) => invoke<PhysicalJobStatus>("project_physical_status", { jobId }),
   physicalMapPreview: (jobId: string) => invoke<string>("project_physical_preview", { jobId }),
   physicalMapClimate: (jobId: string) => invoke<PhysicalClimateProducts>("project_physical_climate", { jobId }),
-  physicalMapEvolution: (jobId: string) => invoke<PhysicalEvolutionProducts>("project_physical_evolution", { jobId }),
   physicalMapHydrology: (jobId: string) => invoke<PhysicalHydrologyProducts>("project_physical_hydrology", { jobId }),
+  physicalMapHazards: (jobId: string) => invoke<PhysicalHazardProducts>("project_physical_hazards", { jobId }),
   cancelPhysicalMap: (jobId: string) => invoke<PhysicalJobStatus>("project_physical_cancel", { jobId }),
   acceptPhysicalMap: (jobId: string, name: string, options?: MutationOptions) =>
     invoke<AcceptedPhysicalMap>("project_physical_accept", {
@@ -461,10 +461,10 @@ export const project = {
     invoke<string>("project_physical_derived_geojson", { mapEntityId }),
   physicalMapDerivedClimate: (mapEntityId: string) =>
     invoke<PhysicalClimateProducts>("project_physical_derived_climate", { mapEntityId }),
-  physicalMapDerivedEvolution: (mapEntityId: string) =>
-    invoke<PhysicalEvolutionProducts>("project_physical_derived_evolution", { mapEntityId }),
   physicalMapDerivedHydrology: (mapEntityId: string) =>
     invoke<PhysicalHydrologyProducts>("project_physical_derived_hydrology", { mapEntityId }),
+  physicalMapDerivedHazards: (mapEntityId: string) =>
+    invoke<PhysicalHazardProducts>("project_physical_derived_hazards", { mapEntityId }),
   physicalMapDerivedEpoch: (mapEntityId: string, epochOffsetYears: number, requestId = crypto.randomUUID()) =>
     invoke<PhysicalHistoricalProducts>("project_physical_derived_epoch", {
       mapEntityId,

@@ -18,8 +18,8 @@ function runCargo(args, timeout = 180_000) {
 
 function render(name, options = {}) {
   const output = join(temp, name);
-  const width = options.width ?? 128;
-  const height = options.height ?? 64;
+  const width = 2048;
+  const height = 1024;
   const format = options.format ?? "png";
   const stdout = runCargo(
     [
@@ -35,17 +35,13 @@ function render(name, options = {}) {
       sourcePath,
       "--output",
       output,
-      "--width",
-      String(width),
-      "--height",
-      String(height),
       ...(options.args ?? []),
     ],
     300_000,
   );
   const summary = JSON.parse(stdout);
   const bytes = readFileSync(output);
-  assert.equal(summary.width, width);
+  assert.equal(summary.width, width, "atlas-map renders the production 2048x1024 view");
   assert.equal(summary.height, height);
   assert.equal(summary.format, format);
   assert.equal(summary.artifactBytes ?? summary.pngBytes, bytes.length);
@@ -71,16 +67,17 @@ try {
       "--locked",
       "--offline",
       "--",
-      "--width",
+      "--resolution",
       "64",
-      "--height",
-      "32",
+      "--preset",
+      "earthlike",
       "--source",
       sourcePath,
     ]),
   );
-  assert.equal(physical.width, 64);
-  assert.equal(physical.height, 32);
+  assert.equal(physical.resolution, 64);
+  assert.equal(physical.width, 1024);
+  assert.equal(physical.height, 512);
 
   const present = render("present.png");
   const repeated = render("present-repeat.png");
@@ -105,7 +102,6 @@ try {
     "daena-atlas-precipitation",
     "daena-atlas-precipitation-nh-summer",
     "daena-atlas-precipitation-nh-winter",
-    "daena-atlas-humidity",
     "daena-atlas-aridity",
     "daena-atlas-storms",
     "daena-atlas-storm-tracks",
@@ -131,7 +127,7 @@ try {
 
   const pdf = render("atlas.pdf", { format: "pdf", args: ["--format", "pdf", "--dpi", "72"] });
   assert.equal(pdf.bytes.subarray(0, 8).toString(), "%PDF-1.4");
-  assert.match(pdf.bytes.toString("latin1"), /\/MediaBox \[0 0 128 64\]/);
+  assert.match(pdf.bytes.toString("latin1"), /\/MediaBox \[0 0 2048 1024\]/);
   assert.equal(pdf.bytes.includes(Buffer.from("/JS")), false);
   assert.equal(pdf.bytes.includes(Buffer.from("/URI")), false);
 

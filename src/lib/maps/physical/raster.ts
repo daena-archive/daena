@@ -12,7 +12,6 @@ export type ClimateOverlayMode =
   | "precipitation"
   | "precipitation-nh-summer"
   | "precipitation-nh-winter"
-  | "humidity"
   | "aridity"
   | "biome"
   | "storm"
@@ -22,7 +21,9 @@ export type PhysicalRasterPaintOptions = {
   iceVisible?: boolean;
   lakesVisible?: boolean;
   windsVisible?: boolean;
-  currentsVisible?: boolean;
+  earthquakeHazardVisible?: boolean;
+  volcanicHazardVisible?: boolean;
+  volcanicSourcesVisible?: boolean;
   climateOverlay?: ClimateOverlayMode;
   climateAnnualCentiC?: number[];
   climateNhSummerCentiC?: number[];
@@ -33,17 +34,17 @@ export type PhysicalRasterPaintOptions = {
   climateWindNorthNhSummerMilli?: number[];
   climateWindEastNhWinterMilli?: number[];
   climateWindNorthNhWinterMilli?: number[];
-  climateCurrentEastMilli?: number[];
-  climateCurrentNorthMilli?: number[];
   climatePrecipitationMm?: number[];
   climatePrecipitationNhSummerMm?: number[];
   climatePrecipitationNhWinterMm?: number[];
-  climateHumidityPpm?: number[];
   climateAridityPpm?: number[];
   climateBiomeClass?: number[];
   climateBiomeFill?: [number, number, number][];
   climateStormSuitabilityPpm?: number[];
   climateStormTrackPpm?: number[];
+  earthquakeHazardPpm?: number[];
+  volcanicHazardPpm?: number[];
+  volcanicSources?: Array<{ longitudeMicro: number; latitudeMicro: number; activityClass: string }>;
   findPlaceCells?: number[];
   findPlaceSelectedCells?: number[];
   routeCells?: number[];
@@ -63,7 +64,6 @@ export type PhysicalRasterProducts = {
 
 /** Isolated sinks smaller than this stay land so one-cell puddles do not speckle continents. */
 export const MIN_VISIBLE_INLAND_WATER_CELLS = 8;
-const CURRENT_ARROW_MIN_MILLI = 80;
 
 function lerp(first: number, second: number, t: number): number {
   return first + (second - first) * t;
@@ -93,20 +93,6 @@ function windComponents(
   return [options.climateWindEastMilli?.[index] ?? 0, options.climateWindNorthMilli?.[index] ?? 0];
 }
 
-function currentTint(eastMilli: number, northMilli: number): [number, number, number] {
-  const speed = Math.hypot(eastMilli, northMilli);
-  if (speed < 1) return [48, 196, 196];
-  const u = eastMilli / speed;
-  const v = northMilli / speed;
-  const westward: [number, number, number] = [72, 112, 220];
-  const eastward: [number, number, number] = [48, 196, 196];
-  const northward: [number, number, number] = [232, 148, 64];
-  const southward: [number, number, number] = [64, 188, 168];
-  const zonal = mixRgb(westward, eastward, (u + 1) / 2);
-  const meridional = v >= 0 ? northward : southward;
-  return mixRgb(zonal, meridional, Math.abs(v) * 0.7);
-}
-
 function windTint(eastMilli: number, northMilli: number): [number, number, number] {
   const speed = Math.hypot(eastMilli, northMilli);
   if (speed < 1) return [72, 168, 232];
@@ -126,19 +112,6 @@ function precipitationTint(mm: number): [number, number, number] {
   return [lerp(196, 32, t), lerp(168, 96, t), lerp(112, 176, t)];
 }
 
-function humidityTint(ppm: number): [number, number, number] {
-  const stops: [number, number, number][] = [
-    [236, 214, 164],
-    [204, 176, 88],
-    [124, 180, 116],
-    [48, 160, 152],
-    [22, 96, 88],
-  ];
-  const t = Math.max(0, Math.min(1, ppm / 1_000_000)) * (stops.length - 1);
-  const index = Math.min(stops.length - 2, Math.floor(t));
-  return mixRgb(stops[index], stops[index + 1], t - index);
-}
-
 function aridityTint(ppm: number): [number, number, number] {
   const t = Math.max(0, Math.min(1, ppm / 1_000_000));
   return [lerp(96, 210, t), lerp(148, 164, t), lerp(92, 96, t)];
@@ -155,6 +128,13 @@ function stormTint(ppm: number): [number, number, number] {
   return [lerp(48, 212, t), lerp(72, 96, t), lerp(112, 64, t)];
 }
 
+function hazardTint(ppm: number, volcanic: boolean): [number, number, number] {
+  const t = Math.max(0, Math.min(1, ppm / 400_000));
+  return volcanic
+    ? [lerp(120, 236, t), lerp(84, 142, t), lerp(48, 48, t)]
+    : [lerp(120, 226, t), lerp(60, 78, t), lerp(64, 64, t)];
+}
+
 function isStormOverlay(mode: ClimateOverlayMode): boolean {
   return mode === "storm" || mode === "storm-track";
 }
@@ -162,7 +142,6 @@ function isStormOverlay(mode: ClimateOverlayMode): boolean {
 function moistureValue(options: PhysicalRasterPaintOptions, overlay: ClimateOverlayMode, index: number): number {
   if (overlay === "precipitation-nh-summer") return options.climatePrecipitationNhSummerMm?.[index] ?? 0;
   if (overlay === "precipitation-nh-winter") return options.climatePrecipitationNhWinterMm?.[index] ?? 0;
-  if (overlay === "humidity") return options.climateHumidityPpm?.[index] ?? 0;
   if (overlay === "aridity") return options.climateAridityPpm?.[index] ?? 0;
   return options.climatePrecipitationMm?.[index] ?? 0;
 }
@@ -172,7 +151,6 @@ function isMoistureOverlay(mode: ClimateOverlayMode): boolean {
     mode === "precipitation" ||
     mode === "precipitation-nh-summer" ||
     mode === "precipitation-nh-winter" ||
-    mode === "humidity" ||
     mode === "aridity"
   );
 }
@@ -375,12 +353,7 @@ export function paintPhysicalSurface(
             );
           } else if (isMoistureOverlay(climateOverlay)) {
             const value = moistureValue(options, climateOverlay, index);
-            const tint =
-              climateOverlay === "humidity"
-                ? humidityTint(value)
-                : climateOverlay === "aridity"
-                  ? aridityTint(value)
-                  : precipitationTint(value);
+            const tint = climateOverlay === "aridity" ? aridityTint(value) : precipitationTint(value);
             [landRed, landGreen, landBlue] = mixRgb([landRed, landGreen, landBlue], tint, 0.72);
           } else {
             const value = climateOverlay === "nh-summer" ? summer : climateOverlay === "nh-winter" ? winter : annual;
@@ -390,6 +363,14 @@ export function paintPhysicalSurface(
         red = Math.round(landRed * light);
         green = Math.round(landGreen * light);
         blue = Math.round(landBlue * light);
+      }
+      if (options.earthquakeHazardVisible) {
+        const value = options.earthquakeHazardPpm?.[index] ?? 0;
+        if (value > 0) [red, green, blue] = mixRgb([red, green, blue], hazardTint(value, false), 0.62);
+      }
+      if (options.volcanicHazardVisible) {
+        const value = options.volcanicHazardPpm?.[index] ?? 0;
+        if (value > 0) [red, green, blue] = mixRgb([red, green, blue], hazardTint(value, true), 0.62);
       }
       if (findPlace.has(index)) {
         const tint: [number, number, number] = findPlaceSelected.has(index) ? [255, 214, 64] : [236, 156, 48];
@@ -409,8 +390,8 @@ export function paintPhysicalSurface(
   if (arrowWind) {
     paintWindArrows(context, products, options, arrowWind);
   }
-  if (options.currentsVisible) {
-    paintCurrentArrows(context, products, options);
+  if (options.volcanicSourcesVisible) {
+    paintVolcanicSources(context, products, options);
   }
   return canvas;
 }
@@ -478,67 +459,32 @@ function paintWindArrows(
   }
 }
 
-function sampleCurrent(
-  options: PhysicalRasterPaintOptions,
-  width: number,
-  height: number,
-  column: number,
-  row: number,
-): [number, number] {
-  const x = Math.max(0, Math.min(width - 1, column));
-  const y = Math.max(0, Math.min(height - 1, row));
-  const x0 = Math.floor(x);
-  const y0 = Math.floor(y);
-  const x1 = Math.min(width - 1, x0 + 1);
-  const y1 = Math.min(height - 1, y0 + 1);
-  const tx = x - x0;
-  const ty = y - y0;
-  const at = (index: number): [number, number] => [
-    options.climateCurrentEastMilli?.[index] ?? 0,
-    options.climateCurrentNorthMilli?.[index] ?? 0,
-  ];
-  const a = at(y0 * width + x0);
-  const b = at(y0 * width + x1);
-  const c = at(y1 * width + x0);
-  const d = at(y1 * width + x1);
-  return [lerp(lerp(a[0], b[0], tx), lerp(c[0], d[0], tx), ty), lerp(lerp(a[1], b[1], tx), lerp(c[1], d[1], tx), ty)];
-}
-
-function paintCurrentArrows(
+function paintVolcanicSources(
   context: CanvasRenderingContext2D,
   products: PhysicalRasterProducts,
   options: PhysicalRasterPaintOptions,
 ) {
-  const stepX = Math.max(2, Math.floor(products.width / 24));
-  const stepY = Math.max(2, Math.floor(products.height / 12));
   const oversample = PHYSICAL_RASTER_OVERSAMPLE;
-  context.lineWidth = 1.4;
-  context.lineCap = "round";
-  for (let row = Math.floor(stepY / 2); row < products.height; row += stepY) {
-    for (let column = Math.floor(stepX / 2); column < products.width; column += stepX) {
-      const jitter = ((column * 1103515245 + row * 12345) >>> 0) % 7;
-      const sampleCol = column + (jitter - 3) * 0.22;
-      const sampleRow = row + (((jitter * 3) % 7) - 3) * 0.22;
-      const [east, north] = sampleCurrent(options, products.width, products.height, sampleCol, sampleRow);
-      const speed = Math.hypot(east, north);
-      if (speed < CURRENT_ARROW_MIN_MILLI) continue;
-      const [red, green, blue] = currentTint(east, north);
-      const alpha = 0.6 + Math.min(0.35, speed / 2_400);
-      context.strokeStyle = `rgba(${Math.round(red)},${Math.round(green)},${Math.round(blue)},${alpha})`;
-      const length = 3 + Math.min(5.8, speed / 360);
-      const angle = Math.atan2(-north, east);
-      const x = sampleCol + 0.5;
-      const y = (sampleRow + 0.5) * oversample;
-      const dx = Math.cos(angle) * length;
-      const dy = Math.sin(angle) * length;
-      context.beginPath();
-      context.moveTo(x - dx, y - dy);
-      context.lineTo(x + dx, y + dy);
-      context.moveTo(x + dx, y + dy);
-      context.lineTo(x + dx - Math.cos(angle - 0.45) * 2.1, y + dy - Math.sin(angle - 0.45) * 2.1);
-      context.moveTo(x + dx, y + dy);
-      context.lineTo(x + dx - Math.cos(angle + 0.45) * 2.1, y + dy - Math.sin(angle + 0.45) * 2.1);
-      context.stroke();
-    }
+  const canvasHeight = products.height * oversample;
+  for (const source of options.volcanicSources ?? []) {
+    const x = ((source.longitudeMicro / 1_000_000 + 180) / 360) * products.width;
+    const y = ((90 - source.latitudeMicro / 1_000_000) / 180) * canvasHeight;
+    if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+    const color =
+      source.activityClass === "vigorous"
+        ? "rgba(255, 112, 72, 0.95)"
+        : source.activityClass === "moderate"
+          ? "rgba(244, 170, 72, 0.92)"
+          : "rgba(196, 188, 176, 0.8)";
+    context.fillStyle = color;
+    context.strokeStyle = "rgba(24, 18, 14, 0.8)";
+    context.lineWidth = 0.8;
+    context.beginPath();
+    context.moveTo(x, y - 3.4);
+    context.lineTo(x + 3, y + 2.4);
+    context.lineTo(x - 3, y + 2.4);
+    context.closePath();
+    context.fill();
+    context.stroke();
   }
 }

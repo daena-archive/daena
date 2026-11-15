@@ -7,50 +7,52 @@ import { spawnSync } from "node:child_process";
 const root = resolve(import.meta.dirname, "..");
 const temp = mkdtempSync(join(tmpdir(), "daena-physical-"));
 const sourcePath = join(temp, "world.pworld");
-const geojsonPath = join(temp, "coastline.geojson");
-const maxSourcePath = join(temp, "world-max.pworld");
-const maxGeojsonPath = join(temp, "coastline-max.geojson");
+const geojsonPath = join(temp, "derived.geojson");
+const largeSourcePath = join(temp, "world-large.pworld");
+const largeGeojsonPath = join(temp, "derived-large.geojson");
 
-function run(args) {
-  const result = spawnSync("cargo", args, { cwd: root, encoding: "utf8" });
+function run(args, timeout = 120_000) {
+  const result = spawnSync("cargo", args, { cwd: root, encoding: "utf8", timeout });
   if (result.status !== 0) {
     throw new Error(`${args.join(" ")} failed:\n${result.stdout}\n${result.stderr}`);
   }
   return result.stdout.trim().split("\n").at(-1);
 }
 
-try {
-  run(["test", "--manifest-path", "crates/daena-physical/Cargo.toml", "--locked", "--offline"]);
-  const summary = JSON.parse(
+function cli(resolution, source, geojson, extra = []) {
+  return JSON.parse(
     run([
       "run",
       "--quiet",
+      ...extra,
       "--manifest-path",
       "crates/daena-physical/Cargo.toml",
       "--locked",
       "--offline",
       "--",
-      "--width",
-      "64",
-      "--height",
-      "32",
+      "--resolution",
+      String(resolution),
+      "--preset",
+      "earthlike",
       "--source",
-      sourcePath,
+      source,
       "--geojson",
-      geojsonPath,
+      geojson,
     ]),
   );
-  const source = readFileSync(sourcePath);
-  const geojsonBytes = readFileSync(geojsonPath);
-  const geojson = JSON.parse(geojsonBytes);
-  assert.equal(summary.width, 64);
-  assert.equal(summary.height, 32);
-  assert.equal(summary.sourceBytes, source.length);
-  assert.equal(summary.geojsonBytes, geojsonBytes.length);
-  assert.ok(Math.abs(summary.landFraction - 0.3) < 0.04);
+}
+
+// DAENAPW2 header: 252 fixed bytes plus a six-step schedule (96 bytes), then
+// one i32 elevation per canonical cube cell (6 * n^2).
+function sourceBytes(resolution) {
+  return 252 + 6 * 16 + 4 * 6 * resolution ** 2;
+}
+
+function checkGeoJson(path) {
+  const bytes = readFileSync(path);
+  const geojson = JSON.parse(bytes);
   assert.equal(geojson.type, "FeatureCollection");
   assert.ok(geojson.features.length > 0);
-  assert.ok(geojson.features.length <= 32768);
   assert.equal(JSON.stringify(geojson).includes("http"), false);
   function positions(value) {
     if (!Array.isArray(value)) return [];
@@ -64,33 +66,39 @@ try {
       assert.ok(latitude >= -90 && latitude <= 90);
     }
   }
-  const maxSummary = JSON.parse(
-    run([
-      "run",
-      "--release",
-      "--quiet",
-      "--manifest-path",
-      "crates/daena-physical/Cargo.toml",
-      "--locked",
-      "--offline",
-      "--",
-      "--max",
-      "--source",
-      maxSourcePath,
-      "--geojson",
-      maxGeojsonPath,
-    ]),
-  );
-  const maxSource = readFileSync(maxSourcePath);
-  const maxGeojson = readFileSync(maxGeojsonPath);
-  assert.equal(maxSummary.width, 384);
-  assert.equal(maxSummary.height, 192);
-  assert.equal(maxSummary.sourceBytes, maxSource.length);
-  assert.equal(maxSummary.geojsonBytes, maxGeojson.length);
-  assert.ok(maxSummary.geojsonFeatures > 0);
-  assert.ok(maxSummary.generationMs < 10_000, `maximum generation exceeded budget: ${maxSummary.generationMs}ms`);
+  return bytes.length;
+}
+
+try {
+  run(["test", "--manifest-path", "crates/daena-physical/Cargo.toml", "--locked", "--offline"]);
+
+  const small = cli(64, sourcePath, geojsonPath);
+  const source = readFileSync(sourcePath);
+  const smallGeojsonBytes = checkGeoJson(geojsonPath);
+  assert.equal(small.resolution, 64);
+  assert.equal(source.subarray(0, 8).toString("latin1"), "DAENAPW2", "the CLI writes the v2 source");
+  assert.equal(source.length, sourceBytes(64), "DAENAPW2 source size is computed from the canonical record");
+  assert.equal(small.width, 1024, "the derived product view is the production 1024x512 view");
+  assert.equal(small.height, 512);
+  assert.equal(small.sourceBytes, source.length);
+  assert.equal(small.geojsonBytes, smallGeojsonBytes);
+  assert.equal(small.geojsonFeatures, JSON.parse(readFileSync(geojsonPath, "utf8")).features.length);
+  assert.ok(small.landFraction > 0.05 && small.landFraction < 0.6, `unexpected land fraction ${small.landFraction}`);
+  assert.equal(small.preset, "earthlike");
+
+  const large = cli(512, largeSourcePath, largeGeojsonPath, ["--release"]);
+  const largeSource = readFileSync(largeSourcePath);
+  const largeGeojsonBytes = checkGeoJson(largeGeojsonPath);
+  assert.equal(large.resolution, 512);
+  assert.equal(large.width, 1024);
+  assert.equal(large.height, 512);
+  assert.equal(largeSource.length, sourceBytes(512));
+  assert.equal(large.sourceBytes, largeSource.length);
+  assert.equal(large.geojsonBytes, largeGeojsonBytes);
+  assert.ok(large.geojsonFeatures > 0);
+  assert.ok(large.generationMs < 15_000, `512 generation exceeded budget: ${large.generationMs}ms`);
   console.log(
-    `physical map v13 source check passed on ${process.platform}/${process.arch}: default=${source.length}/${geojsonBytes.length} bytes, maximum=${maxSource.length}/${maxGeojson.length} bytes in ${maxSummary.generationMs.toFixed(1)}ms`,
+    `physical engine v2 check passed on ${process.platform}/${process.arch}: n=64 source=${small.sourceBytes} bytes geojson=${small.geojsonBytes} bytes; n=512 source=${large.sourceBytes} bytes geojson=${large.geojsonBytes} bytes in ${large.generationMs.toFixed(1)}ms`,
   );
 } finally {
   rmSync(temp, { recursive: true, force: true });

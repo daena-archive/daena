@@ -196,20 +196,12 @@ const FIELD_GUIDE: Array<{ term: string; help: string }> = [
     help: "Yearly precipitation, with the solstice split showing which season brings the rain.",
   },
   {
-    term: "Humidity",
-    help: "Remaining moisture in the air versus local saturation, as a percent. It is not a weather-station humidity reading.",
-  },
-  {
     term: "Aridity",
     help: "How much evaporative demand goes unmet by rain: humid, sub-humid, semi-arid, or arid land.",
   },
   {
-    term: "Surface current",
-    help: "Year-round surface-ocean drift near this coast: direction and strength of the major gyres, not a shipping chart.",
-  },
-  {
     term: "Biome",
-    help: "A derived reading of temperature, rain, humidity, aridity, and elevation — an interpretation for worldbuilding, not painted decoration.",
+    help: "A derived reading of temperature, rain, aridity, and elevation — an interpretation for worldbuilding, not painted decoration.",
   },
   {
     term: "Storms",
@@ -936,16 +928,6 @@ function formatWind(eastMilli: number, northMilli: number) {
   return `${strength} east ${(eastMilli / 1000).toFixed(1)}, north ${(northMilli / 1000).toFixed(1)}`;
 }
 
-function formatCurrent(eastMilli: number, northMilli: number) {
-  const speed = Math.hypot(eastMilli, northMilli);
-  if (speed < 1) return "none";
-  return `annual east ${(eastMilli / 1000).toFixed(2)}, north ${(northMilli / 1000).toFixed(2)}`;
-}
-
-function formatHumidity(ppm: number) {
-  return `${Math.round(ppm / 10_000)}% of saturation`;
-}
-
 function formatAridity(ppm: number) {
   if (ppm < 200_000) return "humid";
   if (ppm < 500_000) return "sub-humid";
@@ -953,10 +935,11 @@ function formatAridity(ppm: number) {
   return "arid";
 }
 
-function formatDivergence(ppm: number) {
-  if (ppm < -20_000) return "Converging";
-  if (ppm > 20_000) return "Diverging";
-  return "Neutral";
+function formatDivergence(nanoPerS: number) {
+  // Typical surface divergence is 1e-6 to 1e-5 s⁻¹, so the neutral band is ±1e-6 s⁻¹.
+  const scaled = nanoPerS / 1_000;
+  const label = scaled < -1 ? "Converging" : scaled > 1 ? "Diverging" : "Neutral";
+  return `${label} (${scaled.toFixed(1)} ×10⁻⁶ s⁻¹)`;
 }
 
 function formatFreeze(value: AtlasStudioSurfaceSample["freeze"]) {
@@ -2270,10 +2253,6 @@ onDestroy(() => {
       <dt>Rainfall</dt>
       <dd>{sample.precipitationMm.toLocaleString("en-US")} mm</dd>
     </div>
-    <div>
-      <dt>Humidity</dt>
-      <dd>{formatHumidity(sample.humidityPpm)}</dd>
-    </div>
   </dl>
   <div class="place-sheet">
     <section aria-label="Temperature">
@@ -2326,15 +2305,15 @@ onDestroy(() => {
         </div>
         <div>
           <dt>Wind flow</dt>
-          <dd>{formatDivergence(sample.windDivergencePpm)}</dd>
+          <dd>{formatDivergence(sample.windDivergenceNanoPerS)}</dd>
         </div>
         <div>
           <dt>Northern-summer flow</dt>
-          <dd>{formatDivergence(sample.windDivergenceNhSummerPpm)}</dd>
+          <dd>{formatDivergence(sample.windDivergenceNhSummerNanoPerS)}</dd>
         </div>
         <div>
           <dt>Northern-winter flow</dt>
-          <dd>{formatDivergence(sample.windDivergenceNhWinterPpm)}</dd>
+          <dd>{formatDivergence(sample.windDivergenceNhWinterNanoPerS)}</dd>
         </div>
       </dl>
     </section>
@@ -2353,10 +2332,6 @@ onDestroy(() => {
           <dt>Aridity</dt>
           <dd>{formatAridity(sample.aridityPpm)}</dd>
         </div>
-        <div>
-          <dt>Surface current</dt>
-          <dd>{formatCurrent(sample.currentEastMilli, sample.currentNorthMilli)}</dd>
-        </div>
       </dl>
     </section>
     <section aria-label="Land and climate">
@@ -2366,12 +2341,6 @@ onDestroy(() => {
           <dt>Surface</dt>
           <dd>{titleCase(sample.surface)}</dd>
         </div>
-        {#if sample.iceThicknessMm > 0}
-          <div>
-            <dt>Ice cover</dt>
-            <dd>{formatMetres(sample.iceThicknessMm)}</dd>
-          </div>
-        {/if}
         <div>
           <dt>Why this biome</dt>
           <dd>{sample.biomeReason}</dd>
@@ -2637,10 +2606,6 @@ onDestroy(() => {
                   <div>
                     <dt>Rainfall</dt>
                     <dd>{surface.precipitationMm.toLocaleString("en-US")} mm/year</dd>
-                  </div>
-                  <div>
-                    <dt>Humidity</dt>
-                    <dd>{formatHumidity(surface.humidityPpm)}</dd>
                   </div>
                 </dl>
               {:else}

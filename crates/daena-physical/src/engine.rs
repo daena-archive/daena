@@ -6,6 +6,7 @@
 
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
+use std::sync::OnceLock;
 
 use daena_worldgen as worldgen;
 use rayon::prelude::*;
@@ -32,6 +33,68 @@ pub const PRODUCT_VIEW_WIDTH: u32 = 1024;
 pub const PRODUCT_VIEW_HEIGHT: u32 = 512;
 /// Resolutions the product accepts for new worlds.
 pub const PRODUCT_RESOLUTIONS: [u32; 2] = [512, 1024];
+
+/// Centre of one canonical cube cell in microdegrees.
+///
+/// `resolution` is the source resolution (`Settings::resolution`), not the
+/// product view size. Hazard sources and event cells use this function so the
+/// frontend never has to convert a canonical cell into a position.
+pub fn canonical_cell_center_microdegrees(
+    resolution: u32,
+    radius_metres: f64,
+    cell: u32,
+) -> Result<[i32; 2], PhysicalError> {
+    let grid = worldgen::CubeSphere::new(resolution, radius_metres)
+        .map_err(|error| invalid(error.to_string()))?;
+    if cell as usize >= grid.cell_count() {
+        return Err(invalid("cell is outside the canonical grid"));
+    }
+    let (latitude, longitude) = grid.lat_lon(cell);
+    Ok([
+        (longitude.to_degrees() * 1_000_000.0).round() as i32,
+        (latitude.to_degrees() * 1_000_000.0).round() as i32,
+    ])
+}
+
+/// Receiver roots for a canonical hydrology receiver array.
+///
+/// A root is the lowest cell of a receiver tree; it is also the watershed id.
+pub(crate) fn receiver_roots(receiver: &[u32]) -> Vec<u32> {
+    const VISITING: u32 = u32::MAX - 1;
+    let mut roots = vec![TOOL_SURFACE_NONE; receiver.len()];
+    for start in 0..receiver.len() {
+        if roots[start] != TOOL_SURFACE_NONE {
+            continue;
+        }
+        let mut path = Vec::new();
+        let mut cursor = start as u32;
+        let root = loop {
+            let known = roots[cursor as usize];
+            if known != TOOL_SURFACE_NONE && known != VISITING {
+                break known;
+            }
+            if known == VISITING {
+                break cursor;
+            }
+            roots[cursor as usize] = VISITING;
+            let next = receiver
+                .get(cursor as usize)
+                .copied()
+                .unwrap_or(TOOL_SURFACE_NONE);
+            if next == TOOL_SURFACE_NONE || next == cursor || next as usize >= receiver.len() {
+                break cursor;
+            }
+            path.push(cursor);
+            cursor = next;
+        };
+        roots[cursor as usize] = root;
+        for cell in path {
+            roots[cell as usize] = root;
+        }
+        roots[start] = root;
+    }
+    roots
+}
 
 const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
@@ -476,15 +539,7 @@ impl DecodedSource {
 
     /// Centre of one canonical cube cell in microdegrees.
     pub fn cell_center_microdegrees(&self, cell: u32) -> Result<[i32; 2], PhysicalError> {
-        let grid = self.cube_grid()?;
-        if cell as usize >= grid.cell_count() {
-            return Err(invalid("cell is outside the canonical grid"));
-        }
-        let (latitude, longitude) = grid.lat_lon(cell);
-        Ok([
-            (longitude.to_degrees() * 1_000_000.0).round() as i32,
-            (latitude.to_degrees() * 1_000_000.0).round() as i32,
-        ])
+        canonical_cell_center_microdegrees(self.settings.resolution, self.settings.radius_m, cell)
     }
 
     /// Ocean volume samples on the canonical cube grid.
@@ -740,6 +795,24 @@ pub struct ToolSurface {
     pub rivers: Vec<SurfaceRiver>,
     lake_index: BTreeMap<u32, usize>,
     lake_minimum_index: BTreeMap<u32, usize>,
+    /// Landmass and watershed size ranks, computed once on first use.
+    region_ranks: OnceLock<RegionRanks>,
+}
+
+#[derive(Debug, Default)]
+struct RegionRanks {
+    landmass: BTreeMap<u32, u32>,
+    watershed: BTreeMap<u32, u32>,
+}
+
+fn rank_map(sizes: BTreeMap<u32, u32>) -> BTreeMap<u32, u32> {
+    let mut ordered = sizes.into_iter().collect::<Vec<_>>();
+    ordered.sort_by(|left, right| right.1.cmp(&left.1).then(left.0.cmp(&right.0)));
+    ordered
+        .into_iter()
+        .enumerate()
+        .map(|(index, (id, _))| (id, index as u32 + 1))
+        .collect()
 }
 
 impl ToolSurface {
@@ -756,6 +829,49 @@ impl ToolSurface {
 
     pub fn cell_count(&self) -> usize {
         self.elevation_mm.len()
+    }
+
+    fn compute_region_ranks(&self) -> RegionRanks {
+        let mut landmass_sizes = BTreeMap::<u32, u32>::new();
+        for (cell, id) in self.landmass_id.iter().enumerate() {
+            if *id != TOOL_SURFACE_NONE && !self.ocean(cell as u32) {
+                *landmass_sizes.entry(*id).or_default() += 1;
+            }
+        }
+        let roots = receiver_roots(&self.receiver);
+        let mut watershed_sizes = BTreeMap::<u32, u32>::new();
+        for (cell, root) in roots.iter().enumerate() {
+            if *root != TOOL_SURFACE_NONE && !self.ocean(cell as u32) {
+                *watershed_sizes.entry(*root).or_default() += 1;
+            }
+        }
+        RegionRanks {
+            landmass: rank_map(landmass_sizes),
+            watershed: rank_map(watershed_sizes),
+        }
+    }
+
+    fn region_ranks(&self) -> &RegionRanks {
+        self.region_ranks
+            .get_or_init(|| self.compute_region_ranks())
+    }
+
+    /// Size rank of a landmass id on this surface, 1 is the largest.
+    pub fn landmass_rank(&self, region_id: u32) -> u32 {
+        self.region_ranks()
+            .landmass
+            .get(&region_id)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// Size rank of a receiver-root watershed on this surface, 1 is the largest.
+    pub fn watershed_rank(&self, outlet: u32) -> u32 {
+        self.region_ranks()
+            .watershed
+            .get(&outlet)
+            .copied()
+            .unwrap_or(0)
     }
 
     pub fn resolution(&self) -> u32 {
@@ -1273,6 +1389,7 @@ fn build_tool_surface_with_cancel(
         rivers,
         lake_index: BTreeMap::new(),
         lake_minimum_index: BTreeMap::new(),
+        region_ranks: OnceLock::new(),
     };
     surface.rebuild_lake_indexes();
     Ok(surface)
@@ -1425,6 +1542,7 @@ impl ToolSurface {
             rivers: Vec::new(),
             lake_index: BTreeMap::new(),
             lake_minimum_index: BTreeMap::new(),
+            region_ranks: OnceLock::new(),
         }
     }
 

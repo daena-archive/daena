@@ -66,6 +66,159 @@ fn engine_products(resolution: u32) -> daena_physical::engine::Products {
     daena_physical::engine::generate(settings, &mut daena_physical::NoopProgress).unwrap()
 }
 
+fn contract_shape(value: &serde_json::Value) -> serde_json::Value {
+    use serde_json::{json, Value};
+    match value {
+        Value::Object(map) => {
+            let fields = map
+                .iter()
+                .map(|(key, value)| (key.clone(), contract_shape(value)))
+                .collect::<serde_json::Map<_, _>>();
+            json!({"kind": "object", "fields": fields})
+        }
+        Value::Array(items) => json!({
+            "kind": "array",
+            "items": items.first().map_or_else(|| json!({"kind": "any"}), contract_shape),
+        }),
+        Value::Null => json!({"kind": "null"}),
+        Value::Bool(_) => json!({"kind": "boolean"}),
+        Value::Number(_) => json!({"kind": "number"}),
+        Value::String(_) => json!({"kind": "string"}),
+    }
+}
+
+#[test]
+fn physical_frontend_contract_fixture_matches_the_rust_json() {
+    let products = engine_products(64);
+    let generation = products.generation().unwrap().clone();
+
+    let mut hydrology = products.hydrology().clone();
+    if hydrology.basins.is_empty() {
+        hydrology.basins.push(daena_physical::products::Basin {
+            id: 1,
+            minimum_cell: 2,
+            minimum_elevation_mm: 3,
+            cell_count: 4,
+            spill_cell: 5,
+            spill_elevation_mm: Some(6),
+            water_level_mm: 7,
+            water_volume_m3: 8,
+            inflow_m3_per_year: 9,
+            evaporation_m3_per_year: 10,
+            outflow_m3_per_year: 11,
+            status: daena_physical::products::BasinStatus::Active,
+        });
+    }
+    if hydrology.rivers.is_empty() {
+        hydrology
+            .rivers
+            .push(daena_physical::products::RiverSegment {
+                id: 1,
+                source_cell: 2,
+                mouth_cell: 3,
+                strahler_order: 4,
+                destination: daena_physical::products::RiverDestination::Ocean,
+                spill_outlet: false,
+                coordinate_count: 0,
+            });
+    }
+    let mut hazards = products.hazards().clone();
+    if hazards.volcanic_sources.is_empty() {
+        hazards
+            .volcanic_sources
+            .push(daena_physical::products::VolcanicSource {
+                stable_id: 9,
+                cell: 0,
+                origin: daena_physical::products::VolcanicOrigin::Hotspot,
+                activity_class: daena_physical::products::VolcanicActivity::Moderate,
+                eruptions_per_model_year_nano: 1,
+            });
+    }
+
+    let mut request = daena_atlas::request::AtlasRenderRequest::spike_png(64, 32).unwrap();
+    request.level = daena_atlas::request::DetailLevel::Standard;
+    let identity = daena_atlas::spike_identity_from_source(products.source());
+    let prepared = daena_atlas::prepare_from_source(
+        products.source(),
+        &identity,
+        &request,
+        None,
+        None,
+        &mut daena_atlas::NoopProgress,
+    )
+    .unwrap();
+    let sample = prepared.sample_surface(0, 0);
+    let decoded = daena_physical::engine::decode_source(products.source()).unwrap();
+    let event_request = daena_physical::events::EventMaterializationRequest {
+        event_kind: daena_physical::events::NaturalEventKind::Earthquake,
+        interval_start_years: -100_000,
+        interval_end_years: 100_000,
+        max_events: 1,
+        hazard_seed: 1,
+    };
+    let mut event = decoded
+        .sample_events(None, &event_request, &mut daena_physical::NoopProgress)
+        .unwrap()
+        .events
+        .into_iter()
+        .next()
+        .expect("the small engine world samples at least one earthquake");
+    // The earthquake event leaves this optional field zero; set it so the
+    // fixture also pins the serialized key shape of the event wrapper.
+    event.hydrology_derivation_version = 1;
+
+    let mut fixture = serde_json::Map::new();
+    fixture.insert("generation".into(), contract_shape(&generation));
+    fixture.insert(
+        "climate".into(),
+        contract_shape(&engine_climate_products(products.climate())),
+    );
+    fixture.insert(
+        "hydrology".into(),
+        contract_shape(&engine_hydrology_products(&hydrology)),
+    );
+    fixture.insert(
+        "hazards".into(),
+        contract_shape(&engine_hazard_products(
+            &hazards,
+            products.resolution(),
+            daena_physical::DEFAULT_RADIUS_METRES as f64,
+        )),
+    );
+    fixture.insert(
+        "surfaceSample".into(),
+        contract_shape(&serde_json::to_value(sample).unwrap()),
+    );
+    fixture.insert(
+        "materializedEvent".into(),
+        contract_shape(
+            &serde_json::to_value(MaterializedPhysicalEvent {
+                entity_id: "entity".into(),
+                event,
+            })
+            .unwrap(),
+        ),
+    );
+    let fixture = serde_json::Value::Object(fixture);
+    let mut text = serde_json::to_string_pretty(&fixture).unwrap();
+    text.push('\n');
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("src/lib/project/physical-contract.fixture.json");
+    if std::env::var_os("DAENA_UPDATE_PHYSICAL_CONTRACT").is_some() {
+        std::fs::write(&path, text).unwrap();
+        return;
+    }
+    let expected = std::fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+    assert_eq!(
+        text,
+        expected,
+        "{} is stale; regenerate it with DAENA_UPDATE_PHYSICAL_CONTRACT=1 cargo test -p daena physical_frontend_contract_fixture_matches_the_rust_json",
+        path.display()
+    );
+}
+
 #[test]
 fn accepted_engine_source_rebuilds_and_rejects_an_external_checkpoint_edit() {
     let products = engine_products(32);
@@ -5722,10 +5875,60 @@ fn volcanic_source_ids_serialize_as_decimal_strings_beyond_two_to_the_53() {
             activity_class: daena_physical::products::VolcanicActivity::Dormant,
             eruptions_per_model_year_nano: 1,
         });
-    let json = engine_hazard_products(&hazards);
+    let json = engine_hazard_products(&hazards, products.resolution(), 6_371_000.0);
     let value = &json["volcanicSources"].as_array().unwrap().last().unwrap()["stableId"];
     assert_eq!(value, &serde_json::json!(id.to_string()));
     assert_eq!(value.as_str().unwrap().parse::<u64>().unwrap(), id);
+}
+
+#[test]
+fn physical_hazard_products_place_canonical_sources_and_match_the_generation_grid() {
+    let products = engine_products(32);
+    let generation = products.generation().unwrap().clone();
+    let (resolution, radius_metres) = generation_source_grid(&generation).unwrap();
+    assert_eq!(resolution, 32);
+    let snapshot = daena_physical::engine::decode_source(products.source())
+        .unwrap()
+        .settings_snapshot();
+    assert_eq!(resolution, snapshot.resolution);
+    assert_eq!(radius_metres, snapshot.radius_m);
+
+    let mut hazards = products.hazards().clone();
+    hazards
+        .volcanic_sources
+        .push(daena_physical::products::VolcanicSource {
+            stable_id: u64::MAX - 1,
+            cell: 0,
+            origin: daena_physical::products::VolcanicOrigin::SubductionArc,
+            activity_class: daena_physical::products::VolcanicActivity::Vigorous,
+            eruptions_per_model_year_nano: 2,
+        });
+    let json = engine_hazard_products(&hazards, resolution, radius_metres);
+    let view_cells = daena_physical::engine::PRODUCT_VIEW_WIDTH as usize
+        * daena_physical::engine::PRODUCT_VIEW_HEIGHT as usize;
+    for key in [
+        "earthquakeHazardPpm",
+        "volcanicHazardPpm",
+        "earthquakeAnnualRateNano",
+        "volcanicAnnualRateNano",
+        "earthquakeRatePerMillionYearsPpm",
+        "eruptionRatePerMillionYearsPpm",
+    ] {
+        assert_eq!(json[key].as_array().unwrap().len(), view_cells);
+    }
+    let source = json["volcanicSources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|source| source["stableId"] == serde_json::json!((u64::MAX - 1).to_string()))
+        .unwrap();
+    let [longitude, latitude] =
+        daena_physical::engine::canonical_cell_center_microdegrees(resolution, radius_metres, 0)
+            .unwrap();
+    assert_eq!(source["longitudeMicro"], serde_json::json!(longitude));
+    assert_eq!(source["latitudeMicro"], serde_json::json!(latitude));
+    assert_eq!(source["origin"], "subduction-arc");
+    assert_eq!(source["activityClass"], "vigorous");
 }
 
 #[test]
@@ -6063,6 +6266,7 @@ fn physical_event_materialization_uses_engine_events_and_survives_rebuild() {
     .unwrap();
     assert!(!floods.events.is_empty());
     assert_eq!(floods.materialization_version, 3);
+    assert_eq!(floods.model_label, "engine-lake-spill-v3");
     let surface = tool_surface_for_source(
         &accepted.physical_identity,
         &validated.source,
@@ -6137,6 +6341,7 @@ fn physical_event_materialization_uses_engine_events_and_survives_rebuild() {
     )
     .unwrap();
     assert!(!earthquakes.events.is_empty());
+    assert_eq!(earthquakes.model_label, "poisson-gutenberg-richter-v2");
     let earthquake_provenance = provenance(&earthquakes.events[0].entity_id);
     assert_eq!(earthquake_provenance["cellKind"], "canonical-cube");
     assert_eq!(

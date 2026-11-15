@@ -24,6 +24,23 @@ fn planetary_from_generation(
         .unwrap_or_else(daena_physical::planetary::PlanetaryConfiguration::earth_like)
 }
 
+pub(super) fn generation_source_grid(generation: &serde_json::Value) -> Result<(u32, f64), String> {
+    let settings = generation
+        .get("settings")
+        .ok_or_else(|| "physical generation settings are missing".to_string())?;
+    let resolution = settings
+        .get("resolution")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .ok_or_else(|| "physical generation is missing its resolution".to_string())?;
+    let radius_metres = settings
+        .get("radiusMetres")
+        .and_then(serde_json::Value::as_u64)
+        .map(|value| value as f64)
+        .ok_or_else(|| "physical generation is missing its radius".to_string())?;
+    Ok((resolution, radius_metres))
+}
+
 #[tauri::command]
 pub(super) async fn project_physical_generate(
     state: tauri::State<'_, SharedCore>,
@@ -489,7 +506,33 @@ pub(super) fn engine_hydrology_products(
 
 pub(super) fn engine_hazard_products(
     hazards: &daena_physical::products::HazardField,
+    resolution: u32,
+    radius_metres: f64,
 ) -> serde_json::Value {
+    let volcanic_sources = hazards
+        .volcanic_sources
+        .iter()
+        .map(|source| {
+            // Hazard sources come from a validated engine world, so the cell is
+            // always inside the canonical grid. Keep the command total anyway.
+            let [longitude_micro, latitude_micro] =
+                daena_physical::engine::canonical_cell_center_microdegrees(
+                    resolution,
+                    radius_metres,
+                    source.cell,
+                )
+                .unwrap_or([0, 0]);
+            serde_json::json!({
+                "stableId": source.stable_id.to_string(),
+                "cell": source.cell,
+                "longitudeMicro": longitude_micro,
+                "latitudeMicro": latitude_micro,
+                "origin": source.origin.label(),
+                "activityClass": source.activity_class.label(),
+                "eruptionsPerModelYearNano": source.eruptions_per_model_year_nano,
+            })
+        })
+        .collect::<Vec<_>>();
     serde_json::json!({
         "derivationVersion": hazards.metrics.derivation_version,
         "volcanicSourceDerivationVersion": hazards.metrics.volcanic_source_derivation_version,
@@ -499,13 +542,7 @@ pub(super) fn engine_hazard_products(
         "volcanicAnnualRateNano": hazards.volcanic_annual_rate_nano,
         "earthquakeRatePerMillionYearsPpm": hazards.earthquake_rate_per_million_years_ppm,
         "eruptionRatePerMillionYearsPpm": hazards.eruption_rate_per_million_years_ppm,
-        "volcanicSources": hazards.volcanic_sources.iter().map(|source| serde_json::json!({
-            "stableId": source.stable_id.to_string(),
-            "cell": source.cell,
-            "origin": source.origin.label(),
-            "activityClass": source.activity_class.label(),
-            "eruptionsPerModelYearNano": source.eruptions_per_model_year_nano,
-        })).collect::<Vec<_>>(),
+        "volcanicSources": volcanic_sources,
         "metrics": {
             "volcanicSourceCount": hazards.metrics.volcanic_source_count,
             "nonDormantSourceCount": hazards.metrics.non_dormant_source_count,
@@ -1092,6 +1129,8 @@ pub(super) fn engine_historical_response(
     epoch_offset_years: i64,
     historical: &daena_physical::history::DerivedHistoricalWorld,
     parameters: daena_physical::history::HistoricalForcingParameters,
+    resolution: u32,
+    radius_metres: f64,
 ) -> serde_json::Value {
     let products = &historical.products;
     let climate = engine_climate_products(&products.climate);
@@ -1118,7 +1157,7 @@ pub(super) fn engine_historical_response(
         "geojson": products.derived_geojson,
         "climate": climate,
         "hydrology": hydrology,
-        "hazards": engine_hazard_products(&products.hazards),
+        "hazards": engine_hazard_products(&products.hazards, resolution, radius_metres),
         "derivedHashes": derived_hashes,
         "forcing": historical_forcing_products(parameters),
         "history": {
@@ -1262,17 +1301,6 @@ pub(super) fn project_physical_climate(
 }
 
 #[tauri::command]
-pub(super) fn project_physical_evolution(
-    state: tauri::State<'_, SharedCore>,
-    _jobs: tauri::State<'_, SharedPhysicalJobs>,
-    _job_id: String,
-) -> Result<serde_json::Value, String> {
-    current_info(state.inner())?
-        .ok_or_else(|| "open a project before reading physical evolution".to_string())?;
-    Err("physical evolution products were removed in phase E4".into())
-}
-
-#[tauri::command]
 pub(super) fn project_physical_hydrology(
     state: tauri::State<'_, SharedCore>,
     jobs: tauri::State<'_, SharedPhysicalJobs>,
@@ -1295,6 +1323,36 @@ pub(super) fn project_physical_hydrology(
         .as_ref()
         .ok_or_else(|| "physical job hydrology is not ready".to_string())?;
     Ok(engine_hydrology_products(&result.hydrology))
+}
+
+#[tauri::command]
+pub(super) fn project_physical_hazards(
+    state: tauri::State<'_, SharedCore>,
+    jobs: tauri::State<'_, SharedPhysicalJobs>,
+    job_id: String,
+) -> Result<serde_json::Value, String> {
+    let project_id = current_info(state.inner())?
+        .ok_or_else(|| "open a project before reading physical hazards".to_string())?
+        .root;
+    let mut manager = jobs
+        .lock()
+        .map_err(|_| "physical job state is unavailable".to_string())?;
+    manager.reap_expired();
+    let job = manager
+        .jobs
+        .get(&job_id)
+        .filter(|job| manager.active_session_matches(&project_id, &job.session_id))
+        .ok_or("physical job was not found, expired, or belongs to another session")?;
+    let result = job
+        .result
+        .as_ref()
+        .ok_or_else(|| "physical job hazards are not ready".to_string())?;
+    let (resolution, radius_metres) = generation_source_grid(&result.generation)?;
+    Ok(engine_hazard_products(
+        &result.hazards,
+        resolution,
+        radius_metres,
+    ))
 }
 
 #[tauri::command]
@@ -1436,16 +1494,6 @@ pub(super) async fn project_physical_derived_climate(
 }
 
 #[tauri::command]
-pub(super) async fn project_physical_derived_evolution(
-    state: tauri::State<'_, SharedCore>,
-    _map_entity_id: String,
-) -> Result<serde_json::Value, String> {
-    current_info(state.inner())?
-        .ok_or_else(|| "open a project before reading physical evolution".to_string())?;
-    Err("physical evolution products were removed in phase E4".into())
-}
-
-#[tauri::command]
 pub(super) async fn project_physical_derived_hydrology(
     state: tauri::State<'_, SharedCore>,
     map_entity_id: String,
@@ -1476,6 +1524,46 @@ pub(super) async fn project_physical_derived_hydrology(
         )
         .map_err(CoreError::Validation)?;
         Ok(engine_hydrology_products(&physics.hydrology))
+    })
+    .await
+}
+
+#[tauri::command]
+pub(super) async fn project_physical_derived_hazards(
+    state: tauri::State<'_, SharedCore>,
+    map_entity_id: String,
+) -> Result<serde_json::Value, String> {
+    with_read_project(state, move |project| {
+        let descriptor = project
+            .list_fields(map_entity_id.clone())?
+            .into_iter()
+            .find(|field| field.namespace == daena_core::maps::MAP_NAMESPACE && field.key == "map")
+            .ok_or_else(|| CoreError::Validation("maps:map descriptor is missing".into()))?;
+        let source_id = descriptor
+            .value
+            .get("sourceAssetId")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| CoreError::Validation("maps: sourceAssetId is missing".into()))?;
+        let generation =
+            descriptor.value.get("generation").cloned().ok_or_else(|| {
+                CoreError::Validation("maps: physical generation is missing".into())
+            })?;
+        let bytes = project.asset_bytes(source_id.to_string())?;
+        let validated = daena_core::maps::physical::validate_source(&bytes, &generation)?;
+        let planetary = planetary_from_generation(&generation);
+        let physics = load_or_fill_engine_static(
+            &project.info().ok_or(CoreError::ProjectNotOpen)?.root,
+            &validated.identity,
+            &validated.source,
+            planetary,
+        )
+        .map_err(CoreError::Validation)?;
+        let snapshot = validated.source.settings_snapshot();
+        Ok(engine_hazard_products(
+            &physics.hazards,
+            snapshot.resolution,
+            snapshot.radius_m,
+        ))
     })
     .await
 }
@@ -1552,6 +1640,7 @@ pub(super) async fn project_physical_derived_epoch(
             ),
         )
         .map_err(|error| CoreError::Validation(error.to_string()))?;
+        let snapshot = validated.source.settings_snapshot();
         let value = engine_historical_response(
             &source_hash,
             &physical_identity,
@@ -1559,6 +1648,8 @@ pub(super) async fn project_physical_derived_epoch(
             epoch_offset_years,
             &historical,
             forcing,
+            snapshot.resolution,
+            snapshot.radius_m,
         );
         let mut cache = historical_epoch_cache()
             .lock()
@@ -1961,6 +2052,7 @@ pub(super) fn physical_materialize_events_response(
         materialization_version: request.event_kind.materialization_version(),
         hazard_derivation_version,
         hydrology_derivation_version,
+        model_label: request.event_kind.model_label().to_owned(),
         prediction: false,
         events: materialized,
     })

@@ -36,11 +36,21 @@ const RESERVED_PHYSICAL_LAYER_IDS = new Set([
   "islands",
   "ice",
   "winds",
-  "currents",
 ]);
 
 export function isReservedPhysicalLayerId(id: string): boolean {
   return RESERVED_PHYSICAL_LAYER_IDS.has(id);
+}
+
+/**
+ * Layer ids that older stored physical maps may still carry. The engine has no
+ * humidity or ocean-current layer, so a read must drop these instead of
+ * rendering a dead toggle.
+ */
+export const RETIRED_PHYSICAL_LAYER_IDS: ReadonlySet<string> = new Set(["currents", "humidity"]);
+
+export function dropRetiredPhysicalLayers(layers: MapLayerDefinition[]): MapLayerDefinition[] {
+  return layers.filter((layer) => !RETIRED_PHYSICAL_LAYER_IDS.has(layer.id));
 }
 
 export function emptyCollection(): VectorFeatureCollection {

@@ -7,7 +7,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::contours;
-use crate::engine::{ToolSurface, TOOL_SURFACE_NONE};
+use crate::engine::{receiver_roots, ToolSurface, TOOL_SURFACE_NONE};
 use crate::hydrology::HydrologyField;
 use crate::{Grid, PhysicalError};
 
@@ -151,7 +151,13 @@ pub fn propose_region_canonical(
             let selected = (0..surface.cell_count())
                 .map(|cell| surface.landmass_id(cell as u32) == region_id)
                 .collect::<Vec<_>>();
-            (selected, region_id, format!("Landmass {region_id}"))
+            let rank = surface.landmass_rank(region_id);
+            let label = if rank == 0 {
+                format!("Landmass {region_id}")
+            } else {
+                format!("Landmass {rank}")
+            };
+            (selected, region_id, label)
         }
         DETECTOR_WATERSHED => {
             if surface.ocean(cell) {
@@ -159,7 +165,7 @@ pub fn propose_region_canonical(
                     "No watershed at this point for the current epoch.".into(),
                 ));
             }
-            let roots = receiver_roots(surface);
+            let roots = receiver_roots(&surface.receiver);
             let outlet = roots[cell as usize];
             if outlet == TOOL_SURFACE_NONE {
                 return Err(PhysicalError::InvalidSettings(
@@ -172,7 +178,13 @@ pub fn propose_region_canonical(
                     !surface.ocean(cell) && roots[cell as usize] == outlet
                 })
                 .collect::<Vec<_>>();
-            (selected, outlet, format!("Watershed {outlet}"))
+            let rank = surface.watershed_rank(outlet);
+            let label = if rank == 0 {
+                format!("Watershed {outlet}")
+            } else {
+                format!("Watershed {rank}")
+            };
+            (selected, outlet, label)
         }
         _ => {
             return Err(PhysicalError::InvalidSettings(
@@ -242,38 +254,6 @@ pub fn propose_region_canonical(
         cell_count,
         rings,
     })
-}
-
-fn receiver_roots(surface: &ToolSurface) -> Vec<u32> {
-    let count = surface.cell_count();
-    let mut roots = vec![TOOL_SURFACE_NONE; count];
-    for start in 0..count {
-        if roots[start] != TOOL_SURFACE_NONE {
-            continue;
-        }
-        let mut path = Vec::new();
-        let mut cursor = start as u32;
-        let root = loop {
-            if roots[cursor as usize] != TOOL_SURFACE_NONE {
-                break roots[cursor as usize];
-            }
-            let next = surface.receiver(cursor);
-            if next == cursor
-                || next == TOOL_SURFACE_NONE
-                || next as usize >= count
-                || path.len() > count
-            {
-                roots[cursor as usize] = cursor;
-                break cursor;
-            }
-            path.push(cursor);
-            cursor = next;
-        };
-        for cursor in path {
-            roots[cursor as usize] = root;
-        }
-    }
-    roots
 }
 
 fn all_land(hydrology: &HydrologyField) -> Result<RegionProposal, PhysicalError> {
@@ -515,7 +495,7 @@ mod canonical_tests {
             propose_region_canonical(&surface, point[0], point[1], DETECTOR_LANDMASS, 64, 32)
                 .unwrap();
         assert_eq!(proposal.region_id, id);
-        assert_eq!(proposal.label, format!("Landmass {id}"));
+        assert_eq!(proposal.label, "Landmass 1");
         assert!(proposal.cell_count > 0);
         assert!(proposal.epoch_dependent);
         assert!(!proposal.rings.is_empty());
@@ -527,6 +507,72 @@ mod canonical_tests {
                 assert!((-90_000_000..=90_000_000).contains(lat));
             }
         }
+    }
+
+    #[test]
+    fn canonical_landmass_labels_are_size_ranks_across_calls() {
+        let mut surface = ToolSurface::synthetic(16);
+        let count = surface.cell_count() as u32;
+        for cell in 0..12 {
+            surface.test_set_land(cell);
+            surface.landmass_id[cell as usize] = 500;
+        }
+        for cell in 40..48 {
+            surface.test_set_land(cell);
+            surface.landmass_id[cell as usize] = 700;
+        }
+        let large = surface.center_microdegrees(0);
+        let small = surface.center_microdegrees(40);
+        let first =
+            propose_region_canonical(&surface, large[0], large[1], DETECTOR_LANDMASS, 64, 32)
+                .unwrap();
+        let second =
+            propose_region_canonical(&surface, large[0], large[1], DETECTOR_LANDMASS, 64, 32)
+                .unwrap();
+        let smaller =
+            propose_region_canonical(&surface, small[0], small[1], DETECTOR_LANDMASS, 64, 32)
+                .unwrap();
+        assert_eq!(first.region_id, 500);
+        assert_eq!(smaller.region_id, 700);
+        assert_eq!(first.label, "Landmass 1");
+        assert_eq!(second.label, first.label);
+        assert_eq!(smaller.label, "Landmass 2");
+        assert!(first.cell_count > smaller.cell_count);
+        assert!(count > 48);
+    }
+
+    #[test]
+    fn canonical_watershed_labels_are_size_ranks_across_calls() {
+        let mut surface = ToolSurface::synthetic(16);
+        let roots = [100u32, 200u32];
+        for root in roots {
+            surface.test_set_land(root);
+            surface.receiver[root as usize] = root;
+        }
+        for cell in [101u32, 102, 103, 104, 105] {
+            surface.test_set_land(cell);
+            surface.receiver[cell as usize] = roots[0];
+        }
+        for cell in [201u32, 202, 203] {
+            surface.test_set_land(cell);
+            surface.receiver[cell as usize] = roots[1];
+        }
+        let large = surface.center_microdegrees(101);
+        let small = surface.center_microdegrees(201);
+        let first =
+            propose_region_canonical(&surface, large[0], large[1], DETECTOR_WATERSHED, 64, 32)
+                .unwrap();
+        let second =
+            propose_region_canonical(&surface, large[0], large[1], DETECTOR_WATERSHED, 64, 32)
+                .unwrap();
+        let smaller =
+            propose_region_canonical(&surface, small[0], small[1], DETECTOR_WATERSHED, 64, 32)
+                .unwrap();
+        assert_eq!(first.region_id, roots[0]);
+        assert_eq!(second.label, first.label);
+        assert_eq!(first.label, "Watershed 1");
+        assert_eq!(smaller.label, "Watershed 2");
+        assert!(first.cell_count > smaller.cell_count);
     }
 
     #[test]

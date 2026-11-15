@@ -1,0 +1,870 @@
+{
+  "climate": {
+    "fields": {
+      "aridityPpm": {
+        "items": {
+          "kind": "number"
+        },
+        "kind": "array"
+      },
+      "biomeClass": {
+        "items": {
+          "kind": "number"
+        },
+        "kind": "array"
+      },
+      "biomeLegend": {
+        "items": {
+          "fields": {
+            "fill": {
+              "kind": "string"
+            },
+            "id": {
+              "kind": "number"
+            },
+            "name": {
+              "kind": "string"
+            },
+            "reason": {
+              "kind": "string"
+            }
+          },
+          "kind": "object"
+        },
+        "kind": "array"
+      },
+      "derivationVersion": {
+        "kind": "number"
+      },
+      "height": {
+        "kind": "number"
+      },
+      "maritimeFactorPpm": {
+        "items": {
+          "kind": "number"
+        },
+        "kind": "array"
+      },
+      "metrics": {
+        "fields": {
+          "climateSpinupYears": {
+            "kind": "number"
+          },
+          "convergingCellPpm": {
+            "kind": "number"
+          },
+          "dominantLandBiome": {
+            "kind": "number"
+          },
+          "driestLandCellPrecipitationMmPerYear": {
+            "kind": "number"
+          },
+          "easterlyCellPpm": {
+            "kind": "number"
+          },
+          "expectedStormsPerYearMilli": {
+            "kind": "number"
+          },
+          "itczLatitudeMilliDeg": {
+            "kind": "number"
+          },
+          "maximumSeasonalTemperatureCentiC": {
+            "kind": "number"
+          },
+          "maximumTemperatureCentiC": {
+            "kind": "number"
+          },
+          "meanExtremeRainfallPotentialPpm": {
+            "kind": "number"
+          },
+          "meanHeatWavePotentialPpm": {
+            "kind": "number"
+          },
+          "meanLandAridityPpm": {
+            "kind": "number"
+          },
+          "meanLandDroughtPotentialPpm": {
+            "kind": "number"
+          },
+          "meanLandDrySeasonPpm": {
+            "kind": "number"
+          },
+          "meanLandGrowingSeasonPpm": {
+            "kind": "number"
+          },
+          "meanLandStormTrackPpm": {
+            "kind": "number"
+          },
+          "meanLandWetSeasonPpm": {
+            "kind": "number"
+          },
+          "meanOceanStormSuitabilityPpm": {
+            "kind": "number"
+          },
+          "meanPrecipitationMmPerYear": {
+            "kind": "number"
+          },
+          "meanRunoffMmPerYear": {
+            "kind": "number"
+          },
+          "meanSeasonalPrecipitationRangeMm": {
+            "kind": "number"
+          },
+          "meanSeasonalRangeCentiC": {
+            "kind": "number"
+          },
+          "meanStormIntensityPpm": {
+            "kind": "number"
+          },
+          "meanTemperatureCentiC": {
+            "kind": "number"
+          },
+          "meanWindSpeedMilli": {
+            "kind": "number"
+          },
+          "minimumSeasonalTemperatureCentiC": {
+            "kind": "number"
+          },
+          "minimumTemperatureCentiC": {
+            "kind": "number"
+          },
+          "permanentlyFrozenLandPpm": {
+            "kind": "number"
+          },
+          "precipitationVolumeM3PerYear": {
+            "kind": "number"
+          },
+          "runoffVolumeM3PerYear": {
+            "kind": "number"
+          },
+          "seasonallyFrozenLandPpm": {
+            "kind": "number"
+          },
+          "stormProneOceanPpm": {
+            "kind": "number"
+          },
+          "wettestCellPrecipitationMmPerYear": {
+            "kind": "number"
+          }
+        },
+        "kind": "object"
+      },
+      "precipitationMmPerYear": {
+        "items": {
+          "kind": "number"
+        },
+        "kind": "array"
+      },
+      "precipitationNhSummerMm": {
+        "items": {
+          "kind": "number"
+        },
+        "kind": "array"
+      },
+      "precipitationNhWinterMm": {
+        "items": {
+          "kind": "number"
+        },
+        "kind": "array"
+      },
+      "runoffMmPerYear": {
+        "items": {
+          "kind": "number"
+        },
+        "kind": "array"
+      },
+      "runoffVolumeM3PerYear": {
+        "items": {
+          "kind": "number"
+        },
+        "kind": "array"
+      },
+      "stormIntensityPpm": {
+        "items": {
+          "kind": "number"
+        },
+        "kind": "array"
+      },
+      "stormSuitabilityPpm": {
+        "items": {
+          "kind": "number"
+        },
+        "kind": "array"
+      },
+      "stormTrackPpm": {
+        "items": {
+          "kind": "number"
+        },
+        "kind": "array"
+      },
+      "temperatureCentiC": {
+        "items": {
+          "kind": "number"
+        },
+        "kind": "array"
+      },
+      "temperatureNhSummerCentiC": {
+        "items": {
+          "kind": "number"
+        },
+        "kind": "array"
+      },
+      "temperatureNhWinterCentiC": {
+        "items": {
+          "kind": "number"
+        },
+        "kind": "array"
+      },
+      "width": {
+        "kind": "number"
+      },
+      "windBand": {
+        "items": {
+          "kind": "number"
+        },
+        "kind": "array"
+      },
+      "windBandNhSummer": {
+        "items": {
+          "kind": "number"
+        },
+        "kind": "array"
+      },
+      "windBandNhWinter": {
+        "items": {
+          "kind": "number"
+        },
+        "kind": "array"
+      },
+      "windDivergenceNanoPerS": {
+        "items": {
+          "kind": "number"
+        },
+        "kind": "array"
+      },
+      "windDivergenceNhSummerNanoPerS": {
+        "items": {
+          "kind": "number"
+        },
+        "kind": "array"
+      },
+      "windDivergenceNhWinterNanoPerS": {
+        "items": {
+          "kind": "number"
+        },
+        "kind": "array"
+      },
+      "windEastMilli": {
+        "items": {
+          "kind": "number"
+        },
+        "kind": "array"
+      },
+      "windEastNhSummerMilli": {
+        "items": {
+          "kind": "number"
+        },
+        "kind": "array"
+      },
+      "windEastNhWinterMilli": {
+        "items": {
+          "kind": "number"
+        },
+        "kind": "array"
+      },
+      "windNorthMilli": {
+        "items": {
+          "kind": "number"
+        },
+        "kind": "array"
+      },
+      "windNorthNhSummerMilli": {
+        "items": {
+          "kind": "number"
+        },
+        "kind": "array"
+      },
+      "windNorthNhWinterMilli": {
+        "items": {
+          "kind": "number"
+        },
+        "kind": "array"
+      }
+    },
+    "kind": "object"
+  },
+  "generation": {
+    "fields": {
+      "id": {
+        "kind": "string"
+      },
+      "seed": {
+        "kind": "number"
+      },
+      "settings": {
+        "fields": {
+          "engineVersion": {
+            "kind": "number"
+          },
+          "hazardDerivationVersion": {
+            "kind": "number"
+          },
+          "historicalForcing": {
+            "fields": {
+              "components": {
+                "items": {
+                  "fields": {
+                    "amplitudeCentiC": {
+                      "kind": "number"
+                    },
+                    "periodYears": {
+                      "kind": "number"
+                    },
+                    "phaseOffsetYears": {
+                      "kind": "number"
+                    }
+                  },
+                  "kind": "object"
+                },
+                "kind": "array"
+              },
+              "iceMidpointCentiC": {
+                "kind": "number"
+              },
+              "iceResponseYears": {
+                "kind": "number"
+              },
+              "iceTransitionWidthCentiC": {
+                "kind": "number"
+              },
+              "landIceAmplitudePpm": {
+                "kind": "number"
+              },
+              "sensitivityPpm": {
+                "kind": "number"
+              },
+              "thermalExpansionPpmPerDegreeC": {
+                "kind": "number"
+              },
+              "version": {
+                "kind": "number"
+              }
+            },
+            "kind": "object"
+          },
+          "planetary": {
+            "fields": {
+              "axialTiltMilliDeg": {
+                "kind": "number"
+              },
+              "bondAlbedoPpm": {
+                "kind": "number"
+              },
+              "eccentricityPpm": {
+                "kind": "number"
+              },
+              "meanDensityKgM3": {
+                "kind": "number"
+              },
+              "preset": {
+                "kind": "string"
+              },
+              "radiusMetres": {
+                "kind": "number"
+              },
+              "retainedHeatCentiC": {
+                "kind": "number"
+              },
+              "rotationPeriodSeconds": {
+                "kind": "number"
+              },
+              "semiMajorAxisMilliAu": {
+                "kind": "number"
+              },
+              "starLuminosityPpm": {
+                "kind": "number"
+              },
+              "starMassPpm": {
+                "kind": "number"
+              },
+              "version": {
+                "kind": "number"
+              }
+            },
+            "kind": "object"
+          },
+          "preset": {
+            "kind": "string"
+          },
+          "radiusMetres": {
+            "kind": "number"
+          },
+          "referenceWaterInventoryM3": {
+            "kind": "number"
+          },
+          "resolution": {
+            "kind": "number"
+          },
+          "sourceVersion": {
+            "kind": "number"
+          },
+          "targetLandFractionPpm": {
+            "kind": "number"
+          }
+        },
+        "kind": "object"
+      },
+      "version": {
+        "kind": "number"
+      }
+    },
+    "kind": "object"
+  },
+  "hazards": {
+    "fields": {
+      "derivationVersion": {
+        "kind": "number"
+      },
+      "earthquakeAnnualRateNano": {
+        "items": {
+          "kind": "number"
+        },
+        "kind": "array"
+      },
+      "earthquakeHazardPpm": {
+        "items": {
+          "kind": "number"
+        },
+        "kind": "array"
+      },
+      "earthquakeRatePerMillionYearsPpm": {
+        "items": {
+          "kind": "number"
+        },
+        "kind": "array"
+      },
+      "eruptionRatePerMillionYearsPpm": {
+        "items": {
+          "kind": "number"
+        },
+        "kind": "array"
+      },
+      "metrics": {
+        "fields": {
+          "earthquakeMaxPpm": {
+            "kind": "number"
+          },
+          "earthquakeMeanPpm": {
+            "kind": "number"
+          },
+          "earthquakeRateMassNano": {
+            "kind": "number"
+          },
+          "nonDormantSourceCount": {
+            "kind": "number"
+          },
+          "volcanicMaxPpm": {
+            "kind": "number"
+          },
+          "volcanicMeanPpm": {
+            "kind": "number"
+          },
+          "volcanicRateMassNano": {
+            "kind": "number"
+          },
+          "volcanicSourceCount": {
+            "kind": "number"
+          }
+        },
+        "kind": "object"
+      },
+      "volcanicAnnualRateNano": {
+        "items": {
+          "kind": "number"
+        },
+        "kind": "array"
+      },
+      "volcanicHazardPpm": {
+        "items": {
+          "kind": "number"
+        },
+        "kind": "array"
+      },
+      "volcanicSourceDerivationVersion": {
+        "kind": "number"
+      },
+      "volcanicSources": {
+        "items": {
+          "fields": {
+            "activityClass": {
+              "kind": "string"
+            },
+            "cell": {
+              "kind": "number"
+            },
+            "eruptionsPerModelYearNano": {
+              "kind": "number"
+            },
+            "latitudeMicro": {
+              "kind": "number"
+            },
+            "longitudeMicro": {
+              "kind": "number"
+            },
+            "origin": {
+              "kind": "string"
+            },
+            "stableId": {
+              "kind": "string"
+            }
+          },
+          "kind": "object"
+        },
+        "kind": "array"
+      }
+    },
+    "kind": "object"
+  },
+  "hydrology": {
+    "fields": {
+      "basinByCell": {
+        "items": {
+          "kind": "number"
+        },
+        "kind": "array"
+      },
+      "basins": {
+        "items": {
+          "fields": {
+            "cellCount": {
+              "kind": "number"
+            },
+            "evaporationM3PerYear": {
+              "kind": "number"
+            },
+            "id": {
+              "kind": "number"
+            },
+            "inflowM3PerYear": {
+              "kind": "number"
+            },
+            "minimumCell": {
+              "kind": "number"
+            },
+            "minimumElevationMm": {
+              "kind": "number"
+            },
+            "outflowM3PerYear": {
+              "kind": "number"
+            },
+            "spillCell": {
+              "kind": "number"
+            },
+            "spillElevationMm": {
+              "kind": "null"
+            },
+            "status": {
+              "kind": "string"
+            },
+            "waterLevelMm": {
+              "kind": "number"
+            },
+            "waterVolumeM3": {
+              "kind": "number"
+            }
+          },
+          "kind": "object"
+        },
+        "kind": "array"
+      },
+      "bathymetryMm": {
+        "items": {
+          "kind": "number"
+        },
+        "kind": "array"
+      },
+      "derivationVersion": {
+        "kind": "number"
+      },
+      "height": {
+        "kind": "number"
+      },
+      "hillshadePpm": {
+        "items": {
+          "kind": "number"
+        },
+        "kind": "array"
+      },
+      "iceCells": {
+        "items": {
+          "kind": "boolean"
+        },
+        "kind": "array"
+      },
+      "islandId": {
+        "items": {
+          "kind": "number"
+        },
+        "kind": "array"
+      },
+      "lakeCells": {
+        "items": {
+          "kind": "boolean"
+        },
+        "kind": "array"
+      },
+      "lakeLevelMm": {
+        "items": {
+          "kind": "number"
+        },
+        "kind": "array"
+      },
+      "metrics": {
+        "fields": {
+          "bathymetryContourCount": {
+            "kind": "number"
+          },
+          "coastlineSegmentCount": {
+            "kind": "number"
+          },
+          "islandCount": {
+            "kind": "number"
+          },
+          "lakeCount": {
+            "kind": "number"
+          },
+          "landPolygonCount": {
+            "kind": "number"
+          },
+          "oceanPolygonCount": {
+            "kind": "number"
+          },
+          "riverCount": {
+            "kind": "number"
+          },
+          "shelfCellCount": {
+            "kind": "number"
+          },
+          "watershedCount": {
+            "kind": "number"
+          }
+        },
+        "kind": "object"
+      },
+      "rivers": {
+        "items": {
+          "fields": {
+            "coordinateCount": {
+              "kind": "number"
+            },
+            "destination": {
+              "kind": "string"
+            },
+            "id": {
+              "kind": "number"
+            },
+            "mouthCell": {
+              "kind": "number"
+            },
+            "sourceCell": {
+              "kind": "number"
+            },
+            "spillOutlet": {
+              "kind": "boolean"
+            },
+            "strahlerOrder": {
+              "kind": "number"
+            }
+          },
+          "kind": "object"
+        },
+        "kind": "array"
+      },
+      "seaLevelMm": {
+        "kind": "number"
+      },
+      "shelfCells": {
+        "items": {
+          "kind": "boolean"
+        },
+        "kind": "array"
+      },
+      "slopePpm": {
+        "items": {
+          "kind": "number"
+        },
+        "kind": "array"
+      },
+      "waterLevelMm": {
+        "items": {
+          "kind": "number"
+        },
+        "kind": "array"
+      },
+      "watershedId": {
+        "items": {
+          "kind": "number"
+        },
+        "kind": "array"
+      },
+      "width": {
+        "kind": "number"
+      }
+    },
+    "kind": "object"
+  },
+  "materializedEvent": {
+    "fields": {
+      "annualRateNano": {
+        "kind": "number"
+      },
+      "cell": {
+        "kind": "number"
+      },
+      "entityId": {
+        "kind": "string"
+      },
+      "eventKind": {
+        "kind": "string"
+      },
+      "hazardPpm": {
+        "kind": "number"
+      },
+      "hydrologyDerivationVersion": {
+        "kind": "number"
+      },
+      "latitudeMicrodegrees": {
+        "kind": "number"
+      },
+      "longitudeMicrodegrees": {
+        "kind": "number"
+      },
+      "magnitudeMilli": {
+        "kind": "number"
+      },
+      "ordinal": {
+        "kind": "number"
+      },
+      "ratePerMillionYearsPpm": {
+        "kind": "number"
+      },
+      "sampledCenterId": {
+        "kind": "null"
+      },
+      "trackCells": {
+        "items": {
+          "kind": "number"
+        },
+        "kind": "array"
+      },
+      "volcanicSourceDerivationVersion": {
+        "kind": "number"
+      },
+      "yearOffset": {
+        "kind": "number"
+      }
+    },
+    "kind": "object"
+  },
+  "surfaceSample": {
+    "fields": {
+      "aridityPpm": {
+        "kind": "number"
+      },
+      "biomeReason": {
+        "kind": "string"
+      },
+      "climate": {
+        "kind": "string"
+      },
+      "elevationMm": {
+        "kind": "number"
+      },
+      "freeze": {
+        "kind": "string"
+      },
+      "latMicro": {
+        "kind": "number"
+      },
+      "lonMicro": {
+        "kind": "number"
+      },
+      "precipitationMm": {
+        "kind": "number"
+      },
+      "precipitationNhSummerMm": {
+        "kind": "number"
+      },
+      "precipitationNhWinterMm": {
+        "kind": "number"
+      },
+      "seasonalRangeCentiC": {
+        "kind": "number"
+      },
+      "stormIntensityPpm": {
+        "kind": "number"
+      },
+      "stormReason": {
+        "kind": "string"
+      },
+      "stormSuitabilityPpm": {
+        "kind": "number"
+      },
+      "stormTrackPpm": {
+        "kind": "number"
+      },
+      "surface": {
+        "kind": "string"
+      },
+      "temperatureCentiC": {
+        "kind": "number"
+      },
+      "temperatureNhSummerCentiC": {
+        "kind": "number"
+      },
+      "temperatureNhWinterCentiC": {
+        "kind": "number"
+      },
+      "waterSurfaceMm": {
+        "kind": "number"
+      },
+      "windBand": {
+        "kind": "string"
+      },
+      "windBandNhSummer": {
+        "kind": "string"
+      },
+      "windBandNhWinter": {
+        "kind": "string"
+      },
+      "windDivergenceNanoPerS": {
+        "kind": "number"
+      },
+      "windDivergenceNhSummerNanoPerS": {
+        "kind": "number"
+      },
+      "windDivergenceNhWinterNanoPerS": {
+        "kind": "number"
+      },
+      "windEastMilli": {
+        "kind": "number"
+      },
+      "windEastNhSummerMilli": {
+        "kind": "number"
+      },
+      "windEastNhWinterMilli": {
+        "kind": "number"
+      },
+      "windNorthMilli": {
+        "kind": "number"
+      },
+      "windNorthNhSummerMilli": {
+        "kind": "number"
+      },
+      "windNorthNhWinterMilli": {
+        "kind": "number"
+      }
+    },
+    "kind": "object"
+  }
+}

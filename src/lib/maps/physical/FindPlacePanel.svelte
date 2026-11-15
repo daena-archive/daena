@@ -3,15 +3,32 @@ import { ChevronRight } from "@lucide/svelte";
 import type { FindPlaceCandidate, FindPlaceQuery, FindPlaceResult } from "$lib/project/types";
 
 const FALLBACK_BIOMES = [
-  { id: 1, name: "permanent ice" },
-  { id: 2, name: "tundra" },
-  { id: 3, name: "alpine" },
-  { id: 4, name: "cold grassland" },
-  { id: 5, name: "temperate grassland" },
-  { id: 6, name: "desert" },
-  { id: 7, name: "shrubland" },
-  { id: 8, name: "temperate forest" },
-  { id: 9, name: "tropical forest" },
+  { id: 0, name: "deep ocean" },
+  { id: 1, name: "shelf" },
+  { id: 2, name: "trench" },
+  { id: 3, name: "reef" },
+  { id: 4, name: "seasonal sea ice" },
+  { id: 5, name: "perennial sea ice" },
+  { id: 6, name: "fresh lake" },
+  { id: 7, name: "salt lake" },
+  { id: 8, name: "salt flat" },
+  { id: 9, name: "ice sheet" },
+  { id: 10, name: "glacier" },
+  { id: 11, name: "tundra" },
+  { id: 12, name: "alpine" },
+  { id: 13, name: "boreal forest" },
+  { id: 14, name: "cold steppe" },
+  { id: 15, name: "cold desert" },
+  { id: 16, name: "temperate rainforest" },
+  { id: 17, name: "temperate forest" },
+  { id: 18, name: "mediterranean" },
+  { id: 19, name: "grassland" },
+  { id: 20, name: "hot desert" },
+  { id: 21, name: "savanna" },
+  { id: 22, name: "tropical seasonal forest" },
+  { id: 23, name: "tropical rainforest" },
+  { id: 24, name: "wetland" },
+  { id: 25, name: "mangrove" },
 ];
 
 type Preset = {
@@ -71,7 +88,7 @@ const PRESETS: Preset[] = [
     id: "storm-coast",
     label: "Tropical storm coast",
     landOnly: true,
-    values: { coastMax: "40", tempMin: "20", stormMin: "20", biomeClass: "9" },
+    values: { coastMax: "40", tempMin: "20", stormMin: "20", biomeClass: "23" },
     soft: ["biome"],
   },
 ];
@@ -124,8 +141,6 @@ let tempMin = $state("");
 let tempMax = $state("");
 let rainMin = $state("");
 let rainMax = $state("");
-let humidityMin = $state("");
-let humidityMax = $state("");
 let aridityMin = $state("");
 let aridityMax = $state("");
 let coastMin = $state("");
@@ -148,7 +163,6 @@ let latitudeSoft = $state(false);
 let slopeSoft = $state(false);
 let tempSoft = $state(false);
 let rainSoft = $state(false);
-let humiditySoft = $state(false);
 let ariditySoft = $state(false);
 let coastSoft = $state(false);
 let freshSoft = $state(false);
@@ -197,7 +211,6 @@ function collectSoft() {
       ["slope", slopeSoft],
       ["temperature", tempSoft],
       ["precipitation", rainSoft],
-      ["humidity", humiditySoft],
       ["aridity", ariditySoft],
       ["coast", coastSoft],
       ["freshwater", freshSoft],
@@ -340,8 +353,6 @@ function resetFilters() {
   tempMax = "";
   rainMin = "";
   rainMax = "";
-  humidityMin = "";
-  humidityMax = "";
   aridityMin = "";
   aridityMax = "";
   coastMin = "";
@@ -364,7 +375,6 @@ function resetFilters() {
   slopeSoft = false;
   tempSoft = false;
   rainSoft = false;
-  humiditySoft = false;
   ariditySoft = false;
   coastSoft = false;
   freshSoft = false;
@@ -405,7 +415,6 @@ function applyPreset(preset: Preset) {
   slopeSoft = preset.soft.includes("slope");
   tempSoft = preset.soft.includes("temperature");
   rainSoft = preset.soft.includes("precipitation");
-  humiditySoft = preset.soft.includes("humidity");
   ariditySoft = preset.soft.includes("aridity");
   coastSoft = preset.soft.includes("coast");
   freshSoft = preset.soft.includes("freshwater");
@@ -433,8 +442,6 @@ function submit() {
       temperatureCentiCMax: climateAvailable ? optionalCenti(tempMax, "Temp max") : undefined,
       precipitationMmMin: climateAvailable ? parseOptional(rainMin, "Rain min") : undefined,
       precipitationMmMax: climateAvailable ? parseOptional(rainMax, "Rain max") : undefined,
-      humidityPpmMin: climateAvailable ? optionalPercentPpm(humidityMin, "Humidity min") : undefined,
-      humidityPpmMax: climateAvailable ? optionalPercentPpm(humidityMax, "Humidity max") : undefined,
       aridityPpmMin: climateAvailable ? optionalPercentPpm(aridityMin, "Aridity min") : undefined,
       aridityPpmMax: climateAvailable ? optionalPercentPpm(aridityMax, "Aridity max") : undefined,
       biomeClass: !climateAvailable || biomeClass === "" ? undefined : Number(biomeClass),
@@ -614,20 +621,6 @@ const HAZARD_CHIPS = [
       <label><span>Slope min %</span><input type="number" min="0" step="0.1" bind:value={slopeMin} {disabled} /></label>
       <label><span>Slope max %</span><input type="number" min="0" step="0.1" bind:value={slopeMax} {disabled} /></label>
       <label
-        ><span>Humidity min %</span><input
-          type="number"
-          min="0"
-          max="100"
-          bind:value={humidityMin}
-          disabled={climateOff} /></label>
-      <label
-        ><span>Humidity max %</span><input
-          type="number"
-          min="0"
-          max="100"
-          bind:value={humidityMax}
-          disabled={climateOff} /></label>
-      <label
         ><span>Aridity min %</span><input
           type="number"
           min="0"
@@ -708,7 +701,6 @@ const HAZARD_CHIPS = [
       <label><input type="checkbox" bind:checked={freshSoft} {disabled} /> Fresh water</label>
       <label><input type="checkbox" bind:checked={latitudeSoft} {disabled} /> Latitude</label>
       <label><input type="checkbox" bind:checked={slopeSoft} {disabled} /> Slope</label>
-      <label><input type="checkbox" bind:checked={humiditySoft} disabled={climateOff} /> Humidity</label>
       <label><input type="checkbox" bind:checked={ariditySoft} disabled={climateOff} /> Aridity</label>
       {#if islandOptions.length > 0}
         <label><input type="checkbox" bind:checked={islandSoft} {disabled} /> Landmass</label>

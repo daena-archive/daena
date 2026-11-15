@@ -1010,9 +1010,9 @@ and add no hash field.
 | `daena-physical/src/region.rs` | view hydrology `island_id`, `watershed_id`, polygons | engine landmass and receiver-root watersheds, polygonized on the requested view | raster for polygons, point for pick | E5 |
 | `daena-physical/src/contours.rs` | `PhysicalField` equirect elevation + sea level | equirect engine elevation view + epoch sea level | raster | E4, E5 |
 | `daena-physical/src/history.rs`, `derived_cache.rs` | `PhysicalField`, `ClimateField`, `DrainageField`, `HydrologyField`, old ocean volume curve, forcing math | engine `World`/`SurfaceContext`, cube inventory solver, product forcing math, engine-derived products; cache version dir gains engine/source versions | mixed | E4 |
-| `src/lib/maps/physical/*` | `PhysicalClimateProducts`, `PhysicalHydrologyProducts`, `PhysicalEvolutionProducts`, `PhysicalGenerationInput`, humidity/current/evolution views, terrain age, tectonic style | climate/hydrology/hazard products from engine; 26-class biome legend; preset + resolution; no humidity/current/evolution | mixed | E7 |
-| `src/lib/maps/atlas/*` | same climate/hydrology products via Atlas scene; humidity style and current arrows; studio surface humidity/current | engine-backed view; humidity style and current arrows removed; 26 classes grouped for the unchanged Atlas biome style | raster plus point inspect | E7 |
-| `src/lib/project/types.ts`, `client.ts` | old product shapes including evolution, humidity, currents, retry index | v2 shapes; removed fields gone; hazard and source metadata added | – | E7 |
+| `src/lib/maps/physical/*` | engine climate/hydrology/hazard products; preset + resolution generation form; 26-class biome legend; hazard rasters and volcanic markers; no humidity/current/evolution/terrain-age/tectonic-style views | unchanged; product shapes now come from the Rust JSON builders and the contract fixture guards them | mixed | E7 |
+| `src/lib/maps/atlas/*` | engine-backed scene; sample without humidity/current/ice thickness; divergence in 1e-9 s⁻¹; no humidity style; 26 engine classes grouped into the unchanged ten Atlas biome groups | unchanged; Atlas style label says "Biome groups" and the studio shows divergence as ×10⁻⁶ s⁻¹ | raster plus point inspect | E7 |
+| `src/lib/project/types.ts`, `client.ts` | v2 product shapes; hazard products and volcanic coordinates; preset/resolution generation input; no evolution, humidity, currents, retry index or tectonic style | unchanged; `physical-contract.fixture.json` and the typed mirror keep the TS interfaces aligned with the Rust builders | – | E7 |
 | `docs/maps/MAPS.md`, ADR 0004 | old source, climate and budget wording | v2 source, engine climate, measured budgets; updated in E8 in the same commit as the constants | – | E8 |
 
 #### Field mapping
@@ -2563,6 +2563,101 @@ Doubts:
   `59.784407` at `n = 1024`), while the notable fraction is one constant
   calibrated at 512. The product rate therefore moves by about 0.7 % between
   the two accepted resolutions.
+
+#### E7 notes
+
+Implemented on `world-engine-v2` on top of E6 (`c0e6bfb`). The frontend now
+speaks the engine contract; no UI path reads a removed product field.
+
+- **Contract test.** `src-tauri/src/tests.rs`
+  `physical_frontend_contract_fixture_matches_the_rust_json` generates a small
+  `n = 64` engine world and writes the key/kind shape of the generation JSON,
+  the climate, hydrology and hazard builders, an `AtlasSurfaceSample` and a
+  materialized event to `src/lib/project/physical-contract.fixture.json`.
+  Regeneration is explicit: `DAENA_UPDATE_PHYSICAL_CONTRACT=1 cargo test
+  --manifest-path src-tauri/Cargo.toml --lib
+  physical_frontend_contract_fixture_matches_the_rust_json`. The typed mirror
+  `src/lib/project/physical-contract.ts` is checked by `svelte-check` against
+  the TS interfaces; `scripts/maps-physical-contract.test.mjs` compares both
+  shapes. A renamed Rust field, a removed TS field or an extra TS field fails
+  one side or the other. The fixture intentionally injects one basin, river and
+  volcanic source when the small world has none, so element shapes are never
+  empty.
+- **Generation form.** Preset (`earthlike`, `frozen`, `hothouse`, `desert`,
+  `archipelago`, `water-world`, `pangea`, `shattered`, `custom`) and resolution
+  (512 or 1024) replace terrain age, continent layout and retry index. Named
+  presets send `targetLandFractionPpm = 0`; only `custom` sends the land
+  fraction control. The wording says the generated world is the accepted
+  world and gives the measured times (about 2 s at 512, about 4 s at 1024).
+- **Removed paths.** The evolution client calls and both Rust stub commands are
+  gone. Humidity and currents disappear from the editor, raster painter,
+  native-vector editor, Atlas style registry and studio samples. Stored
+  physical layer lists are filtered on read (`dropRetiredPhysicalLayers`), so
+  an old `currents` or `humidity` layer does not reach a toggle.
+- **Hazards.** `project_physical_hazards(jobId)` and
+  `project_physical_derived_hazards(mapEntityId)` mirror the climate/hydrology
+  pair. `engine_hazard_products` now also writes `longitudeMicro` and
+  `latitudeMicro` for each volcanic source, derived from the canonical cell, so
+  the frontend places markers by coordinate and never treats `cell` as a view
+  index. Earthquake and volcanic ppm rasters and the source markers share the
+  same 1024×512 product view as climate and hydrology.
+- **Biome legend and readout.** The editor parses the Rust `#rrggbb` fill once
+  per legend and renders all 26 classes. The click readout is the class name
+  plus sampled annual temperature, precipitation and aridity; no per-class
+  reason text is invented. Atlas keeps its ten-group biome style and its label
+  now says "Biome groups".
+- **Canonical indices.** A Node test scans the map frontend for the canonical
+  hydrology fields (`minimumCell`, `spillCell`, `sourceCell`, `mouthCell`) used
+  as array indices and for a volcanic canonical cell used as a view index. No
+  such use exists; new ones fail `check:maps:physical`.
+- **Region labels.** `ToolSurface` caches landmass and watershed size ranks in a
+  `OnceLock`, computed from the surface once per epoch. `propose_region_canonical`
+  labels the largest landmass "Landmass 1" and the largest watershed
+  "Watershed 1", while `region_id` stays the stable canonical cell or receiver
+  root. Tests call each region twice and check label stability and that rank 1
+  has the larger cell count.
+- **Events.** The materialize message now shows the event model label and the
+  epoch or interval. `sampledCenterId` remains a string in the TS type and no
+  frontend parser reads it; old entities with numeric provenance values still
+  render through the generic entity view and their stored document.
+- **Check scripts.** `maps-physical.test.mjs` drives the engine CLI with
+  `--resolution`/`--preset`, checks `DAENAPW2`, the engine GeoJSON and the exact
+  v2 record size. `maps-atlas.test.mjs` builds an engine source and drops the
+  removed humidity style. The Atlas CLI renders its production 2048×1024 view,
+  so the script asserts that size instead of the retired 128×64 harness size.
+  Measured on this machine (seed 831429, Earthlike): n=64 source 98,652 bytes
+  (348-byte header plus 4·6·64² elevation bytes) and 49,197 GeoJSON bytes;
+  n=512 source 6,291,804 bytes and 100,249 GeoJSON bytes (2.20–2.46 s across
+  the three runs).
+
+Doubts:
+
+- `check:maps:atlas` runs the full `daena-atlas` suite. One amplification test
+  has a 5 s wall-clock budget and flaked once under parallel load; it passed
+  standalone and on a second full run.
+- Rendered desktop behaviour (Tauri webview, native file dialogs, actual
+  generation clicks) is not exercised here. The done message lists the manual
+  checklist.
+- The Atlas studio sample's `climate` string remains "biome (group)"; the
+  studio still title-cases it as the Biome row. It is a display label, not a
+  contract field.
+
+Review fixes:
+
+- Engine biome names reached the UI as snake_case keys ("tropical_rainforest")
+  in the legend, the Find Place explanations and the Atlas inspector.
+  `products::biome_legend` and `products::biome_name` now return display names
+  ("tropical rainforest"); `Biome::name` stays the harness key.
+- The editor's click readout indexed the south-origin product view from the
+  north, so a northern click read the mirrored southern cell (this predates E7,
+  but E7 added hazard values to the same readout). It now uses
+  `physicalViewIndex` from `native-vector/coordinates.ts`, and
+  `maps-physical-canonical-index.test.mjs` checks its row order.
+- The Atlas divergence label used a ±20 ×10⁻⁶ s⁻¹ neutral band. Typical surface
+  values are 1–10 ×10⁻⁶ s⁻¹, so almost every cell read "Neutral". The band is
+  now ±1 ×10⁻⁶ s⁻¹.
+- Still open for E8: the climate legend's `reason` field is the name again and
+  no consumer reads it.
 
 ## Known realism gaps, deferred to after E8
 

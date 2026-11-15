@@ -1,0 +1,36 @@
+{
+  "layers": [
+    {
+      "id": "base",
+      "kind": "vector",
+      "name": "Physical base",
+      "order": 0,
+      "defaultVisible": false,
+      "locked": true
+    },
+    {
+      "id": "currents",
+      "kind": "vector",
+      "name": "Currents",
+      "order": 15,
+      "defaultVisible": true,
+      "locked": true
+    },
+    {
+      "id": "humidity",
+      "kind": "vector",
+      "name": "Humidity",
+      "order": 16,
+      "defaultVisible": true,
+      "locked": true
+    },
+    {
+      "id": "rivers",
+      "kind": "vector",
+      "name": "Rivers",
+      "order": 10,
+      "defaultVisible": false,
+      "locked": true
+    }
+  ]
+}

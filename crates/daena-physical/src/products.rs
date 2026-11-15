@@ -222,7 +222,7 @@ pub fn biome_legend() -> Vec<(u32, &'static str, String)> {
             let color = biome.color();
             (
                 *biome as u32,
-                biome.name(),
+                biome_display_name(*biome),
                 format!("#{:02x}{:02x}{:02x}", color[0], color[1], color[2]),
             )
         })
@@ -233,8 +233,41 @@ pub fn biome_legend() -> Vec<(u32, &'static str, String)> {
 #[must_use]
 pub fn biome_name(class: u32) -> &'static str {
     Biome::from_u8(class.min(u8::MAX as u32) as u8)
-        .map(Biome::name)
+        .map(biome_display_name)
         .unwrap_or("unknown")
+}
+
+/// Readable name for the UI and tool explanations. `Biome::name` stays the
+/// snake_case key used by the harness reports.
+fn biome_display_name(biome: Biome) -> &'static str {
+    match biome {
+        Biome::DeepOcean => "deep ocean",
+        Biome::Shelf => "shelf",
+        Biome::Trench => "trench",
+        Biome::Reef => "reef",
+        Biome::SeaIceSeasonal => "seasonal sea ice",
+        Biome::SeaIcePerennial => "perennial sea ice",
+        Biome::FreshLake => "fresh lake",
+        Biome::SaltLake => "salt lake",
+        Biome::SaltFlat => "salt flat",
+        Biome::IceSheet => "ice sheet",
+        Biome::Glacier => "glacier",
+        Biome::Tundra => "tundra",
+        Biome::Alpine => "alpine",
+        Biome::BorealForest => "boreal forest",
+        Biome::ColdSteppe => "cold steppe",
+        Biome::ColdDesert => "cold desert",
+        Biome::TemperateRainforest => "temperate rainforest",
+        Biome::TemperateForest => "temperate forest",
+        Biome::Mediterranean => "mediterranean",
+        Biome::Grassland => "grassland",
+        Biome::HotDesert => "hot desert",
+        Biome::Savanna => "savanna",
+        Biome::TropicalSeasonalForest => "tropical seasonal forest",
+        Biome::TropicalRainforest => "tropical rainforest",
+        Biome::Wetland => "wetland",
+        Biome::Mangrove => "mangrove",
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

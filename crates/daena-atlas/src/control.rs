@@ -602,11 +602,11 @@ mod tests {
 
     #[test]
     fn climate_and_surface_names_are_stable() {
-        assert_eq!(biome_name(9), "ice_sheet");
+        assert_eq!(biome_name(9), "ice sheet");
         assert_eq!(biome_name(11), "tundra");
-        assert_eq!(biome_name(20), "hot_desert");
+        assert_eq!(biome_name(20), "hot desert");
         assert_eq!(biome_name(19), "grassland");
-        assert_eq!(biome_name(17), "temperate_forest");
+        assert_eq!(biome_name(17), "temperate forest");
         assert_eq!(biome_name(12), "alpine");
         assert_eq!(surface_kind(true, true, 1_000, 0), "ice");
         assert_eq!(surface_kind(false, true, -1_000, 0), "lake");

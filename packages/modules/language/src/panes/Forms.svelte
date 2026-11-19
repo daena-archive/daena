@@ -1,5 +1,5 @@
 <script lang="ts">
-import { pluginText, translatePluginText as formatText } from "../../../plugin-i18n.ts";
+import { pluginText, translatePluginText as formatText } from "../i18n.ts";
 import { untrack } from "svelte";
 import type { EntitySummary, ModuleContext, ModuleRecord } from "../../../../module-api/src/index";
 import type { LexemeValue } from "../lexeme";

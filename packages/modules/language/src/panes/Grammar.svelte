@@ -1,5 +1,5 @@
 <script lang="ts">
-import { pluginText } from "../../../plugin-i18n.ts";
+import { pluginText } from "../i18n.ts";
 import { untrack } from "svelte";
 import { confirm } from "../confirm.svelte";
 import type { EntitySummary, ModuleContext, ModuleRecord } from "../../../../module-api/src/index";

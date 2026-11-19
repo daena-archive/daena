@@ -1,5 +1,5 @@
 <script lang="ts">
-import { pluginText } from "../../../plugin-i18n.ts";
+import { pluginText } from "../i18n.ts";
 import { CUSTOM_RULE_TAGS, extraCustomRuleTags, setCustomRuleExtraTags, toggleCustomRuleTag } from "../grammar/rules";
 import type { GrammarCustomRuleRecord } from "../grammar/types";
 import RichTextEditor from "../../../../../src/lib/editor/RichTextEditor.svelte";

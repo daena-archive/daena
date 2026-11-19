@@ -159,6 +159,10 @@ globalThis.document = { documentElement: { lang: "en" }, title: "" };
 window.__DAENA_DISPLAY_LANGUAGE__ = "ja";
 listenForPluginLanguage("World graph");
 assert.equal(document.title, "世界の関係図");
+const { translatePluginText: linguistics } = await import("../packages/modules/language/src/i18n.ts");
+assert.equal(translatePluginText("Person"), "人物");
+assert.equal(linguistics("Person"), "人称");
+assert.equal(linguistics("Clear search"), translatePluginText("Clear search"));
 assert.equal(
   translatePluginText("Displayed on the {calendar} calendar", { calendar: "Haru {1}" }),
   "表示する暦：Haru {1}",
@@ -167,6 +171,7 @@ window.__DAENA_DISPLAY_LANGUAGE__ = "en";
 window.dispatchEvent(new Event("daena:language"));
 assert.equal(document.documentElement.lang, "en");
 assert.equal(document.title, "World graph");
+assert.equal(linguistics("Person"), "Person");
 assert.equal(
   translatePluginText("Displayed on the {calendar} calendar", { calendar: "Haru" }),
   "Displayed on the Haru calendar",

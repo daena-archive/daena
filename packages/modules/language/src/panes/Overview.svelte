@@ -1,6 +1,6 @@
 <script lang="ts">
 import { messages } from "../../../../../src/lib/i18n/index.ts";
-import { pluginText } from "../../../plugin-i18n.ts";
+import { pluginText } from "../i18n.ts";
 import type { EntityRecord, EntitySummary, ModuleContext, ModuleManifest } from "../../../../module-api/src/index";
 import type { FieldDefinition } from "../../../../plugin-sdk/src/generated";
 import RichTextEditor from "../../../../../src/lib/editor/RichTextEditor.svelte";

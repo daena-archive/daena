@@ -43,7 +43,7 @@ function checkDirectory(dir) {
       const src = readFileSync(path, "utf8");
       const file = relative(root, path);
       if (path.endsWith(".svelte")) checkMarkup(parse(src, { modern: true }).fragment, file);
-      for (const match of src.matchAll(/(?:\$ui|localizeUi)\(\s*("(?:\\.|[^"\\])*")/g)) {
+      for (const match of src.matchAll(/(?:\$ui|localizeUi|\$pluginText|translatePluginText|formatText)\(\s*("(?:\\.|[^"\\])*")/g)) {
         const source = JSON.parse(match[1]);
         if (!Object.hasOwn(copy, source)) messages.push([file, "missing translation", source]);
       }
@@ -76,7 +76,7 @@ for (const dir of readdirSync(join(root, "packages/modules"), { withFileTypes: t
   }
 }
 assert.deepEqual(messages, [], "Application copy should use the active language catalog");
-const placeholders = (text) => (text.match(/\{\d+\}/g) ?? []).sort();
+const placeholders = (text) => (text.match(/\{\w+\}/g) ?? []).sort();
 for (const [english, japanese] of Object.entries(copy)) {
   assert.deepEqual(placeholders(japanese), placeholders(english), english);
 }

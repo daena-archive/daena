@@ -1,5 +1,5 @@
 <script lang="ts">
-import { pluginText } from "../../plugin-i18n.ts";
+import { pluginText } from "./i18n.ts";
 import { confirmState, resolveConfirm } from "./confirm.svelte";
 
 let confirmButton: HTMLButtonElement | undefined = $state();

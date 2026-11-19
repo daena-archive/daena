@@ -1,5 +1,5 @@
 <script lang="ts">
-import { pluginText } from "../../../../plugin-i18n.ts";
+import { pluginText } from "../../i18n.ts";
 import {
   CASE_TEMPLATES,
   NOUN_CLASS_KIND_OPTIONS,

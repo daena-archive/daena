@@ -1,5 +1,5 @@
 <script lang="ts">
-import { pluginText } from "../../plugin-i18n.ts";
+import { pluginText } from "./i18n.ts";
 import { onMount, tick } from "svelte";
 import type { EntitySummary, ModuleContext, UUID } from "../../../module-api/src/index";
 import ConfirmModal from "./ConfirmModal.svelte";

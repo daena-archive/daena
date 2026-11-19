@@ -1,5 +1,5 @@
 <script lang="ts">
-import { pluginText } from "../../../../plugin-i18n.ts";
+import { pluginText } from "../../i18n.ts";
 import { CELL_STATE_OPTIONS, cartesianCoordinates, coordKey } from "../../grammar/paradigm";
 import type { ParadigmCell, ParadigmCellState, ParadigmAxis } from "../../grammar/types";
 

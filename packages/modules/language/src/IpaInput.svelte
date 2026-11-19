@@ -1,5 +1,5 @@
 <script lang="ts">
-import { pluginText } from "../../plugin-i18n.ts";
+import { pluginText } from "./i18n.ts";
 import { tick } from "svelte";
 import IpaPicker from "./IpaPicker.svelte";
 import { insertIpaAtSelection } from "./ipa";

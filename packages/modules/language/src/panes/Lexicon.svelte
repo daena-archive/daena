@@ -1,4 +1,5 @@
 <script lang="ts">
+import { pluginText, translatePluginText as formatText } from "../../../plugin-i18n.ts";
 import { untrack } from "svelte";
 import type { EntitySummary, ModuleContext, ModuleRecord, ModuleRecordQuery } from "../../../../module-api/src/index";
 import IpaInput from "../IpaInput.svelte";
@@ -149,7 +150,7 @@ function lexiconHasDraft() {
 async function tryLeaveLexicon(confirmLeave: (message: string) => Promise<boolean> | boolean) {
   if (!lexiconHasDraft()) return true;
   if (lexiconSaving || lexiconImporting) return false;
-  const allowed = await confirmLeave("You have unsaved changes in the word editor. Discard them?");
+  const allowed = await confirmLeave($pluginText("You have unsaved changes in the word editor. Discard them?"));
   if (allowed) closeLexiconEditor();
   return allowed;
 }
@@ -242,7 +243,7 @@ async function openPendingLexeme(id: string) {
       error = "";
       void refreshHomonyms(draft.lemma);
     } else {
-      error = "The linked word could not be found in this language.";
+      error = $pluginText("The linked word could not be found in this language.");
     }
   } catch (cause) {
     if (!cancelled && token === request) error = cause instanceof Error ? cause.message : String(cause);
@@ -337,7 +338,7 @@ async function saveLexeme(): Promise<"ok" | "lemma" | "error" | "none"> {
   const ownerLanguageId = selectedLanguage.id;
   const value = normalizeLexeme(draft);
   if (!value.lemma) {
-    error = "Lemma is required.";
+    error = $pluginText("Lemma is required.");
     return "lemma";
   }
   error = "";
@@ -373,7 +374,7 @@ async function saveLexeme(): Promise<"ok" | "lemma" | "error" | "none"> {
 
 async function deleteLexeme() {
   if (!selectedLanguage || !editing) return;
-  if (!(await confirm("Delete", `Delete “${editing.value.lemma}”?`))) return;
+  if (!(await confirm("Delete", formatText("Delete “{name}”?", { name: editing.value.lemma })))) return;
   const ownerLanguageId = selectedLanguage.id;
   try {
     setMutationActive(true);
@@ -445,7 +446,7 @@ async function importLexicon(file: File) {
   try {
     const lexemes = parseLexiconImport(await file.text());
     if (lexemes.length === 0) {
-      error = "This file does not contain any lexicon entries.";
+      error = $pluginText("This file does not contain any lexicon entries.");
       return;
     }
     if (
@@ -574,126 +575,125 @@ async function handleSubmit(event: SubmitEvent) {
       </datalist>
     </div>
     <div class="language-editor-head">
-      <h3>{editing ? "Edit word" : "New word"}</h3>
-      <p>Capture the core meaning first; pronunciation, forms, and notes can grow with the entry.</p>
+      <h3>{editing ? $pluginText("Edit word") : $pluginText("New word")}</h3>
+      <p>{$pluginText("Capture the core meaning first; pronunciation, forms, and notes can grow with the entry.")}</p>
     </div>
     <section class="language-form-section">
-      <h3>Core details</h3>
+      <h3>{$pluginText("Core details")}</h3>
       <div class="language-section-grid">
         <label class="language-field language-field-wide">
-          <span>Lemma</span>
+          <span>{$pluginText("Lemma")}</span>
           <input name="lemma" bind:this={lemmaInput} bind:value={draft.lemma} />
         </label>
         <label class="language-field">
-          <span>Part of speech (optional)</span>
+          <span>{$pluginText("Part of speech (optional)")}</span>
           <input name="partOfSpeech" list="language-pos" bind:value={draft.partOfSpeech} />
         </label>
         <label class="language-field">
-          <span>Status (optional)</span>
+          <span>{$pluginText("Status (optional)")}</span>
           <input name="status" list="language-status" bind:value={draft.status} />
         </label>
         <label class="language-field">
-          <span>Tags — comma or line separated (optional)</span>
+          <span>{$pluginText("Tags — comma or line separated (optional)")}</span>
           <textarea name="tags" rows={2} bind:value={tagsText}></textarea>
         </label>
       </div>
     </section>
     <label class="language-field">
-      <span>Paradigm (optional)</span>
-      <select name="paradigmId" aria-label="Paradigm" bind:value={draft.paradigmId}>
-        <option value={""}>None</option>
+      <span>{$pluginText("Paradigm (optional)")}</span>
+      <select name="paradigmId" aria-label={$pluginText("Paradigm")} bind:value={draft.paradigmId}>
+        <option value={""}>{$pluginText("None")}</option>
         {#each paradigms as record (record.id)}
-          <option value={record.id}>{record.value.name || "Untitled paradigm"}</option>
+          <option value={record.id}>{record.value.name || $pluginText("Untitled paradigm")}</option>
         {/each}
       </select>
     </label>
     {#if homonymCount > 0}
       <p class="language-status">
-        {homonymCount} other {homonymCount === 1 ? "entry shares" : "entries share"} this lemma. Duplicate lemmas are kept
-        as distinct homonyms.
+        {homonymCount} {$pluginText("other")} {homonymCount === 1 ? $pluginText("entry shares") : $pluginText("entries share")} {$pluginText("this lemma. Duplicate lemmas are kept as distinct homonyms.")}
       </p>
     {/if}
     <section class="language-group language-form-section">
       <div class="language-group-head">
-        <h3>Pronunciation variants</h3>
-        <button type="button" class="language-button secondary" onclick={addPronunciation}>Add</button>
+        <h3>{$pluginText("Pronunciation variants")}</h3>
+        <button type="button" class="language-button secondary" onclick={addPronunciation}>{$pluginText("Add")}</button>
       </div>
       {#each draft.pronunciations as pronunciation, index (pronunciation.id)}
         <div class="language-inline">
           <div class="language-inline-fields">
-            <IpaInput label="Pronunciation" name={`pronunciation-${index}`} bind:value={pronunciation.value} />
+            <IpaInput label={$pluginText("Pronunciation")} name={`pronunciation-${index}`} bind:value={pronunciation.value} />
             <label class="language-field">
-              <span>Note (optional)</span>
+              <span>{$pluginText("Note (optional)")}</span>
               <input name={`pronunciation-note-${index}`} bind:value={pronunciation.note} />
             </label>
           </div>
           <button
             type="button"
             class="language-button secondary language-danger"
-            onclick={() => removePronunciation(index)}>Remove</button>
+            onclick={() => removePronunciation(index)}>{$pluginText("Remove")}</button>
         </div>
       {/each}
     </section>
     <section class="language-group language-form-section">
       <div class="language-group-head">
-        <h3>Alternate forms</h3>
-        <button type="button" class="language-button secondary" onclick={addForm}>Add</button>
+        <h3>{$pluginText("Alternate forms")}</h3>
+        <button type="button" class="language-button secondary" onclick={addForm}>{$pluginText("Add")}</button>
       </div>
       {#each draft.forms as form, index (form.id)}
         <div class="language-inline">
           <div class="language-inline-fields">
             <label class="language-field">
-              <span>Form</span>
+              <span>{$pluginText("Form")}</span>
               <input name={`form-${index}`} bind:value={form.form} />
             </label>
             <label class="language-field">
-              <span>Kind (optional)</span>
+              <span>{$pluginText("Kind (optional)")}</span>
               <input name={`form-kind-${index}`} bind:value={form.kind} />
             </label>
             <IpaInput
-              label="Pronunciation (optional)"
+              label={$pluginText("Pronunciation (optional)")}
               name={`form-pronunciation-${index}`}
               bind:value={form.pronunciation} />
           </div>
           <button type="button" class="language-button secondary language-danger" onclick={() => removeForm(index)}
-            >Remove</button>
+            >{$pluginText("Remove")}</button>
         </div>
       {/each}
     </section>
     <section class="language-group language-form-section">
       <div class="language-group-head">
-        <h3>Senses</h3>
-        <button type="button" class="language-button secondary" onclick={addSense}>Add</button>
+        <h3>{$pluginText("Senses")}</h3>
+        <button type="button" class="language-button secondary" onclick={addSense}>{$pluginText("Add")}</button>
       </div>
       {#each draft.senses as sense, index (sense.id)}
         <div class="language-group">
           <div class="language-group-head">
-            <h3>Sense {index + 1}</h3>
+            <h3>{$pluginText("Sense")} {index + 1}</h3>
             <button type="button" class="language-button secondary language-danger" onclick={() => removeSense(index)}
-              >Remove sense</button>
+              >{$pluginText("Remove sense")}</button>
           </div>
           <label class="language-field">
-            <span>Gloss (optional)</span>
+            <span>{$pluginText("Gloss (optional)")}</span>
             <input name={`sense-gloss-${index}`} bind:value={sense.gloss} />
           </label>
           <label class="language-field">
-            <span>Definition (optional)</span>
+            <span>{$pluginText("Definition (optional)")}</span>
             <textarea name={`sense-definition-${index}`} rows={2} bind:value={sense.definition}></textarea>
           </label>
           <label class="language-field">
-            <span>Usage notes (optional)</span>
+            <span>{$pluginText("Usage notes (optional)")}</span>
             <textarea name={`sense-usage-${index}`} rows={2} bind:value={sense.usageNotes}></textarea>
           </label>
           {#each sense.examples as example, exampleIndex (example.id)}
             <div class="language-inline">
               <div class="language-inline-fields">
                 <label class="language-field">
-                  <span>Example</span>
+                  <span>{$pluginText("Example")}</span>
                   <textarea name={`sense-${index}-example-${exampleIndex}`} rows={2} bind:value={example.text}
                   ></textarea>
                 </label>
                 <label class="language-field">
-                  <span>Translation (optional)</span>
+                  <span>{$pluginText("Translation (optional)")}</span>
                   <textarea
                     name={`sense-${index}-translation-${exampleIndex}`}
                     rows={2}
@@ -703,41 +703,40 @@ async function handleSubmit(event: SubmitEvent) {
               <button
                 type="button"
                 class="language-button secondary language-danger"
-                onclick={() => removeExample(index, exampleIndex)}>Remove</button>
+                onclick={() => removeExample(index, exampleIndex)}>{$pluginText("Remove")}</button>
             </div>
           {/each}
-          <button type="button" class="language-button secondary" onclick={() => addExample(index)}>Add example</button>
+          <button type="button" class="language-button secondary" onclick={() => addExample(index)}>{$pluginText("Add example")}</button>
         </div>
       {/each}
     </section>
     <label class="language-field">
-      <span>Etymology (optional)</span>
+      <span>{$pluginText("Etymology (optional)")}</span>
       <textarea name="etymology" bind:value={draft.etymology}></textarea>
     </label>
     <label class="language-field">
-      <span>Source notes (optional)</span>
+      <span>{$pluginText("Source notes (optional)")}</span>
       <textarea name="sourceNotes" bind:value={draft.sourceNotes}></textarea>
     </label>
     <label class="language-field">
-      <span>Notes (optional)</span>
+      <span>{$pluginText("Notes (optional)")}</span>
       <textarea name="notes" bind:value={draft.notes}></textarea>
     </label>
     {#if attached}
       <section class="language-group language-form-section">
-        <h3>Generated forms preview</h3>
+        <h3>{$pluginText("Generated forms preview")}</h3>
         <p class="language-empty" role="status">
-          Generated cells are a preview. Pinning stores an authored override on this word; changing a rule does not
-          delete pinned or other authored forms.
+          {$pluginText("Generated cells are a preview. Pinning stores an authored override on this word; changing a rule does not delete pinned or other authored forms.")}
         </p>
         <div class="language-chart-wrap">
           <table class="paradigm-preview">
             <thead>
               <tr>
-                <th>Slot</th>
-                <th>Form</th>
-                <th>Source</th>
-                <th>Rule</th>
-                <th>Override</th>
+                <th>{$pluginText("Slot")}</th>
+                <th>{$pluginText("Form")}</th>
+                <th>{$pluginText("Source")}</th>
+                <th>{$pluginText("Rule")}</th>
+                <th>{$pluginText("Override")}</th>
               </tr>
             </thead>
             <tbody>
@@ -748,7 +747,7 @@ async function handleSubmit(event: SubmitEvent) {
                   <td
                     >{cell.form ||
                       "—"}{#if cell.provenance === "authored" && cell.generated && cell.generated !== cell.form}
-                      <small> rule: {cell.generated}</small>
+                      <small> {$pluginText("rule:")} {cell.generated}</small>
                     {/if}</td>
                   <td
                     ><span
@@ -756,10 +755,10 @@ async function handleSubmit(event: SubmitEvent) {
                       class:is-authored={cell.provenance === "authored"}
                       class:is-missing={cell.provenance === "missing"}
                       >{cell.provenance === "authored"
-                        ? "authored"
+                        ? $pluginText("authored")
                         : cell.provenance === "generated"
-                          ? "generated"
-                          : "no rule"}</span
+                          ? $pluginText("generated")
+                          : $pluginText("no rule")}</span
                     ></td>
                   <td>{cell.ruleName || "—"}</td>
                   <td
@@ -767,12 +766,12 @@ async function handleSubmit(event: SubmitEvent) {
                       <button
                         type="button"
                         class="language-button secondary"
-                        onclick={() => pinSlotOverride(cell.slot, cell.form)}>Pin override</button>
+                        onclick={() => pinSlotOverride(cell.slot, cell.form)}>{$pluginText("Pin override")}</button>
                     {:else if cell.provenance === "authored"}
                       <button
                         type="button"
                         class="language-button secondary"
-                        onclick={() => clearSlotOverride(cell.slot)}>Clear override</button>
+                        onclick={() => clearSlotOverride(cell.slot)}>{$pluginText("Clear override")}</button>
                     {/if}</td>
                 </tr>
               {/each}
@@ -785,105 +784,105 @@ async function handleSubmit(event: SubmitEvent) {
       <p class="language-status error" role="alert">{error}</p>
     {/if}
     {#if lexiconSaving}
-      <p class="language-empty" role="status">Saving word…</p>
+      <p class="language-empty" role="status">{$pluginText("Saving word…")}</p>
     {/if}
     <div class="language-actions">
       <span>
         {#if editing}
-          <button type="button" class="language-button secondary" onclick={() => void addHomonym()}>Add homonym</button>
-          <button type="button" class="language-button secondary language-danger" onclick={deleteLexeme}>Delete</button>
+          <button type="button" class="language-button secondary" onclick={() => void addHomonym()}>{$pluginText("Add homonym")}</button>
+          <button type="button" class="language-button secondary language-danger" onclick={deleteLexeme}>{$pluginText("Delete")}</button>
         {/if}
       </span>
       <span>
-        <button type="button" class="language-button secondary" onclick={closeLexiconEditor}>Cancel</button>
+        <button type="button" class="language-button secondary" onclick={closeLexiconEditor}>{$pluginText("Cancel")}</button>
         <button type="submit" class="language-button" disabled={lexiconSaving}
-          >{lexiconSaving ? "Saving…" : "Save word"}</button>
+          >{lexiconSaving ? $pluginText("Saving…") : $pluginText("Save word")}</button>
       </span>
     </div>
   </form>
 {:else}
   <div class="language-toolbar">
     <div class="language-toolbar-title">
-      <h2>Lexicon</h2>
+      <h2>{$pluginText("Lexicon")}</h2>
     </div>
     <div class="language-toolbar-actions">
       <input
         type="file"
         accept="application/json,.json"
         class="file-input"
-        aria-label="Import lexicon JSON"
+        aria-label={$pluginText("Import lexicon JSON")}
         bind:this={fileInput}
         onchange={handleImportChange} />
       <button
         type="button"
         class="language-button secondary"
         disabled={!selectedLanguage || lexiconExporting}
-        onclick={exportLexicon}>{lexiconExporting ? "Exporting…" : "Export JSON"}</button>
+        onclick={exportLexicon}>{lexiconExporting ? $pluginText("Exporting…") : $pluginText("Export JSON")}</button>
       <button
         type="button"
         class="language-button secondary"
         disabled={!selectedLanguage || lexiconImporting}
-        onclick={() => fileInput?.click()}>{lexiconImporting ? "Importing…" : "Import JSON"}</button>
+        onclick={() => fileInput?.click()}>{lexiconImporting ? $pluginText("Importing…") : $pluginText("Import JSON")}</button>
       <button
         type="button"
         class="language-button"
         data-guide="language-add-word"
         disabled={!selectedLanguage}
-        onclick={addWord}>Add word</button>
+        onclick={addWord}>{$pluginText("Add word")}</button>
     </div>
   </div>
   {#if selectedLanguage}
     <div class="language-search-row">
       <label class="language-field language-search-field">
-        <span>Search lemma or meaning</span>
+        <span>{$pluginText("Search lemma or meaning")}</span>
         <input
           name="search"
           class="language-search"
           type="search"
           bind:value={search}
-          placeholder="Type to search..." />
+          placeholder={$pluginText("Type to search...")} />
       </label>
       {#if filtered}
         <div class="language-filter-badge">
-          {activeFilterCount} filter{activeFilterCount !== 1 ? "s" : ""} active
+          {activeFilterCount} {$pluginText("filter")}{activeFilterCount !== 1 ? $pluginText("s") : ""} {$pluginText("active")}
           <button
             type="button"
             class="language-filter-badge-clear"
             onclick={clearFilters}
-            aria-label="Clear all filters">&times;</button>
+            aria-label={$pluginText("Clear all filters")}>&times;</button>
         </div>
       {/if}
     </div>
     <details class="language-filter-panel">
       <summary>
-        <span>Filters and sorting</span>
+        <span>{$pluginText("Filters and sorting")}</span>
         {#if activeFilterCount > 0}
           <span class="language-filter-count">{activeFilterCount}</span>
         {/if}
       </summary>
       <div class="language-filters">
         <label class="language-field">
-          <span>Status</span>
+          <span>{$pluginText("Status")}</span>
           <input
             name="statusFilter"
             list="language-filter-status"
             bind:value={statusFilterInput}
-            placeholder="Any status" />
+            placeholder={$pluginText("Any status")} />
         </label>
         <label class="language-field">
-          <span>Tag</span>
-          <input name="tagFilter" bind:value={tagFilterInput} placeholder="Any tag" />
+          <span>{$pluginText("Tag")}</span>
+          <input name="tagFilter" bind:value={tagFilterInput} placeholder={$pluginText("Any tag")} />
         </label>
         <label class="language-field">
-          <span>Sort by</span>
-          <select name="sort" aria-label="Sort lexicon" bind:value={sort}>
-            <option value="lemma">Lemma</option>
-            <option value="status">Status</option>
-            <option value="updatedAt">Last updated</option>
+          <span>{$pluginText("Sort by")}</span>
+          <select name="sort" aria-label={$pluginText("Sort lexicon")} bind:value={sort}>
+            <option value="lemma">{$pluginText("Lemma")}</option>
+            <option value="status">{$pluginText("Status")}</option>
+            <option value="updatedAt">{$pluginText("Last updated")}</option>
           </select>
         </label>
         <label class="language-check">
-          <input type="checkbox" bind:checked={homonymsOnly} />Homonyms only
+          <input type="checkbox" bind:checked={homonymsOnly} />{$pluginText("Homonyms only")}
         </label>
         <datalist id="language-filter-status">
           {#each STATUS_SUGGESTIONS as suggestion}
@@ -892,7 +891,7 @@ async function handleSubmit(event: SubmitEvent) {
         </datalist>
         {#if activeFilterCount > 0}
           <div class="language-filter-actions">
-            <button type="button" class="language-button secondary" onclick={clearFilters}>Clear all filters</button>
+            <button type="button" class="language-button secondary" onclick={clearFilters}>{$pluginText("Clear all filters")}</button>
           </div>
         {/if}
       </div>
@@ -905,38 +904,38 @@ async function handleSubmit(event: SubmitEvent) {
     <div class="language-empty-card language-error-card">
       <p class="language-status error" role="alert">{error}</p>
       {#if selectedLanguage}
-        <button type="button" class="language-button secondary" onclick={() => void loadRecords()}>Try again</button>
+        <button type="button" class="language-button secondary" onclick={() => void loadRecords()}>{$pluginText("Try again")}</button>
       {/if}
     </div>
   {:else if !selectedLanguage}
-    <p class="language-empty" role="status">Select a language to view its lexicon.</p>
+    <p class="language-empty" role="status">{$pluginText("Select a language to view its lexicon.")}</p>
   {:else if lexiconLoading}
-    <p class="language-empty language-loading" role="status">Loading lexicon…</p>
+    <p class="language-empty language-loading" role="status">{$pluginText("Loading lexicon…")}</p>
   {:else if records.length === 0}
     <div class="language-empty-card">
-      <p class="language-empty" role="status">{filtered ? "No words match these filters." : "No words yet."}</p>
+      <p class="language-empty" role="status">{filtered ? $pluginText("No words match these filters.") : $pluginText("No words yet.")}</p>
       <div class="language-inline">
         {#if filtered}
-          <button type="button" class="language-button secondary" onclick={clearFilters}>Clear filters</button>
+          <button type="button" class="language-button secondary" onclick={clearFilters}>{$pluginText("Clear filters")}</button>
         {:else}
           <button type="button" class="language-button" data-guide="language-add-word" onclick={addWord}
-            >Add word</button>
+            >{$pluginText("Add word")}</button>
         {/if}
       </div>
     </div>
   {:else}
-    <p class="language-results" role="status">Showing {firstResult}–{lastResult}{hasNextPage ? "+" : ""} words</p>
+    <p class="language-results" role="status">{$pluginText("Showing")} {firstResult}–{lastResult}{hasNextPage ? "+" : ""} {$pluginText("words")}</p>
     <ul class="lexeme-list">
       {#each records as record (record.id)}
         <li>
           <button
             type="button"
             class="language-item lexeme-row"
-            aria-label={`Edit ${record.value.lemma || "word"}`}
+            aria-label={$pluginText("Edit {0}", { 0: String(record.value.lemma || "word") })}
             onclick={() => openLexiconEditor(record)}>
             <strong>{record.value.lemma}</strong>
             <small class="lexeme-part">{record.value.partOfSpeech || "—"}</small>
-            <span class="lexeme-meaning">{firstGloss(record.value) || "No gloss yet"}</span>
+            <span class="lexeme-meaning">{firstGloss(record.value) || $pluginText("No gloss yet")}</span>
             <small class="lexeme-status"
               >{[record.value.status, record.value.tags[0]].filter(Boolean).join(" · ") || "—"}</small>
           </button>
@@ -946,8 +945,8 @@ async function handleSubmit(event: SubmitEvent) {
     {#if page > 0 || hasNextPage}
       <div class="language-actions">
         <button type="button" class="language-button secondary" disabled={page === 0} onclick={previousPage}
-          >Previous</button>
-        <button type="button" class="language-button secondary" disabled={!hasNextPage} onclick={nextPage}>Next</button>
+          >{$pluginText("Previous")}</button>
+        <button type="button" class="language-button secondary" disabled={!hasNextPage} onclick={nextPage}>{$pluginText("Next")}</button>
       </div>
     {/if}
   {/if}

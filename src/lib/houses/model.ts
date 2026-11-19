@@ -1,3 +1,4 @@
+import { localizeUi } from "../i18n/ui.ts";
 import type { CalendarDate } from "$lib/date.ts";
 
 export const PERSON_TYPE = "daena.lore:person";
@@ -85,10 +86,11 @@ export interface HouseMemberRecord {
 export function formatMembershipRole(role: string | null | undefined, customLabel?: string | null): string {
   const trimmed = typeof role === "string" ? role.trim() : "";
   if (!trimmed || trimmed === "member") {
-    return customLabel?.trim() || "Member";
+    return customLabel?.trim() || localizeUi("Member");
   }
-  if (trimmed === "custom") return customLabel?.trim() || "Custom";
-  const label = trimmed.charAt(0).toUpperCase() + trimmed.slice(1);
+  if (trimmed === "custom") return customLabel?.trim() || localizeUi("Custom");
+  const source = trimmed.charAt(0).toUpperCase() + trimmed.slice(1);
+  const label = MEMBER_ROLES.some((role) => role === trimmed) ? localizeUi(source) : source;
   return customLabel?.trim() ? `${label} · ${customLabel.trim()}` : label;
 }
 
@@ -98,7 +100,7 @@ export function formatRelationshipTitle(
   sourceName: string,
   targetName: string,
 ): string {
-  if (kind === "partner") return `${sourceName} and ${targetName}`;
+  if (kind === "partner") return localizeUi("{0} and {1}", sourceName, targetName);
   return `${sourceName} → ${targetName}`;
 }
 
@@ -114,10 +116,10 @@ export function formatRelationshipTypeLabel(relationship: {
   if (relationship.label?.trim()) return relationship.label.trim();
   if (relationship.kind === "partner") {
     const kind = relationship.partnerKind?.trim() || "partnership";
-    return kind.charAt(0).toUpperCase() + kind.slice(1);
+    return localizeUi(kind.charAt(0).toUpperCase() + kind.slice(1));
   }
   const kind = relationship.parentKind?.trim() || "parent";
-  return `${kind.charAt(0).toUpperCase() + kind.slice(1)} parent`;
+  return localizeUi("{0} parent", localizeUi(kind.charAt(0).toUpperCase() + kind.slice(1)));
 }
 
 export type HouseTreeScope = "members-only" | "members-plus-immediate-family";
@@ -338,7 +340,7 @@ export function isPartnerStatus(value: unknown): value is PartnerStatus {
 
 export function truncationWarning(lowerBound: number): GenealogyWarning {
   const shown = lowerBound > 0 ? `${lowerBound}+` : "99+";
-  return { message: `Relationship query truncated (${shown}). Counts may be a lower bound.` };
+  return { message: localizeUi("Relationship query truncated ({0}). Counts may be a lower bound.", shown) };
 }
 
 export function layoutExceedsLimits(

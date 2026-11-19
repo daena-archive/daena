@@ -93,6 +93,14 @@ const ATLAS_PROGRESS_EVENT: &str = "atlas-progress";
 const ATLAS_STUDIO_PROGRESS_EVENT: &str = "atlas-studio-progress";
 static ATLAS_STUDIO: OnceLock<SharedAtlasStudio> = OnceLock::new();
 static EXTERNAL_IMPORTS: OnceLock<SharedExternalImports> = OnceLock::new();
+#[derive(Clone, Deserialize)]
+struct PluginWindowTitle {
+    source: String,
+    title: String,
+}
+
+static PLUGIN_TITLES: Mutex<BTreeMap<String, PluginWindowTitle>> = Mutex::new(BTreeMap::new());
+static PLUGIN_LANGUAGE: Mutex<String> = Mutex::new(String::new());
 static PLUGIN_APPEARANCE: OnceLock<SharedAppearance> = OnceLock::new();
 static CLOSE_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 static PROJECT_COMMANDS_IN_FLIGHT: AtomicU64 = AtomicU64::new(0);
@@ -347,10 +355,69 @@ fn current_plugin_appearance() -> daena_plugin_api::PluginAppearance {
         .unwrap_or_else(daena_plugin_api::builtin_plugin_appearance)
 }
 
+fn plugin_language_script() -> String {
+    let language = PLUGIN_LANGUAGE
+        .lock()
+        .ok()
+        .map(|stored| stored.clone())
+        .unwrap_or_default();
+    let language = if language.is_empty() { "en" } else { &language };
+    let json = serde_json::to_string(language).expect("language serializes as JSON");
+    format!(
+        r#"(function (language) {{
+  window.__DAENA_DISPLAY_LANGUAGE__ = language;
+  function apply() {{
+    document.documentElement.lang = window.__DAENA_DISPLAY_LANGUAGE__;
+    window.dispatchEvent(new Event("daena:language"));
+  }}
+  if (document.documentElement) apply();
+  else document.addEventListener("DOMContentLoaded", apply, {{ once: true }});
+}})({json});"#
+    )
+}
+
+#[tauri::command]
+fn plugin_language_sync(
+    app: tauri::AppHandle,
+    webview: tauri::Webview,
+    language: String,
+    menu: Option<std::collections::HashMap<String, String>>,
+    window_titles: BTreeMap<String, PluginWindowTitle>,
+) -> Result<(), String> {
+    #[cfg(not(target_os = "macos"))]
+    let _ = menu;
+    if webview.label() != "main" {
+        return Err("only the main window may change the display language".into());
+    }
+    #[cfg(target_os = "macos")]
+    app_menu::sync_language(&app, menu.as_ref()).map_err(|e| e.to_string())?;
+    let previous = {
+        let mut titles = PLUGIN_TITLES.lock().map_err(|_| "language lock poisoned".to_string())?;
+        std::mem::replace(&mut *titles, window_titles.clone())
+    };
+    for (id, localized) in window_titles {
+        if let Some(window) = app.get_webview_window(&plugin_window_label(&id)) {
+            let current = window.title().map_err(|error| error.to_string())?;
+            if current == localized.source || previous.get(&id).is_some_and(|old| old.title == current) {
+                window.set_title(&localized.title).map_err(|error| error.to_string())?;
+            }
+        }
+    }
+    *PLUGIN_LANGUAGE.lock().map_err(|_| "language lock poisoned".to_string())? = language;
+    let script = plugin_language_script();
+    for (label, webview) in app.webviews() {
+        if label.starts_with("plugin:") {
+            let _ = webview.eval(&script);
+        }
+    }
+    Ok(())
+}
+
 fn plugin_webview_init_script() -> String {
     let json = serde_json::to_string(&current_plugin_appearance()).unwrap_or_else(|_| "{}".into());
     format!(
-        "{PLUGIN_WEBVIEW_ISOLATION_SCRIPT}\n{}({json});",
+        "{PLUGIN_WEBVIEW_ISOLATION_SCRIPT}\n{}\n{}({json});",
+        plugin_language_script(),
         plugin_appearance_apply_js()
     )
 }
@@ -708,6 +775,7 @@ pub fn run() {
             settings_get,
             settings_update,
             plugin_appearance_sync,
+            plugin_language_sync,
             ai::ai_provider_status,
             ai::ai_provider_models,
             ai::ai_provider_connect,

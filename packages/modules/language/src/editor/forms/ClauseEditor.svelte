@@ -1,4 +1,5 @@
 <script lang="ts">
+import { pluginText } from "../../../../plugin-i18n.ts";
 import {
   CLAUSE_NEGATION_OPTIONS,
   CONTENT_QUESTION_OPTIONS,
@@ -72,7 +73,7 @@ function toChecks(options: { value: string; label: string; expansion?: string }[
   {#if draft.systemId === "clauses.yes-no-questions"}
     {@const config = draft.config as YesNoQuestionsConfig}
     <TemplateChecks
-      legend="How are yes/no questions formed?"
+      legend={$pluginText("How are yes/no questions formed?")}
       options={toChecks(YES_NO_OPTIONS)}
       selected={config.strategies}
       {locked}
@@ -80,11 +81,11 @@ function toChecks(options: { value: string; label: string; expansion?: string }[
         applySystemMutation(draft, toggleYesNoStrategy(draft, value as YesNoQuestionStrategy));
       }} />
     {#if config.strategies.includes("particle")}
-      <Field label="Particle"
+      <Field label={$pluginText("Particle")}
         ><input name="particle" type="text" bind:value={config.particle} disabled={locked} /></Field>
       <StatusRow
         name="placement"
-        legend="Position"
+        legend={$pluginText("Position")}
         options={PLACEMENT_OPTIONS}
         value={config.placement}
         {locked}
@@ -97,7 +98,7 @@ function toChecks(options: { value: string; label: string; expansion?: string }[
     {@const interrogativeSelected = new Set(config.interrogatives.map((item) => item.meaning))}
     <ChoiceCards
       name="behavior"
-      legend="Where do question words appear?"
+      legend={$pluginText("Where do question words appear?")}
       options={CONTENT_QUESTION_OPTIONS}
       value={config.behavior}
       {locked}
@@ -105,12 +106,12 @@ function toChecks(options: { value: string; label: string; expansion?: string }[
         applySystemMutation(draft, setContentBehavior(draft, value as ContentQuestionBehavior));
       }} />
     {#if config.behavior === "custom"}
-      <Field label="Custom behavior">
+      <Field label={$pluginText("Custom behavior")}>
         <input name="customBehavior" type="text" bind:value={config.customBehavior} disabled={locked} />
       </Field>
     {/if}
     <TemplateChecks
-      legend="Common interrogatives"
+      legend={$pluginText("Common interrogatives")}
       options={INTERROGATIVE_TEMPLATES.map((meaning) => ({ id: meaning, label: meaning }))}
       selected={interrogativeSelected}
       {locked}
@@ -124,12 +125,12 @@ function toChecks(options: { value: string; label: string; expansion?: string }[
         onclick={() => {
           applySystemMutation(draft, addInterrogative(draft));
         }}>
-        Add interrogative
+        {$pluginText("Add interrogative")}
       </button>
     {/if}
     {#each config.interrogatives as item, index (item.id)}
       <InventoryItem
-        title={item.meaning || `Interrogative ${index + 1}`}
+        title={item.meaning || $pluginText("Interrogative {0}", { 0: String(index + 1) })}
         {index}
         total={config.interrogatives.length}
         {locked}
@@ -139,9 +140,9 @@ function toChecks(options: { value: string; label: string; expansion?: string }[
         onremove={() => {
           applySystemMutation(draft, removeInterrogative(draft, item.id));
         }}>
-        <Field label="Meaning"><input name="meaning" type="text" bind:value={item.meaning} disabled={locked} /></Field>
-        <Field label="Form"><input name="form" type="text" bind:value={item.form} disabled={locked} /></Field>
-        <Field label="Linked word (optional)">
+        <Field label={$pluginText("Meaning")}><input name="meaning" type="text" bind:value={item.meaning} disabled={locked} /></Field>
+        <Field label={$pluginText("Form")}><input name="form" type="text" bind:value={item.form} disabled={locked} /></Field>
+        <Field label={$pluginText("Linked word (optional)")}>
           <select
             name="lexemeId"
             value={item.lexemeId ?? ""}
@@ -154,7 +155,7 @@ function toChecks(options: { value: string; label: string; expansion?: string }[
                 }),
               );
             }}>
-            <option value="">Not linked to a word</option>
+            <option value="">{$pluginText("Not linked to a word")}</option>
             {#each lexemes as lexeme (lexeme.id)}
               <option value={lexeme.id}>{lexeme.lemma}</option>
             {/each}
@@ -162,7 +163,7 @@ function toChecks(options: { value: string; label: string; expansion?: string }[
         </Field>
       </InventoryItem>
     {/each}
-    <p class="language-empty" role="status">Interrogatives do not become lexicon entries unless you link a word.</p>
+    <p class="language-empty" role="status">{$pluginText("Interrogatives do not become lexicon entries unless you link a word.")}</p>
   {:else if draft.systemId === "clauses.imperatives"}
     {@const config = draft.config as ImperativesConfig}
     {@const distinctions = [
@@ -171,7 +172,7 @@ function toChecks(options: { value: string; label: string; expansion?: string }[
       { key: "politenessDistinction", label: "Polite imperative" },
     ] as const}
     <TemplateChecks
-      legend="How are commands formed?"
+      legend={$pluginText("How are commands formed?")}
       options={toChecks(IMPERATIVE_OPTIONS)}
       selected={config.strategies}
       {locked}
@@ -181,7 +182,7 @@ function toChecks(options: { value: string; label: string; expansion?: string }[
     <details
       class="grammar-learn"
       open={Boolean(config.numberDistinction || config.polarityDistinction || config.politenessDistinction)}>
-      <summary>Advanced</summary>
+      <summary>{$pluginText("Advanced")}</summary>
       {#each distinctions as item (item.key)}
         <label>
           <input type="checkbox" name="distinction" bind:checked={config[item.key]} disabled={locked} />
@@ -192,10 +193,10 @@ function toChecks(options: { value: string; label: string; expansion?: string }[
   {:else if draft.systemId === "clauses.negation"}
     {@const config = draft.config as ClauseNegationConfig}
     <p class="language-empty" role="status">
-      This editor owns clause negation. Do not re-enter negative verb morphology configured under Verbs.
+      {$pluginText("This editor owns clause negation. Do not re-enter negative verb morphology configured under Verbs.")}
     </p>
     <TemplateChecks
-      legend="Primary strategy"
+      legend={$pluginText("Primary strategy")}
       options={toChecks(CLAUSE_NEGATION_OPTIONS)}
       selected={config.strategies}
       {locked}
@@ -203,14 +204,14 @@ function toChecks(options: { value: string; label: string; expansion?: string }[
         applySystemMutation(draft, toggleNegationStrategy(draft, value as ClauseNegationStrategy));
       }} />
     {#if negativeVerbSummary}
-      <p class="language-empty" role="status">Negative verb forms: {negativeVerbSummary}</p>
+      <p class="language-empty" role="status">{$pluginText("Negative verb forms:")} {negativeVerbSummary}</p>
     {/if}
     {#if config.strategies.includes("particle")}
-      <Field label="Particle"
+      <Field label={$pluginText("Particle")}
         ><input name="particle" type="text" bind:value={config.particle} disabled={locked} /></Field>
       <StatusRow
         name="placement"
-        legend="Position"
+        legend={$pluginText("Position")}
         options={PLACEMENT_OPTIONS}
         value={config.placement}
         {locked}
@@ -218,20 +219,20 @@ function toChecks(options: { value: string; label: string; expansion?: string }[
           applySystemMutation(draft, setNegationPlacement(draft, value as ParticlePlacement));
         }} />
     {/if}
-    <Field label="Negative questions">
+    <Field label={$pluginText("Negative questions")}>
       <textarea rows="3" name="negativeQuestions" bind:value={config.negativeQuestions} disabled={locked}></textarea>
     </Field>
-    <Field label="Negative imperatives">
+    <Field label={$pluginText("Negative imperatives")}>
       <textarea rows="3" name="negativeImperatives" bind:value={config.negativeImperatives} disabled={locked}
       ></textarea>
     </Field>
   {:else if draft.systemId === "clauses.relative-clauses"}
     {@const config = draft.config as RelativeClausesConfig}
     <p class="language-empty" role="status">
-      Placement relative to the head noun is configured under Syntax → Relative clause position.
+      {$pluginText("Placement relative to the head noun is configured under Syntax → Relative clause position.")}
     </p>
     <TemplateChecks
-      legend="Relativization strategy"
+      legend={$pluginText("Relativization strategy")}
       options={toChecks(RELATIVIZATION_OPTIONS)}
       selected={config.strategies}
       {locked}
@@ -239,12 +240,12 @@ function toChecks(options: { value: string; label: string; expansion?: string }[
         applySystemMutation(draft, toggleRelativization(draft, value as RelativizationStrategy));
       }} />
     {#if relativePositionSummary}
-      <p class="language-empty" role="status">Relative clause position: {relativePositionSummary}</p>
+      <p class="language-empty" role="status">{$pluginText("Relative clause position:")} {relativePositionSummary}</p>
     {/if}
-    <Field label="Head behavior">
+    <Field label={$pluginText("Head behavior")}>
       <textarea rows="3" name="headBehavior" bind:value={config.headBehavior} disabled={locked}></textarea>
     </Field>
-    <Field label="Resumptives or gaps">
+    <Field label={$pluginText("Resumptives or gaps")}>
       <textarea rows="3" name="resumptives" bind:value={config.resumptives} disabled={locked}></textarea>
     </Field>
   {/if}

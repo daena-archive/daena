@@ -1,4 +1,5 @@
 <script lang="ts">
+import { ui } from "$lib/i18n/ui";
 import { Hexagon, MousePointer2, Pencil, Plus, Redo2, Save, Trash2, Undo2 } from "@lucide/svelte";
 import { featureName } from "../native-vector/types";
 import LandmassSelectionBar from "../physical/LandmassSelectionBar.svelte";
@@ -118,10 +119,10 @@ function regionFill(featureId: string) {
 }
 </script>
 
-<section class="overlays" aria-label="Overlay authoring">
+<section class="overlays" aria-label={$ui("Overlay authoring")}>
   <div class="block">
-    <span class="kicker">Layer</span>
-    <p class="note">Name it anything. Suggestions only set a starting color.</p>
+    <span class="kicker">{$ui("Layer")}</span>
+    <p class="note">{$ui("Name it anything. Suggestions only set a starting color.")}</p>
     <div class="create-row">
       <div
         class="suggest"
@@ -130,7 +131,7 @@ function regionFill(featureId: string) {
           if (next && event.currentTarget.contains(next)) return;
           closeSuggestions();
         }}>
-        <label class="name-label" for="atlas-overlay-name">Name</label>
+        <label class="name-label" for="atlas-overlay-name">{$ui("Name")}</label>
         <input
           id="atlas-overlay-name"
           bind:this={nameField}
@@ -141,7 +142,7 @@ function regionFill(featureId: string) {
           aria-expanded={suggestOpen}
           aria-controls={listboxId}
           aria-activedescendant={suggestIndex >= 0 ? `${listboxId}-${suggestIndex}` : undefined}
-          placeholder="Political, kingdoms, trade…"
+          placeholder={$ui("Political, kingdoms, trade…")}
           autocomplete="off"
           spellcheck="false"
           disabled={authoring.busy}
@@ -152,7 +153,7 @@ function regionFill(featureId: string) {
           }}
           onkeydown={onNameKey} />
         {#if suggestOpen && suggestions.length > 0}
-          <ul class="suggest-list" id={listboxId} role="listbox" aria-label="Layer name suggestions">
+          <ul class="suggest-list" id={listboxId} role="listbox" aria-label={$ui("Layer name suggestions")}>
             {#each suggestions as item, index (item.family)}
               <li>
                 <button
@@ -166,7 +167,7 @@ function regionFill(featureId: string) {
                     applySuggestion(item.label);
                   }}>
                   <span>{item.label}</span>
-                  <small>Preset</small>
+                  <small>{$ui("Preset")}</small>
                 </button>
               </li>
             {/each}
@@ -174,18 +175,17 @@ function regionFill(featureId: string) {
         {/if}
       </div>
       <button type="button" class="primary" disabled={authoring.busy} onclick={createOverlay}>
-        <Plus {...iconProps} /> Create
-      </button>
+        <Plus {...iconProps} /> {$ui("Create")} </button>
     </div>
     {#if createName.trim()}
       <p class="hint">
         {inferredFamily === "custom"
-          ? `Creates “${createName.trim()}” as a custom layer.`
-          : `“${createName.trim()}” will use ${overlayFamilyLabel(inferredFamily)} colors. Rename anytime.`}
+          ? $ui("Creates “{0}” as a custom layer.", createName.trim())
+          : $ui("“{0}” will use {1} colors. Rename anytime.", createName.trim(), overlayFamilyLabel(inferredFamily))}
       </p>
     {/if}
     {#if authoring.layers.length > 0}
-      <div class="layer-switch" role="group" aria-label="Overlays">
+      <div class="layer-switch" role="group" aria-label={$ui("Overlays")}>
         {#each authoring.layers as layer (layer.id)}
           <button
             type="button"
@@ -202,37 +202,29 @@ function regionFill(featureId: string) {
   </div>
 
   {#if !activeLayer}
-    <p class="note empty">Create a layer to draw and manage regions.</p>
+    <p class="note empty">{$ui("Create a layer to draw and manage regions.")}</p>
   {:else}
     <div class="block">
-      <span class="kicker">Active layer</span>
-      <label>
-        Rename
-        <input
+      <span class="kicker">{$ui("Active layer")}</span>
+      <label> {$ui("Rename")} <input
           value={activeLayer.name}
           disabled={authoring.busy || activeLayer.locked}
           onchange={(event) => authoring.renameLayer(activeLayer.id, event.currentTarget.value)} />
       </label>
-      <div class="style-grid" aria-label="Layer appearance">
-        <label>
-          Fill
-          <input
+      <div class="style-grid" aria-label={$ui("Layer appearance")}>
+        <label> {$ui("Fill")} <input
             type="color"
             value={activeLayer.style.fill}
             disabled={authoring.busy || activeLayer.locked}
             oninput={(event) => authoring.updateLayerStyle(activeLayer.id, { fill: event.currentTarget.value })} />
         </label>
-        <label>
-          Stroke
-          <input
+        <label> {$ui("Stroke")} <input
             type="color"
             value={activeLayer.style.stroke}
             disabled={authoring.busy || activeLayer.locked}
             oninput={(event) => authoring.updateLayerStyle(activeLayer.id, { stroke: event.currentTarget.value })} />
         </label>
-        <label class="span">
-          Fill opacity
-          <input
+        <label class="span"> {$ui("Fill opacity")} <input
             type="range"
             min="0"
             max="1"
@@ -243,9 +235,7 @@ function regionFill(featureId: string) {
               authoring.updateLayerStyle(activeLayer.id, { fillOpacity: Number(event.currentTarget.value) })} />
           <em>{Math.round(activeLayer.style.fillOpacity * 100)}%</em>
         </label>
-        <label class="span">
-          Layer opacity
-          <input
+        <label class="span"> {$ui("Layer opacity")} <input
             type="range"
             min="0"
             max="1"
@@ -259,31 +249,28 @@ function regionFill(featureId: string) {
     </div>
 
     <div class="block">
-      <span class="kicker">Draw</span>
-      <div class="tools" role="toolbar" aria-label="Region tools">
+      <span class="kicker">{$ui("Draw")}</span>
+      <div class="tools" role="toolbar" aria-label={$ui("Region tools")}>
         <button
           type="button"
           class:active={tool === "select"}
           aria-pressed={tool === "select"}
           onclick={() => setTool("select", "")}>
-          <MousePointer2 {...iconProps} /> Select
-        </button>
+          <MousePointer2 {...iconProps} /> {$ui("Select")} </button>
         <button
           type="button"
           class:active={tool === "freehand"}
           aria-pressed={tool === "freehand"}
           disabled={!canDraw}
           onclick={() => setTool("freehand", "Draw a freehand region on the map.")}>
-          <Pencil {...iconProps} /> Freehand
-        </button>
+          <Pencil {...iconProps} /> {$ui("Freehand")} </button>
         <button
           type="button"
           class:active={tool === "polygon"}
           aria-pressed={tool === "polygon"}
           disabled={!canDraw}
           onclick={() => setTool("polygon", "Click to place polygon vertices.")}>
-          <Hexagon {...iconProps} /> Polygon
-        </button>
+          <Hexagon {...iconProps} /> {$ui("Polygon")} </button>
         <button
           type="button"
           class:active={tool === "landmass"}
@@ -292,9 +279,7 @@ function regionFill(featureId: string) {
             setTool(
               "landmass",
               "Click land to select the connected landmass at this epoch. Shift adds, Alt subtracts.",
-            )}>
-          Landmass
-        </button>
+            )}> {$ui("Landmass")} </button>
       </div>
       <LandmassSelectionBar
         {selection}
@@ -311,22 +296,20 @@ function regionFill(featureId: string) {
         onclear={() => onClearSelection?.()} />
       <div class="history">
         <button type="button" disabled={!authoring.canUndo || authoring.busy} onclick={() => authoring.undo()}>
-          <Undo2 {...iconProps} /> Undo
-        </button>
+          <Undo2 {...iconProps} /> {$ui("Undo")} </button>
         <button type="button" disabled={!authoring.canRedo || authoring.busy} onclick={() => authoring.redo()}>
-          <Redo2 {...iconProps} /> Redo
-        </button>
+          <Redo2 {...iconProps} /> {$ui("Redo")} </button>
         <button type="button" disabled={!authoring.dirty || authoring.busy} onclick={() => void authoring.save()}>
           <Save {...iconProps} />
-          {authoring.busy ? "Saving…" : authoring.dirty ? "Save" : "Saved"}
+          {authoring.busy ? $ui("Saving…") : authoring.dirty ? $ui("Save") : $ui("Saved")}
         </button>
       </div>
     </div>
 
     <div class="block">
-      <span class="kicker">Regions</span>
+      <span class="kicker">{$ui("Regions")}</span>
       {#if regions.length === 0}
-        <p class="note">Draw, or add a landmass, then name it as a Place.</p>
+        <p class="note">{$ui("Draw, or add a landmass, then name it as a Place.")}</p>
       {:else}
         <ul class="region-list">
           {#each regions as feature (feature.id)}
@@ -334,22 +317,22 @@ function regionFill(featureId: string) {
               <input
                 type="color"
                 value={regionFill(feature.id)}
-                aria-label={`${featureName(feature) || "Unnamed region"} fill`}
+                aria-label={$ui("{0} fill", featureName(feature) || $ui("Unnamed region"))}
                 disabled={authoring.busy || activeLayer.locked}
                 oninput={(event) => authoring.updateFeatureStyle(feature.id, { fill: event.currentTarget.value })}
                 onfocus={() => (selectedFeatureId = feature.id)} />
               <input
                 class="region-name"
                 value={featureName(feature) ?? ""}
-                placeholder="Unnamed region"
-                aria-label="Region name"
+                placeholder={$ui("Unnamed region")}
+                aria-label={$ui("Region name")}
                 disabled={authoring.busy || activeLayer.locked}
                 onfocus={() => (selectedFeatureId = feature.id)}
                 onchange={(event) => authoring.renameFeature(feature.id, event.currentTarget.value.trim() || null)} />
               <button
                 type="button"
                 class="icon-danger"
-                aria-label={`Delete ${featureName(feature) || "unnamed region"}`}
+                aria-label={$ui("Delete {0}", featureName(feature) || $ui("unnamed region"))}
                 disabled={authoring.busy || activeLayer.locked}
                 onclick={() => {
                   if (selectedFeatureId === feature.id) selectedFeatureId = null;
@@ -366,21 +349,15 @@ function regionFill(featureId: string) {
           type="button"
           class="primary"
           disabled={authoring.busy || !onNamePlace}
-          onclick={() => onNamePlace?.(selected.id)}>
-          Place
-        </button>
-        <div class="style-grid" aria-label="Selected region appearance">
-          <label>
-            Stroke
-            <input
+          onclick={() => onNamePlace?.(selected.id)}> {$ui("Place")} </button>
+        <div class="style-grid" aria-label={$ui("Selected region appearance")}>
+          <label> {$ui("Stroke")} <input
               type="color"
               value={regionStyle.stroke}
               disabled={authoring.busy || activeLayer.locked}
               oninput={(event) => authoring.updateFeatureStyle(selected.id, { stroke: event.currentTarget.value })} />
           </label>
-          <label>
-            Fill opacity
-            <input
+          <label> {$ui("Fill opacity")} <input
               type="range"
               min="0"
               max="1"
@@ -398,9 +375,7 @@ function regionFill(featureId: string) {
       type="button"
       class="danger"
       disabled={activeLayer.locked || authoring.busy}
-      onclick={() => authoring.deleteLayer(activeLayer.id)}>
-      Delete layer
-    </button>
+      onclick={() => authoring.deleteLayer(activeLayer.id)}> {$ui("Delete layer")} </button>
   {/if}
 </section>
 

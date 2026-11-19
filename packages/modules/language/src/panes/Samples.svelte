@@ -1,4 +1,5 @@
 <script lang="ts">
+import { pluginText, translatePluginText as formatText } from "../../../plugin-i18n.ts";
 import { untrack } from "svelte";
 import type { EntitySummary, ModuleContext, ModuleRecord } from "../../../../module-api/src/index";
 import type { LexemeValue } from "../lexeme";
@@ -84,7 +85,7 @@ function samplesHasDraft() {
 async function tryLeaveSamples(confirmLeave: (message: string) => Promise<boolean> | boolean) {
   if (!samplesHasDraft()) return true;
   if (sampleSaving) return false;
-  const allowed = await confirmLeave("You have unsaved changes to a sample. Discard them?");
+  const allowed = await confirmLeave($pluginText("You have unsaved changes to a sample. Discard them?"));
   if (allowed) closeSampleEditor();
   return allowed;
 }
@@ -172,7 +173,7 @@ async function saveSample(): Promise<"ok" | "text" | "error" | "none"> {
   const ownerLanguageId = selectedLanguage.id;
   const value = normalizeSample(sampleDraft);
   if (!value.text.trim()) {
-    error = "Text is required.";
+    error = $pluginText("Text is required.");
     return "text";
   }
   error = "";
@@ -208,7 +209,7 @@ async function saveSample(): Promise<"ok" | "text" | "error" | "none"> {
 
 async function deleteSample() {
   if (!selectedLanguage || !sampleEditing) return;
-  if (!(await confirm("Delete sample", `Delete “${sampleTitle(sampleEditing.value)}”?`))) return;
+  if (!(await confirm($pluginText("Delete sample"), formatText("Delete “{name}”?", { name: sampleTitle(sampleEditing.value) })))) return;
   const ownerLanguageId = selectedLanguage.id;
   error = "";
   try {
@@ -230,7 +231,7 @@ async function deleteSample() {
 
 function tokenize() {
   if (!sampleDraft.text.trim()) {
-    error = "Add sample text before tokenizing it.";
+    error = $pluginText("Add sample text before tokenizing it.");
     textInput?.focus();
     return;
   }
@@ -255,103 +256,102 @@ async function handleSubmit(event: SubmitEvent) {
 
 <div class="language-toolbar">
   <div class="language-toolbar-title">
-    <h2>Samples</h2>
+    <h2>{$pluginText("Samples")}</h2>
   </div>
   <div class="language-toolbar-actions">
     <button type="button" class="language-button" disabled={!selectedLanguage} onclick={() => addSample()}
-      >Add sample</button>
+      >{$pluginText("Add sample")}</button>
   </div>
 </div>
 
 {#if paneLoading}
-  <p class="language-empty language-loading" role="status" aria-live="polite">Loading samples…</p>
+  <p class="language-empty language-loading" role="status" aria-live="polite">{$pluginText("Loading samples…")}</p>
 {:else if sampleEditorOpen}
   <form class="language-editor" onsubmit={handleSubmit}>
     <label class="language-field">
-      <span>Title (optional)</span>
+      <span>{$pluginText("Title (optional)")}</span>
       <input name="title" bind:this={titleInput} bind:value={sampleDraft.title} />
     </label>
     <label class="language-field">
-      <span>Kind</span>
-      <select name="kind" aria-label="Sample kind" bind:value={sampleDraft.kind}>
+      <span>{$pluginText("Kind")}</span>
+      <select name="kind" aria-label={$pluginText("Sample kind")} bind:value={sampleDraft.kind}>
         {#each SAMPLE_KINDS as item (item.id)}
-          <option value={item.id}>{item.label}</option>
+          <option value={item.id}>{$pluginText(item.label)}</option>
         {/each}
       </select>
     </label>
     <label class="language-field">
-      <span>Text</span>
+      <span>{$pluginText("Text")}</span>
       <textarea
         name="text"
         rows={4}
         bind:this={textInput}
         bind:value={sampleDraft.text}
-        placeholder="Write the sample exactly as it appears in the language."></textarea>
+        placeholder={$pluginText("Write the sample exactly as it appears in the language.")}></textarea>
     </label>
     <label class="language-field">
-      <span>Transliteration (optional)</span>
+      <span>{$pluginText("Transliteration (optional)")}</span>
       <textarea name="transliteration" rows={2} bind:value={sampleDraft.transliteration}></textarea>
     </label>
     <label class="language-field">
-      <span>Translation (optional)</span>
+      <span>{$pluginText("Translation (optional)")}</span>
       <textarea name="translation" rows={2} bind:value={sampleDraft.translation}></textarea>
     </label>
     <label class="language-field">
-      <span>Notes (optional)</span>
+      <span>{$pluginText("Notes (optional)")}</span>
       <textarea name="notes" rows={2} bind:value={sampleDraft.notes}></textarea>
     </label>
     <section class="language-form-section">
       <div class="language-form-section-header">
         <div>
-          <h3>Interlinear tokens</h3>
+          <h3>{$pluginText("Interlinear tokens")}</h3>
           <p>
-            Tokenize splits the sample on whitespace. Matching surface forms keep their glosses, grammar tags, and
-            lexeme links.
+            {$pluginText("Tokenize splits the sample on whitespace. Matching surface forms keep their glosses, grammar tags, and lexeme links.")}
           </p>
         </div>
         <div class="samples-token-actions">
-          <button type="button" class="language-button secondary" onclick={tokenize}>Tokenize text</button>
-          <button type="button" class="language-button secondary" onclick={addToken}>Add token</button>
+          <button type="button" class="language-button secondary" onclick={tokenize}>{$pluginText("Tokenize text")}</button>
+          <button type="button" class="language-button secondary" onclick={addToken}>{$pluginText("Add token")}</button>
         </div>
       </div>
       {#if sampleDraft.tokens.length === 0}
         <div class="language-empty-card">
           <p class="language-empty" role="status">
-            No tokens defined. Use "Tokenize text" to split on whitespace, or add tokens manually.
+            {$pluginText("No tokens defined. Use \"Tokenize text\" to split on whitespace, or add tokens manually.")}
           </p>
         </div>
       {:else}
         <div class="samples-tokens-table">
           <div class="samples-tokens-header">
             <span class="samples-tokens-col">#</span>
-            <span class="samples-tokens-col">Form</span>
-            <span class="samples-tokens-col">Gloss</span>
-            <span class="samples-tokens-col">Grammar</span>
-            <span class="samples-tokens-col">Lexeme</span>
+            <span class="samples-tokens-col">{$pluginText("Form")}</span>
+            <span class="samples-tokens-col">{$pluginText("Gloss")}</span>
+            <span class="samples-tokens-col">{$pluginText("Grammar")}</span>
+            <span class="samples-tokens-col">{$pluginText("Lexeme")}</span>
             <span class="samples-tokens-col samples-tokens-actions"></span>
           </div>
           {#each sampleDraft.tokens as token, index (token.id)}
             <div class="samples-token-row">
               <span class="samples-tokens-col samples-token-number">{index + 1}</span>
               <label class="samples-tokens-col">
-                <span class="visually-hidden">Form</span>
-                <input name={`token-text-${index}`} bind:value={token.text} placeholder="Word" />
+                <span class="visually-hidden">{$pluginText("Form")}</span>
+                <input name={`token-text-${index}`} bind:value={token.text} placeholder={$pluginText("Word")} />
               </label>
               <label class="samples-tokens-col">
-                <span class="visually-hidden">Gloss</span>
-                <input name={`token-gloss-${index}`} bind:value={token.gloss} placeholder="Translation" />
+                <span class="visually-hidden">{$pluginText("Gloss")}</span>
+                <input name={`token-gloss-${index}`} bind:value={token.gloss} placeholder={$pluginText("Translation")} />
               </label>
               <label class="samples-tokens-col">
-                <span class="visually-hidden">Grammar</span>
-                <input name={`token-grammar-${index}`} bind:value={token.grammar} placeholder="e.g. N, V" />
+                <span class="visually-hidden">{$pluginText("Grammar")}</span>
+                <input name={`token-grammar-${index}`} bind:value={token.grammar} placeholder={$pluginText("e.g. N, V")} />
               </label>
               <label class="samples-tokens-col">
-                <span class="visually-hidden">Lexeme</span>
+                <span class="visually-hidden">{$pluginText("Lexeme")}</span>
                 <select
                   name={`token-lexeme-${index}`}
-                  aria-label={`Lexeme for token ${index + 1}`}
+                  aria-label={$pluginText("Lexeme for token {0}", { 0: String(index + 1) })}
                   bind:value={token.lexemeId}>
-                  <option value={""}>None</option>
+                  <option value={""}>{$pluginText("None")}</option>
                   {#each records as record (record.id)}
                     <option value={record.id}>{record.value.lemma}</option>
                   {/each}
@@ -362,7 +362,7 @@ async function handleSubmit(event: SubmitEvent) {
                   type="button"
                   class="samples-token-remove"
                   onclick={() => removeToken(index)}
-                  aria-label="Remove token">&times;</button>
+                  aria-label={$pluginText("Remove token")}>&times;</button>
               </span>
             </div>
           {/each}
@@ -372,8 +372,8 @@ async function handleSubmit(event: SubmitEvent) {
     <section class="language-form-section">
       <div class="language-form-section-header">
         <div>
-          <h3>Readable preview</h3>
-          <p>See how the sample will look when rendered with interlinear glosses.</p>
+          <h3>{$pluginText("Readable preview")}</h3>
+          <p>{$pluginText("See how the sample will look when rendered with interlinear glosses.")}</p>
         </div>
       </div>
       <div class="samples-preview" bind:this={previewBox}>
@@ -381,7 +381,7 @@ async function handleSubmit(event: SubmitEvent) {
           {@html previewHtml}
         {:else}
           <div class="language-empty-card">
-            <p class="language-empty" role="status">Add text or tokens to see the rendered sample.</p>
+            <p class="language-empty" role="status">{$pluginText("Add text or tokens to see the rendered sample.")}</p>
           </div>
         {/if}
       </div>
@@ -396,14 +396,14 @@ async function handleSubmit(event: SubmitEvent) {
             type="button"
             class="language-button secondary language-danger"
             onclick={deleteSample}
-            disabled={sampleSaving}>Delete</button>
+            disabled={sampleSaving}>{$pluginText("Delete")}</button>
         {/if}
       </span>
       <span>
         <button type="button" class="language-button secondary" onclick={closeSampleEditor} disabled={sampleSaving}
-          >Cancel</button>
+          >{$pluginText("Cancel")}</button>
         <button type="submit" class="language-button" disabled={sampleSaving}
-          >{sampleSaving ? "Saving…" : "Save sample"}</button>
+          >{sampleSaving ? $pluginText("Saving…") : $pluginText("Save sample")}</button>
       </span>
     </div>
   </form>
@@ -411,39 +411,37 @@ async function handleSubmit(event: SubmitEvent) {
   <div class="language-empty-card language-error-card">
     <p class="language-status error" role="alert">{error}</p>
     {#if selectedLanguage}
-      <button type="button" class="language-button secondary" onclick={() => void loadSamples()}>Try again</button>
+      <button type="button" class="language-button secondary" onclick={() => void loadSamples()}>{$pluginText("Try again")}</button>
     {/if}
   </div>
 {:else if !selectedLanguage}
   <div class="language-empty-card">
-    <p class="language-empty" role="status">Select a language to collect sample sentences and paragraphs.</p>
+    <p class="language-empty" role="status">{$pluginText("Select a language to collect sample sentences and paragraphs.")}</p>
   </div>
 {:else if samples.length === 0}
   <div class="language-empty-card">
     <p class="language-empty" role="status">
-      No analyzed samples yet. Add a sentence or paragraph to test vocabulary and grammar in context. Writing-system
-      display examples live in Writing.
+      {$pluginText("No analyzed samples yet. Add a sentence or paragraph to test vocabulary and grammar in context. Writing-system display examples live in Writing.")}
     </p>
-    <button type="button" class="language-button" onclick={() => addSample()}>Add first sample</button>
+    <button type="button" class="language-button" onclick={() => addSample()}>{$pluginText("Add first sample")}</button>
   </div>
 {:else}
   <div class="samples-search-row">
     <label class="language-field">
-      <span>Search samples</span>
-      <input type="search" bind:value={sampleSearch} placeholder="Search text, translation, gloss, or grammar…" />
+      <span>{$pluginText("Search samples")}</span>
+      <input type="search" bind:value={sampleSearch} placeholder={$pluginText("Search text, translation, gloss, or grammar…")} />
     </label>
     {#if sampleSearch}
-      <button type="button" class="language-button secondary" onclick={() => (sampleSearch = "")}>Clear</button>
+      <button type="button" class="language-button secondary" onclick={() => (sampleSearch = "")}>{$pluginText("Clear")}</button>
     {/if}
   </div>
   <p class="language-pane-summary">
-    {visibleSamples.length}{sampleSearch ? ` of ${samples.length}` : ""} sample{visibleSamples.length === 1 ? "" : "s"} ·
-    grouped by kind for quick browsing.
+    {visibleSamples.length}{sampleSearch ? $pluginText(" of {0}", { 0: String(samples.length) }) : ""} {$pluginText("sample")}{visibleSamples.length === 1 ? "" : $pluginText("s")} {$pluginText("· grouped by kind for quick browsing.")}
   </p>
   {#if visibleSamples.length === 0}
     <div class="language-empty-card">
-      <p class="language-empty" role="status">No samples match “{sampleSearch.trim()}”.</p>
-      <button type="button" class="language-button secondary" onclick={() => (sampleSearch = "")}>Clear search</button>
+      <p class="language-empty" role="status">{$pluginText("No samples match “")}{sampleSearch.trim()}”.</p>
+      <button type="button" class="language-button secondary" onclick={() => (sampleSearch = "")}>{$pluginText("Clear search")}</button>
     </div>
   {:else}<div class="language-panes">
       {#each groups as group (group.id)}
@@ -451,10 +449,10 @@ async function handleSubmit(event: SubmitEvent) {
             <div class="language-group-head">
               <h3>{group.label}</h3>
               <button type="button" class="language-button secondary" onclick={() => addSample(group.id)}
-                >Add {group.label.toLowerCase()}</button>
+                >{$pluginText("Add")} {group.label.toLowerCase()}</button>
             </div>
             {#if group.samples.length === 0}
-              <p class="language-empty" role="status">No {group.label.toLowerCase()} yet.</p>
+              <p class="language-empty" role="status">{$pluginText("No")} {group.label.toLowerCase()} {$pluginText("yet.")}</p>
             {:else}
               <ul class="lexeme-list">
                 {#each group.samples as record (record.id)}
@@ -462,12 +460,12 @@ async function handleSubmit(event: SubmitEvent) {
                     <button
                       type="button"
                       class="language-item"
-                      aria-label={`Edit sample ${sampleTitle(record.value)}`}
+                      aria-label={$pluginText("Edit sample {0}", { 0: String(sampleTitle(record.value)) })}
                       onclick={() => openSampleEditor(record)}>
                       <strong>{sampleTitle(record.value)}</strong>
                       <span
-                        >{record.value.translation || record.value.text.trim().split("\n")[0] || "No text yet"}</span>
-                      <small>{record.value.tokens.length} token{record.value.tokens.length === 1 ? "" : "s"}</small>
+                        >{record.value.translation || record.value.text.trim().split("\n")[0] || $pluginText("No text yet")}</span>
+                      <small>{record.value.tokens.length} {$pluginText("token")}{record.value.tokens.length === 1 ? "" : $pluginText("s")}</small>
                     </button>
                   </li>
                 {/each}

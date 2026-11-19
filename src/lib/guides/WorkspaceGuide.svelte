@@ -1,4 +1,5 @@
 <script lang="ts">
+import { ui } from "$lib/i18n/ui";
 import { tick } from "svelte";
 import type { GuideStep } from "./types.ts";
 
@@ -24,7 +25,7 @@ const step = $derived(steps[Math.min(stepIndex, Math.max(steps.length - 1, 0))])
 const isFirst = $derived(stepIndex <= 0);
 const isLast = $derived(stepIndex >= steps.length - 1);
 const primaryLabel = $derived(
-  step?.waitForTarget ? (step.primaryLabel ?? "Skip this step") : (step?.primaryLabel ?? (isLast ? "Done" : "Next")),
+  step?.waitForTarget ? (step.primaryLabel ?? $ui("Skip this step")) : (step?.primaryLabel ?? (isLast ? $ui("Done") : $ui("Next"))),
 );
 
 let highlight = $state<{ top: number; left: number; width: number; height: number } | null>(null);
@@ -133,16 +134,16 @@ $effect(() => {
         aria-modal="false"
         aria-labelledby="workspace-guide-title"
         style={`top:${card.top}px;left:${card.left}px`}>
-        <p class="guide-kicker">{stepIndex + 1} of {steps.length}</p>
-        <h2 id="workspace-guide-title">{step.title}</h2>
-        <p>{step.body}</p>
+        <p class="guide-kicker">{$ui("{0} of {1}", stepIndex + 1, steps.length)}</p>
+        <h2 id="workspace-guide-title">{$ui(step.title)}</h2>
+        <p>{$ui(step.body)}</p>
         <div class="guide-actions">
-          <button type="button" class="guide-text" onclick={onDismiss}>Skip guide</button>
+          <button type="button" class="guide-text" onclick={onDismiss}>{$ui("Skip guide")}</button>
           <span class="guide-actions-end">
             {#if !isFirst}
-              <button type="button" class="guide-secondary" onclick={handleBack}>Back</button>
+              <button type="button" class="guide-secondary" onclick={handleBack}>{$ui("Back")}</button>
             {/if}
-            <button type="button" class="guide-primary" onclick={() => void handlePrimary()}>{primaryLabel}</button>
+            <button type="button" class="guide-primary" onclick={() => void handlePrimary()}>{$ui(primaryLabel)}</button>
           </span>
         </div>
       </div>

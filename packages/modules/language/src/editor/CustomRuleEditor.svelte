@@ -1,4 +1,5 @@
 <script lang="ts">
+import { pluginText } from "../../../plugin-i18n.ts";
 import { CUSTOM_RULE_TAGS, extraCustomRuleTags, setCustomRuleExtraTags, toggleCustomRuleTag } from "../grammar/rules";
 import type { GrammarCustomRuleRecord } from "../grammar/types";
 import RichTextEditor from "../../../../../src/lib/editor/RichTextEditor.svelte";
@@ -26,29 +27,28 @@ function updateTags(next: string[]) {
 
 <Group>
   <p class="language-empty" role="status">
-    Use this for grammatical features that do not fit Daena's built-in grammar systems. If a feature becomes common
-    enough, it may eventually deserve its own dedicated editor.
+    {$pluginText("Use this for grammatical features that do not fit Daena's built-in grammar systems. If a feature becomes common enough, it may eventually deserve its own dedicated editor.")}
   </p>
-  <Field label="Title">
+  <Field label={$pluginText("Title")}>
     <input name="title" type="text" bind:value={draft.title} disabled={locked} />
   </Field>
   <CheckRow
     name="tags"
-    legend="Category / tags (optional)"
+    legend={$pluginText("Category / tags (optional)")}
     selected={draft.tags}
     {locked}
     options={CUSTOM_RULE_TAGS.map((tag) => ({ value: tag, label: tag }))}
     ontoggle={(value) => updateTags(toggleCustomRuleTag(draft, value).tags)} />
-  <Field label="Additional tags">
+  <Field label={$pluginText("Additional tags")}>
     <input
       name="tags"
       type="text"
       value={extra}
-      placeholder="Other tags, comma-separated"
+      placeholder={$pluginText("Other tags, comma-separated")}
       disabled={locked}
       oninput={(event) => updateTags(setCustomRuleExtraTags(draft, event.currentTarget.value).tags)} />
   </Field>
-  <Field label="Description">
+  <Field label={$pluginText("Description")}>
     <RichTextEditor
       value={draft.body}
       onChange={(v) => (draft.body = v)}

@@ -166,7 +166,11 @@ function workspaceStyle() {
   );
   const archive = functionBody("confirmWritingArchive");
   assert.match(archive, /target\.id !== entityId/, "archive needs the entry to be the selection");
-  assert.match(archive, /confirmDialog\(archiveConfirmOptions\(target\.name\)\)/, "archive keeps its confirmation");
+  assert.match(
+    archive,
+    /confirmDialog\(archiveConfirmOptions\(target\.name, \{ copy: \$messages\.inspector \}\)\)/,
+    "archive keeps its confirmation",
+  );
   assert.match(
     archive,
     /selected\?\.id !== entityId\) return;\s*await archiveSelected\(\)/,
@@ -261,9 +265,9 @@ function workspaceStyle() {
   // Lore, Maps and the Writing types the webview does not handle keep the shell editor.
   assert.match(
     page,
-    /placeholder=\{section === "writing"\s*\? `Write this \$\{createLabel\(\)\}…`\s*: section === "maps"/,
+    /placeholder=\{section === "writing"\s*\? \$ui\("Write this \{0\}…", createLabel\(\)\)\s*: section === "maps"/,
   );
-  assert.match(page, /Write the canonical story of this entry…/);
+  assert.match(page, /\$messages\.workspace\.writeEntry/);
 }
 
 // Writing does not declare `document.write`. A module that does (Lore, Language) still creates the entry
@@ -294,7 +298,7 @@ function workspaceStyle() {
   assert.ok(saveAt >= 0 && saveAt < refreshAt, "the opening note is saved before refresh");
   assert.ok(refreshAt < selectAt, "refresh happens before the selection moves");
   assert.ok(selectAt < errorAt, "the note failure is reported after selectEntity clears error");
-  assert.match(create, /was created, but its opening note was not saved: \$\{friendlyError\(cause\)\}/);
+  assert.match(create, /was created, but its opening note was not saved: \{1\}", created\.name, friendlyError\(cause\)/);
   assert.match(
     functionBody("flushAutoSave"),
     /flushWritingWebview\(\)/,

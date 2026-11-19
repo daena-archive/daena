@@ -54,8 +54,8 @@ const settings = components.get("src/lib/SettingsView.svelte");
 assert.doesNotMatch(settings, /> Plugins<\/button>|> Snapshots<\/button>|> Schema<\/button>/);
 
 const projectCenter = components.get("src/lib/ProjectCenter.svelte");
-for (const section of ["Overview", "Data &amp; recovery", "Extensions", "Fields &amp; Types", "AI", "Snapshots"])
-  assert.match(projectCenter, new RegExp(`> ${section}`), `Project Center includes ${section}`);
+for (const section of ["Overview", "Data & recovery", "Extensions", "Fields & Types", "AI", "Snapshots"])
+  assert.ok(projectCenter.includes(`$ui("${section}")`), `Project Center includes ${section}`);
 // Developer fixtures are allowed but must stay gated in Advanced > details.raw-controls
 assert.match(projectCenter, /<details[^>]*class="raw-controls"[^>]*>/);
 assert.match(projectCenter, /Developer fixtures/);
@@ -107,13 +107,13 @@ assert.match(tabStrip, /onClose/, "TabStrip closes a tab");
 assert.match(tabStrip, /onNew/, "TabStrip opens a new tab");
 assert.match(tabStrip, /"Close all tabs"/, "the tab menu closes every unpinned tab");
 assert.match(tabStrip, /onCloseAll/, "TabStrip reports Close all tabs to the shell");
-assert.match(tabStrip, /aria-label=\{`Close \$\{/, "a tab's close button names the tab");
+assert.match(tabStrip, /aria-label=\{\$ui\("Close \{0\}", tab\.title\)\}/, "a tab's close button names the tab");
 assert.match(tabStrip, /role="presentation"/, "the tab pill is not a nested button");
 assert.match(tabStrip, /role="menu"/);
 assert.match(tabStrip, /data-shell-popover="tab-menu"/);
 assert.match(tabStrip, /data-shell-popover="tab-list"/);
 assert.match(tabStrip, /menuitemradio/);
-assert.match(tabStrip, /aria-label="All tabs"/);
+assert.match(tabStrip, /aria-label=\{\$ui\("All tabs"\)\}/);
 assert.match(tabStrip, /ContextMenu/);
 assert.match(tabStrip, /F10/);
 assert.match(tabStrip, /shiftKey/);
@@ -151,7 +151,7 @@ for (const name of [
 }
 
 const vocabulary = await read("src/lib/entity-lifecycle/vocabulary.ts");
-assert.match(vocabulary, /openInNewTab: "Open in new tab"/);
+assert.match(vocabulary, /get openInNewTab\(\)\s*\{\s*return localizeUi\("Open in new tab"\)/);
 
 const rowActions = components.get("src/lib/entity-lifecycle/EntityRowActions.svelte");
 assert.match(rowActions, /ENTITY_ACTIONS\.openInNewTab/, "the row menu offers Open in new tab");

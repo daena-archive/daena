@@ -98,6 +98,21 @@ pub(crate) fn menu_shortcut(id: &str) -> Option<&'static str> {
 /// and Help. The Window and Help submenus carry tauri's ids, so tauri registers them with AppKit as the
 /// Window and Help menus.
 pub(crate) fn build_macos_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
+    localized_menu(app, None)
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn sync_language(
+    app: &AppHandle,
+    catalog: Option<&std::collections::HashMap<String, String>>,
+) -> tauri::Result<()> {
+    app.set_menu(localized_menu(app, catalog)?)?;
+    Ok(())
+}
+
+fn localized_menu(app: &AppHandle, catalog: Option<&std::collections::HashMap<String, String>>) -> tauri::Result<Menu<Wry>> {
+    let label = |key: &'static str| catalog.and_then(|items| items.get(key)).map(String::as_str).unwrap_or(key);
+    let translated = |key: &str| catalog.and_then(|items| items.get(key)).map(|text| text.replace("{0}", &app.package_info().name));
     let pkg_info = app.package_info();
     let config = app.config();
     let about_metadata = AboutMetadata {
@@ -114,39 +129,39 @@ pub(crate) fn build_macos_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
     let quit = MenuItem::with_id(
         app,
         QUIT_MENU_ID,
-        format!("Quit {}", pkg_info.name),
+        label("Quit {0}").replace("{0}", &pkg_info.name),
         true,
         Some(QUIT_ACCELERATOR),
     )?;
     let show_next_tab = MenuItem::with_id(
         app,
         "tab-next",
-        "Show Next Tab",
+        label("Show Next Tab"),
         true,
         Some(TAB_NEXT_ACCELERATOR),
     )?;
     let show_previous_tab = MenuItem::with_id(
         app,
         "tab-previous",
-        "Show Previous Tab",
+        label("Show Previous Tab"),
         true,
         Some(TAB_PREVIOUS_ACCELERATOR),
     )?;
     let window_close = MenuItem::with_id(
         app,
         WINDOW_CLOSE_MENU_ID,
-        "Close Window",
+        label("Close Window"),
         true,
         Some(WINDOW_CLOSE_ACCELERATOR),
     )?;
     let window_menu = Submenu::with_id_and_items(
         app,
         WINDOW_SUBMENU_ID,
-        "Window",
+        label("Window"),
         true,
         &[
-            &PredefinedMenuItem::minimize(app, None)?,
-            &PredefinedMenuItem::maximize(app, None)?,
+            &PredefinedMenuItem::minimize(app, translated("Minimize").as_deref())?,
+            &PredefinedMenuItem::maximize(app, translated("Zoom").as_deref())?,
             &PredefinedMenuItem::separator(app)?,
             &show_next_tab,
             &show_previous_tab,
@@ -154,7 +169,7 @@ pub(crate) fn build_macos_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
             &window_close,
         ],
     )?;
-    let help_menu = Submenu::with_id_and_items(app, HELP_SUBMENU_ID, "Help", true, &[])?;
+    let help_menu = Submenu::with_id_and_items(app, HELP_SUBMENU_ID, label("Help"), true, &[])?;
     Menu::with_items(
         app,
         &[
@@ -163,26 +178,26 @@ pub(crate) fn build_macos_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
                 pkg_info.name.clone(),
                 true,
                 &[
-                    &PredefinedMenuItem::about(app, None, Some(about_metadata))?,
+                    &PredefinedMenuItem::about(app, translated("About {0}").as_deref(), Some(about_metadata))?,
                     &PredefinedMenuItem::separator(app)?,
-                    &PredefinedMenuItem::services(app, None)?,
+                    &PredefinedMenuItem::services(app, translated("Services").as_deref())?,
                     &PredefinedMenuItem::separator(app)?,
-                    &PredefinedMenuItem::hide(app, None)?,
-                    &PredefinedMenuItem::hide_others(app, None)?,
+                    &PredefinedMenuItem::hide(app, translated("Hide {0}").as_deref())?,
+                    &PredefinedMenuItem::hide_others(app, translated("Hide Others").as_deref())?,
                     &PredefinedMenuItem::separator(app)?,
                     &quit,
                 ],
             )?,
             &Submenu::with_items(
                 app,
-                "File",
+                label("File"),
                 true,
                 &[
-                    &MenuItem::with_id(app, "tab-new", "New Tab", true, Some(TAB_NEW_ACCELERATOR))?,
+                    &MenuItem::with_id(app, "tab-new", label("New Tab"), true, Some(TAB_NEW_ACCELERATOR))?,
                     &MenuItem::with_id(
                         app,
                         "tab-reopen",
-                        "Reopen Closed Tab",
+                        label("Reopen Closed Tab"),
                         true,
                         Some(TAB_REOPEN_ACCELERATOR),
                     )?,
@@ -190,14 +205,14 @@ pub(crate) fn build_macos_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
                     &MenuItem::with_id(
                         app,
                         "tab-close",
-                        "Close Tab",
+                        label("Close Tab"),
                         true,
                         Some(TAB_CLOSE_ACCELERATOR),
                     )?,
                     &MenuItem::with_id(
                         app,
                         WINDOW_CLOSE_MENU_ID,
-                        "Close Window",
+                        label("Close Window"),
                         true,
                         Some(WINDOW_CLOSE_ACCELERATOR),
                     )?,
@@ -205,23 +220,23 @@ pub(crate) fn build_macos_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
             )?,
             &Submenu::with_items(
                 app,
-                "Edit",
+                label("Edit"),
                 true,
                 &[
-                    &PredefinedMenuItem::undo(app, None)?,
-                    &PredefinedMenuItem::redo(app, None)?,
+                    &PredefinedMenuItem::undo(app, translated("Undo").as_deref())?,
+                    &PredefinedMenuItem::redo(app, translated("Redo").as_deref())?,
                     &PredefinedMenuItem::separator(app)?,
-                    &PredefinedMenuItem::cut(app, None)?,
-                    &PredefinedMenuItem::copy(app, None)?,
-                    &PredefinedMenuItem::paste(app, None)?,
-                    &PredefinedMenuItem::select_all(app, None)?,
+                    &PredefinedMenuItem::cut(app, translated("Cut").as_deref())?,
+                    &PredefinedMenuItem::copy(app, translated("Copy").as_deref())?,
+                    &PredefinedMenuItem::paste(app, translated("Paste").as_deref())?,
+                    &PredefinedMenuItem::select_all(app, translated("Select All").as_deref())?,
                 ],
             )?,
             &Submenu::with_items(
                 app,
-                "View",
+                label("View"),
                 true,
-                &[&PredefinedMenuItem::fullscreen(app, None)?],
+                &[&PredefinedMenuItem::fullscreen(app, translated("Toggle Full Screen").as_deref())?],
             )?,
             &window_menu,
             &help_menu,

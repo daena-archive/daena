@@ -1,4 +1,6 @@
 <script lang="ts">
+import { nativeErrorText } from "$lib/i18n/native-errors.ts";
+import { ui } from "$lib/i18n/ui";
 import { tick, onMount } from "svelte";
 import {
   X,
@@ -523,7 +525,7 @@ function selectAsset(id: string) {
 
 async function handlePickAndStageUpload() {
   if (!entityId) {
-    uploadError = "No entry selected — cannot attach file.";
+    uploadError = $ui("No entry selected — cannot attach file.");
     return;
   }
   uploading = true;
@@ -624,41 +626,41 @@ onMount(() => {
       onkeydown={handleKeydown}>
       <header>
         <div>
-          <span class="kicker">{mode === "replace" ? "EDIT" : "INSERT"}</span>
-          <h2 id="insert-asset-title">{mode === "replace" ? "Edit image" : "Insert image or file"}</h2>
+          <span class="kicker">{mode === "replace" ? $ui("EDIT") : $ui("INSERT")}</span>
+          <h2 id="insert-asset-title">{mode === "replace" ? $ui("Edit image") : $ui("Insert image or file")}</h2>
           <p class="subtitle">
             {mode === "replace"
-              ? "Update image details or choose a different file."
-              : "Choose from this entry, shared files, or upload a new file."}
+              ? $ui("Update image details or choose a different file.")
+              : $ui("Choose from this entry, shared files, or upload a new file.")}
           </p>
         </div>
-        <button type="button" class="close-btn" aria-label="Close" onclick={onCancel}
+        <button type="button" class="close-btn" aria-label={$ui("Close")} onclick={onCancel}
           ><X size={16} strokeWidth={1.8} /></button>
       </header>
 
-      <div class="tabs" role="tablist" aria-label="Asset source">
+      <div class="tabs" role="tablist" aria-label={$ui("Asset source")}>
         <button
           type="button"
           role="tab"
           aria-selected={activeTab === "mine"}
           class:active={activeTab === "mine"}
           disabled={!entityId}
-          title={!entityId ? "No entry selected" : ""}
+          title={!entityId ? $ui("No entry selected") : ""}
           onclick={() => (activeTab = "mine")}
-          >This entry {#if myAssets.length}· {myAssets.length}{/if}</button>
+          >{$ui("This entry")} {#if myAssets.length}· {myAssets.length}{/if}</button>
         <button
           type="button"
           role="tab"
           aria-selected={activeTab === "shared"}
           class:active={activeTab === "shared"}
           onclick={() => (activeTab = "shared")}
-          >Shared files {#if sharedAssets.length}· {sharedAssets.length}{/if}</button>
+          >{$ui("Shared files")} {#if sharedAssets.length}· {sharedAssets.length}{/if}</button>
         <button
           type="button"
           role="tab"
           aria-selected={activeTab === "upload"}
           class:active={activeTab === "upload"}
-          onclick={() => (activeTab = "upload")}>Upload new</button>
+          onclick={() => (activeTab = "upload")}>{$ui("Upload new")}</button>
       </div>
 
       {#if activeTab !== "upload"}
@@ -667,21 +669,21 @@ onMount(() => {
           <input
             bind:this={searchInput}
             type="text"
-            placeholder={activeTab === "mine" ? "Search this entry…" : "Search shared files…"}
+            placeholder={activeTab === "mine" ? $ui("Search this entry…") : $ui("Search shared files…")}
             bind:value={query} />
           {#if query}<button type="button" class="clear" onclick={() => (query = "")}><X size={12} /></button>{/if}
         </label>
       {/if}
 
       {#if activeTab === "mine"}
-        <div class="assets-list" role="listbox" aria-label="Attachments for this entry">
+        <div class="assets-list" role="listbox" aria-label={$ui("Attachments for this entry")}>
           {#if loadingMy}
-            <p class="empty">Loading…</p>
+            <p class="empty">{$ui("Loading…")}</p>
           {:else if myError}
-            <p class="error">{myError}</p>
+            <p class="error">{$nativeErrorText(myError)}</p>
           {:else if filteredMy.length === 0}
             <p class="empty">
-              {entityId ? "No attachments on this entry. Try Shared files or Upload new." : "No entry selected."}
+              {entityId ? $ui("No attachments on this entry. Try Shared files or Upload new.") : $ui("No entry selected.")}
             </p>
           {:else}
             {#each filteredMy as asset (asset.id)}
@@ -699,7 +701,7 @@ onMount(() => {
                   <strong>{asset.filename}</strong>
                   <small
                     >{formatSize(asset.size)} · {asset.mime_type}
-                    {#if asset.reference_scope === "project"}· shared{/if}</small>
+                    {#if asset.reference_scope === "project"}{$ui("· shared")}{/if}</small>
                 </span>
                 <small class="role">{asset.role}</small>
               </button>
@@ -707,13 +709,13 @@ onMount(() => {
           {/if}
         </div>
       {:else if activeTab === "shared"}
-        <div class="assets-list" role="listbox" aria-label="Shared files">
+        <div class="assets-list" role="listbox" aria-label={$ui("Shared files")}>
           {#if loadingShared}
-            <p class="empty">Loading…</p>
+            <p class="empty">{$ui("Loading…")}</p>
           {:else if sharedError}
-            <p class="error">{sharedError}</p>
+            <p class="error">{$nativeErrorText(sharedError)}</p>
           {:else if filteredShared.length === 0}
-            <p class="empty">No shared files yet. Upload a file and mark it as shared to reuse across entries.</p>
+            <p class="empty">{$ui("No shared files yet. Upload a file and mark it as shared to reuse across entries.")}</p>
           {:else}
             {#each filteredShared as asset (asset.id)}
               <button
@@ -730,7 +732,7 @@ onMount(() => {
                   <strong>{asset.filename}</strong>
                   <small>{formatSize(asset.size)} · {asset.mime_type} · {entityName(asset.entity_id)}</small>
                 </span>
-                <small class="role">shared</small>
+                <small class="role">{$ui("shared")}</small>
               </button>
             {/each}
           {/if}
@@ -740,26 +742,26 @@ onMount(() => {
           {#if !uploadedAsset}
             <div class="drop-hint">
               <Upload size={20} strokeWidth={1.6} />
-              <p><strong>Upload a new file to this entry</strong></p>
-              <p class="muted">Images insert as images, other files as links.</p>
+              <p><strong>{$ui("Upload a new file to this entry")}</strong></p>
+              <p class="muted">{$ui("Images insert as images, other files as links.")}</p>
             </div>
             <label class="share-row">
               <input type="checkbox" bind:checked={shareNew} />
-              <span>Share with other entries <small>Others can pick this file from Shared files.</small></span>
+              <span>{$ui("Share with other entries")} <small>{$ui("Others can pick this file from Shared files.")}</small></span>
             </label>
-            {#if uploadError}<p class="error">{uploadError}</p>{/if}
-            {#if pickedFileLabel}<p class="picked">Last picked: {pickedFileLabel}</p>{/if}
+            {#if uploadError}<p class="error">{$nativeErrorText(uploadError)}</p>{/if}
+            {#if pickedFileLabel}<p class="picked">{$ui("Last picked: {0}", pickedFileLabel)}</p>{/if}
             <button
               type="button"
               class="primary upload-btn"
               disabled={uploading || !entityId}
               onclick={handlePickAndStageUpload}>
-              {#if uploading}Uploading…{:else}Choose file{/if}
+              {#if uploading}{$ui("Uploading…")}{:else}{$ui("Choose file")}{/if}
             </button>
           {:else}
             <div class="staged-header">
-              <span class="staged-badge"><CircleCheckIcon size={13} strokeWidth={2} /> Staged</span>
-              <span class="staged-hint">Review details → Insert in footer</span>
+              <span class="staged-badge"><CircleCheckIcon size={13} strokeWidth={2} /> {$ui("Staged")}</span>
+              <span class="staged-hint">{$ui("Review details → Insert in footer")}</span>
             </div>
             <div class="staged-card">
               <div class="staged-thumb">
@@ -769,7 +771,7 @@ onMount(() => {
                   <!-- svelte-ignore a11y_media_has_caption -->
                   <video src={uploadedPreviewUrl} controls preload="metadata"></video>
                 {:else if isImage(uploadedAsset.mime_type) && uploadedPreviewError}
-                  <div class="staged-fallback staged-fallback--error">Preview unavailable</div>
+                  <div class="staged-fallback staged-fallback--error">{$ui("Preview unavailable")}</div>
                 {:else}
                   <div class="staged-fallback">
                     {#if isImage(uploadedAsset.mime_type)}<ImageIcon size={20} />{:else}<FileIcon size={20} />{/if}
@@ -785,34 +787,34 @@ onMount(() => {
                   <span class="staged-dot">·</span>
                   <span>{formatSize(uploadedAsset.size)}</span>
                   {#if isImage(uploadedAsset.mime_type)}<span class="staged-dot">·</span><span
-                      class="staged-image-badge">Image</span
+                      class="staged-image-badge">{$ui("Image")}</span
                     >{/if}
                 </span>
                 {#if shareNew}
                   <span class="staged-share-hint"
-                    ><InfoIcon size={11} strokeWidth={1.8} /> Will be shared on insert</span>
+                    ><InfoIcon size={11} strokeWidth={1.8} /> {$ui("Will be shared on insert")}</span>
                 {/if}
               </div>
             </div>
             <label class="share-row">
               <input type="checkbox" bind:checked={shareNew} />
-              <span>Share with other entries <small>Others can pick this file from Shared files.</small></span>
+              <span>{$ui("Share with other entries")} <small>{$ui("Others can pick this file from Shared files.")}</small></span>
             </label>
-            {#if uploadError}<p class="error">{uploadError}</p>{/if}
+            {#if uploadError}<p class="error">{$nativeErrorText(uploadError)}</p>{/if}
             <div class="upload-actions upload-actions--staged">
               <button type="button" class="quiet" onclick={clearStagedUpload}
-                ><Trash2Icon size={12} strokeWidth={1.8} /> Clear</button>
+                ><Trash2Icon size={12} strokeWidth={1.8} /> {$ui("Clear")}</button>
               <button
                 type="button"
                 class="secondary"
                 disabled={uploading || !entityId}
                 onclick={handlePickAndStageUpload}>
                 <RefreshCwIcon size={12} strokeWidth={1.8} />
-                {#if uploading}Uploading…{:else}Choose different file{/if}
+                {#if uploading}{$ui("Uploading…")}{:else}{$ui("Choose different file")}{/if}
               </button>
             </div>
           {/if}
-          {#if !entityId}<p class="empty">Select an entry before uploading.</p>{/if}
+          {#if !entityId}<p class="empty">{$ui("Select an entry before uploading.")}</p>{/if}
         </div>
       {/if}
 
@@ -824,7 +826,7 @@ onMount(() => {
             <!-- svelte-ignore a11y_media_has_caption -->
             <video src={previewUrl} controls preload="metadata"></video>
           {:else if isImage(selectedAsset.mime_type) && previewError}
-            <div class="preview-fallback">Preview unavailable</div>
+            <div class="preview-fallback">{$ui("Preview unavailable")}</div>
           {:else}
             <div class="preview-fallback">
               <FileIcon size={20} /><span>{selectedAsset.mime_type} · {formatSize(selectedAsset.size)}</span>
@@ -840,177 +842,169 @@ onMount(() => {
       {#if isImageContext()}
         <div class="image-edit-section">
           <div class="image-edit-header">
-            <span class="image-edit-header-title"><ImageIcon size={14} strokeWidth={1.8} /> Image details</span>
-            <span class="image-edit-header-hint">Applied on insert</span>
+            <span class="image-edit-header-title"><ImageIcon size={14} strokeWidth={1.8} /> {$ui("Image details")}</span>
+            <span class="image-edit-header-hint">{$ui("Applied on insert")}</span>
           </div>
 
           <label class="image-edit-field">
             <span class="field-label"
-              >Alt text <span class="field-badge field-badge--required">accessibility</span></span>
+              >{$ui("Alt text")} <span class="field-badge field-badge--required">{$ui("accessibility")}</span></span>
             <input
               type="text"
-              placeholder="Describe the image for screen readers"
+              placeholder={$ui("Describe the image for screen readers")}
               value={draftAlt}
               oninput={(e) => updateDraftAlt((e.target as HTMLInputElement).value)} />
-            <span class="field-hint">Read by screen readers and shown if the image fails to load.</span>
+            <span class="field-hint">{$ui("Read by screen readers and shown if the image fails to load.")}</span>
           </label>
 
           <label class="image-edit-field">
-            <span class="field-label">Hover title <span class="field-badge field-badge--optional">optional</span></span>
+            <span class="field-label">{$ui("Hover title")} <span class="field-badge field-badge--optional">{$ui("optional")}</span></span>
             <input
               type="text"
-              placeholder="Tooltip on hover — leave empty to use alt text"
+              placeholder={$ui("Tooltip on hover — leave empty to use alt text")}
               value={draftTitle}
               oninput={(e) => updateDraftTitle((e.target as HTMLInputElement).value)} />
             <span class="field-hint"
-              >Shown on hover. Leave empty and the alt text will be used as the <code>title</code>.</span>
+              >{$ui("Shown on hover. Leave empty and the alt text will be used as the")} <code>title</code>.</span>
           </label>
 
           <div class="image-align-group">
-            <span class="field-label">Alignment</span>
-            <div class="image-align-row" role="group" aria-label="Image alignment">
+            <span class="field-label">{$ui("Alignment")}</span>
+            <div class="image-align-row" role="group" aria-label={$ui("Image alignment")}>
               <button
                 type="button"
                 class="align-btn"
                 class:active={draftAlign === "" || draftAlign === "left"}
                 aria-pressed={draftAlign === "" || draftAlign === "left"}
-                title="Align left (default)"
+                title={$ui("Align left (default)")}
                 onclick={() => (draftAlign = "left")}>
-                <AlignLeftIcon size={14} strokeWidth={1.8} /> Left
-              </button>
+                <AlignLeftIcon size={14} strokeWidth={1.8} /> {$ui("Left")} </button>
               <button
                 type="button"
                 class="align-btn"
                 class:active={draftAlign === "center"}
                 aria-pressed={draftAlign === "center"}
-                title="Center image"
+                title={$ui("Center image")}
                 onclick={() => (draftAlign = "center")}>
-                <AlignCenterIcon size={14} strokeWidth={1.8} /> Center
-              </button>
+                <AlignCenterIcon size={14} strokeWidth={1.8} /> {$ui("Center")} </button>
               <button
                 type="button"
                 class="align-btn"
                 class:active={draftAlign === "right"}
                 aria-pressed={draftAlign === "right"}
-                title="Align right"
+                title={$ui("Align right")}
                 onclick={() => (draftAlign = "right")}>
-                <AlignRightIcon size={14} strokeWidth={1.8} /> Right
-              </button>
+                <AlignRightIcon size={14} strokeWidth={1.8} /> {$ui("Right")} </button>
             </div>
-            <span class="field-hint">Paragraph alignment — center is most common for standalone images.</span>
+            <span class="field-hint">{$ui("Paragraph alignment — center is most common for standalone images.")}</span>
           </div>
 
           <div class="image-edit-dim-group">
-            <span class="field-label">Size <span class="field-optional">pixels · empty = auto</span></span>
+            <span class="field-label">{$ui("Size")} <span class="field-optional">{$ui("pixels · empty = auto")}</span></span>
             <div class="image-edit-dim-row">
               <label class="dim-input" class:dim-input--oversized={isWidthOversized}
-                ><span class="dim-label">W</span><input
+                ><span class="dim-label">{$ui("W")}</span><input
                   type="number"
                   min="16"
                   max="2000"
                   step="1"
-                  placeholder="Auto"
+                  placeholder={$ui("Auto")}
                   value={draftWidth}
                   oninput={(e) => updateDraftWidth((e.target as HTMLInputElement).value)}
                   aria-invalid={isWidthOversized} />
-                <span class="dim-unit">px</span></label>
+                <span class="dim-unit">{$ui("px")}</span></label>
               <span class="dim-x" aria-hidden="true">×</span>
               <label class="dim-input" class:dim-input--oversized={isHeightOversized}
-                ><span class="dim-label">H</span><input
+                ><span class="dim-label">{$ui("H")}</span><input
                   type="number"
                   min="16"
                   max="2000"
                   step="1"
-                  placeholder="Auto"
+                  placeholder={$ui("Auto")}
                   value={draftHeight}
                   oninput={(e) => updateDraftHeight((e.target as HTMLInputElement).value)}
                   aria-invalid={isHeightOversized} />
-                <span class="dim-unit">px</span></label>
+                <span class="dim-unit">{$ui("px")}</span></label>
               <button
                 type="button"
                 class="image-lock-btn"
                 aria-pressed={draftPreserveAspect}
-                aria-label={draftPreserveAspect ? "Aspect ratio locked" : "Aspect ratio unlocked"}
+                aria-label={draftPreserveAspect ? $ui("Aspect ratio locked") : $ui("Aspect ratio unlocked")}
                 title={draftPreserveAspect
-                  ? "Aspect locked — height follows width"
-                  : "Aspect unlocked — width and height independent"}
+                  ? $ui("Aspect locked — height follows width")
+                  : $ui("Aspect unlocked — width and height independent")}
                 onclick={() => (draftPreserveAspect = !draftPreserveAspect)}>
                 {#if draftPreserveAspect}<LinkIcon size={13} strokeWidth={1.9} />{:else}<UnlinkIcon
                     size={13}
                     strokeWidth={1.9} />{/if}
-                <span>{draftPreserveAspect ? "Locked" : "Free"}</span>
+                <span>{draftPreserveAspect ? $ui("Locked") : $ui("Free")}</span>
               </button>
               <button
                 type="button"
                 class="image-auto-btn"
                 onclick={clearDraftDims}
-                title="Clear width and height — use natural size">Auto</button>
+                title={$ui("Clear width and height — use natural size")}>{$ui("Auto")}</button>
             </div>
             {#if isOversized}
               <div class="image-oversize-warning" role="alert">
                 <TriangleAlertIcon size={13} strokeWidth={1.9} />
                 <span
-                  >Upscaling — larger than natural <strong>{draftNaturalW}×{draftNaturalH}</strong>
+                  >{$ui("Upscaling — larger than natural")} <strong>{draftNaturalW}×{draftNaturalH}</strong>
                   {#if isWidthOversized && isHeightOversized}
                     ({draftWidth}×{draftHeight})
-                  {:else if isWidthOversized}
-                    (width {draftWidth} > {draftNaturalW})
-                  {:else}
-                    (height {draftHeight} > {draftNaturalH})
-                  {/if}
-                  may look blurry.</span>
+                  {:else if isWidthOversized} {$ui("(width {0} > {1})", draftWidth, draftNaturalW)} {:else} {$ui("(height {0} > {1})", draftHeight, draftNaturalH)} {/if} {$ui("may look blurry.")}</span>
               </div>
             {/if}
             {#if draftNaturalW && draftNaturalH}
               <div class="image-natural-row">
                 <InfoIcon size={11} strokeWidth={1.8} />
-                <span>Natural <strong>{draftNaturalW}×{draftNaturalH}</strong></span>
+                <span>{$ui("Natural")} <strong>{draftNaturalW}×{draftNaturalH}</strong></span>
                 <span class="image-natural-sep">·</span>
-                <span>Presets scale with aspect lock on</span>
+                <span>{$ui("Presets scale with aspect lock on")}</span>
               </div>
             {/if}
             <div class="image-presets">
-              <span class="presets-label">Quick sizes</span>
+              <span class="presets-label">{$ui("Quick sizes")}</span>
               <div class="presets-buttons">
                 <button
                   type="button"
                   onclick={() => applyDraftPreset("S")}
                   title={draftNaturalW && 320 > draftNaturalW
-                    ? `Width 320px — will upscale beyond natural ${draftNaturalW}×${draftNaturalH}`
-                    : "Width 320px"}
+                    ? $ui("Width 320px — will upscale beyond natural {0}×{1}", draftNaturalW, draftNaturalH)
+                    : $ui("Width 320px")}
                   class:presets-btn--upscale={!!(draftNaturalW && 320 > draftNaturalW)}>
-                  <span>S</span> <small>320</small>
+                  <span>{$ui("S")}</span> <small>320</small>
                   {#if draftNaturalW && 320 > draftNaturalW}<TriangleAlertIcon size={10} strokeWidth={1.9} />{/if}
                 </button>
                 <button
                   type="button"
                   onclick={() => applyDraftPreset("M")}
                   title={draftNaturalW && 640 > draftNaturalW
-                    ? `Width 640px — will upscale beyond natural ${draftNaturalW}×${draftNaturalH}`
-                    : "Width 640px"}
+                    ? $ui("Width 640px — will upscale beyond natural {0}×{1}", draftNaturalW, draftNaturalH)
+                    : $ui("Width 640px")}
                   class:presets-btn--upscale={!!(draftNaturalW && 640 > draftNaturalW)}>
-                  <span>M</span> <small>640</small>
+                  <span>{$ui("M")}</span> <small>640</small>
                   {#if draftNaturalW && 640 > draftNaturalW}<TriangleAlertIcon size={10} strokeWidth={1.9} />{/if}
                 </button>
                 <button
                   type="button"
                   onclick={() => applyDraftPreset("L")}
                   title={draftNaturalW && 960 > draftNaturalW
-                    ? `Width 960px — will upscale beyond natural ${draftNaturalW}×${draftNaturalH}`
-                    : "Width 960px"}
+                    ? $ui("Width 960px — will upscale beyond natural {0}×{1}", draftNaturalW, draftNaturalH)
+                    : $ui("Width 960px")}
                   class:presets-btn--upscale={!!(draftNaturalW && 960 > draftNaturalW)}>
-                  <span>L</span> <small>960</small>
+                  <span>{$ui("L")}</span> <small>960</small>
                   {#if draftNaturalW && 960 > draftNaturalW}<TriangleAlertIcon size={10} strokeWidth={1.9} />{/if}
                 </button>
                 <button
                   type="button"
                   disabled={!draftNaturalW}
                   onclick={() => applyDraftPreset("Original")}
-                  title="Use natural dimensions"
-                  ><span>Original</span>
+                  title={$ui("Use natural dimensions")}
+                  ><span>{$ui("Original")}</span>
                   {#if draftNaturalW}<small>{draftNaturalW}×{draftNaturalH}</small>{/if}</button>
-                <button type="button" onclick={() => applyDraftPreset("Full")} title="Remove width and height"
-                  >Full</button>
+                <button type="button" onclick={() => applyDraftPreset("Full")} title={$ui("Remove width and height")}
+                  >{$ui("Full")}</button>
               </div>
             </div>
           </div>
@@ -1018,9 +1012,9 @@ onMount(() => {
       {/if}
 
       <footer>
-        <button type="button" class="quiet" onclick={onCancel}>Cancel</button>
+        <button type="button" class="quiet" onclick={onCancel}>{$ui("Cancel")}</button>
         <button type="button" class="primary" disabled={!canConfirm()} onclick={confirmInsert}
-          >{mode === "replace" ? "Save" : "Insert"}</button>
+          >{mode === "replace" ? $ui("Save") : $ui("Insert")}</button>
       </footer>
     </div>
   </div>

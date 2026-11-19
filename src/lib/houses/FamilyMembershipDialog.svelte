@@ -1,4 +1,6 @@
 <script lang="ts">
+import { nativeErrorText } from "$lib/i18n/native-errors.ts";
+import { ui } from "$lib/i18n/ui";
 import type { ModuleContext } from "../../../packages/module-api/src/index";
 import { X } from "@lucide/svelte";
 import { trapModalTab } from "$lib/shell/modalFocus";
@@ -72,7 +74,7 @@ let dialogEl = $state<HTMLElement | null>(null);
 
 const isEdit = $derived(Boolean(editing));
 const title = $derived(
-  isEdit ? `Edit membership · ${editing?.personName ?? "Person"}` : `Add member · ${houseName || "House"}`,
+  isEdit ? $ui("Edit membership · {0}", editing?.personName ?? "Person") : $ui("Add member · {0}", houseName || "House"),
 );
 
 $effect(() => {
@@ -147,7 +149,7 @@ async function save() {
   if (busy) return;
   const role = String(draft.role ?? "member");
   if (role === "custom" && !String(draft.customLabel ?? "").trim()) {
-    error = "Custom label is required.";
+    error = $ui("Custom label is required.");
     return;
   }
   busy = true;
@@ -164,7 +166,7 @@ async function save() {
     let revision = selectedRevision;
     if (mode === "create") {
       if (!createName.trim()) {
-        error = "Enter a person name.";
+        error = $ui("Enter a person name.");
         busy = false;
         return;
       }
@@ -173,7 +175,7 @@ async function save() {
       revision = created.revision;
     }
     if (!personId) {
-      error = "Choose a person to add.";
+      error = $ui("Choose a person to add.");
       busy = false;
       return;
     }
@@ -207,9 +209,9 @@ async function save() {
 async function removeMembership() {
   if (!editing || busy) return;
   const confirmed = await confirmDialog({
-    title: `Remove ${editing.personName} from ${houseName || "house"}?`,
+    title: $ui("Remove {0} from {1}?", editing.personName, houseName || "house"),
     message: ENTITY_ACTION_CONFIRM.removeMembershipMessage,
-    confirmLabel: "Remove from House",
+    confirmLabel: $ui("Remove from House"),
     danger: true,
   });
   if (!confirmed) return;
@@ -264,19 +266,19 @@ $effect(() => {
   <div class="card" role="document" onclick={(event) => event.stopPropagation()}>
     <header class="dialog-heading">
       <div>
-        <span class="panel-kicker">MEMBERSHIP</span>
+        <span class="panel-kicker">{$ui("MEMBERSHIP")}</span>
         <strong>{title}</strong>
       </div>
-      <button type="button" class="dialog-close" aria-label="Close dialog" disabled={busy} onclick={onClose}
+      <button type="button" class="dialog-close" aria-label={$ui("Close dialog")} disabled={busy} onclick={onClose}
         ><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
     </header>
 
     {#if !isEdit}
       <div class="tabs">
         <button type="button" class="quiet-button" aria-pressed={mode === "link"} onclick={() => (mode = "link")}
-          >Link existing</button>
+          >{$ui("Link existing")}</button>
         <button type="button" class="quiet-button" aria-pressed={mode === "create"} onclick={() => (mode = "create")}
-          >Create person</button>
+          >{$ui("Create person")}</button>
       </div>
       {#if mode === "link"}
         <AsyncEntityPicker
@@ -286,23 +288,22 @@ $effect(() => {
           selectedIds={selectedPersonId ? [selectedPersonId] : []}
           dropdown={false}
           disabled={busy}
-          placeholder="Search people"
-          ariaLabel="Search people to add"
-          emptyMessage="No matching people."
+          placeholder={$ui("Search people")}
+          ariaLabel={$ui("Search people to add")}
+          emptyMessage={$ui("No matching people.")}
           onSelect={(option) => {
             selectedPersonId = option.id;
             selectedPersonName = option.name;
             selectedRevision = typeof option.revision === "string" ? option.revision : "";
           }} />
         {#if selectedPersonId}
-          <p class="hint">Selected: <strong>{selectedPersonName}</strong></p>
+          <p class="hint">{$ui("Selected:")} <strong>{selectedPersonName}</strong></p>
         {/if}
       {:else}
         <label class="field"
-          >Name
-          <input bind:value={createName} placeholder="Person name" aria-label="New person name" />
+          >{$ui("Name")} <input bind:value={createName} placeholder={$ui("Person name")} aria-label={$ui("New person name")} />
         </label>
-        <p class="hint">Creates a Lore person and adds them to this house.</p>
+        <p class="hint">{$ui("Creates a Lore person and adds them to this house.")}</p>
       {/if}
     {/if}
 
@@ -338,7 +339,7 @@ $effect(() => {
       {/each}
     </div>
 
-    {#if error}<p class="error" role="alert">{error}</p>{/if}
+    {#if error}<p class="error" role="alert">{$nativeErrorText(error)}</p>{/if}
     {#if conflict}
       <div class="actions">
         <p class="hint">{MUTATION_STATUS_MESSAGES.conflictTitle}</p>
@@ -351,11 +352,11 @@ $effect(() => {
     <div class="actions">
       {#if isEdit}
         <button type="button" class="danger-button" disabled={busy} onclick={() => void removeMembership()}
-          >Remove from House</button>
+          >{$ui("Remove from House")}</button>
       {/if}
-      <button type="button" class="quiet-button" disabled={busy} onclick={onClose}>Cancel</button>
+      <button type="button" class="quiet-button" disabled={busy} onclick={onClose}>{$ui("Cancel")}</button>
       <button type="button" class="primary-button" disabled={busy || conflict} onclick={() => void save()}>
-        {busy ? MUTATION_STATUS.working : isEdit ? "Save" : "Add to House"}
+        {busy ? MUTATION_STATUS.working : isEdit ? $ui("Save") : $ui("Add to House")}
       </button>
     </div>
   </div>

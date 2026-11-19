@@ -1,4 +1,6 @@
 <script lang="ts">
+import { nativeErrorText } from "$lib/i18n/native-errors.ts";
+import { ui } from "$lib/i18n/ui";
 import { onMount, tick } from "svelte";
 import type { PhysicalDetachScope } from "./detach";
 
@@ -82,26 +84,21 @@ function trapFocus(event: KeyboardEvent) {
     aria-modal="true"
     aria-labelledby="detach-title"
     onkeydown={trapFocus}>
-    <h2 id="detach-title">Detach {sourceLayerName} for editing?</h2>
-    <p>
-      Daena will copy {count} generated features from {epoch} into a new authored layer and hide {sourceLayerName}. The
-      copy will no longer follow epoch changes or physical re-derivation. The accepted physical world will not be
-      changed.
-    </p>
+    <h2 id="detach-title">{$ui("Detach {0} for editing?", sourceLayerName)}</h2>
+    <p> {$ui("Daena will copy {0} generated features from {1} into a new authored layer and hide {2}. The copy will no longer follow epoch changes or physical re-derivation. The accepted physical world will not be changed.", count, epoch, sourceLayerName)} </p>
     {#if hasSelectionChoice}
       <label
-        ><input bind:this={selectedRadio} type="radio" name="detach-scope" value="selected" bind:group={scope} />
-        Selected features ({selectedFeatureCount})</label>
+        ><input bind:this={selectedRadio} type="radio" name="detach-scope" value="selected" bind:group={scope} /> {$ui("Selected features ({0})", selectedFeatureCount)}</label>
       <label
-        ><input type="radio" name="detach-scope" value="layer" bind:group={scope} /> Entire layer ({totalSourceLayerFeatureCount})</label>
-    {:else}<p>Entire layer ({totalSourceLayerFeatureCount})</p>{/if}
-    {#if error}<p class="error" role="alert">{error}</p>{/if}
+        ><input type="radio" name="detach-scope" value="layer" bind:group={scope} /> {$ui("Entire layer ({0})", totalSourceLayerFeatureCount)}</label>
+    {:else}<p>{$ui("Entire layer ({0})", totalSourceLayerFeatureCount)}</p>{/if}
+    {#if error}<p class="error" role="alert">{$nativeErrorText(error)}</p>{/if}
     <div class="actions">
-      <button type="button" disabled={busy} onclick={oncancel}>Cancel</button><button
+      <button type="button" disabled={busy} onclick={oncancel}>{$ui("Cancel")}</button><button
         bind:this={confirmButton}
         type="button"
         disabled={busy}
-        onclick={() => onconfirm(scope)}>Detach snapshot</button>
+        onclick={() => onconfirm(scope)}>{$ui("Detach snapshot")}</button>
     </div>
   </div>
 </div>

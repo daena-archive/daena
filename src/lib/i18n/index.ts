@@ -1,6 +1,7 @@
 import { derived, writable } from "svelte/store";
 import { en } from "./en.ts";
 import { ja } from "./ja.ts";
+import japaneseMenu from "./menu-ja.json" with { type: "json" };
 
 export const languageOptions = [
   { value: "en", label: "English" },
@@ -9,18 +10,20 @@ export const languageOptions = [
 
 export type DisplayLanguage = (typeof languageOptions)[number]["value"];
 
+const FALLBACK_LANGUAGE = "en" satisfies DisplayLanguage;
 const catalogs = { en, ja } satisfies Record<DisplayLanguage, typeof en>;
+export const menuCatalogs: Record<DisplayLanguage, Record<string, string>> = { en: {}, ja: japaneseMenu };
 const storageKey = "daena:display-language";
 
 function normalizeDisplayLanguage(value: unknown): DisplayLanguage {
-  return value === "ja" ? "ja" : "en";
+  return languageOptions.find((language) => language.value === value)?.value ?? FALLBACK_LANGUAGE;
 }
 
 function readDisplayLanguage(): DisplayLanguage {
   try {
     return normalizeDisplayLanguage(globalThis.localStorage?.getItem(storageKey));
   } catch {
-    return "en";
+    return FALLBACK_LANGUAGE;
   }
 }
 

@@ -1,4 +1,5 @@
 <script lang="ts">
+import { ui } from "$lib/i18n/ui";
 import { onMount } from "svelte";
 import { project, type Entity } from "$lib/project/client";
 import { htmlToMarkdown, markdownToPlainText } from "$lib/markdown";
@@ -116,21 +117,21 @@ onMount(() => {
   <section
     class="entity-hover-card"
     style={`top: ${position.top}px; left: ${position.left}px;`}
-    aria-label={`${activeEntity.name} preview`}
+    aria-label={$ui("{0} preview", activeEntity.name)}
     onmouseenter={cancelHide}
     onmouseleave={scheduleHide}>
-    <span>{activeEntity.entity_type ?? "Uncategorized"}</span>
+    <span>{activeEntity.entity_type ?? $ui("Uncategorized")}</span>
     <strong>{activeEntity.name}</strong>
     {#if previewById[activeEntity.id]}
       <p>{previewById[activeEntity.id]}</p>
     {:else}
-      <p class="entity-hover-empty">No document preview available.</p>
+      <p class="entity-hover-empty">{$ui("No document preview available.")}</p>
     {/if}
     <button
       type="button"
       onclick={openActiveEntity}
       onauxclick={openActiveEntityAux}
-      onmousedown={blockMiddleClickScroll}>Open fully</button>
+      onmousedown={blockMiddleClickScroll}>{$ui("Open fully")}</button>
   </section>
 {/if}
 

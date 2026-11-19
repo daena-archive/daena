@@ -1,3 +1,4 @@
+import { localizeUi } from "../i18n/ui.ts";
 import { invoke } from "@tauri-apps/api/core";
 import type {
   AcceptedPhysicalMap,
@@ -110,7 +111,7 @@ export const project = {
       options: {
         directory: false,
         multiple: false,
-        filters: [{ name: "Map image", extensions: ["png", "jpg", "jpeg", "svg"] }],
+        filters: [{ name: localizeUi("Map image"), extensions: ["png", "jpg", "jpeg", "svg"] }],
       },
     }),
   pickVectorMapFile: () =>
@@ -118,7 +119,7 @@ export const project = {
       options: {
         directory: false,
         multiple: false,
-        filters: [{ name: "GeoJSON", extensions: ["geojson", "json"] }],
+        filters: [{ name: localizeUi("GeoJSON"), extensions: ["geojson", "json"] }],
       },
     }),
   create: (path: string) => invoke<ProjectInfo>("project_new", { path }),
@@ -770,11 +771,16 @@ export const project = {
       options: {
         directory: false,
         multiple: false,
-        filters: [{ name: "Daena Archive plugin", extensions: ["daenaplugin"] }],
+        filters: [{ name: localizeUi("Daena Archive plugin"), extensions: ["daenaplugin"] }],
       },
     }),
   settingsGet: () => invoke<AppSettings>("settings_get"),
   settingsUpdate: (update: AppSettingsUpdate) => invoke<AppSettings>("settings_update", { update }),
+  pluginLanguageSync: (
+    language: string,
+    menu: Record<string, string>,
+    windowTitles: Record<string, { source: string; title: string }>,
+  ) => invoke<void>("plugin_language_sync", { language, menu, windowTitles }),
   pluginAppearanceSync: (appearance: {
     preference: "light" | "dark" | "system";
     resolved: "light" | "dark";

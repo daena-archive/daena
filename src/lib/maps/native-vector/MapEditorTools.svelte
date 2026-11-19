@@ -1,4 +1,5 @@
 <script lang="ts">
+import { ui } from "$lib/i18n/ui";
 import {
   Circle,
   CircleHelp,
@@ -53,33 +54,33 @@ let {
 const iconProps = { size: 16, strokeWidth: 1.8, "aria-hidden": true } as const;
 </script>
 
-<nav class="map-tool-rail" aria-label="Editing tools">
-  <div class="tool-group" role="group" aria-label="Navigate">
+<nav class="map-tool-rail" aria-label={$ui("Editing tools")}>
+  <div class="tool-group" role="group" aria-label={$ui("Navigate")}>
     <button
       type="button"
       class="icon-button"
       class:active={tool === "static"}
       aria-pressed={tool === "static"}
-      aria-label="Hand"
-      title="Hand (H), hold Space to pan"
+      aria-label={$ui("Hand")}
+      title={$ui("Hand (H), hold Space to pan")}
       onclick={() => onset("static")}><Hand {...iconProps} /></button>
     <button
       type="button"
       class="icon-button"
       class:active={tool === "select"}
       aria-pressed={tool === "select"}
-      aria-label="Select"
-      title="Select (V)"
+      aria-label={$ui("Select")}
+      title={$ui("Select (V)")}
       onclick={() => onset("select")}><MousePointer2 {...iconProps} /></button>
   </div>
-  <div class="tool-group" role="group" aria-label="Draw">
+  <div class="tool-group" role="group" aria-label={$ui("Draw")}>
     <button
       type="button"
       class="icon-button"
       class:active={tool === "point"}
       aria-pressed={tool === "point"}
-      aria-label="Point"
-      title="Point (P)"
+      aria-label={$ui("Point")}
+      title={$ui("Point (P)")}
       disabled={!canDraw}
       onclick={() => onset("point")}><Circle {...iconProps} /></button>
     <button
@@ -87,8 +88,8 @@ const iconProps = { size: 16, strokeWidth: 1.8, "aria-hidden": true } as const;
       class="icon-button"
       class:active={tool === "linestring"}
       aria-pressed={tool === "linestring"}
-      aria-label="Line"
-      title="Line (L)"
+      aria-label={$ui("Line")}
+      title={$ui("Line (L)")}
       disabled={!canDraw}
       onclick={() => onset("linestring")}><Slash {...iconProps} /></button>
     <button
@@ -96,8 +97,8 @@ const iconProps = { size: 16, strokeWidth: 1.8, "aria-hidden": true } as const;
       class="icon-button"
       class:active={tool === "polygon"}
       aria-pressed={tool === "polygon"}
-      aria-label="Polygon"
-      title="Polygon (G)"
+      aria-label={$ui("Polygon")}
+      title={$ui("Polygon (G)")}
       disabled={!canDraw}
       onclick={() => onset("polygon")}><Hexagon {...iconProps} /></button>
     <button
@@ -105,8 +106,8 @@ const iconProps = { size: 16, strokeWidth: 1.8, "aria-hidden": true } as const;
       class="icon-button"
       class:active={tool === "rectangle"}
       aria-pressed={tool === "rectangle"}
-      aria-label="Rectangle"
-      title="Rectangle (R)"
+      aria-label={$ui("Rectangle")}
+      title={$ui("Rectangle (R)")}
       disabled={!canDraw}
       onclick={() => onset("rectangle")}><Square {...iconProps} /></button>
     <button
@@ -114,8 +115,8 @@ const iconProps = { size: 16, strokeWidth: 1.8, "aria-hidden": true } as const;
       class="icon-button"
       class:active={tool === "freehand"}
       aria-pressed={tool === "freehand"}
-      aria-label="Freehand"
-      title="Freehand (F)"
+      aria-label={$ui("Freehand")}
+      title={$ui("Freehand (F)")}
       disabled={!canDraw}
       onclick={() => onset("freehand")}><Pencil {...iconProps} /></button>
     <button
@@ -123,8 +124,8 @@ const iconProps = { size: 16, strokeWidth: 1.8, "aria-hidden": true } as const;
       class="icon-button"
       class:active={tool === "trace"}
       aria-pressed={tool === "trace"}
-      aria-label="Trace"
-      title="Trace (T)"
+      aria-label={$ui("Trace")}
+      title={$ui("Trace (T)")}
       disabled={!canDraw}
       onclick={() => onset("trace")}><Spline {...iconProps} /></button>
     {#if physicalMap}
@@ -133,20 +134,20 @@ const iconProps = { size: 16, strokeWidth: 1.8, "aria-hidden": true } as const;
         class="icon-button"
         class:active={tool === "landmass"}
         aria-pressed={tool === "landmass"}
-        aria-label="Landmass"
-        title="Select landmass. Shift adds, Alt subtracts."
+        aria-label={$ui("Landmass")}
+        title={$ui("Select landmass. Shift adds, Alt subtracts.")}
         disabled={!mapId}
         onclick={() => onset("landmass")}><Mountain {...iconProps} /></button>
     {/if}
   </div>
-  <div class="tool-group" role="group" aria-label="Snap">
+  <div class="tool-group" role="group" aria-label={$ui("Snap")}>
     <button
       type="button"
       class="icon-button"
       class:active={snapEnabled}
       aria-pressed={snapEnabled}
-      aria-label={snapEnabled ? "Snap on" : "Snap off"}
-      title={snapEnabled ? "Snap on (\\)" : "Snap off (\\)"}
+      aria-label={snapEnabled ? $ui("Snap on") : $ui("Snap off")}
+      title={snapEnabled ? $ui("Snap on (\\)") : $ui("Snap off (\\)")}
       disabled={!editorReady}
       onclick={() => ontogglesnap()}><Magnet {...iconProps} /></button>
     <button
@@ -154,19 +155,19 @@ const iconProps = { size: 16, strokeWidth: 1.8, "aria-hidden": true } as const;
       class="icon-button"
       class:active={snapConfigOpen}
       aria-pressed={snapConfigOpen}
-      aria-label="Snap settings"
-      title="Snap settings"
+      aria-label={$ui("Snap settings")}
+      title={$ui("Snap settings")}
       disabled={!editorReady}
       onclick={() => ontogglesnapconfig()}><CircleHelp {...iconProps} /></button>
   </div>
-  <div class="tool-group" role="group" aria-label="Measure">
+  <div class="tool-group" role="group" aria-label={$ui("Measure")}>
     <button
       type="button"
       class="icon-button"
       class:active={tool === "measure-distance"}
       aria-pressed={tool === "measure-distance"}
-      aria-label="Measure distance"
-      title="Measure distance (D)"
+      aria-label={$ui("Measure distance")}
+      title={$ui("Measure distance (D)")}
       disabled={!editorReady}
       onclick={() => onset("measure-distance")}><Ruler {...iconProps} /></button>
     <button
@@ -174,8 +175,8 @@ const iconProps = { size: 16, strokeWidth: 1.8, "aria-hidden": true } as const;
       class="icon-button"
       class:active={tool === "measure-length"}
       aria-pressed={tool === "measure-length"}
-      aria-label="Measure length"
-      title="Measure length (Shift+M)"
+      aria-label={$ui("Measure length")}
+      title={$ui("Measure length (Shift+M)")}
       disabled={!editorReady}
       onclick={() => onset("measure-length")}><Slash {...iconProps} /></button>
     <button
@@ -183,24 +184,24 @@ const iconProps = { size: 16, strokeWidth: 1.8, "aria-hidden": true } as const;
       class="icon-button"
       class:active={tool === "measure-area"}
       aria-pressed={tool === "measure-area"}
-      aria-label="Measure area"
-      title="Measure area (Shift+A)"
+      aria-label={$ui("Measure area")}
+      title={$ui("Measure area (Shift+A)")}
       disabled={!editorReady}
       onclick={() => onset("measure-area")}><SquareStack {...iconProps} /></button>
   </div>
-  <div class="tool-group history" role="group" aria-label="History">
+  <div class="tool-group history" role="group" aria-label={$ui("History")}>
     <button
       type="button"
       class="icon-button"
-      aria-label="Undo"
-      title="Undo (⌘Z)"
+      aria-label={$ui("Undo")}
+      title={$ui("Undo (⌘Z)")}
       disabled={!canUndo}
       onclick={() => onundo()}><Undo2 {...iconProps} /></button>
     <button
       type="button"
       class="icon-button"
-      aria-label="Redo"
-      title="Redo (⇧⌘Z)"
+      aria-label={$ui("Redo")}
+      title={$ui("Redo (⇧⌘Z)")}
       disabled={!canRedo}
       onclick={() => onredo()}><Redo2 {...iconProps} /></button>
   </div>

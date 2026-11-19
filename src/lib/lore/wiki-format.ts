@@ -34,12 +34,12 @@ export function humanizeType(value: string) {
   return label.charAt(0).toUpperCase() + label.slice(1);
 }
 
-export function formatSystemTimestamp(value: unknown): string {
+export function formatSystemTimestamp(value: unknown, locale?: string): string {
   const timestamp = typeof value === "number" ? value : Number(value);
   if (!Number.isFinite(timestamp)) return "";
   const date = new Date(Math.floor(timestamp / 1_000_000));
   if (Number.isNaN(date.getTime())) return "";
-  return date.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+  return date.toLocaleDateString(locale, { year: "numeric", month: "short", day: "numeric" });
 }
 
 export function formatAttributeValue(value: unknown, field: { type?: string } | null): string {

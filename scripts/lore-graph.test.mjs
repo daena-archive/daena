@@ -19,8 +19,8 @@ assert.equal(relationTypeLabel("family_parent_of"), "Parent");
 assert.equal(relationTypeLabel("located_in"), "located in");
 
 const source = await readFile(new URL("../packages/modules/lore/src/index.ts", import.meta.url), "utf8");
-assert.match(source, /aria-label", "Zoom out"/);
-assert.match(source, /aria-label", "Zoom in"/);
+assert.match(source, /aria-label", t\("Zoom out"\)/);
+assert.match(source, /aria-label", t\("Zoom in"\)/);
 assert.match(source, /zoomOutButton, zoomInButton, fitButton/);
 
 console.log("lore graph relation filters passed");

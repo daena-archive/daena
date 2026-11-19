@@ -1,4 +1,6 @@
 <script lang="ts">
+import { displayLanguage } from "$lib/i18n";
+import { ui } from "$lib/i18n/ui";
 import { onDestroy, onMount, tick, untrack } from "svelte";
 import { Info, Layers, MapPin, Pencil, Route, Search, X } from "@lucide/svelte";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
@@ -124,7 +126,7 @@ let {
   mapId,
   viewerLayers = [],
   overlayAuthoring = null,
-  stage = $bindable("Opening Atlas Studio…"),
+  stage = $bindable($ui("Opening Atlas Studio…")),
   onexport,
   onready,
 }: {
@@ -168,56 +170,56 @@ const modalCoords = $derived(modalSample ? `${modalSample.lng.toFixed(4)}°, ${m
 
 const FIELD_GUIDE: Array<{ term: string; help: string }> = [
   {
-    term: "Solstice temperatures",
-    help: "Temperature at the northern-summer and northern-winter solstices: two representative seasonal states, not a daily forecast.",
+    get term() { return $ui("Solstice temperatures"); },
+    get help() { return $ui("Temperature at the northern-summer and northern-winter solstices: two representative seasonal states, not a daily forecast."); },
   },
   {
-    term: "Annual range",
-    help: "How much the temperature typically swings across the year at this spot.",
+    get term() { return $ui("Annual range"); },
+    get help() { return $ui("How much the temperature typically swings across the year at this spot."); },
   },
   {
-    term: "Freeze",
-    help: "Permanent means the land stays below freezing all year; seasonal means it freezes for part of the year and thaws.",
+    get term() { return $ui("Freeze"); },
+    get help() { return $ui("Permanent means the land stays below freezing all year; seasonal means it freezes for part of the year and thaws."); },
   },
   {
-    term: "Prevailing wind",
-    help: "The average wind direction and strength here. Think prevailing conditions, not today's weather.",
+    get term() { return $ui("Prevailing wind"); },
+    get help() { return $ui("The average wind direction and strength here. Think prevailing conditions, not today's weather."); },
   },
   {
-    term: "Circulation",
-    help: "Which planet-scale air band sits overhead: Hadley (tropical), Ferrel (temperate), or polar.",
+    get term() { return $ui("Circulation"); },
+    get help() { return $ui("Which planet-scale air band sits overhead: Hadley (tropical), Ferrel (temperate), or polar."); },
   },
   {
-    term: "Wind flow",
-    help: "Converging means winds flow together here (air rises, often wetter); diverging means they spread apart (often drier); neutral is neither.",
+    get term() { return $ui("Wind flow"); },
+    get help() { return $ui("Converging means winds flow together here (air rises, often wetter); diverging means they spread apart (often drier); neutral is neither."); },
   },
   {
-    term: "Rainfall",
-    help: "Yearly precipitation, with the solstice split showing which season brings the rain.",
+    get term() { return $ui("Rainfall"); },
+    get help() { return $ui("Yearly precipitation, with the solstice split showing which season brings the rain."); },
   },
   {
-    term: "Humidity",
-    help: "Remaining moisture in the air versus local saturation, as a percent. It is not a weather-station humidity reading.",
+    get term() { return $ui("Humidity"); },
+    get help() { return $ui("Remaining moisture in the air versus local saturation, as a percent. It is not a weather-station humidity reading."); },
   },
   {
-    term: "Aridity",
-    help: "How much evaporative demand goes unmet by rain: humid, sub-humid, semi-arid, or arid land.",
+    get term() { return $ui("Aridity"); },
+    get help() { return $ui("How much evaporative demand goes unmet by rain: humid, sub-humid, semi-arid, or arid land."); },
   },
   {
-    term: "Surface current",
-    help: "Year-round surface-ocean drift near this coast: direction and strength of the major gyres, not a shipping chart.",
+    get term() { return $ui("Surface current"); },
+    get help() { return $ui("Year-round surface-ocean drift near this coast: direction and strength of the major gyres, not a shipping chart."); },
   },
   {
-    term: "Biome",
-    help: "A derived reading of temperature, rain, humidity, aridity, and elevation — an interpretation for worldbuilding, not painted decoration.",
+    get term() { return $ui("Biome"); },
+    get help() { return $ui("A derived reading of temperature, rain, humidity, aridity, and elevation — an interpretation for worldbuilding, not painted decoration."); },
   },
   {
-    term: "Storms",
-    help: "Storm climatology: where formation and tracks are plausible, and how exposed this spot is. It is not a forecast, and only materialized storms become world history.",
+    get term() { return $ui("Storms"); },
+    get help() { return $ui("Storm climatology: where formation and tracks are plausible, and how exposed this spot is. It is not a forecast, and only materialized storms become world history."); },
   },
   {
-    term: "Elevation and surface",
-    help: "Height relative to the water surface, and whether this spot reads as ocean, lake, or land.",
+    get term() { return $ui("Elevation and surface"); },
+    get help() { return $ui("Height relative to the water surface, and whether this spot reads as ocean, lake, or land."); },
   },
 ];
 let placeDialog = $state<HTMLDivElement | null>(null);
@@ -233,12 +235,12 @@ type SidebarPane = "layers" | "find" | "draw" | "inspect";
 type FindTopic = "places" | "routes";
 let sidebarPane = $state<SidebarPane>("layers");
 let findTopic = $state<FindTopic>("places");
-const sidebarPanes: Array<{ id: SidebarPane; label: string }> = [
-  { id: "layers", label: "Layers" },
-  { id: "find", label: "Find" },
-  { id: "draw", label: "Draw" },
-  { id: "inspect", label: "Inspect" },
-];
+const sidebarPanes: Array<{ id: SidebarPane; label: string }> = $derived([
+  { id: "layers", label: $ui("Layers") },
+  { id: "find", label: $ui("Find") },
+  { id: "draw", label: $ui("Draw") },
+  { id: "inspect", label: $ui("Inspect") },
+]);
 let viewZoom = $state(1);
 let worldMinZoom = $state(0);
 let findPlaceResult = $state<FindPlaceResult | null>(null);
@@ -314,9 +316,9 @@ function deviceScale() {
 }
 
 function formatEpoch(offset: number) {
-  if (offset === 0) return "at epoch";
-  if (offset < 0) return "years before epoch";
-  return "years after epoch";
+  if (offset === 0) return $ui("at epoch");
+  if (offset < 0) return $ui("years before epoch");
+  return $ui("years after epoch");
 }
 
 function parseEpochYears(raw: string) {
@@ -392,44 +394,44 @@ function prefersReducedMotion() {
   return typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 }
 
-const STUDIO_DIAGNOSTICS: Record<string, { title: string; action: string }> = {
+const STUDIO_DIAGNOSTICS: Record<string, { title: string; action: string }> = $derived({
   "atlas.studio.request.invalid": {
-    title: "This Atlas Studio request is not valid.",
-    action: "Refresh Atlas and use a supported style, epoch, and layer set.",
+    title: $ui("This Atlas Studio request is not valid."),
+    action: $ui("Refresh Atlas and use a supported style, epoch, and layer set."),
   },
   "atlas.studio.tile.invalid": {
-    title: "That map tile request is not valid.",
-    action: "Pan or zoom back into the supported range, then retry.",
+    title: $ui("That map tile request is not valid."),
+    action: $ui("Pan or zoom back into the supported range, then retry."),
   },
   "atlas.studio.resource-limit": {
-    title: "Atlas Studio is busy or at a resource limit.",
-    action: "Wait for visible tiles; a full queue is retryable and is not a sticky error.",
+    title: $ui("Atlas Studio is busy or at a resource limit."),
+    action: $ui("Wait for visible tiles; a full queue is retryable and is not a sticky error."),
   },
   "atlas.studio.cancelled": {
-    title: "Atlas work was cancelled.",
-    action: "Refresh Atlas if the map is still open.",
+    title: $ui("Atlas work was cancelled."),
+    action: $ui("Refresh Atlas if the map is still open."),
   },
   "atlas.studio.unsupported": {
-    title: "Atlas Studio is not available for this map.",
-    action: "Enable Maps and open an accepted physical map.",
+    title: $ui("Atlas Studio is not available for this map."),
+    action: $ui("Enable Maps and open an accepted physical map."),
   },
   "atlas.studio.stale": {
-    title: "The project changed after this Atlas session.",
-    action: "Refresh Atlas to capture the current generation.",
+    title: $ui("The project changed after this Atlas session."),
+    action: $ui("Refresh Atlas to capture the current generation."),
   },
   "atlas.studio.expired": {
-    title: "This Atlas session expired.",
-    action: "Refresh Atlas to open a new session.",
+    title: $ui("This Atlas session expired."),
+    action: $ui("Refresh Atlas to open a new session."),
   },
   "atlas.studio.tile.failed": {
-    title: "Atlas Studio failed to draw a tile.",
-    action: "Retry. If it continues, regenerate the disposable cache.",
+    title: $ui("Atlas Studio failed to draw a tile."),
+    action: $ui("Retry. If it continues, regenerate the disposable cache."),
   },
   "atlas.studio.protocol.denied": {
-    title: "Atlas Studio refused that tile request.",
-    action: "Refresh Atlas. Do not paste file paths into the map.",
+    title: $ui("Atlas Studio refused that tile request."),
+    action: $ui("Refresh Atlas. Do not paste file paths into the map."),
   },
-};
+});
 
 function explainStudioError(raw: string) {
   const code = raw.split(":")[0]?.trim() ?? "";
@@ -437,28 +439,28 @@ function explainStudioError(raw: string) {
   if (mapped) return { code, ...mapped };
   return {
     code: code.startsWith("atlas.studio.") ? code : "atlas.studio.failed",
-    title: raw || "Atlas Studio could not complete that action.",
-    action: "Retry. If it continues, Refresh Atlas or regenerate the disposable cache.",
+    title: raw || $ui("Atlas Studio could not complete that action."),
+    action: $ui("Retry. If it continues, Refresh Atlas or regenerate the disposable cache."),
   };
 }
 
 function derivedExplanation(hit: AtlasStudioInspectHit) {
   if (hit.kind === PHYSICAL_LAKE_FEATURE_KIND || hit.kind === PHYSICAL_RIVER_FEATURE_KIND) {
-    return "Generated water at this epoch. Naming creates a Place; the geometry stays derived.";
+    return $ui("Generated water at this epoch. Naming creates a Place; the geometry stays derived.");
   }
   if (hit.kind === PHYSICAL_LANDMASS_FEATURE_KIND) {
-    return "Generated land at this epoch. Naming creates a Place; the geometry stays derived.";
+    return $ui("Generated land at this epoch. Naming creates a Place; the geometry stays derived.");
   }
   if (hit.kind === ATLAS_OROMETRY_FEATURE_KIND) {
-    return "Coarse-stable Atlas orometry. Naming creates a Place on the feature ID; the geometry stays derived.";
+    return $ui("Coarse-stable Atlas orometry. Naming creates a Place on the feature ID; the geometry stays derived.");
   }
   if (hit.kind === "derived-tributary") {
-    return "Atlas-only derived drainage. It is not canonical Physical Map data and cannot be edited or promoted from Studio.";
+    return $ui("Atlas-only derived drainage. It is not canonical Physical Map data and cannot be edited or promoted from Studio.");
   }
   if (hit.derived) {
-    return "Presentation overlay from the captured Atlas snapshot. It is not a Physical Map edit.";
+    return $ui("Presentation overlay from the captured Atlas snapshot. It is not a Physical Map edit.");
   }
-  return "Authored or semantic map feature from the captured project snapshot.";
+  return $ui("Authored or semantic map feature from the captured project snapshot.");
 }
 
 function claimableHit(hit: AtlasStudioInspectHit) {
@@ -479,7 +481,7 @@ function styleLabel(id: string) {
 const studioLayerBook = $derived([
   {
     id: "overlays",
-    label: "Overlays",
+    label: $ui("Overlays"),
     layers:
       overlayAuthoring?.layers.map((layer) => ({
         id: layer.id,
@@ -491,7 +493,7 @@ const studioLayerBook = $derived([
   },
   {
     id: "physical",
-    label: "Physical",
+    label: $ui("Physical"),
     layers: layers.map((layer) => ({
       id: layer.id,
       name: layer.name,
@@ -562,7 +564,7 @@ async function openSession() {
   error = "";
   stale = "";
   hits = [];
-  stage = "Snapshotting…";
+  stage = $ui("Snapshotting…");
   try {
     if (!capabilities) await loadCapabilities();
     const previous = session;
@@ -573,11 +575,11 @@ async function openSession() {
     styleId = next.styleId;
     offsetYears = next.offsetYears;
     if (map && tileSource) {
-      stage = "Updating map…";
+      stage = $ui("Updating map…");
       configureTileSource(tileSource, next);
       watchRenderCompletion(next, () => tileSource?.refresh());
     } else {
-      stage = "Mounting map…";
+      stage = $ui("Mounting map…");
       mapLifecycle?.dispose();
       mapLifecycle = undefined;
       map = null;
@@ -637,7 +639,7 @@ function watchRenderCompletion(status: AtlasStudioSessionStatus, prepare: () => 
     () => session?.sessionToken === status.sessionToken,
     () => {
       loading = false;
-      stage = "Ready";
+      stage = $ui("Ready");
       schedulePrefetch(status);
     },
   );
@@ -678,7 +680,7 @@ function mountMap(status: AtlasStudioSessionStatus, initial?: { center: [number,
       interactions: defaultInteractions({ altShiftDragRotate: false, pinchRotate: false }),
     });
   } catch (cause) {
-    error = cause instanceof Error ? cause.message : "OpenLayers failed to create the Atlas view.";
+    error = cause instanceof Error ? cause.message : $ui("OpenLayers failed to create the Atlas view.");
     loading = false;
     return;
   }
@@ -871,7 +873,7 @@ function currentViewExport(): AtlasRenderRequest | null {
 async function regenerate() {
   error = "";
   confirmCache = false;
-  stage = "Regenerating cache…";
+  stage = $ui("Regenerating cache…");
   try {
     await project.atlasStudioRegenerateCache();
     await openSession();
@@ -923,7 +925,7 @@ function formatElevation(elevationMm: number, waterSurfaceMm: number, surface: s
   if (surface === "ocean" || surface === "lake") {
     return relative < 0 ? `${formatMetres(-relative)} below water` : `${height} at water`;
   }
-  return `${height} above water`;
+  return $ui("{0} above water", height);
 }
 
 function formatTemperature(centiC: number) {
@@ -933,17 +935,17 @@ function formatTemperature(centiC: number) {
 function formatWind(eastMilli: number, northMilli: number) {
   const speed = Math.hypot(eastMilli, northMilli);
   const strength = speed < 400 ? "light" : speed < 1_200 ? "moderate" : "strong";
-  return `${strength} east ${(eastMilli / 1000).toFixed(1)}, north ${(northMilli / 1000).toFixed(1)}`;
+  return $ui("{0} east {1}, north {2}", strength, (eastMilli / 1000).toFixed(1), (northMilli / 1000).toFixed(1));
 }
 
 function formatCurrent(eastMilli: number, northMilli: number) {
   const speed = Math.hypot(eastMilli, northMilli);
-  if (speed < 1) return "none";
-  return `annual east ${(eastMilli / 1000).toFixed(2)}, north ${(northMilli / 1000).toFixed(2)}`;
+  if (speed < 1) return $ui("none");
+  return $ui("annual east {0}, north {1}", (eastMilli / 1000).toFixed(2), (northMilli / 1000).toFixed(2));
 }
 
 function formatHumidity(ppm: number) {
-  return `${Math.round(ppm / 10_000)}% of saturation`;
+  return $ui("{0}% of saturation", Math.round(ppm / 10_000));
 }
 
 function formatAridity(ppm: number) {
@@ -1149,7 +1151,7 @@ function pickNameActions() {
       const named = namedWaterPins.some((pin) => pin.featureKind === hit.kind && pin.featureId === hit.id);
       return [
         {
-          label: named ? `Rename ${namedPlaceLabel(hit)}` : `Name ${namedPlaceLabel(hit)}`,
+          label: named ? $ui("Rename {0}", namedPlaceLabel(hit)) : $ui("Name {0}", namedPlaceLabel(hit)),
           run: () => nameClaimHit(hit),
         },
       ];
@@ -1158,7 +1160,7 @@ function pickNameActions() {
       const named = namedPlacePins.some((pin) => pin.featureId === hit.id);
       return [
         {
-          label: named ? `Rename ${namedPlaceLabel(hit)}` : `Place ${namedPlaceLabel(hit)}`,
+          label: named ? $ui("Rename {0}", namedPlaceLabel(hit)) : $ui("Place {0}", namedPlaceLabel(hit)),
           run: () => void nameOverlayFeature(hit.id),
         },
       ];
@@ -1176,17 +1178,17 @@ async function nameOverlayFeature(featureId: string) {
   const feature = overlayFeatureForHit(featureId);
   if (!authoring || !feature) return;
   if (authoring.dirty) {
-    overlayDetectHint = "Saving overlay…";
+    overlayDetectHint = $ui("Saving overlay…");
     try {
       await authoring.save();
     } catch {
-      overlayDetectHint = "Save the overlay before creating a Place.";
+      overlayDetectHint = $ui("Save the overlay before creating a Place.");
       return;
     }
   }
   const positions = feature.geometry.coordinates.flat(Infinity) as number[];
   if (positions.length < 2) {
-    overlayDetectHint = "That region has no geometry to bind.";
+    overlayDetectHint = $ui("That region has no geometry to bind.");
     return;
   }
   const layer = authoring.layers.find((item) => item.id === feature.properties.daena.layerId);
@@ -1504,13 +1506,13 @@ function commitDrawnFeature(olFeature: Feature) {
   const layerId = authoring?.activeLayerId;
   if (!authoring || !layerId) {
     overlaySource?.removeFeature(olFeature);
-    overlayDetectHint = "Create an overlay first.";
+    overlayDetectHint = $ui("Create an overlay first.");
     return;
   }
   let geometry = vectorGeometryFromOl(olFeature);
   if (!geometry) {
     overlaySource?.removeFeature(olFeature);
-    overlayDetectHint = "Could not keep that shape.";
+    overlayDetectHint = $ui("Could not keep that shape.");
     return;
   }
   if (overlayTool === "freehand") {
@@ -1518,14 +1520,14 @@ function commitDrawnFeature(olFeature: Feature) {
     if ("error" in simplified) {
       overlaySource?.removeFeature(olFeature);
       overlayDetectHint =
-        simplified.error === "vector.limit.exceeded" ? "That drawing is too detailed." : "Could not close that shape.";
+        simplified.error === "vector.limit.exceeded" ? $ui("That drawing is too detailed.") : $ui("Could not close that shape.");
       return;
     }
     geometry = simplified;
   }
   if (geometry.type !== "Polygon" && geometry.type !== "MultiPolygon") {
     overlaySource?.removeFeature(olFeature);
-    overlayDetectHint = "Could not close that shape.";
+    overlayDetectHint = $ui("Could not close that shape.");
     return;
   }
   const feature: VectorFeature = {
@@ -1537,7 +1539,7 @@ function commitDrawnFeature(olFeature: Feature) {
   overlaySource?.removeFeature(olFeature);
   overlaySelectedId = feature.id;
   overlayTool = "select";
-  overlayDetectHint = "Region added. Name it as a Place, then save.";
+  overlayDetectHint = $ui("Region added. Name it as a Place, then save.");
   authoring.addFeature(feature);
   paintOverlayFeature(feature);
 }
@@ -1682,7 +1684,7 @@ function commitLandmassSelection(layerId: string, subtractOccupied = false) {
   authoring.addFeature(feature);
   paintOverlayFeature(feature);
   overlayTool = "select";
-  overlayDetectHint = `${selection.label} added. Set its color, then save.`;
+  overlayDetectHint = $ui("{0} added. Set its color, then save.", selection.label);
   landmassSelection = null;
   clearLandmassHover();
   paintLandmassSelection();
@@ -1694,7 +1696,7 @@ function createFromLandmassSelection() {
   const layerId = authoring.createLayer(overlayCreateName);
   overlayCreateName = "";
   if (!layerId) {
-    overlayDetectHint = "Could not create overlay.";
+    overlayDetectHint = $ui("Could not create overlay.");
     return;
   }
   commitLandmassSelection(layerId);
@@ -1705,7 +1707,7 @@ function addFromLandmassSelection() {
   const layerId = authoring?.activeLayerId;
   const layer = authoring?.layers.find((item) => item.id === layerId);
   if (!authoring || !layerId || !layer || layer.locked || !layer.defaultVisible) {
-    overlayDetectHint = "Create or select an unlocked overlay first.";
+    overlayDetectHint = $ui("Create or select an unlocked overlay first.");
     return;
   }
   commitLandmassSelection(layerId, true);
@@ -1722,12 +1724,12 @@ async function invertLandmassSelection() {
   const generation = session?.capturedContentGeneration;
   if (!selection || !token || overlayDetectBusy) return;
   if (!landmassHydrologyReady() || generation == null) {
-    overlayDetectHint = "Wait for the epoch to finish updating.";
+    overlayDetectHint = $ui("Wait for the epoch to finish updating.");
     return;
   }
   const request = ++landmassRequest;
   overlayDetectBusy = true;
-  overlayDetectHint = "Inverting selection…";
+  overlayDetectHint = $ui("Inverting selection…");
   try {
     let land =
       landGeometryCache?.mapId === mapId &&
@@ -1755,7 +1757,7 @@ async function invertLandmassSelection() {
       return;
     }
     landmassSelection = next.selection;
-    overlayDetectHint = next.selection ? "Selection inverted over all land." : "Selection cleared.";
+    overlayDetectHint = next.selection ? $ui("Selection inverted over all land.") : $ui("Selection cleared.");
     paintLandmassSelection();
   } catch (cause) {
     if (request !== landmassRequest) return;
@@ -1771,12 +1773,12 @@ async function selectDetectedRegion(longitude: number, latitude: number, shiftKe
   const generation = session?.capturedContentGeneration;
   if (!token || overlayDetectBusy) return;
   if (!landmassHydrologyReady() || generation == null) {
-    overlayDetectHint = "Wait for the epoch to finish updating.";
+    overlayDetectHint = $ui("Wait for the epoch to finish updating.");
     return;
   }
   const request = ++landmassRequest;
   overlayDetectBusy = true;
-  overlayDetectHint = "Selecting landmass…";
+  overlayDetectHint = $ui("Selecting landmass…");
   try {
     const proposal = await project.atlasStudioProposeRegion(token, toMicro(longitude), toMicro(latitude), "landmass");
     if (
@@ -1795,8 +1797,8 @@ async function selectDetectedRegion(longitude: number, latitude: number, shiftKe
     }
     landmassSelection = next.selection;
     overlayDetectHint = next.selection
-      ? "Landmass selected. Shift-click adds, Alt-click subtracts."
-      : "Selection cleared.";
+      ? $ui("Landmass selected. Shift-click adds, Alt-click subtracts.")
+      : $ui("Selection cleared.");
     paintLandmassSelection();
   } catch (cause) {
     if (request !== landmassRequest) return;
@@ -1907,7 +1909,7 @@ function selectRoute(suggestion: RouteSuggestion) {
 function acceptRoute(suggestion: RouteSuggestion) {
   const authoring = overlayAuthoring;
   if (!authoring) {
-    routeError = "Open Atlas from the physical map editor to keep a road.";
+    routeError = $ui("Open Atlas from the physical map editor to keep a road.");
     return;
   }
   const feature = routeFeatureFromSuggestion(suggestion, offsetYears, "");
@@ -2263,133 +2265,133 @@ onDestroy(() => {
 {#snippet surfaceFields(sample: AtlasStudioSurfaceSample)}
   <dl class="place-hero">
     <div>
-      <dt>Temperature</dt>
+      <dt>{$ui("Temperature")}</dt>
       <dd>{formatTemperature(sample.temperatureCentiC)}</dd>
     </div>
     <div>
-      <dt>Rainfall</dt>
-      <dd>{sample.precipitationMm.toLocaleString("en-US")} mm</dd>
+      <dt>{$ui("Rainfall")}</dt>
+      <dd>{$ui("{0} mm", sample.precipitationMm.toLocaleString($displayLanguage))}</dd>
     </div>
     <div>
-      <dt>Humidity</dt>
+      <dt>{$ui("Humidity")}</dt>
       <dd>{formatHumidity(sample.humidityPpm)}</dd>
     </div>
   </dl>
   <div class="place-sheet">
-    <section aria-label="Temperature">
-      <h3>Temperature</h3>
+    <section aria-label={$ui("Temperature")}>
+      <h3>{$ui("Temperature")}</h3>
       <dl>
         <div>
-          <dt>Northern-summer solstice</dt>
+          <dt>{$ui("Northern-summer solstice")}</dt>
           <dd>{formatTemperature(sample.temperatureNhSummerCentiC)}</dd>
         </div>
         <div>
-          <dt>Northern-winter solstice</dt>
+          <dt>{$ui("Northern-winter solstice")}</dt>
           <dd>{formatTemperature(sample.temperatureNhWinterCentiC)}</dd>
         </div>
         <div>
-          <dt>Annual range</dt>
+          <dt>{$ui("Annual range")}</dt>
           <dd>{formatTemperature(sample.seasonalRangeCentiC)}</dd>
         </div>
         <div>
-          <dt>Freeze</dt>
+          <dt>{$ui("Freeze")}</dt>
           <dd>{formatFreeze(sample.freeze)}</dd>
         </div>
       </dl>
     </section>
-    <section aria-label="Wind">
-      <h3>Wind</h3>
+    <section aria-label={$ui("Wind")}>
+      <h3>{$ui("Wind")}</h3>
       <dl>
         <div>
-          <dt>Prevailing</dt>
+          <dt>{$ui("Prevailing")}</dt>
           <dd>{formatWind(sample.windEastMilli, sample.windNorthMilli)}</dd>
         </div>
         <div>
-          <dt>Northern-summer</dt>
+          <dt>{$ui("Northern-summer")}</dt>
           <dd>{formatWind(sample.windEastNhSummerMilli, sample.windNorthNhSummerMilli)}</dd>
         </div>
         <div>
-          <dt>Northern-winter</dt>
+          <dt>{$ui("Northern-winter")}</dt>
           <dd>{formatWind(sample.windEastNhWinterMilli, sample.windNorthNhWinterMilli)}</dd>
         </div>
         <div>
-          <dt>Circulation</dt>
+          <dt>{$ui("Circulation")}</dt>
           <dd>{titleCase(sample.windBand)}</dd>
         </div>
         <div>
-          <dt>Northern-summer circulation</dt>
+          <dt>{$ui("Northern-summer circulation")}</dt>
           <dd>{titleCase(sample.windBandNhSummer)}</dd>
         </div>
         <div>
-          <dt>Northern-winter circulation</dt>
+          <dt>{$ui("Northern-winter circulation")}</dt>
           <dd>{titleCase(sample.windBandNhWinter)}</dd>
         </div>
         <div>
-          <dt>Wind flow</dt>
+          <dt>{$ui("Wind flow")}</dt>
           <dd>{formatDivergence(sample.windDivergencePpm)}</dd>
         </div>
         <div>
-          <dt>Northern-summer flow</dt>
+          <dt>{$ui("Northern-summer flow")}</dt>
           <dd>{formatDivergence(sample.windDivergenceNhSummerPpm)}</dd>
         </div>
         <div>
-          <dt>Northern-winter flow</dt>
+          <dt>{$ui("Northern-winter flow")}</dt>
           <dd>{formatDivergence(sample.windDivergenceNhWinterPpm)}</dd>
         </div>
       </dl>
     </section>
-    <section aria-label="Water">
-      <h3>Water</h3>
+    <section aria-label={$ui("Water")}>
+      <h3>{$ui("Water")}</h3>
       <dl>
         <div>
-          <dt>Northern-summer rainfall</dt>
-          <dd>{sample.precipitationNhSummerMm.toLocaleString("en-US")} mm</dd>
+          <dt>{$ui("Northern-summer rainfall")}</dt>
+          <dd>{$ui("{0} mm", sample.precipitationNhSummerMm.toLocaleString($displayLanguage))}</dd>
         </div>
         <div>
-          <dt>Northern-winter rainfall</dt>
-          <dd>{sample.precipitationNhWinterMm.toLocaleString("en-US")} mm</dd>
+          <dt>{$ui("Northern-winter rainfall")}</dt>
+          <dd>{$ui("{0} mm", sample.precipitationNhWinterMm.toLocaleString($displayLanguage))}</dd>
         </div>
         <div>
-          <dt>Aridity</dt>
+          <dt>{$ui("Aridity")}</dt>
           <dd>{formatAridity(sample.aridityPpm)}</dd>
         </div>
         <div>
-          <dt>Surface current</dt>
+          <dt>{$ui("Surface current")}</dt>
           <dd>{formatCurrent(sample.currentEastMilli, sample.currentNorthMilli)}</dd>
         </div>
       </dl>
     </section>
-    <section aria-label="Land and climate">
-      <h3>Land and climate</h3>
+    <section aria-label={$ui("Land and climate")}>
+      <h3>{$ui("Land and climate")}</h3>
       <dl>
         <div>
-          <dt>Surface</dt>
+          <dt>{$ui("Surface")}</dt>
           <dd>{titleCase(sample.surface)}</dd>
         </div>
         {#if sample.iceThicknessMm > 0}
           <div>
-            <dt>Ice cover</dt>
+            <dt>{$ui("Ice cover")}</dt>
             <dd>{formatMetres(sample.iceThicknessMm)}</dd>
           </div>
         {/if}
         <div>
-          <dt>Why this biome</dt>
+          <dt>{$ui("Why this biome")}</dt>
           <dd>{sample.biomeReason}</dd>
         </div>
         <div>
-          <dt>Storms</dt>
+          <dt>{$ui("Storms")}</dt>
           <dd>{sample.stormReason}</dd>
         </div>
         <div>
-          <dt>Storm suitability</dt>
+          <dt>{$ui("Storm suitability")}</dt>
           <dd>{formatShare(sample.stormSuitabilityPpm)}</dd>
         </div>
         <div>
-          <dt>Storm tracks</dt>
+          <dt>{$ui("Storm tracks")}</dt>
           <dd>{formatShare(sample.stormTrackPpm)}</dd>
         </div>
         <div>
-          <dt>Storm intensity</dt>
+          <dt>{$ui("Storm intensity")}</dt>
           <dd>{formatShare(sample.stormIntensityPpm)}</dd>
         </div>
       </dl>
@@ -2397,36 +2399,32 @@ onDestroy(() => {
   </div>
 {/snippet}
 
-<section class="studio" aria-label="Atlas Studio">
+<section class="studio" aria-label={$ui("Atlas Studio")}>
   <div class="body" style={`--atlas-sidebar-width: ${sidebarWidth}px`}>
-    <aside class="atlas-sidebar" aria-label="Atlas Studio controls">
+    <aside class="atlas-sidebar" aria-label={$ui("Atlas Studio controls")}>
       <header class="sidebar-head">
         <div class="sidebar-brand">
-          <span>Atlas</span>
+          <span>{$ui("Atlas")}</span>
           <strong>{styleLabel(styleId)}</strong>
         </div>
-        <label class="style-field">
-          Style
-          <select bind:value={styleId} onchange={() => scheduleSession()}>
+        <label class="style-field"> {$ui("Style")} <select bind:value={styleId} onchange={() => scheduleSession()}>
             {#each capabilities?.styles ?? [] as id}
               <option value={id}>{styleLabel(id)}</option>
             {/each}
           </select>
         </label>
         {#if (capabilities?.presets.length ?? 0) > 0}
-          <label class="style-field">
-            Preset
-            <select onchange={(event) => void applyPreset(event.currentTarget.value)}>
-              <option value="">Saved presets</option>
+          <label class="style-field"> {$ui("Preset")} <select onchange={(event) => void applyPreset(event.currentTarget.value)}>
+              <option value="">{$ui("Saved presets")}</option>
               {#each capabilities?.presets ?? [] as preset}
                 <option value={preset.id}>{preset.name}</option>
               {/each}
             </select>
           </label>
         {/if}
-        <div class="epoch-card" aria-label="World epoch">
+        <div class="epoch-card" aria-label={$ui("World epoch")}>
           <div class="epoch-copy">
-            <span>Epoch</span>
+            <span>{$ui("Epoch")}</span>
             <strong>{formatEpoch(offsetYears)}</strong>
           </div>
           <input
@@ -2435,7 +2433,7 @@ onDestroy(() => {
             max={EPOCH_MAX}
             step={EPOCH_STEP}
             value={offsetYears}
-            aria-label="Epoch offset"
+            aria-label={$ui("Epoch offset")}
             disabled={timeKind === "calendar-year"}
             oninput={(event) => setOffsetYears(clampEpoch(Number(event.currentTarget.value), EPOCH_STEP))} />
           <input
@@ -2444,24 +2442,20 @@ onDestroy(() => {
             inputmode="numeric"
             autocomplete="off"
             spellcheck="false"
-            value={Math.abs(offsetYears).toLocaleString("en-US")}
-            aria-label="Years from epoch"
+            value={Math.abs(offsetYears).toLocaleString($displayLanguage)}
+            aria-label={$ui("Years from epoch")}
             disabled={timeKind === "calendar-year"}
             onchange={(event) => setOffsetYearsAbs(event.currentTarget.value)} />
         </div>
         {#if capabilities?.timeModes.includes("calendar-year")}
           <div class="time-row">
-            <label>
-              Time
-              <select bind:value={timeKind} onchange={() => scheduleSession()}>
-                <option value="physical-offset-year">Physical offset</option>
-                <option value="calendar-year">Authored year</option>
+            <label> {$ui("Time")} <select bind:value={timeKind} onchange={() => scheduleSession()}>
+                <option value="physical-offset-year">{$ui("Physical offset")}</option>
+                <option value="calendar-year">{$ui("Authored year")}</option>
               </select>
             </label>
             {#if timeKind === "calendar-year"}
-              <label>
-                Year
-                <input type="number" bind:value={authoredYear} oninput={() => scheduleSession()} />
+              <label> {$ui("Year")} <input type="number" bind:value={authoredYear} oninput={() => scheduleSession()} />
               </label>
             {/if}
           </div>
@@ -2469,17 +2463,15 @@ onDestroy(() => {
       </header>
       {#if confirmCache}
         <div class="confirm" role="alertdialog" aria-labelledby="atlas-cache-title" aria-describedby="atlas-cache-copy">
-          <strong id="atlas-cache-title">Regenerate disposable Atlas cache?</strong>
-          <p id="atlas-cache-copy">
-            This removes derived Atlas cache files only. It does not change canonical project files.
-          </p>
+          <strong id="atlas-cache-title">{$ui("Regenerate disposable Atlas cache?")}</strong>
+          <p id="atlas-cache-copy"> {$ui("This removes derived Atlas cache files only. It does not change canonical project files.")} </p>
           <div class="actions">
-            <button type="button" onclick={() => void regenerate()}>Regenerate now</button>
-            <button type="button" onclick={() => (confirmCache = false)}>Cancel</button>
+            <button type="button" onclick={() => void regenerate()}>{$ui("Regenerate now")}</button>
+            <button type="button" onclick={() => (confirmCache = false)}>{$ui("Cancel")}</button>
           </div>
         </div>
       {/if}
-      <div class="sidebar-tabs" role="tablist" aria-label="Atlas tools">
+      <div class="sidebar-tabs" role="tablist" aria-label={$ui("Atlas tools")}>
         {#each sidebarPanes as pane (pane.id)}
           {@const badge = sidebarPaneBadge(pane.id)}
           <button
@@ -2523,7 +2515,7 @@ onDestroy(() => {
           </div>
         {:else if sidebarPane === "find"}
           <div class="sidebar-pane find-pane" id="atlas-pane-find" role="tabpanel" aria-labelledby="atlas-tab-find">
-            <div class="find-topics" role="tablist" aria-label="Search">
+            <div class="find-topics" role="tablist" aria-label={$ui("Search")}>
               <button
                 type="button"
                 role="tab"
@@ -2532,9 +2524,7 @@ onDestroy(() => {
                 aria-controls="atlas-find-places-panel"
                 class:active={findTopic === "places"}
                 onclick={() => (findTopic = "places")}>
-                <MapPin size={13} strokeWidth={1.8} />
-                Places
-                {#if findPlaceResult}<em>{findPlaceResult.candidateCount}</em>{/if}
+                <MapPin size={13} strokeWidth={1.8} /> {$ui("Places")} {#if findPlaceResult}<em>{findPlaceResult.candidateCount}</em>{/if}
               </button>
               <button
                 type="button"
@@ -2544,9 +2534,7 @@ onDestroy(() => {
                 aria-controls="atlas-find-routes-panel"
                 class:active={findTopic === "routes"}
                 onclick={() => (findTopic = "routes")}>
-                <Route size={13} strokeWidth={1.8} />
-                Routes
-                {#if routeResult}<em>{routeResult.suggestionCount}</em>{/if}
+                <Route size={13} strokeWidth={1.8} /> {$ui("Routes")} {#if routeResult}<em>{routeResult.suggestionCount}</em>{/if}
               </button>
             </div>
             {#if findTopic === "places"}
@@ -2605,7 +2593,7 @@ onDestroy(() => {
                 onClearSelection={() => clearLandmassSelection()}
                 onNamePlace={(id) => void nameOverlayFeature(id)} />
             {:else}
-              <p class="pane-empty">This map has no overlay authoring session.</p>
+              <p class="pane-empty">{$ui("This map has no overlay authoring session.")}</p>
             {/if}
           </div>
         {:else}
@@ -2614,65 +2602,65 @@ onDestroy(() => {
             id="atlas-pane-inspect"
             role="tabpanel"
             aria-labelledby="atlas-tab-inspect">
-            <section class="place" aria-label="Place" aria-live="polite">
-              <strong>Place</strong>
+            <section class="place" aria-label={$ui("Place")} aria-live="polite">
+              <strong>{$ui("Place")}</strong>
               {#if surface}
                 <dl class="place-summary">
                   <div>
-                    <dt>Coordinates</dt>
+                    <dt>{$ui("Coordinates")}</dt>
                     <dd>{cursor}</dd>
                   </div>
                   <div>
-                    <dt>Biome</dt>
+                    <dt>{$ui("Biome")}</dt>
                     <dd>{titleCase(surface.climate)}</dd>
                   </div>
                   <div>
-                    <dt>Surface</dt>
+                    <dt>{$ui("Surface")}</dt>
                     <dd>{formatElevation(surface.elevationMm, surface.waterSurfaceMm, surface.surface)}</dd>
                   </div>
                   <div>
-                    <dt>Temperature</dt>
+                    <dt>{$ui("Temperature")}</dt>
                     <dd>{formatTemperature(surface.temperatureCentiC)}</dd>
                   </div>
                   <div>
-                    <dt>Rainfall</dt>
-                    <dd>{surface.precipitationMm.toLocaleString("en-US")} mm/year</dd>
+                    <dt>{$ui("Rainfall")}</dt>
+                    <dd>{$ui("{0} mm/year", surface.precipitationMm.toLocaleString($displayLanguage))}</dd>
                   </div>
                   <div>
-                    <dt>Humidity</dt>
+                    <dt>{$ui("Humidity")}</dt>
                     <dd>{formatHumidity(surface.humidityPpm)}</dd>
                   </div>
                 </dl>
               {:else}
-                <p>Move or click the map to sample this point.</p>
+                <p>{$ui("Move or click the map to sample this point.")}</p>
               {/if}
             </section>
             {#if hits.length > 0}
-              <div class="inspect" role="region" aria-label="Feature inspection">
-                <strong>Features</strong>
+              <div class="inspect" role="region" aria-label={$ui("Feature inspection")}>
+                <strong>{$ui("Features")}</strong>
                 {#each hits as hit}
                   <p>
                     <span>{namedPlaceLabel(hit)}</span>
-                    <small>{hit.kind}{hit.derived ? " · derived" : ""}</small>
+                    <small>{hit.kind}{hit.derived ? $ui(" · derived") : ""}</small>
                     <small>{derivedExplanation(hit)}</small>
                   </p>
                 {/each}
               </div>
             {:else}
-              <p class="pane-empty">Click the map or press Enter to inspect the center.</p>
+              <p class="pane-empty">{$ui("Click the map or press Enter to inspect the center.")}</p>
             {/if}
             {#if showHelp}
-              <section class="help" aria-label="Keyboard shortcuts">
-                <strong>Keyboard</strong>
+              <section class="help" aria-label={$ui("Keyboard shortcuts")}>
+                <strong>{$ui("Keyboard")}</strong>
                 <ul>
-                  <li>Drag or the pan pad to move the view</li>
-                  <li>Arrows pan (Shift for a larger step)</li>
-                  <li>+ / − zoom</li>
-                  <li>Home or 0 resets the view</li>
-                  <li>Enter inspects the map center</li>
-                  <li>Escape clears inspection, drawing, or suggested routing</li>
-                  <li>⌘/Ctrl+Z undo overlay edits</li>
-                  <li>⌘/Ctrl+S save overlay edits</li>
+                  <li>{$ui("Drag or the pan pad to move the view")}</li>
+                  <li>{$ui("Arrows pan (Shift for a larger step)")}</li>
+                  <li>{$ui("+ / − zoom")}</li>
+                  <li>{$ui("Home or 0 resets the view")}</li>
+                  <li>{$ui("Enter inspects the map center")}</li>
+                  <li>{$ui("Escape clears inspection, drawing, or suggested routing")}</li>
+                  <li>{$ui("⌘/Ctrl+Z undo overlay edits")}</li>
+                  <li>{$ui("⌘/Ctrl+S save overlay edits")}</li>
                 </ul>
               </section>
             {/if}
@@ -2683,12 +2671,12 @@ onDestroy(() => {
         type="button"
         class="sidebar-foot"
         onclick={() => (sidebarPane = "inspect")}
-        aria-label="Open place inspection">
+        aria-label={$ui("Open place inspection")}>
         <span>{cursor}</span>
         {#if surface}
           <span>{titleCase(surface.climate)} · {formatTemperature(surface.temperatureCentiC)}</span>
         {:else}
-          <span>Sample a point</span>
+          <span>{$ui("Sample a point")}</span>
         {/if}
       </button>
     </aside>
@@ -2697,11 +2685,11 @@ onDestroy(() => {
       class="sidebar-resizer"
       role="slider"
       aria-orientation="vertical"
-      aria-label="Resize Atlas sidebar"
+      aria-label={$ui("Resize Atlas sidebar")}
       aria-valuemin={SIDEBAR_MIN}
       aria-valuemax={SIDEBAR_MAX}
       aria-valuenow={sidebarWidth}
-      title="Drag to resize · Double-click to reset"
+      title={$ui("Drag to resize · Double-click to reset")}
       onpointerdown={startSidebarResize}
       ondblclick={() => setSidebarWidth(SIDEBAR_DEFAULT)}
       onkeydown={onSidebarResizeKey}></button>
@@ -2712,7 +2700,7 @@ onDestroy(() => {
           <strong>{diagnostic.title}</strong>
           <span>{diagnostic.action}</span>
           {#if diagnostic.code}<code>{diagnostic.code}</code>{/if}
-          <button type="button" onclick={() => void openSession()}>Retry</button>
+          <button type="button" onclick={() => void openSession()}>{$ui("Retry")}</button>
         </p>
       {:else if stale}
         {@const diagnostic = explainStudioError(
@@ -2722,7 +2710,7 @@ onDestroy(() => {
           <strong>{diagnostic.title}</strong>
           <span>{diagnostic.action}</span>
           {#if diagnostic.code}<code>{diagnostic.code}</code>{/if}
-          <button type="button" onclick={() => void openSession()}>Refresh Atlas</button>
+          <button type="button" onclick={() => void openSession()}>{$ui("Refresh Atlas")}</button>
         </p>
       {:else if loading}
         <div class="map-busy" role="status">
@@ -2734,7 +2722,7 @@ onDestroy(() => {
         id="atlas-studio-map"
         bind:this={host}
         tabindex="-1"
-        aria-label="Atlas Studio map"
+        aria-label={$ui("Atlas Studio map")}
         aria-keyshortcuts="ArrowLeft ArrowRight ArrowUp ArrowDown + - Home Enter Escape">
       </div>
       <MapViewControls
@@ -2760,12 +2748,12 @@ onDestroy(() => {
       {/if}
       {#if routingArming}
         <p class="pick-arming" role="status">
-          {routingStart ? "Click the end on land · Escape to cancel" : "Click the start on land · Escape to cancel"}
+          {routingStart ? $ui("Click the end on land · Escape to cancel") : $ui("Click the start on land · Escape to cancel")}
         </p>
       {:else if routeSearching}
-        <p class="pick-arming" role="status">Finding land routes…</p>
+        <p class="pick-arming" role="status">{$ui("Finding land routes…")}</p>
       {:else if linkArming}
-        <p class="pick-arming" role="status">Click the map to choose a link location · Escape to cancel</p>
+        <p class="pick-arming" role="status">{$ui("Click the map to choose a link location · Escape to cancel")}</p>
       {/if}
       {#if picked}
         <div
@@ -2773,29 +2761,27 @@ onDestroy(() => {
           class:flip={picked.flip}
           style={`left: ${picked.x}px; top: ${picked.y}px;`}
           role="dialog"
-          aria-label="Map spot actions"
+          aria-label={$ui("Map spot actions")}
           tabindex="-1"
           bind:this={pickPanel}>
-          <button type="button" class="pick-close" aria-label="Close spot actions" onclick={() => clearPicked(true)}>
+          <button type="button" class="pick-close" aria-label={$ui("Close spot actions")} onclick={() => clearPicked(true)}>
             <X size={13} strokeWidth={2} aria-hidden="true" />
           </button>
           <strong>{picked.lng.toFixed(4)}°, {picked.lat.toFixed(4)}°</strong>
           {#if pickedSample}
             <span
-              >{titleCase(pickedSample.surface.climate)} · {formatTemperature(pickedSample.surface.temperatureCentiC)} · {pickedSample.surface.precipitationMm.toLocaleString(
+              >{$ui("{0} · {1} · {2} mm/year", titleCase(pickedSample.surface.climate), formatTemperature(pickedSample.surface.temperatureCentiC), pickedSample.surface.precipitationMm.toLocaleString(
                 "en-US",
-              )} mm/year</span>
+              ))}</span>
           {:else}
-            <span>Sampling this point…</span>
+            <span>{$ui("Sampling this point…")}</span>
           {/if}
           <div class="actions">
             {#each pickNameActions() as action (action.label)}
               <button type="button" onclick={action.run}>{action.label}</button>
             {/each}
-            <button type="button" onclick={() => picked && openLinkPanel(picked.lng, picked.lat)}>
-              Link to entity
-            </button>
-            <button type="button" onclick={() => openPlaceDetails(true)}>Place details</button>
+            <button type="button" onclick={() => picked && openLinkPanel(picked.lng, picked.lat)}> {$ui("Link to entity")} </button>
+            <button type="button" onclick={() => openPlaceDetails(true)}>{$ui("Place details")}</button>
           </div>
         </div>
       {/if}
@@ -2817,11 +2803,11 @@ onDestroy(() => {
         tabindex="-1"
         onkeydown={trapPlaceFocus}>
         <div class="place-modal-head">
-          <button type="button" class="place-close" aria-label="Close place details" onclick={closePlaceDetails}>
+          <button type="button" class="place-close" aria-label={$ui("Close place details")} onclick={closePlaceDetails}>
             <X size={15} strokeWidth={2} aria-hidden="true" />
           </button>
           {#if modalSurface}
-            <span class="place-kicker">Place details</span>
+            <span class="place-kicker">{$ui("Place details")}</span>
             <strong id="place-modal-title">{titleCase(modalSurface.climate)}</strong>
             <span class="place-sub"
               >{modalCoords} · {formatElevation(
@@ -2830,14 +2816,14 @@ onDestroy(() => {
                 modalSurface.surface,
               )}</span>
           {:else}
-            <span class="place-kicker">Place details</span>
-            <strong id="place-modal-title">No sample yet</strong>
+            <span class="place-kicker">{$ui("Place details")}</span>
+            <strong id="place-modal-title">{$ui("No sample yet")}</strong>
           {/if}
         </div>
         {#if modalSurface}
           {@render surfaceFields(modalSurface)}
         {:else}
-          <p>Move or click the map to sample this point.</p>
+          <p>{$ui("Move or click the map to sample this point.")}</p>
         {/if}
         <div class="place-guide">
           <button
@@ -2845,7 +2831,7 @@ onDestroy(() => {
             onclick={() => (guideOpen = !guideOpen)}
             aria-expanded={guideOpen}
             aria-controls="place-guide-list">
-            {guideOpen ? "Hide field guide" : "What do these terms mean?"}
+            {guideOpen ? $ui("Hide field guide") : $ui("What do these terms mean?")}
           </button>
           {#if guideOpen}
             <dl id="place-guide-list">
@@ -2866,11 +2852,9 @@ onDestroy(() => {
                 const spot = modalSample;
                 closePlaceDetails();
                 if (spot) openLinkPanel(spot.lng, spot.lat);
-              }}>
-              Link to entity
-            </button>
+              }}> {$ui("Link to entity")} </button>
           {/if}
-          <button type="button" onclick={closePlaceDetails}>Close</button>
+          <button type="button" onclick={closePlaceDetails}>{$ui("Close")}</button>
         </div>
       </div>
     </div>

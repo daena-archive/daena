@@ -1,4 +1,6 @@
 <script lang="ts">
+import { nativeErrorText } from "$lib/i18n/native-errors.ts";
+import { ui } from "$lib/i18n/ui";
 import { onMount, type Snippet } from "svelte";
 import {
   AlertTriangle,
@@ -119,9 +121,9 @@ function projectThemeFromValue(value: string) {
 onMount(() => {
   setSchemaEditorDiscardPrompt(() =>
     confirmDialog({
-      title: "Discard unsaved Fields & Types changes?",
-      message: "Your edits to types, fields, and templates will be lost.",
-      confirmLabel: "Discard",
+      title: $ui("Discard unsaved Fields & Types changes?"),
+      message: $ui("Your edits to types, fields, and templates will be lost."),
+      confirmLabel: $ui("Discard"),
       danger: true,
     }),
   );
@@ -159,14 +161,14 @@ async function runAction(action: () => Promise<void>, success: string) {
 async function createPortableBackup() {
   await runAction(async () => {
     const path = await onPortableBackup();
-    actionMessage = `Portable backup created at ${path}`;
+    actionMessage = $ui("Portable backup created at {0}", path);
   }, "");
 }
 
 async function createRecoveryBackup() {
   await runAction(async () => {
     recoveryPath = await onRecoveryBackup();
-    actionMessage = `Recovery backup created at ${recoveryPath}`;
+    actionMessage = $ui("Recovery backup created at {0}", recoveryPath);
   }, "");
 }
 
@@ -183,69 +185,60 @@ async function pickRestorePath() {
 async function restoreRecoveryBackup() {
   if (!recoveryPath.trim()) return;
   const confirmed = await confirmDialog({
-    title: "Restore recovery backup?",
-    message: "This replaces the current runtime state with the selected recovery backup.",
-    confirmLabel: "Restore",
+    title: $ui("Restore recovery backup?"),
+    message: $ui("This replaces the current runtime state with the selected recovery backup."),
+    confirmLabel: $ui("Restore"),
     danger: true,
   });
   if (!confirmed) return;
-  await runAction(async () => onRestoreRecoveryBackup(recoveryPath.trim()), "Recovery backup restored.");
+  await runAction(async () => onRestoreRecoveryBackup(recoveryPath.trim()), $ui("Recovery backup restored."));
 }
 
 async function seedExampleProject() {
   const confirmed = await confirmDialog({
-    title: "Add example world?",
-    message: "This adds Daena's example entries to the current project.",
-    confirmLabel: "Add example world",
+    title: $ui("Add example world?"),
+    message: $ui("This adds Daena's example entries to the current project."),
+    confirmLabel: $ui("Add example world"),
   });
-  if (confirmed) await runAction(onSeedExample, "Example world added.");
+  if (confirmed) await runAction(onSeedExample, $ui("Example world added."));
 }
 </script>
 
-<section class="project-center" aria-label="Project">
+<section class="project-center" aria-label={$ui("Project")}>
   <header class="project-header">
     <div class="header-left">
       <div class="header-icon"><Boxes size={18} strokeWidth={1.8} aria-hidden="true" /></div>
       <div>
-        <span class="panel-kicker">PROJECT</span>
+        <span class="panel-kicker">{$ui("PROJECT")}</span>
         <h1>{summary.name}</h1>
-        <p>Manage this project's structure, portability, history, and extensions.</p>
+        <p>{$ui("Manage this project's structure, portability, history, and extensions.")}</p>
       </div>
     </div>
     <button type="button" class="quiet-button header-back" onclick={() => void handleClose()}>
-      <ChevronLeft size={14} strokeWidth={1.9} aria-hidden="true" /> Back
-    </button>
+      <ChevronLeft size={14} strokeWidth={1.9} aria-hidden="true" /> {$ui("Back")} </button>
   </header>
 
   <div class="project-layout">
-    <nav class="project-nav" aria-label="Project sections">
+    <nav class="project-nav" aria-label={$ui("Project sections")}>
       <button class:active={section === "overview"} onclick={() => void goToSection("overview")}>
-        <Boxes size={14} strokeWidth={1.8} aria-hidden="true" /> Overview
-      </button>
+        <Boxes size={14} strokeWidth={1.8} aria-hidden="true" /> {$ui("Overview")} </button>
       <button class:active={section === "data"} onclick={() => void goToSection("data")}>
-        <DatabaseBackup size={14} strokeWidth={1.8} aria-hidden="true" /> Data &amp; recovery
-      </button>
+        <DatabaseBackup size={14} strokeWidth={1.8} aria-hidden="true" /> {$ui("Data & recovery")} </button>
       <button class:active={section === "extensions"} onclick={() => void goToSection("extensions")}>
-        <Puzzle size={14} strokeWidth={1.8} aria-hidden="true" /> Extensions
-      </button>
+        <Puzzle size={14} strokeWidth={1.8} aria-hidden="true" /> {$ui("Extensions")} </button>
       <button class:active={section === "fields"} onclick={() => void goToSection("fields")}>
-        <SlidersHorizontal size={14} strokeWidth={1.8} aria-hidden="true" /> Fields &amp; Types
-      </button>
+        <SlidersHorizontal size={14} strokeWidth={1.8} aria-hidden="true" /> {$ui("Fields & Types")} </button>
       <button class:active={section === "ai"} onclick={() => void goToSection("ai")}>
-        <Sparkles size={14} strokeWidth={1.8} aria-hidden="true" /> AI
-      </button>
+        <Sparkles size={14} strokeWidth={1.8} aria-hidden="true" /> {$ui("AI")} </button>
       <button class:active={section === "snapshots"} onclick={() => void goToSection("snapshots")}>
-        <GitBranch size={14} strokeWidth={1.8} aria-hidden="true" /> Snapshots
-        {#if snapshotChangeCount > 0}<span class="nav-count">{snapshotChangeCount}</span>{/if}
+        <GitBranch size={14} strokeWidth={1.8} aria-hidden="true" /> {$ui("Snapshots")} {#if snapshotChangeCount > 0}<span class="nav-count">{snapshotChangeCount}</span>{/if}
       </button>
       <button class:active={section === "archive"} onclick={() => void goToSection("archive")}>
-        <Archive size={14} strokeWidth={1.8} aria-hidden="true" /> Archive
-        {#if archivedCount > 0}<span class="nav-count">{archivedCount}</span>{/if}
+        <Archive size={14} strokeWidth={1.8} aria-hidden="true" /> {$ui("Archive")} {#if archivedCount > 0}<span class="nav-count">{archivedCount}</span>{/if}
       </button>
       <div class="nav-separator"></div>
       <button class:active={section === "advanced"} onclick={() => void goToSection("advanced")}>
-        <Wrench size={14} strokeWidth={1.8} aria-hidden="true" /> Advanced
-      </button>
+        <Wrench size={14} strokeWidth={1.8} aria-hidden="true" /> {$ui("Advanced")} </button>
     </nav>
 
     <div class="project-panel">
@@ -253,145 +246,142 @@ async function seedExampleProject() {
         <div class="panel-hero">
           <div class="hero-icon"><Boxes size={18} strokeWidth={1.8} aria-hidden="true" /></div>
           <div class="hero-copy">
-            <span class="kicker">PROJECT CENTER</span>
-            <strong>One home for this project</strong>
-            <p>Import, recovery, Fields &amp; Types, extensions, Snapshots, and diagnostics live here.</p>
+            <span class="kicker">{$ui("PROJECT CENTER")}</span>
+            <strong>{$ui("One home for this project")}</strong>
+            <p>{$ui("Import, recovery, Fields & Types, extensions, Snapshots, and diagnostics live here.")}</p>
           </div>
         </div>
-        <div class="status-grid" aria-label="Project status summary">
+        <div class="status-grid" aria-label={$ui("Project status summary")}>
           <button type="button" onclick={() => void goToSection("data")}>
             <span class:ok={checkpointCurrent} class:error={Boolean(summary.sync.export_error)} class="status-icon">
               {#if summary.sync.export_error}<AlertTriangle size={17} />{:else}<CircleCheck size={17} />{/if}
             </span>
             <span
-              ><strong>{checkpointCurrent ? "Checkpoint current" : "Checkpoint needs attention"}</strong><small>
+              ><strong>{checkpointCurrent ? $ui("Checkpoint current") : $ui("Checkpoint needs attention")}</strong><small>
                 {summary.sync.export_error ??
                   (summary.sync.dirty_count > 0
-                    ? `${summary.sync.dirty_count} portable change${summary.sync.dirty_count === 1 ? "" : "s"} pending`
-                    : "Portable project files are up to date")}
+                    ? $ui("{0} portable change{1} pending", summary.sync.dirty_count, summary.sync.dirty_count === 1 ? "" : $ui("s"))
+                    : $ui("Portable project files are up to date"))}
               </small></span>
           </button>
           <button type="button" onclick={() => void goToSection("snapshots")}>
             <span class="status-icon"><GitBranch size={17} /></span>
             <span
-              ><strong>{snapshotChangeCount} snapshot-ready changes</strong><small>
-                {snapshotRepository ? snapshotBranch || "Detached history" : "Set up Snapshots for this project"}
+              ><strong>{$ui("{0} snapshot-ready changes", snapshotChangeCount)}</strong><small>
+                {snapshotRepository ? snapshotBranch || $ui("Detached history") : $ui("Set up Snapshots for this project")}
               </small></span>
           </button>
           <button type="button" onclick={() => void goToSection("extensions")}>
             <span class="status-icon"><Puzzle size={17} /></span>
-            <span><strong>Extensions</strong><small>Install, enable, update, or review capabilities</small></span>
+            <span><strong>{$ui("Extensions")}</strong><small>{$ui("Install, enable, update, or review capabilities")}</small></span>
           </button>
           <button type="button" onclick={() => void goToSection("fields")}>
             <span class="status-icon"><SlidersHorizontal size={17} /></span>
             <span
-              ><strong>Fields &amp; Types</strong><small
-                >Shape project-specific authoring without editing packages</small
+              ><strong>{$ui("Fields & Types")}</strong><small
+                >{$ui("Shape project-specific authoring without editing packages")}</small
               ></span>
           </button>
           {#if archivedCount > 0}
             <button type="button" onclick={() => void goToSection("archive")}>
               <span class="status-icon"><Archive size={17} /></span>
               <span
-                ><strong>{archivedCount} archived entr{archivedCount === 1 ? "y" : "ies"}</strong><small
-                  >Restore or permanently delete archived work</small
+                ><strong>{$ui("{0} archived entr{1}", archivedCount, archivedCount === 1 ? $ui("y") : $ui("ies"))}</strong><small
+                  >{$ui("Restore or permanently delete archived work")}</small
                 ></span>
             </button>
           {/if}
         </div>
         <div class="project-identity">
-          <div><span>Project folder</span><strong title={summary.root}>{summary.root}</strong></div>
-          <div><span>Search index</span><strong>{summary.indexStatus || "Unknown"}</strong></div>
+          <div><span>{$ui("Project folder")}</span><strong title={summary.root}>{summary.root}</strong></div>
+          <div><span>{$ui("Search index")}</span><strong>{summary.indexStatus || $ui("Unknown")}</strong></div>
           <div>
-            <span>AI features</span><button type="button" class="quiet-button" onclick={() => void goToSection("ai")}
-              >{summary.aiEnabled ? "Enabled" : "Off"}</button>
+            <span>{$ui("AI features")}</span><button type="button" class="quiet-button" onclick={() => void goToSection("ai")}
+              >{summary.aiEnabled ? $ui("Enabled") : $ui("Off")}</button>
           </div>
           <div>
-            <span>Theme pack</span>
+            <span>{$ui("Theme pack")}</span>
             <select
-              aria-label="Project theme pack"
+              aria-label={$ui("Project theme pack")}
               value={projectThemeValue()}
               onchange={(event) => onProjectThemePackChange?.(projectThemeFromValue(event.currentTarget.value))}>
-              <option value="follow">Follow application</option>
-              <option value="builtin">Default</option>
+              <option value="follow">{$ui("Follow application")}</option>
+              <option value="builtin">{$ui("Default")}</option>
               {#each themePacks as pack (pack.pluginId + "/" + pack.themeId)}
                 <option value="{pack.pluginId}/{pack.themeId}">{pack.name}</option>
               {/each}
             </select>
-            <small>Applies only while this project is open. The welcome screen keeps the application pack.</small>
-            {#if projectThemeError}<small class="error-copy">{projectThemeError}</small>{/if}
+            <small>{$ui("Applies only while this project is open. The welcome screen keeps the application pack.")}</small>
+            {#if projectThemeError}<small class="error-copy">{$nativeErrorText(projectThemeError)}</small>{/if}
           </div>
         </div>
         {#if diagnostics.length > 0}
           <div class="diagnostic-callout" role="alert">
             <AlertTriangle size={17} strokeWidth={1.8} aria-hidden="true" />
             <div>
-              <strong>Project needs attention</strong>
+              <strong>{$ui("Project needs attention")}</strong>
               <p>{diagnostics[0]}</p>
             </div>
-            <button type="button" class="quiet-button" onclick={() => void goToSection("advanced")}>Review</button>
+            <button type="button" class="quiet-button" onclick={() => void goToSection("advanced")}>{$ui("Review")}</button>
           </div>
         {/if}
       {:else if section === "data"}
         <div class="section-heading">
           <span class="heading-icon"><DatabaseBackup size={17} /></span>
           <div>
-            <span class="kicker">PORTABILITY</span>
-            <h2>Data &amp; recovery</h2>
-            <p>Bring material in, take readable work out, and create explicit recovery copies.</p>
+            <span class="kicker">{$ui("PORTABILITY")}</span>
+            <h2>{$ui("Data & recovery")}</h2>
+            <p>{$ui("Bring material in, take readable work out, and create explicit recovery copies.")}</p>
           </div>
         </div>
         <section class="operation-card">
           <div>
-            <strong>Import &amp; export</strong>
-            <p>Import external material through a reviewed mapping, or export the whole project as Markdown.</p>
+            <strong>{$ui("Import & export")}</strong>
+            <p>{$ui("Import external material through a reviewed mapping, or export the whole project as Markdown.")}</p>
           </div>
           <div class="action-row">
             <button type="button" class="primary-button" onclick={onImportExternal}
-              ><ImportIcon size={14} /> Import material</button>
+              ><ImportIcon size={14} /> {$ui("Import material")}</button>
             <button
               type="button"
               class="quiet-button"
               disabled={actionBusy}
-              onclick={() => void runAction(onExportMarkdown, "")}><Download size={14} /> Export Markdown</button>
+              onclick={() => void runAction(onExportMarkdown, "")}><Download size={14} /> {$ui("Export Markdown")}</button>
           </div>
         </section>
         <section class="operation-card">
           <div>
-            <strong>Backups</strong>
-            <p>A portable backup travels between Daena installations. A recovery backup is a local undo point.</p>
+            <strong>{$ui("Backups")}</strong>
+            <p>{$ui("A portable backup travels between Daena installations. A recovery backup is a local undo point.")}</p>
           </div>
           <div class="action-row">
             <button
               type="button"
               class="primary-button"
               disabled={actionBusy}
-              onclick={() => void createPortableBackup()}><DatabaseZap size={14} /> Create portable backup</button>
+              onclick={() => void createPortableBackup()}><DatabaseZap size={14} /> {$ui("Create portable backup")}</button>
             <button type="button" class="quiet-button" disabled={actionBusy} onclick={() => void createRecoveryBackup()}
-              ><Wrench size={14} /> Create recovery backup</button>
+              ><Wrench size={14} /> {$ui("Create recovery backup")}</button>
           </div>
         </section>
         <section class="operation-card">
           <div>
-            <strong>Restore a recovery backup</strong>
-            <p>
-              Choose the recovery folder to replace the current runtime state. Daena asks for confirmation before
-              restoring.
-            </p>
+            <strong>{$ui("Restore a recovery backup")}</strong>
+            <p> {$ui("Choose the recovery folder to replace the current runtime state. Daena asks for confirmation before restoring.")} </p>
           </div>
           <label class="path-field"
-            ><span>Recovery folder</span>
+            ><span>{$ui("Recovery folder")}</span>
             <div>
-              <input bind:value={recoveryPath} placeholder="Choose or paste a recovery backup folder" /><button
+              <input bind:value={recoveryPath} placeholder={$ui("Choose or paste a recovery backup folder")} /><button
                 type="button"
                 class="quiet-button"
-                onclick={() => void pickRestorePath()}><FolderOpen size={14} /> Browse</button>
+                onclick={() => void pickRestorePath()}><FolderOpen size={14} /> {$ui("Browse")}</button>
             </div></label>
           <button
             type="button"
             class="danger-button"
             disabled={actionBusy || !recoveryPath.trim()}
-            onclick={() => void restoreRecoveryBackup()}>Restore recovery backup</button>
+            onclick={() => void restoreRecoveryBackup()}>{$ui("Restore recovery backup")}</button>
         </section>
       {:else if section === "extensions"}
         {@render extensions()}
@@ -407,19 +397,19 @@ async function seedExampleProject() {
         <div class="section-heading">
           <span class="heading-icon"><Wrench size={17} /></span>
           <div>
-            <span class="kicker">ADVANCED</span>
-            <h2>Diagnostics &amp; maintenance</h2>
-            <p>Technical controls are kept here so everyday project work stays focused.</p>
+            <span class="kicker">{$ui("ADVANCED")}</span>
+            <h2>{$ui("Diagnostics & maintenance")}</h2>
+            <p>{$ui("Technical controls are kept here so everyday project work stays focused.")}</p>
           </div>
         </div>
         <section class="operation-card">
           <div>
-            <strong>Project diagnostics</strong>
-            <p>Runtime index: {summary.indexStatus || "unknown"}. Portable checkpoint: {summary.sync.state}.</p>
+            <strong>{$ui("Project diagnostics")}</strong>
+            <p>{$ui("Runtime index: {0}. Portable checkpoint: {1}.", summary.indexStatus || "unknown", summary.sync.state)}</p>
           </div>
           {#if diagnostics.length > 0}<ul class="diagnostic-list">
-              {#each diagnostics as diagnostic}<li>{diagnostic}</li>{/each}
-            </ul>{:else}<p class="healthy-copy"><CircleCheck size={14} /> No unresolved project diagnostics.</p>{/if}
+              {#each diagnostics as diagnostic}<li>{$nativeErrorText(diagnostic)}</li>{/each}
+            </ul>{:else}<p class="healthy-copy"><CircleCheck size={14} /> {$ui("No unresolved project diagnostics.")}</p>{/if}
           {#if summary.sync.export_error}<p class="error-copy">{summary.sync.export_error}</p>{/if}
           <div class="action-row">
             <button
@@ -427,33 +417,33 @@ async function seedExampleProject() {
               class="quiet-button"
               disabled={actionBusy}
               onclick={() => void runAction(onImportCheckpoint, "")}
-              ><RefreshCw size={14} /> Import portable checkpoint</button>
+              ><RefreshCw size={14} /> {$ui("Import portable checkpoint")}</button>
             <button
               type="button"
               class="quiet-button"
               disabled={actionBusy}
               onclick={() => void runAction(onRebuildIndex, "Search index rebuilt.")}
-              ><DatabaseZap size={14} /> Rebuild search index</button>
+              ><DatabaseZap size={14} /> {$ui("Rebuild search index")}</button>
           </div>
         </section>
         <details class="raw-controls">
-          <summary><FileCog size={15} /> Developer fixtures</summary>
+          <summary><FileCog size={15} /> {$ui("Developer fixtures")}</summary>
           <div>
-            <p>Add Daena's example content to this project. This is intended for testing authoring flows.</p>
+            <p>{$ui("Add Daena's example content to this project. This is intended for testing authoring flows.")}</p>
             <button type="button" class="quiet-button" disabled={actionBusy} onclick={() => void seedExampleProject()}
-              ><Sparkles size={14} /> Add example world</button>
+              ><Sparkles size={14} /> {$ui("Add example world")}</button>
           </div>
         </details>
       {/if}
 
       {#if actionError}<div class="action-feedback error" role="alert">
-          <AlertTriangle size={15} /> <span>{actionError}</span><button
-            aria-label="Dismiss"
+          <AlertTriangle size={15} /> <span>{$nativeErrorText(actionError)}</span><button
+            aria-label={$ui("Dismiss")}
             onclick={() => (actionError = "")}><X size={14} /></button>
         </div>{/if}
       {#if actionMessage}<div class="action-feedback success" role="status">
           <CircleCheck size={15} /> <span>{actionMessage}</span><button
-            aria-label="Dismiss"
+            aria-label={$ui("Dismiss")}
             onclick={() => (actionMessage = "")}><X size={14} /></button>
         </div>{/if}
     </div>

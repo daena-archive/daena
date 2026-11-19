@@ -1,4 +1,6 @@
 <script lang="ts">
+import { nativeErrorText } from "$lib/i18n/native-errors.ts";
+import { ui } from "$lib/i18n/ui";
 import { tick } from "svelte";
 import {
   createRequestGate,
@@ -93,12 +95,12 @@ $: clampedTop = Math.max(8, top);
     style={`top: ${clampedTop}px; left: ${clampedLeft}px;`}
     role="listbox"
     tabindex="-1"
-    aria-label="Entity suggestions"
+    aria-label={$ui("Entity suggestions")}
     onmousedown={(event) => event.preventDefault()}>
     {#if error}
-      <p class="entity-mention-status" role="alert">{error}</p>
+      <p class="entity-mention-status" role="alert">{$nativeErrorText(error)}</p>
     {:else if busy && page.items.length === 0}
-      <p class="entity-mention-status">Searching…</p>
+      <p class="entity-mention-status">{$ui("Searching…")}</p>
     {:else}
       {#each page.items as entity, index (entity.id)}
         <button
@@ -110,16 +112,16 @@ $: clampedTop = Math.max(8, top);
           onmouseenter={() => (activeIndex = index)}
           onclick={() => pick(entity)}>
           <strong>{entity.name}</strong>
-          <small>{entity.entityType ? humanizeId(entity.entityType) : "Uncategorized"}</small>
+          <small>{entity.entityType ? humanizeId(entity.entityType) : $ui("Uncategorized")}</small>
         </button>
       {:else}
-        <p class="entity-mention-status">No matching entities.</p>
+        <p class="entity-mention-status">{$ui("No matching entities.")}</p>
       {/each}
     {/if}
     <div class="entity-mention-footer">
-      <button type="button" class="quiet" onclick={onBrowse}>Browse all…</button>
+      <button type="button" class="quiet" onclick={onBrowse}>{$ui("Browse all…")}</button>
       {#if keepLabel && onWebUrl}
-        <button type="button" class="quiet" onclick={onWebUrl}>Web URL…</button>
+        <button type="button" class="quiet" onclick={onWebUrl}>{$ui("Web URL…")}</button>
       {/if}
     </div>
   </div>

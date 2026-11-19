@@ -1,4 +1,6 @@
 <script lang="ts">
+import { ui } from "$lib/i18n/ui";
+import { messages } from "$lib/i18n";
 import { Editor, Mark, getMarkRange } from "@tiptap/core";
 import { PluginKey } from "@tiptap/pm/state";
 import type { Transaction } from "@tiptap/pm/state";
@@ -139,7 +141,7 @@ const Spoiler = Mark.create({
         class: "spoiler",
         role: "button",
         tabindex: "0",
-        title: "Click to reveal spoiler",
+        title: $ui("Click to reveal spoiler"),
         ...HTMLAttributes,
       },
       0,
@@ -156,7 +158,7 @@ const Spoiler = Mark.create({
 });
 
 export let value = "";
-export let placeholder = "Start writing…";
+export let placeholder = $ui("Start writing…");
 export let onChange: (value: string) => void = () => {};
 export let onSelectionChange: (markdown: string, plainText: string) => void = () => {};
 export let onAiRequest: (action: string, markdown: string, plainText: string, context: string) => void = () => {};
@@ -451,13 +453,13 @@ function editorAiTemplates() {
     aiTemplates.length
       ? aiTemplates
       : [
-          { id: "rewrite", label: "Rewrite selection", requiresSelection: true },
-          { id: "generate", label: "Generate text" },
-          { id: "concise", label: "Make concise", requiresSelection: true },
-          { id: "expand", label: "Expand", requiresSelection: true },
-          { id: "grammar", label: "Fix grammar", requiresSelection: true },
-          { id: "tone", label: "Change tone", requiresSelection: true },
-          { id: "custom", label: "Custom instruction" },
+          { id: "rewrite", label: $ui("Rewrite selection"), requiresSelection: true },
+          { id: "generate", label: $ui("Generate text") },
+          { id: "concise", label: $ui("Make concise"), requiresSelection: true },
+          { id: "expand", label: $ui("Expand"), requiresSelection: true },
+          { id: "grammar", label: $ui("Fix grammar"), requiresSelection: true },
+          { id: "tone", label: $ui("Change tone"), requiresSelection: true },
+          { id: "custom", label: $ui("Custom instruction") },
         ]
   ).filter((template) => template.enabled !== false);
 }
@@ -2230,81 +2232,81 @@ $: inTable = editorState?.isActive("table") ?? false;
 </script>
 
 <div class="editor-shell">
-  <div class="editor-toolbar" role="toolbar" aria-label="Formatting tools">
+  <div class="editor-toolbar" role="toolbar" aria-label={$messages.editor.formattingTools}>
     <div class="editor-toolbar-tools">
-      <div class="toolbar-group" aria-label="History">
+      <div class="toolbar-group toolbar-history" aria-label={$messages.editor.history}>
         <button
           class="history-button"
           type="button"
-          title="Undo (⌘/Ctrl + Z)"
-          aria-label="Undo"
+          title={$ui("{0} (⌘/Ctrl + Z)", $messages.editor.undo)}
+          aria-label={$messages.editor.undo}
           disabled={!editorState?.can().undo()}
           onclick={() => run((currentEditor) => currentEditor.chain().focus().undo().run())}
           ><Undo2 size={14} strokeWidth={1.8} /></button>
         <button
           class="history-button"
           type="button"
-          title="Redo (⌘/Ctrl + Shift + Z)"
-          aria-label="Redo"
+          title={$ui("{0} (⌘/Ctrl + Shift + Z)", $messages.editor.redo)}
+          aria-label={$messages.editor.redo}
           disabled={!editorState?.can().redo()}
           onclick={() => run((currentEditor) => currentEditor.chain().focus().redo().run())}
           ><Redo2 size={14} strokeWidth={1.8} /></button>
       </div>
 
       <div class="toolbar-group">
-        <label class="sr-only" for="block-style">Text style</label>
+        <label class="sr-only" for="block-style">{$messages.editor.textStyle}</label>
         <select
           id="block-style"
           class="style-select"
-          aria-label="Text style"
+          aria-label={$messages.editor.textStyle}
           value={blockStyle()}
           onchange={changeBlockStyle}>
-          <option value="paragraph">Normal text</option>
-          <option value="heading-1">Heading 1</option>
-          <option value="heading-2">Heading 2</option>
-          <option value="heading-3">Heading 3</option>
-          <option value="blockquote">Quote</option>
-          <option value="codeBlock">Code block</option>
+          <option value="paragraph">{$messages.editor.normalText}</option>
+          <option value="heading-1">{$messages.editor.heading1}</option>
+          <option value="heading-2">{$messages.editor.heading2}</option>
+          <option value="heading-3">{$messages.editor.heading3}</option>
+          <option value="blockquote">{$messages.editor.quote}</option>
+          <option value="codeBlock">{$messages.editor.codeBlock}</option>
         </select>
       </div>
 
-      <div class="toolbar-group" aria-label="Text formatting">
+      <div class="toolbar-group" aria-label={$messages.editor.textFormatting}>
         <button
           type="button"
-          title="Bold (⌘/Ctrl + B)"
-          aria-label="Bold"
+          title={$ui("{0} (⌘/Ctrl + B)", $messages.editor.bold)}
+          aria-label={$messages.editor.bold}
           aria-pressed={editorState?.isActive("bold") ?? false}
           class:active={editorState?.isActive("bold")}
           onclick={() => run((currentEditor) => currentEditor.chain().focus().toggleBold().run())}
           ><BoldIcon size={14} strokeWidth={1.8} /></button>
         <button
           type="button"
-          title="Italic (⌘/Ctrl + I)"
-          aria-label="Italic"
+          title={$ui("{0} (⌘/Ctrl + I)", $messages.editor.italic)}
+          aria-label={$messages.editor.italic}
           aria-pressed={editorState?.isActive("italic") ?? false}
           class:active={editorState?.isActive("italic")}
           onclick={() => run((currentEditor) => currentEditor.chain().focus().toggleItalic().run())}
           ><ItalicIcon size={14} strokeWidth={1.8} /></button>
         <button
           type="button"
-          title="Underline (⌘/Ctrl + U)"
-          aria-label="Underline"
+          title={$ui("{0} (⌘/Ctrl + U)", $messages.editor.underline)}
+          aria-label={$messages.editor.underline}
           aria-pressed={editorState?.isActive("underline") ?? false}
           class:active={editorState?.isActive("underline")}
           onclick={() => run((currentEditor) => currentEditor.chain().focus().toggleUnderline().run())}
           ><UnderlineIcon size={14} strokeWidth={1.8} /></button>
         <button
           type="button"
-          title="Strikethrough"
-          aria-label="Strikethrough"
+          title={$messages.editor.strikethrough}
+          aria-label={$messages.editor.strikethrough}
           aria-pressed={editorState?.isActive("strike") ?? false}
           class:active={editorState?.isActive("strike")}
           onclick={() => run((currentEditor) => currentEditor.chain().focus().toggleStrike().run())}
           ><StrikethroughIcon size={14} strokeWidth={1.8} /></button>
         <button
           type="button"
-          title="Spoiler (hidden text)"
-          aria-label="Spoiler"
+          title={$messages.editor.spoilerHint}
+          aria-label={$messages.editor.spoiler}
           aria-pressed={editorState?.isActive("spoiler") ?? false}
           class:active={editorState?.isActive("spoiler")}
           onclick={() => run((currentEditor) => (currentEditor.chain().focus() as any).toggleSpoiler().run())}
@@ -2312,12 +2314,12 @@ $: inTable = editorState?.isActive("table") ?? false;
         <label
           class="color-control"
           class:active={editorState?.isActive("textColor")}
-          title="Text color (right-click to remove)">
+          title={$messages.editor.textColorHint}>
           <Palette size={14} strokeWidth={1.8} />
           <span class="color-swatch" style={`background: ${currentTextColor()}`}></span>
           <input
             type="color"
-            aria-label="Text color"
+            aria-label={$messages.editor.textColor}
             value={currentTextColor()}
             disabled={!editable}
             oninput={(event) => applyTextColor(event.currentTarget.value)}
@@ -2327,18 +2329,18 @@ $: inTable = editorState?.isActive("table") ?? false;
             }} />
         </label>
       </div>
-      <div class="toolbar-group" aria-label="Links and media">
+      <div class="toolbar-group" aria-label={$messages.editor.linksAndMedia}>
         <button
           type="button"
-          title="Link"
-          aria-label="Link"
+          title={$messages.editor.link}
+          aria-label={$messages.editor.link}
           aria-pressed={editorState?.isActive("link") ?? false}
           class:active={editorState?.isActive("link")}
           onclick={setLink}><LinkIcon size={14} strokeWidth={1.8} /></button>
         <button
           type="button"
-          title="Link to lore entry (@)"
-          aria-label="Link to lore entry"
+          title={`${$messages.editor.linkLore} (@)`}
+          aria-label={$messages.editor.linkLore}
           onclick={() => {
             if (!editorState || !editor) return;
             const { from, to, empty } = editor.state.selection;
@@ -2354,17 +2356,17 @@ $: inTable = editorState?.isActive("table") ?? false;
         {#if effectiveAssets}
           <button
             type="button"
-            title="Insert image or file"
-            aria-label="Insert image or file"
+            title={$messages.editor.insertImage}
+            aria-label={$messages.editor.insertImage}
             disabled={!editable}
             onclick={openInsertAsset}><ImageIcon size={14} strokeWidth={1.8} /></button>
         {/if}
       </div>
-      <div class="toolbar-group" aria-label="Text direction">
+      <div class="toolbar-group" aria-label={$messages.editor.textDirection}>
         <button
           type="button"
-          title="Left to right (⌘/Ctrl + Alt + L) — click again to auto"
-          aria-label="Left to right"
+          title={$messages.editor.leftToRightHint}
+          aria-label={$messages.editor.leftToRight}
           aria-pressed={isDirection("ltr")}
           class:active={isDirection("ltr")}
           onclick={() =>
@@ -2375,8 +2377,8 @@ $: inTable = editorState?.isActive("table") ?? false;
             )}><ArrowRightToLine size={14} strokeWidth={1.8} /></button>
         <button
           type="button"
-          title="Right to left (⌘/Ctrl + Alt + R) — click again to auto"
-          aria-label="Right to left"
+          title={$messages.editor.rightToLeftHint}
+          aria-label={$messages.editor.rightToLeft}
           aria-pressed={isDirection("rtl")}
           class:active={isDirection("rtl")}
           onclick={() =>
@@ -2386,113 +2388,113 @@ $: inTable = editorState?.isActive("table") ?? false;
                 : (currentEditor.chain().focus() as any).setTextDirection("rtl").run(),
             )}><ArrowLeftToLine size={14} strokeWidth={1.8} /></button>
       </div>
-      <div class="toolbar-group" aria-label="Text alignment">
+      <div class="toolbar-group" aria-label={$messages.editor.textAlignment}>
         <button
           type="button"
-          title="Align left"
-          aria-label="Align left"
+          title={$messages.editor.alignLeft}
+          aria-label={$messages.editor.alignLeft}
           aria-pressed={isAligned("left")}
           class:active={isAligned("left")}
           onclick={() => run((currentEditor) => currentEditor.chain().focus().setTextAlign("left").run())}
           ><TextAlignStart size={14} strokeWidth={1.8} /></button>
         <button
           type="button"
-          title="Align center"
-          aria-label="Align center"
+          title={$messages.editor.alignCenter}
+          aria-label={$messages.editor.alignCenter}
           aria-pressed={isAligned("center")}
           class:active={isAligned("center")}
           onclick={() => run((currentEditor) => currentEditor.chain().focus().setTextAlign("center").run())}
           ><TextAlignCenter size={14} strokeWidth={1.8} /></button>
         <button
           type="button"
-          title="Align right"
-          aria-label="Align right"
+          title={$messages.editor.alignRight}
+          aria-label={$messages.editor.alignRight}
           aria-pressed={isAligned("right")}
           class:active={isAligned("right")}
           onclick={() => run((currentEditor) => currentEditor.chain().focus().setTextAlign("right").run())}
           ><TextAlignEnd size={14} strokeWidth={1.8} /></button>
       </div>
 
-      <div class="toolbar-group" aria-label="Lists and blocks">
+      <div class="toolbar-group" aria-label={$messages.editor.listsAndBlocks}>
         <button
           type="button"
-          title="Bulleted list"
-          aria-label="Bulleted list"
+          title={$messages.editor.bulletedList}
+          aria-label={$messages.editor.bulletedList}
           aria-pressed={editorState?.isActive("bulletList") ?? false}
           class:active={editorState?.isActive("bulletList")}
           onclick={() => run((currentEditor) => currentEditor.chain().focus().toggleBulletList().run())}
           ><List size={14} strokeWidth={1.8} /></button>
         <button
           type="button"
-          title="Numbered list"
-          aria-label="Numbered list"
+          title={$messages.editor.numberedList}
+          aria-label={$messages.editor.numberedList}
           aria-pressed={editorState?.isActive("orderedList") ?? false}
           class:active={editorState?.isActive("orderedList")}
           onclick={() => run((currentEditor) => currentEditor.chain().focus().toggleOrderedList().run())}
           ><ListOrdered size={14} strokeWidth={1.8} /></button>
         <button
           type="button"
-          title="Quote"
-          aria-label="Quote"
+          title={$messages.editor.quote}
+          aria-label={$messages.editor.quote}
           aria-pressed={editorState?.isActive("blockquote") ?? false}
           class:active={editorState?.isActive("blockquote")}
           onclick={() => run((currentEditor) => currentEditor.chain().focus().toggleBlockquote().run())}
           ><QuoteIcon size={14} strokeWidth={1.8} /></button>
         <button
           type="button"
-          title="Horizontal rule"
-          aria-label="Horizontal rule"
+          title={$messages.editor.horizontalRule}
+          aria-label={$messages.editor.horizontalRule}
           onclick={() => run((currentEditor) => currentEditor.chain().focus().setHorizontalRule().run())}
           ><SeparatorHorizontal size={14} strokeWidth={1.8} /></button>
         <button
           type="button"
-          title="Insert table"
-          aria-label="Insert table"
+          title={$messages.editor.insertTable}
+          aria-label={$messages.editor.insertTable}
           aria-pressed={inTable}
           class:active={inTable}
           disabled={!editable}
           onclick={openInsertTable}><TableIcon size={14} strokeWidth={1.8} /></button>
         <button
           type="button"
-          title="Clear formatting"
-          aria-label="Clear formatting"
+          title={$messages.editor.clearFormatting}
+          aria-label={$messages.editor.clearFormatting}
           onclick={() => run((currentEditor) => currentEditor.chain().focus().clearNodes().unsetAllMarks().run())}
           ><Eraser size={14} strokeWidth={1.8} /></button>
       </div>
       {#if inTable}
-        <div class="toolbar-group" aria-label="Table">
+        <div class="toolbar-group" aria-label={$messages.editor.table}>
           <button
             type="button"
-            title="Add row below"
-            aria-label="Add row below"
+            title={$messages.editor.addRow}
+            aria-label={$messages.editor.addRow}
             disabled={!editable || !editorState?.can().addRowAfter()}
             onclick={() => runTableCommand((currentEditor) => currentEditor.chain().focus().addRowAfter().run())}
             ><BetweenHorizontalEnd size={14} strokeWidth={1.8} /></button>
           <button
             type="button"
-            title="Delete row"
-            aria-label="Delete row"
+            title={$messages.editor.deleteRow}
+            aria-label={$messages.editor.deleteRow}
             disabled={!editable || !editorState?.can().deleteRow()}
             onclick={() => runTableCommand((currentEditor) => currentEditor.chain().focus().deleteRow().run())}
             ><BetweenHorizontalStart size={14} strokeWidth={1.8} /></button>
           <button
             type="button"
-            title="Add column after"
-            aria-label="Add column after"
+            title={$messages.editor.addColumn}
+            aria-label={$messages.editor.addColumn}
             disabled={!editable || !editorState?.can().addColumnAfter()}
             onclick={() => runTableCommand((currentEditor) => currentEditor.chain().focus().addColumnAfter().run())}
             ><BetweenVerticalEnd size={14} strokeWidth={1.8} /></button>
           <button
             type="button"
-            title="Delete column"
-            aria-label="Delete column"
+            title={$messages.editor.deleteColumn}
+            aria-label={$messages.editor.deleteColumn}
             disabled={!editable || !editorState?.can().deleteColumn()}
             onclick={() => runTableCommand((currentEditor) => currentEditor.chain().focus().deleteColumn().run())}
             ><BetweenVerticalStart size={14} strokeWidth={1.8} /></button>
           <button
             type="button"
-            title="Delete table"
-            aria-label="Delete table"
+            title={$messages.editor.deleteTable}
+            aria-label={$messages.editor.deleteTable}
             disabled={!editable || !editorState?.can().deleteTable()}
             onclick={() => runTableCommand((currentEditor) => currentEditor.chain().focus().deleteTable().run())}
             ><Trash2 size={14} strokeWidth={1.8} /></button>
@@ -2505,15 +2507,15 @@ $: inTable = editorState?.isActive("table") ?? false;
           <button
             class="ai-toolbar-button"
             type="button"
-            title="Ask AI"
-            aria-label="Ask AI"
+            title={$messages.editor.askAi}
+            aria-label={$messages.editor.askAi}
             aria-haspopup="menu"
             aria-expanded={aiMenuOpen}
             disabled={!editable}
             onmousedown={(event) => event.preventDefault()}
             onclick={() => (aiMenuOpen = !aiMenuOpen)}><SparklesIcon size={14} strokeWidth={1.8} /></button>
           {#if aiMenuOpen}
-            <div class="ai-toolbar-menu" role="menu" aria-label="Ask AI">
+            <div class="ai-toolbar-menu" role="menu" aria-label={$messages.editor.askAi}>
               {#each editorAiTemplates() as template}
                 <button
                   type="button"
@@ -2530,8 +2532,8 @@ $: inTable = editorState?.isActive("table") ?? false;
       <button
         class="search-toggle"
         type="button"
-        title="Find and replace (⌘/Ctrl + F)"
-        aria-label="Find and replace"
+        title={$ui("{0} (⌘/Ctrl + F)", $messages.editor.findReplace)}
+        aria-label={$messages.editor.findReplace}
         aria-pressed={searchOpen}
         class:active={searchOpen}
         onclick={() => (searchOpen ? closeSearch() : openSearch(false))}
@@ -2539,8 +2541,8 @@ $: inTable = editorState?.isActive("table") ?? false;
       <button
         class="fullscreen-toggle"
         type="button"
-        title={isFullscreen ? "Exit full screen editor (Esc)" : "Open full screen editor"}
-        aria-label={isFullscreen ? "Exit full screen editor" : "Open full screen editor"}
+        title={isFullscreen ? $ui("{0} (Esc)", $messages.editor.exitFullscreen) : $messages.editor.openFullscreen}
+        aria-label={isFullscreen ? $messages.editor.exitFullscreen : $messages.editor.openFullscreen}
         aria-pressed={isFullscreen}
         onclick={toggleFullscreen}
         >{#if isFullscreen}<Minimize2 size={14} strokeWidth={1.8} />{:else}<Maximize2
@@ -2549,15 +2551,15 @@ $: inTable = editorState?.isActive("table") ?? false;
     </div>
   </div>
   {#if searchOpen}
-    <div class="search-bar" role="search" aria-label="Find and replace">
+    <div class="search-bar" role="search" aria-label={$messages.editor.findReplace}>
       <div class="search-row">
         <div class="search-input-group">
           <SearchIcon size={12} strokeWidth={1.8} class="search-input-icon" />
           <input
             bind:this={searchInputEl}
             type="text"
-            placeholder="Find"
-            aria-label="Find"
+            placeholder={$messages.editor.find}
+            aria-label={$messages.editor.find}
             bind:value={searchQuery}
             oninput={dispatchSearch}
             onkeydown={handleSearchKeydown} />
@@ -2565,30 +2567,30 @@ $: inTable = editorState?.isActive("table") ?? false;
             <button
               type="button"
               class="search-inline-btn"
-              title="Match case (Aa)"
-              aria-label="Match case"
+              title={$ui("{0} (Aa)", $messages.editor.matchCase)}
+              aria-label={$messages.editor.matchCase}
               aria-pressed={searchCaseSensitive}
               class:active={searchCaseSensitive}
               onclick={() => {
                 searchCaseSensitive = !searchCaseSensitive;
                 dispatchSearch();
-              }}>Aa</button>
+              }}>{$ui("Aa")}</button>
             <button
               type="button"
-              class="search-inline-btn"
-              title="Match whole word"
-              aria-label="Match whole word"
+              class="search-inline-btn search-whole-word"
+              title={$messages.editor.wholeWord}
+              aria-label={$messages.editor.wholeWord}
               aria-pressed={searchWholeWord}
               class:active={searchWholeWord}
               onclick={() => {
                 searchWholeWord = !searchWholeWord;
                 dispatchSearch();
-              }}>wd</button>
+              }}>{$ui("wd")}</button>
             <button
               type="button"
               class="search-inline-btn"
-              title="Use regular expression"
-              aria-label="Use regular expression"
+              title={$messages.editor.regex}
+              aria-label={$messages.editor.regex}
               aria-pressed={searchUseRegex}
               class:active={searchUseRegex}
               onclick={() => {
@@ -2600,8 +2602,8 @@ $: inTable = editorState?.isActive("table") ?? false;
         <button
           type="button"
           class="search-icon-btn"
-          title={searchReplaceOpen ? "Hide replace" : "Show replace (Ctrl+H or ⌘⌥F)"}
-          aria-label="Toggle replace"
+          title={searchReplaceOpen ? $messages.editor.hideReplace : $ui("{0} (Ctrl+H or ⌘⌥F)", $messages.editor.showReplace)}
+          aria-label={$messages.editor.toggleReplace}
           aria-pressed={searchReplaceOpen}
           class:active={searchReplaceOpen}
           onclick={() => {
@@ -2612,22 +2614,26 @@ $: inTable = editorState?.isActive("table") ?? false;
           <button
             type="button"
             class="search-nav"
-            title="Previous (Shift+Enter)"
-            aria-label="Previous match"
+            title={$messages.editor.previousMatchHint}
+            aria-label={$messages.editor.previousMatch}
             disabled={!searchMatchCount}
             onclick={() => goSearch(-1)}>‹</button>
           <button
             type="button"
             class="search-nav"
-            title="Next (Enter)"
-            aria-label="Next match"
+            title={$messages.editor.nextMatchHint}
+            aria-label={$messages.editor.nextMatch}
             disabled={!searchMatchCount}
             onclick={() => goSearch(1)}>›</button>
           <span class="search-count"
             >{searchQuery ? `${searchMatchCount ? searchActiveIndex + 1 : 0}/${searchMatchCount}` : "0/0"}</span>
         </div>
-        <button type="button" class="search-close" title="Close (Esc)" aria-label="Close search" onclick={closeSearch}
-          ><XIcon size={14} strokeWidth={1.8} /></button>
+        <button
+          type="button"
+          class="search-close"
+          title={$messages.editor.closeSearchHint}
+          aria-label={$messages.editor.closeSearch}
+          onclick={closeSearch}><XIcon size={14} strokeWidth={1.8} /></button>
       </div>
       {#if searchReplaceOpen}
         <div class="search-row replace-row">
@@ -2636,8 +2642,8 @@ $: inTable = editorState?.isActive("table") ?? false;
             <input
               bind:this={replaceInputEl}
               type="text"
-              placeholder="Replace"
-              aria-label="Replace"
+              placeholder={$messages.editor.replace}
+              aria-label={$messages.editor.replace}
               bind:value={replaceQuery}
               onkeydown={(e) => {
                 if (e.key === "Enter") {
@@ -2649,8 +2655,10 @@ $: inTable = editorState?.isActive("table") ?? false;
                 }
               }} />
           </div>
-          <button type="button" class="search-action" disabled={!searchMatchCount} onclick={replaceOne}>Replace</button>
-          <button type="button" class="search-action" disabled={!searchMatchCount} onclick={replaceAll}>All</button>
+          <button type="button" class="search-action" disabled={!searchMatchCount} onclick={replaceOne}
+            >{$messages.editor.replace}</button>
+          <button type="button" class="search-action" disabled={!searchMatchCount} onclick={replaceAll}
+            >{$messages.editor.all}</button>
         </div>
       {/if}
     </div>
@@ -2681,7 +2689,7 @@ $: inTable = editorState?.isActive("table") ?? false;
     <div
       class="entity-reference-popover"
       role="group"
-      aria-label="Entity reference actions"
+      aria-label={$ui("Entity reference actions")}
       bind:this={entityReferencePopoverEl}
       style={`top: ${entityReferenceEdit.top}px; left: ${entityReferenceEdit.left}px;`}
       onmouseenter={cancelEntityReferenceHide}
@@ -2692,18 +2700,18 @@ $: inTable = editorState?.isActive("table") ?? false;
           type="button"
           class="entity-reference-open"
           onmousedown={(event) => event.preventDefault()}
-          onclick={openEntityReferenceFromPopover}>Open</button>
+          onclick={openEntityReferenceFromPopover}>{$ui("Open")}</button>
         <button
           type="button"
           class="entity-reference-open"
           onmousedown={(event) => event.preventDefault()}
-          onclick={openEntityReferenceInNewTab}>Open in new tab</button>
+          onclick={openEntityReferenceInNewTab}>{$ui("Open in new tab")}</button>
       {/if}
       <button
         type="button"
         class="entity-reference-edit"
         onmousedown={(event) => event.preventDefault()}
-        onclick={openEntityReferenceEditor}>Edit reference</button>
+        onclick={openEntityReferenceEditor}>{$ui("Edit reference")}</button>
     </div>
   {/if}
   {#if linkPopover && !linkDialogOpen}
@@ -2713,29 +2721,29 @@ $: inTable = editorState?.isActive("table") ?? false;
       bind:this={linkPopoverEl}
       style={`top: ${linkPopover.top}px; left: ${linkPopover.left}px;`}
       role="dialog"
-      aria-label="Link actions">
+      aria-label={$ui("Link actions")}>
       <div class="link-popover-url" title={linkPopover.href}>{linkPopover.href}</div>
       <div class="link-popover-actions">
         <button
           type="button"
           class="link-popover-btn"
           onmousedown={(event) => event.preventDefault()}
-          onclick={openLinkExternal}>Open</button>
+          onclick={openLinkExternal}>{$ui("Open")}</button>
         <button
           type="button"
           class="link-popover-btn primary"
           onmousedown={(event) => event.preventDefault()}
-          onclick={editLinkFromPopover}>Edit</button>
+          onclick={editLinkFromPopover}>{$ui("Edit")}</button>
         <button
           type="button"
           class="link-popover-btn danger"
           onmousedown={(event) => event.preventDefault()}
-          onclick={unlinkFromPopover}>Unlink</button>
+          onclick={unlinkFromPopover}>{$ui("Unlink")}</button>
       </div>
       <button
         type="button"
         class="link-popover-close"
-        aria-label="Close link popover"
+        aria-label={$ui("Close link popover")}
         onmousedown={(event) => event.preventDefault()}
         onclick={hideLinkPopover}><XIcon size={12} strokeWidth={1.8} /></button>
     </div>
@@ -2747,14 +2755,14 @@ $: inTable = editorState?.isActive("table") ?? false;
       bind:this={imagePopoverEl}
       style={`top: ${imagePopover.top}px; left: ${imagePopover.left}px;`}
       role="dialog"
-      aria-label="Image actions"
+      aria-label={$ui("Image actions")}
       aria-modal="false">
       <div class="image-popover-header">
-        <strong>Image</strong>
+        <strong>{$ui("Image")}</strong>
         <button
           type="button"
           class="image-popover-close"
-          aria-label="Close"
+          aria-label={$ui("Close")}
           onmousedown={(event) => event.preventDefault()}
           onclick={hideImagePopover}><XIcon size={12} strokeWidth={1.8} /></button>
       </div>
@@ -2767,35 +2775,35 @@ $: inTable = editorState?.isActive("table") ?? false;
             type="button"
             class="image-compact-btn primary"
             onmousedown={(event) => event.preventDefault()}
-            onclick={replaceImage}>Edit…</button>
+            onclick={replaceImage}>{$ui("Edit…")}</button>
         {/if}
         <button
           type="button"
           class="image-compact-btn danger"
           onmousedown={(event) => event.preventDefault()}
-          onclick={removeImage}>Remove</button>
+          onclick={removeImage}>{$ui("Remove")}</button>
       </div>
       <div class="image-align-row compact">
         <button
           type="button"
-          title="Align left"
-          aria-label="Align left"
+          title={$messages.editor.alignLeft}
+          aria-label={$messages.editor.alignLeft}
           aria-pressed={isAligned("left")}
           class:active={isAligned("left")}
           onmousedown={(event) => event.preventDefault()}
           onclick={() => alignImage("left")}><TextAlignStart size={14} strokeWidth={1.8} /></button>
         <button
           type="button"
-          title="Align center"
-          aria-label="Align center"
+          title={$messages.editor.alignCenter}
+          aria-label={$messages.editor.alignCenter}
           aria-pressed={isAligned("center")}
           class:active={isAligned("center")}
           onmousedown={(event) => event.preventDefault()}
           onclick={() => alignImage("center")}><TextAlignCenter size={14} strokeWidth={1.8} /></button>
         <button
           type="button"
-          title="Align right"
-          aria-label="Align right"
+          title={$messages.editor.alignRight}
+          aria-label={$messages.editor.alignRight}
           aria-pressed={isAligned("right")}
           class:active={isAligned("right")}
           onmousedown={(event) => event.preventDefault()}
@@ -2805,11 +2813,11 @@ $: inTable = editorState?.isActive("table") ?? false;
   {/if}
 
   <div class="editor-statusbar">
-    <span>{wordCountValue} {wordCountValue === 1 ? "word" : "words"}</span>
+    <span>{$messages.editor.words(wordCountValue)}</span>
     <span class="status-separator">·</span>
-    <span>{characterCountValue} {characterCountValue === 1 ? "character" : "characters"}</span>
+    <span>{$messages.editor.characters(characterCountValue)}</span>
     <span class="status-spacer"></span>
-    <span class="editor-mode">Markdown</span>
+    <span class="editor-mode">{$ui("Markdown")}</span>
   </div>
   <EntityReferenceDialog
     open={entityReferenceDialogOpen}
@@ -3225,7 +3233,7 @@ $: inTable = editorState?.isActive("table") ?? false;
   cursor: not-allowed;
   opacity: 0.55;
 }
-.toolbar-group[aria-label="History"] {
+.toolbar-group.toolbar-history {
   gap: 2px;
 }
 .editor-toolbar button.history-button {
@@ -3624,7 +3632,7 @@ $: inTable = editorState?.isActive("table") ?? false;
   border-color: var(--theme-warning-border, #d3c0a9);
   color: var(--on-accent);
 }
-.search-inline-btn[aria-label="Match whole word"].active {
+.search-whole-word.active {
   text-decoration: underline;
   text-underline-offset: 2px;
   text-decoration-thickness: 1.4px;

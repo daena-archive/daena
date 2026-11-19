@@ -1,4 +1,5 @@
 <script lang="ts">
+import { ui } from "$lib/i18n/ui";
 import { messages } from "$lib/i18n";
 import type { WorkspaceSection } from "$lib/modules/workspace";
 import { ENTITY_ACTIONS } from "$lib/entity-lifecycle/vocabulary";
@@ -139,7 +140,7 @@ function railMenuItems(open: (intent: OpenIntent) => void): RailMenu["items"] {
 
 function showRailMenu(anchor: HTMLElement, x: number, y: number, title: string, open: (intent: OpenIntent) => void) {
   hideTooltip();
-  railMenu = { x, y, label: `Actions for ${title}`, returnFocus: anchor, items: railMenuItems(open) };
+  railMenu = { x, y, label: $messages.workspace.actionsFor(title), returnFocus: anchor, items: railMenuItems(open) };
   menuOpen = true;
 }
 
@@ -191,9 +192,9 @@ $effect(() => {
   <div class="rail-scroll" class:menu-open={collapsed && ready && projectMenuOpen} onscroll={hideTooltip}>
     <div class="brand">
       {#if collapsed && ready}
-        <img class="brand-icon" src="/branding/icon.png" alt="Daena" />
+        <img class="brand-icon" src="/branding/icon.png" alt={$ui("Daena")} />
       {:else}
-        <img class="brand-logo" src="/branding/logo.png" alt="Daena Archive" />
+        <img class="brand-logo" src="/branding/logo.png" alt={$ui("Daena Archive")} />
       {/if}
     </div>
 
@@ -216,35 +217,37 @@ $effect(() => {
         aria-current={homeActive ? "page" : undefined}
         class:active={homeActive}
         class="rail-button rail-home-button"
-        title="Home"
+        title={$messages.workspace.home}
         onclick={(event) => onOpenHome(railIntent(event))}
         onauxclick={(event) => railAux(event, onOpenHome)}
         onmousedown={blockMiddleClickScroll}
-        oncontextmenu={(event) => onRailContextMenu(event, "Home", onOpenHome)}
-        onkeydown={(event) => onRailMenuKey(event, "Home", onOpenHome)}
-        onmouseenter={(e) => showTooltip(e, "Home")}
+        oncontextmenu={(event) => onRailContextMenu(event, $messages.workspace.home, onOpenHome)}
+        onkeydown={(event) => onRailMenuKey(event, $messages.workspace.home, onOpenHome)}
+        onmouseenter={(e) => showTooltip(e, $messages.workspace.home)}
         onmouseleave={hideTooltip}
-        onfocus={(e) => showTooltip(e, "Home")}
+        onfocus={(e) => showTooltip(e, $messages.workspace.home)}
         onblur={hideTooltip}>
-        <span class="rail-icon"><Home size={16} strokeWidth={1.8} aria-hidden="true" /></span><span>Home</span>
+        <span class="rail-icon"><Home size={16} strokeWidth={1.8} aria-hidden="true" /></span><span
+          >{$messages.workspace.home}</span>
       </button>
 
       {#if workspaces.length > 0}
         <button
           aria-expanded={createOpen}
           class="rail-create-button"
-          title="New"
+          title={$messages.workspace.newEntry}
           onclick={onCreate}
-          onmouseenter={(e) => showTooltip(e, "New")}
+          onmouseenter={(e) => showTooltip(e, $messages.workspace.newEntry)}
           onmouseleave={hideTooltip}
-          onfocus={(e) => showTooltip(e, "New")}
+          onfocus={(e) => showTooltip(e, $messages.workspace.newEntry)}
           onblur={hideTooltip}>
-          <span class="rail-icon"><Plus size={16} strokeWidth={1.8} /></span><span>New</span></button>
-        <div class="rail-label">WORKSPACES</div>
-        <nav class="workspace-nav" aria-label="Workspace sections">
+          <span class="rail-icon"><Plus size={16} strokeWidth={1.8} /></span><span>{$messages.workspace.newEntry}</span
+          ></button>
+        <div class="rail-label">{$messages.workspace.workspaces}</div>
+        <nav class="workspace-nav" aria-label={$messages.workspace.workspaceSections}>
           {#each workspaces as item (item.key)}
             {@const Icon = workspaceIcon(item.section)}
-            {@const wsTitle = item.beta ? `${item.title} · Beta plugin — may be unstable` : item.title}
+            {@const wsTitle = item.beta ? $messages.workspace.betaWarning(item.title) : item.title}
             <button
               title={wsTitle}
               aria-current={item.active ? "page" : undefined}
@@ -262,15 +265,15 @@ $effect(() => {
               onblur={hideTooltip}>
               <span class="rail-icon"><Icon size={16} strokeWidth={1.8} /></span>
               <span
-                >{item.title}{#if item.beta}<em class="workspace-beta">Beta</em>{/if}</span>
+                >{item.title}{#if item.beta}<em class="workspace-beta">{$messages.workspace.beta}</em>{/if}</span>
             </button>
           {/each}
         </nav>
       {/if}
 
       {#if tools.length > 0}
-        <div class="rail-label plugin-views-label">TOOLS</div>
-        <nav class="workspace-nav" aria-label="Plugin views">
+        <div class="rail-label plugin-views-label">{$messages.workspace.tools}</div>
+        <nav class="workspace-nav" aria-label={$messages.workspace.pluginViews}>
           {#each tools as item (item.key)}
             <div class="plugin-nav-row">
               <button
@@ -304,13 +307,13 @@ $effect(() => {
         aria-current={projectCenterActive ? "page" : undefined}
         class:active={projectCenterActive}
         class="rail-button muted-button"
-        title="Project"
+        title={$messages.workspace.project}
         onclick={onOpenProjectCenter}
-        onmouseenter={(e) => showTooltip(e, "Project")}
+        onmouseenter={(e) => showTooltip(e, $messages.workspace.project)}
         onmouseleave={hideTooltip}
-        onfocus={(e) => showTooltip(e, "Project")}
+        onfocus={(e) => showTooltip(e, $messages.workspace.project)}
         onblur={hideTooltip}>
-        <span class="rail-icon"><Boxes size={16} strokeWidth={1.8} /></span><span>Project</span>
+        <span class="rail-icon"><Boxes size={16} strokeWidth={1.8} /></span><span>{$messages.workspace.project}</span>
       </button>
     {/if}
     <button
@@ -323,10 +326,11 @@ $effect(() => {
       onmouseleave={hideTooltip}
       onfocus={(e) => showTooltip(e, $messages.common.settings)}
       onblur={hideTooltip}>
-      <span class="rail-icon"><SettingsIcon size={16} strokeWidth={1.8} /></span><span>{$messages.common.settings}</span>
+      <span class="rail-icon"><SettingsIcon size={16} strokeWidth={1.8} /></span><span
+        >{$messages.common.settings}</span>
     </button>
     {#if ready}
-      {@const collapseTitle = collapsed ? "Expand sidebar" : "Collapse sidebar"}
+      {@const collapseTitle = collapsed ? $messages.workspace.expandSidebar : $messages.workspace.collapseSidebar}
       <button
         class="rail-button muted-button rail-collapse-toggle"
         aria-label={collapseTitle}
@@ -341,10 +345,10 @@ $effect(() => {
               size={16}
               strokeWidth={1.8} />{/if}
         </span>
-        <span>{collapsed ? "Expand" : "Collapse"}</span>
+        <span>{collapsed ? $messages.workspace.expand : $messages.workspace.collapse}</span>
       </button>
     {/if}
-    <div class="rail-footer">v{version}</div>
+    <div class="rail-footer">{$ui("v{0}", version)}</div>
   </div>
   {#if tooltip}
     <div class="rail-tooltip" style="left: {tooltip.x}px; top: {tooltip.y}px;">{tooltip.text}</div>

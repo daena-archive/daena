@@ -1,4 +1,5 @@
 <script lang="ts">
+import { messages } from "$lib/i18n";
 import type { Snippet } from "svelte";
 import WorkbenchState from "./WorkbenchState.svelte";
 
@@ -28,25 +29,26 @@ let {
   class:inspector-empty={empty}
   class="inspector-panel panel-surface"
   data-guide="workspace-inspector"
-  aria-label="Inspector"
+  aria-label={$messages.inspector.title}
   aria-busy={loading}
   inert={loading}
   onscroll={onScroll}>
   {#if loading}
-    <WorkbenchState
-      kind="loading"
-      compact
-      title="Loading details"
-      message="Reading fields, relationships, and assets." />
+    <WorkbenchState kind="loading" compact title={$messages.inspector.loading} message={$messages.inspector.reading} />
   {:else if error}
-    {#snippet retryAction()}<button type="button" onclick={onRetry}>Retry</button>{/snippet}
-    <WorkbenchState kind="error" compact title="Details unavailable" message={error} actions={retryAction} />
+    {#snippet retryAction()}<button type="button" onclick={onRetry}>{$messages.inspector.retry}</button>{/snippet}
+    <WorkbenchState
+      kind="error"
+      compact
+      title={$messages.inspector.unavailable}
+      message={error}
+      actions={retryAction} />
   {:else if empty}
     <WorkbenchState
       kind="empty"
       compact
-      title="Nothing selected"
-      message="Select an entry to see its details and edit more fields." />
+      title={$messages.inspector.noneSelected}
+      message={$messages.inspector.selectEntry} />
   {:else if children}
     {@render children()}
   {/if}

@@ -1,4 +1,5 @@
 <script lang="ts">
+import { messages } from "$lib/i18n";
 import type { Entity, EntityTypeColor, IconRef } from "$lib/project/client";
 import type { WorkspaceSection } from "$lib/modules/workspace";
 import EntityGlyph from "$lib/entity-colors/EntityGlyph.svelte";
@@ -71,50 +72,51 @@ function sectionIcon(section: WorkspaceSection) {
 <section class="project-home" aria-labelledby="project-home-title">
   <div class="project-home-hero">
     <div class="project-home-heading">
-      <span class="overline">PROJECT HOME</span>
+      <span class="overline">{$messages.workspace.projectHome}</span>
       <h1 id="project-home-title">{projectName}</h1>
-      <p>Continue recent work, enter a workspace, or preserve the project with a snapshot.</p>
+      <p>{$messages.workspace.homeDescription}</p>
     </div>
     <div class="project-home-actions">
       {#if workspaces.length > 0}
         <button type="button" class="primary-button" onclick={onNewEntry}
-          ><Plus size={14} strokeWidth={1.8} aria-hidden="true" /> New</button>
+          ><Plus size={14} strokeWidth={1.8} aria-hidden="true" /> {$messages.workspace.newEntry}</button>
       {/if}
       <button type="button" class="quiet-button" onclick={onSnapshots}
-        ><GitBranch size={14} strokeWidth={1.8} aria-hidden="true" /> Snapshots</button>
+        ><GitBranch size={14} strokeWidth={1.8} aria-hidden="true" /> {$messages.workspace.snapshots}</button>
       <button type="button" class="quiet-button" onclick={onProjectCenter}
-        ><Boxes size={14} strokeWidth={1.8} aria-hidden="true" /> Project</button>
+        ><Boxes size={14} strokeWidth={1.8} aria-hidden="true" /> {$messages.workspace.project}</button>
     </div>
   </div>
 
-  <div class="project-home-stats" aria-label="Project summary">
+  <div class="project-home-stats" aria-label={$messages.workspace.projectSummary}>
     <div>
       <strong>{activeEntityCount}</strong>
-      <span>active entries</span>
+      <span>{$messages.workspace.activeEntries}</span>
     </div>
     <div>
       <strong>{workspaces.length}</strong>
-      <span>enabled workspaces</span>
+      <span>{$messages.workspace.enabledWorkspaces}</span>
     </div>
     <div class:attention={snapshotChangeCount > 0}>
       <strong>{snapshotChangeCount}</strong>
-      <span>snapshot-ready changes</span>
+      <span>{$messages.workspace.snapshotReady}</span>
     </div>
   </div>
 
   <section class="project-home-section" aria-labelledby="home-workspaces-title">
     <div class="project-home-section-heading">
       <div>
-        <span class="panel-kicker">WORKSPACES</span>
-        <h2 id="home-workspaces-title">Choose where to work</h2>
+        <span class="panel-kicker">{$messages.workspace.workspaces}</span>
+        <h2 id="home-workspaces-title">{$messages.workspace.chooseWorkspace}</h2>
       </div>
-      <small>Only enabled workspaces appear here.</small>
+      <small>{$messages.workspace.enabledOnly}</small>
     </div>
     {#if workspaces.length === 0}
       <div class="project-home-empty">
-        <strong>No workspaces enabled</strong>
-        <p>Enable a workspace extension to begin creating project content.</p>
-        <button type="button" class="primary-button" onclick={onExtensions}>Open Extensions</button>
+        <strong>{$messages.workspace.noWorkspaces}</strong>
+        <p>{$messages.workspace.enableWorkspace}</p>
+        <button type="button" class="primary-button" onclick={onExtensions}
+          >{$messages.workspace.openExtensions}</button>
       </div>
     {:else}
       <div class="project-home-workspaces">
@@ -137,15 +139,15 @@ function sectionIcon(section: WorkspaceSection) {
   <section class="project-home-section" aria-labelledby="recent-work-title">
     <div class="project-home-section-heading">
       <div>
-        <span class="panel-kicker">CONTINUE</span>
-        <h2 id="recent-work-title">Recently updated</h2>
+        <span class="panel-kicker">{$messages.workspace.continueWork}</span>
+        <h2 id="recent-work-title">{$messages.workspace.recentlyUpdated}</h2>
       </div>
-      <small>Across every enabled workspace.</small>
+      <small>{$messages.workspace.allWorkspaces}</small>
     </div>
     {#if recents.length === 0}
       <div class="project-home-empty">
-        <strong>This project is ready for its first entry</strong>
-        <p>Create something new or choose a workspace to see its empty state and guidance.</p>
+        <strong>{$messages.workspace.firstEntry}</strong>
+        <p>{$messages.workspace.firstEntryHint}</p>
       </div>
     {:else}
       <div class="project-home-recents">

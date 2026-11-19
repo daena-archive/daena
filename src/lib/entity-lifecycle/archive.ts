@@ -1,8 +1,10 @@
+import { localizeUi } from "../i18n/ui.ts";
 /**
  * Helpers for shared entity archive confirmation copy.
  */
 
-import { ENTITY_ACTION_CONFIRM, ENTITY_ACTIONS, MUTATION_STATUS } from "./vocabulary.ts";
+import { en } from "../i18n/en.ts";
+import { ENTITY_ACTIONS, MUTATION_STATUS } from "./vocabulary.ts";
 
 export type ArchiveConfirmOptions = {
   title: string;
@@ -11,14 +13,16 @@ export type ArchiveConfirmOptions = {
   danger: true;
 };
 
-export function archiveConfirmOptions(name: string, options?: { dirtyNote?: string }): ArchiveConfirmOptions {
-  const message = options?.dirtyNote
-    ? `${ENTITY_ACTION_CONFIRM.archiveMessage(name)} ${options.dirtyNote}`
-    : ENTITY_ACTION_CONFIRM.archiveMessage(name);
+export function archiveConfirmOptions(
+  name: string,
+  options?: { dirtyNote?: string; copy?: typeof en.inspector },
+): ArchiveConfirmOptions {
+  const copy = options?.copy ?? en.inspector;
+  const message = options?.dirtyNote ? `${copy.archiveMessage(name)} ${options.dirtyNote}` : copy.archiveMessage(name);
   return {
-    title: ENTITY_ACTION_CONFIRM.archiveTitle(name),
+    title: copy.archiveTitle(name),
     message,
-    confirmLabel: ENTITY_ACTION_CONFIRM.archiveConfirm,
+    confirmLabel: copy.archive,
     danger: true,
   };
 }
@@ -28,5 +32,5 @@ export function archivePendingLabel(busy: boolean) {
 }
 
 export function archivedToastMessage(name: string) {
-  return `"${name}" archived.`;
+  return localizeUi("\"{0}\" archived.", name);
 }

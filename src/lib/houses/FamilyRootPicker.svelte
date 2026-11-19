@@ -1,4 +1,6 @@
 <script lang="ts">
+import { nativeErrorText } from "$lib/i18n/native-errors.ts";
+import { ui } from "$lib/i18n/ui";
 import type { EntitySummary, ModuleContext } from "../../../packages/module-api/src/index";
 import { UserPlus } from "@lucide/svelte";
 import AsyncEntityPicker from "$lib/entity-lifecycle/AsyncEntityPicker.svelte";
@@ -75,30 +77,30 @@ const showCreate = $derived(kind === "person" && emptyCatalog && !dropdown);
 </script>
 
 <div class="picker" class:compact class:dropdown>
-  {#if !compact}<span class="overline">{kind === "house" ? "House" : "Root person"}</span>{/if}
+  {#if !compact}<span class="overline">{kind === "house" ? $ui("House") : $ui("Root person")}</span>{/if}
   <AsyncEntityPicker
     search={searchEntities}
     entityTypes={[entityType]}
     pageSize={20}
     {dropdown}
     openOnFocus={dropdown || compact}
-    placeholder={kind === "house" ? "Search houses" : "Search Lore people"}
-    ariaLabel={kind === "house" ? "Search houses" : "Search Lore people"}
-    emptyMessage={kind === "house" ? "No houses match this search." : "No Lore people match this search."}
-    resultsSectionLabel={kind === "house" ? "Houses" : "People"}
+    placeholder={kind === "house" ? $ui("Search houses") : $ui("Search Lore people")}
+    ariaLabel={kind === "house" ? $ui("Search houses") : $ui("Search Lore people")}
+    emptyMessage={kind === "house" ? $ui("No houses match this search.") : $ui("No Lore people match this search.")}
+    resultsSectionLabel={kind === "house" ? $ui("Houses") : $ui("People")}
     recents={recents.map((entry) => ({ ...entry, entityType }))}
     onSelect={pick} />
-  {#if error}<p class="error" role="alert">{error}</p>{/if}
+  {#if error}<p class="error" role="alert">{$nativeErrorText(error)}</p>{/if}
   {#if showCreate}
     <div class="create-cta">
-      <p class="hint">No Lore people yet. Create a person — they will also appear in Lore.</p>
-      <label class="field">Name <input bind:value={createName} placeholder="Person name" /></label>
+      <p class="hint">{$ui("No Lore people yet. Create a person — they will also appear in Lore.")}</p>
+      <label class="field">{$ui("Name")} <input bind:value={createName} placeholder={$ui("Person name")} /></label>
       <button
         type="button"
         class="primary-button"
         disabled={creating || !createName.trim()}
         onclick={() => void createPerson()}
-        ><UserPlus size={14} strokeWidth={1.8} aria-hidden="true" /> Create person</button>
+        ><UserPlus size={14} strokeWidth={1.8} aria-hidden="true" /> {$ui("Create person")}</button>
     </div>
   {/if}
 </div>

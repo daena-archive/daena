@@ -1,4 +1,5 @@
 <script lang="ts">
+import { ui } from "$lib/i18n/ui";
 import { Activity, AlertTriangle, Check, ChevronRight, LoaderCircle, RefreshCw, X } from "@lucide/svelte";
 
 export type StatusCenterTone = "neutral" | "success" | "busy" | "warning" | "danger";
@@ -106,13 +107,13 @@ $effect(() => {
       aria-labelledby="status-center-title">
       <header>
         <div class="status-header-title">
-          <span>PROJECT STATUS</span><strong id="status-center-title">What Daena is doing</strong>
+          <span>{$ui("PROJECT STATUS")}</span><strong id="status-center-title">{$ui("What Daena is doing")}</strong>
         </div>
         <div class="status-header-actions">
-          <button type="button" aria-label="Refresh project status" disabled={refreshing} onclick={handleRefresh}>
+          <button type="button" aria-label={$ui("Refresh project status")} disabled={refreshing} onclick={handleRefresh}>
             <RefreshCw size={15} class={refreshing ? "spin" : undefined} />
           </button>
-          <button aria-label="Close project status" onclick={() => setOpen(false, true)}><X size={15} /></button>
+          <button aria-label={$ui("Close project status")} onclick={() => setOpen(false, true)}><X size={15} /></button>
         </div>
       </header>
       <div class="status-items" aria-live="polite">

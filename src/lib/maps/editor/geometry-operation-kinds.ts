@@ -1,3 +1,4 @@
+import { localizeUi } from "../../i18n/ui.ts";
 import type { VectorFeature } from "../native-vector/types.ts";
 
 export type GeometryOperationKind =
@@ -39,7 +40,7 @@ export const HEAVY_GEOMETRY_OPERATIONS = new Set<GeometryOperationKind>([
 ]);
 
 export function cancelledGeometryResult(): GeometryOpResult & { ok: false } {
-  return { ok: false, code: "geometry.cancelled", detail: "Operation cancelled." };
+  return { ok: false, code: "geometry.cancelled", detail: localizeUi("Operation cancelled.") };
 }
 
 export function isPolygonGeometry(geometry: VectorFeature["geometry"]): boolean {
@@ -57,21 +58,21 @@ export function isReversibleLine(geometry: VectorFeature["geometry"]): boolean {
 export function operationLabel(kind: GeometryOperationKind): string {
   switch (kind) {
     case "union":
-      return "Union";
+      return localizeUi("Union");
     case "difference":
-      return "Difference";
+      return localizeUi("Difference");
     case "intersection":
-      return "Intersection";
+      return localizeUi("Intersection");
     case "split":
-      return "Split";
+      return localizeUi("Split");
     case "buffer":
-      return "Buffer";
+      return localizeUi("Buffer");
     case "simplify":
-      return "Simplify";
+      return localizeUi("Simplify");
     case "reverse":
-      return "Reverse line";
+      return localizeUi("Reverse line");
     case "merge-lines":
-      return "Merge lines";
+      return localizeUi("Merge lines");
   }
 }
 

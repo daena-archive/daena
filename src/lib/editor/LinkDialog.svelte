@@ -1,4 +1,6 @@
 <script lang="ts">
+import { nativeErrorText } from "$lib/i18n/native-errors.ts";
+import { ui } from "$lib/i18n/ui";
 import { tick } from "svelte";
 import { X } from "@lucide/svelte";
 
@@ -24,10 +26,10 @@ $: urlError = validateUrl(url);
 function validateUrl(value: string) {
   const candidate = value.trim();
   if (!candidate) return "";
-  if (/[\u0000-\u001f\u007f]/.test(candidate)) return "Links cannot contain control characters.";
+  if (/[\u0000-\u001f\u007f]/.test(candidate)) return $ui("Links cannot contain control characters.");
   const scheme = candidate.match(/^([a-z][a-z0-9+.-]*):/i)?.[1]?.toLowerCase();
   if (scheme && !["http", "https", "ftp", "ftps", "mailto", "tel", "callto", "sms", "cid", "xmpp"].includes(scheme))
-    return "Use a web, email, phone, asset, or relative link.";
+    return $ui("Use a web, email, phone, asset, or relative link.");
   return "";
 }
 
@@ -116,24 +118,24 @@ function trapFocus(event: KeyboardEvent) {
       onkeydown={handleKeydown}>
       <header>
         <div>
-          <span class="panel-kicker">LINK</span>
-          <h2 id="link-dialog-title">{initialUrl ? "Edit link" : "Insert link"}</h2>
+          <span class="panel-kicker">{$ui("LINK")}</span>
+          <h2 id="link-dialog-title">{initialUrl ? $ui("Edit link") : $ui("Insert link")}</h2>
         </div>
-        <button type="button" aria-label="Close link dialog" onclick={onCancel}
+        <button type="button" aria-label={$ui("Close link dialog")} onclick={onCancel}
           ><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
       </header>
 
       {#if hasSelection}
         <div class="link-preview">
-          <span>Selected text</span>
+          <span>{$ui("Selected text")}</span>
           <p title={initialText}>{displayText}</p>
         </div>
         <label class="link-field">
-          <span>Link URL</span>
+          <span>{$ui("Link URL")}</span>
           <input
             bind:this={urlInput}
             bind:value={url}
-            placeholder="https://…"
+            placeholder={$ui("https://…")}
             autocomplete="off"
             spellcheck="false"
             aria-invalid={Boolean(urlError)}
@@ -141,35 +143,35 @@ function trapFocus(event: KeyboardEvent) {
         </label>
       {:else}
         <label class="link-field">
-          <span>Display text</span>
-          <input bind:this={textInput} bind:value={text} placeholder="Text to display" autocomplete="off" />
+          <span>{$ui("Display text")}</span>
+          <input bind:this={textInput} bind:value={text} placeholder={$ui("Text to display")} autocomplete="off" />
         </label>
         <label class="link-field">
-          <span>Link URL</span>
+          <span>{$ui("Link URL")}</span>
           <input
             bind:this={urlInput}
             bind:value={url}
-            placeholder="https://…"
+            placeholder={$ui("https://…")}
             autocomplete="off"
             spellcheck="false"
             aria-invalid={Boolean(urlError)}
             aria-describedby={urlError ? "link-url-error" : undefined} />
         </label>
       {/if}
-      {#if urlError}<p id="link-url-error" class="link-error" role="alert">{urlError}</p>{/if}
+      {#if urlError}<p id="link-url-error" class="link-error" role="alert">{$nativeErrorText(urlError)}</p>{/if}
 
       <footer>
         {#if initialUrl && onRemove}
-          <button type="button" class="quiet danger" onclick={onRemove}>Remove link</button>
+          <button type="button" class="quiet danger" onclick={onRemove}>{$ui("Remove link")}</button>
           <span style="flex:1"></span>
         {/if}
-        <button type="button" class="quiet" onclick={onCancel}>Cancel</button>
+        <button type="button" class="quiet" onclick={onCancel}>{$ui("Cancel")}</button>
         <button
           type="button"
           class="primary"
           disabled={Boolean(urlError) || (hasSelection ? !url.trim() : !text.trim() || !url.trim())}
           onclick={submit}>
-          {initialUrl ? "Update link" : "Insert link"}
+          {initialUrl ? $ui("Update link") : $ui("Insert link")}
         </button>
       </footer>
     </div>

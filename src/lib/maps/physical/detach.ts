@@ -1,3 +1,4 @@
+import { localizeUi } from "../../i18n/ui.ts";
 import {
   VECTOR_MAX_BYTES,
   VECTOR_MAX_FEATURES,
@@ -111,7 +112,7 @@ function limit(message: string): PhysicalDetachError {
 export function buildPhysicalDetachPlan(input: BuildPhysicalDetachPlanInput): PhysicalDetachPlan | PhysicalDetachError {
   const { sourceLayer } = input;
   if (!isPhysicalDerivedLayerId(sourceLayer.id) || sourceLayer.kind !== "vector" || !sourceLayer.locked) {
-    return { code: "physical.detach.invalid-layer", message: "This physical layer cannot be detached for editing." };
+    return { code: "physical.detach.invalid-layer", message: localizeUi("This physical layer cannot be detached for editing.") };
   }
 
   const all = physicalFeaturesForLayer(input.collection, sourceLayer.id);
@@ -120,7 +121,7 @@ export function buildPhysicalDetachPlan(input: BuildPhysicalDetachPlanInput): Ph
       ? selectedPhysicalFeatures(input.collection, sourceLayer.id, input.selectedIds ?? [])
       : all;
   if (source.length === 0) {
-    return { code: "physical.detach.empty", message: "This physical layer has no generated features to detach." };
+    return { code: "physical.detach.empty", message: localizeUi("This physical layer has no generated features to detach.") };
   }
   if (input.document.layers.length + 1 > VECTOR_MAX_LAYERS) {
     return limit(`Detaching would exceed the map layer limit of ${VECTOR_MAX_LAYERS}.`);

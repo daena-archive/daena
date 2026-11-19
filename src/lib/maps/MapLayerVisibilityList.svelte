@@ -1,4 +1,5 @@
 <script lang="ts">
+import { ui } from "$lib/i18n/ui";
 import { ChevronRight, Eye, EyeOff, Hexagon, Layers } from "@lucide/svelte";
 
 type VisibilityLayer = {
@@ -70,8 +71,8 @@ const enabledCount = $derived(flatLayers.filter((layer) => layer.enabled).length
           class="mini-icon"
           class:off={!layer.enabled}
           aria-pressed={layer.enabled}
-          aria-label={layer.enabled ? `Hide ${layer.name}` : `Show ${layer.name}`}
-          title={layer.enabled ? "Hide" : "Show"}
+          aria-label={layer.enabled ? $ui("Hide {0}", layer.name) : $ui("Show {0}", layer.name)}
+          title={layer.enabled ? $ui("Hide") : $ui("Show")}
           onclick={() => onToggle(layer.id)}>
           {#if layer.enabled}<Eye size={14} strokeWidth={1.8} />{:else}<EyeOff size={14} strokeWidth={1.8} />{/if}
         </button>
@@ -90,7 +91,7 @@ const enabledCount = $derived(flatLayers.filter((layer) => layer.enabled).length
             >{group.layers.filter((layer) => layer.enabled).length}/{group.layers.length}</span>
         </div>
         {#if group.layers.length === 0}
-          <p class="empty-note">None yet.</p>
+          <p class="empty-note">{$ui("None yet.")}</p>
         {:else}
           {@render layerList(group.layers, group.label)}
         {/if}

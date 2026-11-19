@@ -1,4 +1,6 @@
 <script lang="ts">
+import { nativeErrorText } from "$lib/i18n/native-errors.ts";
+import { ui } from "$lib/i18n/ui";
 import type { EntitySummary, ModuleContext, UUID } from "../../../packages/module-api/src/index";
 import { X } from "@lucide/svelte";
 import { trapModalTab } from "$lib/shell/modalFocus";
@@ -71,14 +73,14 @@ const excluded = $derived([currentId, ...excludeIds]);
 
 const title = $derived(
   role === "parent"
-    ? `Add parent of ${currentName}`
+    ? $ui("Add parent of {0}", currentName)
     : role === "child"
       ? coParentName
-        ? `Add child of ${currentName} and ${coParentName}`
-        : `Add child of ${currentName}`
+        ? $ui("Add child of {0} and {1}", currentName, coParentName)
+        : $ui("Add child of {0}", currentName)
       : otherPerson
-        ? `Add partnership of ${currentName} and ${otherPerson.name}`
-        : `Add partner of ${currentName}`,
+        ? $ui("Add partnership of {0} and {1}", currentName, otherPerson.name)
+        : $ui("Add partner of {0}", currentName),
 );
 
 function metadata() {
@@ -130,12 +132,12 @@ function requestIdForLink(preferred?: string) {
 
 async function performLink(candidate: EntitySummary, requestId: string) {
   if ((parentKind === "custom" || partnerKind === "custom") && !customLabel.trim()) {
-    error = "Custom label is required.";
+    error = $ui("Custom label is required.");
     return false;
   }
   const cycle = wouldCycle(candidate.id);
   if (cycle) {
-    error = typeof cycle === "string" ? cycle : "That parent link would create a cycle.";
+    error = typeof cycle === "string" ? cycle : $ui("That parent link would create a cycle.");
     return false;
   }
   pendingRequestId = requestId;
@@ -165,7 +167,7 @@ async function performLink(candidate: EntitySummary, requestId: string) {
       } catch (cause) {
         const failure = classifyMutationError(cause);
         if (failure.code !== "relationship.duplicate") {
-          error = `Linked to ${currentName}, but not to ${coParentName || "their partner"}: ${failure.message}`;
+          error = $ui("Linked to {0}, but not to {1}: {2}", currentName, coParentName || "their partner", failure.message);
         }
       }
     }
@@ -247,69 +249,61 @@ $effect(() => {
   <div class="card" role="document" onclick={(e) => e.stopPropagation()}>
     <header class="dialog-heading">
       <div>
-        <span class="panel-kicker">FAMILY</span><strong>{title}</strong>
+        <span class="panel-kicker">{$ui("FAMILY")}</span><strong>{title}</strong>
       </div>
-      <button type="button" class="dialog-close" aria-label="Close dialog" disabled={saving} onclick={onClose}
+      <button type="button" class="dialog-close" aria-label={$ui("Close dialog")} disabled={saving} onclick={onClose}
         ><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
     </header>
     {#if linkedOk && created}
-      <p class="hint">Person created and linked. Open in Lore to add dates, portrait, and details.</p>
+      <p class="hint">{$ui("Person created and linked. Open in Lore to add dates, portrait, and details.")}</p>
       <div class="actions">
-        <button type="button" class="primary-button" onclick={() => onOpenEntity(created!.id)}>Open in Lore</button>
-        <button type="button" class="quiet-button" onclick={onClose}>Done</button>
+        <button type="button" class="primary-button" onclick={() => onOpenEntity(created!.id)}>{$ui("Open in Lore")}</button>
+        <button type="button" class="quiet-button" onclick={onClose}>{$ui("Done")}</button>
       </div>
     {:else if created && error}
-      <p class="error" role="alert">
-        {created.name} was created, but the relationship was not saved.
-      </p>
+      <p class="error" role="alert"> {$ui("{0} was created, but the relationship was not saved.", created.name)} </p>
       <div class="actions">
         <button type="button" class="primary-button" disabled={saving} onclick={() => void retryLink()}
-          >Retry relationship</button>
+          >{$ui("Retry relationship")}</button>
         <button type="button" class="quiet-button" onclick={() => onOpenEntity(created!.id)}
-          >Open person in Lore</button>
-        <button type="button" class="quiet-button" disabled={saving} onclick={onClose}>Cancel</button>
+          >{$ui("Open person in Lore")}</button>
+        <button type="button" class="quiet-button" disabled={saving} onclick={onClose}>{$ui("Cancel")}</button>
       </div>
     {:else}
       {#if !otherPerson}
         <div class="tabs">
           <button type="button" class="quiet-button" aria-pressed={mode === "link"} onclick={() => (mode = "link")}
-            >Link existing</button>
+            >{$ui("Link existing")}</button>
           <button type="button" class="quiet-button" aria-pressed={mode === "create"} onclick={() => (mode = "create")}
-            >Create person</button>
+            >{$ui("Create person")}</button>
         </div>
       {/if}
       {#if role !== "partner"}
-        <label>
-          Parent type
-          <select bind:value={parentKind}>
-            {#each PARENT_KINDS as kind}<option value={kind}>{kind}</option>{/each}
+        <label> {$ui("Parent type")} <select bind:value={parentKind}>
+            {#each PARENT_KINDS as kind}<option value={kind}>{$ui(kind)}</option>{/each}
           </select>
         </label>
       {:else}
-        <label>
-          Partnership type
-          <select bind:value={partnerKind}>
-            {#each PARTNER_KINDS as kind}<option value={kind}>{kind}</option>{/each}
+        <label> {$ui("Partnership type")} <select bind:value={partnerKind}>
+            {#each PARTNER_KINDS as kind}<option value={kind}>{$ui(kind)}</option>{/each}
           </select>
         </label>
-        <label>
-          Status
-          <select bind:value={partnerStatus}>
+        <label> {$ui("Status")} <select bind:value={partnerStatus}>
             {#each PARTNER_STATUSES as status}<option value={status}>{status}</option>{/each}
           </select>
         </label>
       {/if}
       {#if parentKind === "custom" || partnerKind === "custom"}
-        <label>Custom label <input bind:value={customLabel} /></label>
+        <label>{$ui("Custom label")} <input bind:value={customLabel} /></label>
       {/if}
-      <label>Notes <textarea bind:value={notes} rows="2"></textarea></label>
+      <label>{$ui("Notes")} <textarea bind:value={notes} rows="2"></textarea></label>
       {#if role === "child" && coParentName}
-        <p class="hint">Also links {coParentName} as a parent so the child hangs from this marriage.</p>
+        <p class="hint">{$ui("Also links {0} as a parent so the child hangs from this marriage.", coParentName)}</p>
       {/if}
       {#if otherPerson}
-        <p class="hint">These two people already share a child. Save to record a partnership.</p>
+        <p class="hint">{$ui("These two people already share a child. Save to record a partnership.")}</p>
         <button type="button" class="primary-button" disabled={saving} onclick={() => void linkPerson(otherPerson)}
-          >Save partnership</button>
+          >{$ui("Save partnership")}</button>
       {:else if mode === "link"}
         <AsyncEntityPicker
           search={searchPeople}
@@ -318,21 +312,21 @@ $effect(() => {
           pageSize={20}
           dropdown={false}
           disabled={saving}
-          placeholder="Search people"
-          ariaLabel="Search people"
-          emptyMessage="No matching people."
+          placeholder={$ui("Search people")}
+          ariaLabel={$ui("Search people")}
+          emptyMessage={$ui("No matching people.")}
           onSelect={(entity) => void linkPerson(toSummary(entity))} />
       {:else}
-        <label>Name <input bind:value={name} /></label>
-        <p class="hint">Creates a Lore person, then links them. Dates and portraits are added in Lore.</p>
+        <label>{$ui("Name")} <input bind:value={name} /></label>
+        <p class="hint">{$ui("Creates a Lore person, then links them. Dates and portraits are added in Lore.")}</p>
         <button
           type="button"
           class="primary-button"
           disabled={saving || !name.trim()}
-          onclick={() => void createPerson()}>Create and link</button>
+          onclick={() => void createPerson()}>{$ui("Create and link")}</button>
       {/if}
     {/if}
-    {#if error && !created}<p class="error" role="alert">{error}</p>{/if}
+    {#if error && !created}<p class="error" role="alert">{$nativeErrorText(error)}</p>{/if}
   </div>
 </div>
 

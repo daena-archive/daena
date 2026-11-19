@@ -1,4 +1,5 @@
 <script lang="ts">
+import { pluginText } from "../../plugin-i18n.ts";
 import { confirmState, resolveConfirm } from "./confirm.svelte";
 
 let confirmButton: HTMLButtonElement | undefined = $state();
@@ -44,15 +45,15 @@ function settle(value: boolean) {
       aria-labelledby="confirm-title"
       tabindex="-1"
       onclick={(e) => e.stopPropagation()}>
-      <h3 id="confirm-title">{confirmState.title}</h3>
-      <p>{confirmState.message}</p>
+      <h3 id="confirm-title">{$pluginText(confirmState.title)}</h3>
+      <p>{$pluginText(confirmState.message)}</p>
       <div class="language-modal-actions">
-        <button type="button" class="language-button secondary" onclick={() => settle(false)}>Cancel</button>
+        <button type="button" class="language-button secondary" onclick={() => settle(false)}>{$pluginText("Cancel")}</button>
         <button
           type="button"
           class={confirmState.danger ? "language-button secondary language-danger" : "language-button"}
           bind:this={confirmButton}
-          onclick={() => settle(true)}>{confirmState.confirmLabel}</button>
+          onclick={() => settle(true)}>{$pluginText(confirmState.confirmLabel)}</button>
       </div>
     </div>
   </div>

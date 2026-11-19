@@ -45,8 +45,12 @@ const shell = await readFile(new URL("../src/routes/+page.svelte", import.meta.u
 const quickOpen = await readFile(new URL("../src/lib/shell/QuickOpen.svelte", import.meta.url), "utf8");
 const toolbar = await readFile(new URL("../src/lib/shell/GlobalToolbar.svelte", import.meta.url), "utf8");
 
-assert.match(toolbar, /aria-label="Quick Open"/, "Quick Open keeps an accessible name");
-assert.match(toolbar, /Quick Open · \$\{quickOpenShortcut\}/, "Quick Open title uses the shortcut prop");
+assert.match(toolbar, /aria-label=\{\$messages\.workspace\.quickOpen\}/, "Quick Open keeps an accessible name");
+assert.match(
+  toolbar,
+  /\$messages\.workspace\.quickOpen\} · \$\{quickOpenShortcut\}/,
+  "Quick Open title uses the shortcut prop",
+);
 assert.doesNotMatch(toolbar, /global-search-label/, "the compact trigger has no visible Quick Open label");
 assert.match(shell, /event\.key\.toLowerCase\(\)/, "global shortcuts normalize keyboard input");
 assert.match(shell, /key === "k"/, "Cmd or Ctrl K opens Quick Open");

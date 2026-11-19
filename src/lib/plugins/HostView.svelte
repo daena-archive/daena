@@ -1,4 +1,7 @@
 <script lang="ts">
+import { nativeErrorText } from "$lib/i18n/native-errors.ts";
+import { manifestCopy } from "$lib/i18n/manifest-copy";
+import { ui } from "$lib/i18n/ui";
 import { project, type Entity, type PluginAdminEntry, type HostViewData } from "$lib/project/client";
 
 type View = PluginAdminEntry["views"][number];
@@ -109,19 +112,19 @@ function inputValue(key: string): string | number | boolean {
 }
 </script>
 
-<section class="host-view" aria-label={`${plugin.name} · ${view.title}`}>
+<section class="host-view" aria-label={`${manifestCopy($ui, plugin.id, "module", plugin.id, plugin.name)} · ${manifestCopy($ui, plugin.id, "view", view.id, view.title)}`}>
   <header class="host-view-heading">
     <div>
       <span class="overline">{plugin.name}</span>
-      <h1>{view.title}</h1>
+      <h1>{manifestCopy($ui, plugin.id, "view", view.id, view.title)}</h1>
     </div>
-    <span class="host-view-badge">Host-rendered</span>
+    <span class="host-view-badge">{$ui("Host-rendered")}</span>
   </header>
 
   {#if loading}
-    <p class="host-view-state">Loading…</p>
+    <p class="host-view-state">{$ui("Loading…")}</p>
   {:else if error}
-    <p class="host-view-state error">{error}</p>
+    <p class="host-view-state error">{$nativeErrorText(error)}</p>
   {:else}
     <div class="host-view-components">
       {#each view.components ?? [] as component (component.id)}
@@ -136,7 +139,7 @@ function inputValue(key: string): string | number | boolean {
               <span>{lists[component.id]?.length ?? 0}</span>
             </div>
             {#if (lists[component.id]?.length ?? 0) === 0}
-              <p class="host-view-state">No {component.entityType} entries yet.</p>
+              <p class="host-view-state">{$ui("No {0} entries yet.", component.entityType)}</p>
             {:else}
               <ul class="host-view-list">
                 {#each lists[component.id] ?? [] as entity (entity.id)}
@@ -158,20 +161,20 @@ function inputValue(key: string): string | number | boolean {
             {#if selected}
               <dl class="host-view-detail">
                 <div>
-                  <dt>Name</dt>
+                  <dt>{$ui("Name")}</dt>
                   <dd>{selected.name}</dd>
                 </div>
                 <div>
-                  <dt>Type</dt>
-                  <dd>{selected.entity_type ?? "Unspecified"}</dd>
+                  <dt>{$ui("Type")}</dt>
+                  <dd>{selected.entity_type ?? $ui("Unspecified")}</dd>
                 </div>
                 <div>
-                  <dt>Updated</dt>
+                  <dt>{$ui("Updated")}</dt>
                   <dd>{selected.updated_at}</dd>
                 </div>
               </dl>
             {:else}
-              <p class="host-view-state">Select an entry to inspect it.</p>
+              <p class="host-view-state">{$ui("Select an entry to inspect it.")}</p>
             {/if}
           </article>
         {:else if component.type === "field-form"}
@@ -190,7 +193,7 @@ function inputValue(key: string): string | number | boolean {
                           value={String(inputValue(field.key))}
                           onchange={(event) =>
                             void saveField(component, field, (event.currentTarget as HTMLSelectElement).value)}>
-                          <option value="">Not set</option>
+                          <option value="">{$ui("Not set")}</option>
                           {#each field.options ?? [] as option}<option value={option}>{option}</option>{/each}
                         </select>
                       {:else if field.type === "boolean"}
@@ -213,7 +216,7 @@ function inputValue(key: string): string | number | boolean {
                 {/each}
               </div>
             {:else}
-              <p class="host-view-state">Select an entry to edit its fields.</p>
+              <p class="host-view-state">{$ui("Select an entry to edit its fields.")}</p>
             {/if}
           </article>
         {:else if component.type === "button"}

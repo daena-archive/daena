@@ -1,4 +1,5 @@
 <script lang="ts">
+import { ui } from "$lib/i18n/ui";
 import { untrack } from "svelte";
 import type { MapAnchor } from "../../../../packages/plugin-sdk/src/maps";
 import { RENDERER_UNAVAILABLE, createMapAdapter, type MapAdapter, type MapAdapterView } from "../openlayers/MapAdapter";
@@ -117,7 +118,7 @@ $effect(() => {
 
 <div class="frame">
   {#if notice}<p class="map-reconcile-notice" role="alert">{notice}</p>{/if}
-  <div class="viewport" bind:this={host} role="img" aria-label="Physical world map"></div>
+  <div class="viewport" bind:this={host} role="img" aria-label={$ui("Physical world map")}></div>
   <MapViewControls
     zoom={view?.zoom ?? 1}
     min={0}

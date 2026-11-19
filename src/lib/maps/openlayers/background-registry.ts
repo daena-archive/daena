@@ -1,3 +1,4 @@
+import { localizeUi } from "../../i18n/ui.ts";
 import Collection from "ol/Collection.js";
 import ImageLayer from "ol/layer/Image.js";
 import LayerGroup from "ol/layer/Group.js";
@@ -34,7 +35,7 @@ function sourceUrl(background: RuntimeBackground, onError?: (detail: string) => 
       canvasDataUrls.set(background.canvas, url);
       return url;
     } catch (cause) {
-      onError?.(cause instanceof Error ? cause.message : "OpenLayers could not read the raster canvas.");
+      onError?.(cause instanceof Error ? cause.message : localizeUi("OpenLayers could not read the raster canvas."));
       return null;
     }
   }

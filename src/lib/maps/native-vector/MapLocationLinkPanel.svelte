@@ -1,4 +1,5 @@
 <script lang="ts">
+import { ui } from "$lib/i18n/ui";
 import {
   ATLAS_OROMETRY_FEATURE_KIND,
   isLoreBindableFeatureKind,
@@ -98,12 +99,12 @@ async function refreshCreateTypes() {
 }
 
 function anchorLabel(value: MapAnchor | null): string {
-  if (!value) return arming ? "Click the map to choose a location" : "Nothing selected";
+  if (!value) return arming ? $ui("Click the map to choose a location") : $ui("Nothing selected");
   if (value.kind === "provider-feature") return `${value.featureKind} ${value.featureId}`.trim();
-  if (value.kind === "point") return `Point (${value.point[0].toFixed(3)}, ${value.point[1].toFixed(3)})`;
-  if (value.kind === "path") return `Path (${value.points.length} points)`;
-  if (value.kind === "area") return `Area (${value.rings.length} rings)`;
-  return "Selection";
+  if (value.kind === "point") return $ui("Point ({0}, {1})", value.point[0].toFixed(3), value.point[1].toFixed(3));
+  if (value.kind === "path") return $ui("Path ({0} points)", value.points.length);
+  if (value.kind === "area") return $ui("Area ({0} rings)", value.rings.length);
+  return $ui("Selection");
 }
 
 function anchorPoint(value: MapAnchor | null): [number, number] | null {
@@ -128,13 +129,13 @@ function fillCoordinates(value: MapAnchor | null) {
 
 function applyCoordinates() {
   if (anchor?.kind === "provider-feature") {
-    status = "This location is bound to a map feature";
+    status = $ui("This location is bound to a map feature");
     return;
   }
   const x = Number(pointX);
   const y = Number(pointY);
   if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || x > 1 || y < 0 || y > 1) {
-    status = "Coordinates must be between 0 and 1";
+    status = $ui("Coordinates must be between 0 and 1");
     return;
   }
   anchor = { kind: "point", point: [x, y] };
@@ -162,7 +163,7 @@ async function refreshExisting() {
 }
 
 function buildLocation(label: string): MapLocation {
-  if (!anchor) throw new Error("Choose a map location first");
+  if (!anchor) throw new Error($ui("Choose a map location first"));
   return {
     id: crypto.randomUUID(),
     mapEntityId: mapId,
@@ -175,12 +176,12 @@ function buildLocation(label: string): MapLocation {
 
 async function linkExisting() {
   if (!selectedEntityId) {
-    status = "Choose an entity";
+    status = $ui("Choose an entity");
     return;
   }
   const entity = entities.find((item) => item.id === selectedEntityId);
   if (!entity) {
-    status = "Choose an entity";
+    status = $ui("Choose an entity");
     return;
   }
   busy = true;
@@ -188,7 +189,7 @@ async function linkExisting() {
   try {
     await project.upsertMapLocation(entity.id, buildLocation(entity.name));
     await refreshExisting();
-    status = "Linked";
+    status = $ui("Linked");
     onlinked?.(entity.id);
   } catch (cause) {
     status = cause instanceof Error ? cause.message : String(cause);
@@ -200,11 +201,11 @@ async function linkExisting() {
 async function createAndLink() {
   const name = createName.trim();
   if (!name) {
-    status = "Enter a name";
+    status = $ui("Enter a name");
     return;
   }
   if (!createType) {
-    status = "No creatable entity types are enabled";
+    status = $ui("No creatable entity types are enabled");
     return;
   }
   busy = true;
@@ -215,7 +216,7 @@ async function createAndLink() {
     createName = "";
     await refreshEntities();
     await refreshExisting();
-    status = `Created ${created.name}`;
+    status = $ui("Created {0}", created.name);
     onlinked?.(created.id);
   } catch (cause) {
     status = cause instanceof Error ? cause.message : String(cause);
@@ -229,7 +230,7 @@ async function unlink(pin: MapPin) {
   try {
     await project.unlinkMapLocation(pin.entityId, pin.id);
     await refreshExisting();
-    status = "Unlinked";
+    status = $ui("Unlinked");
     onlinked?.(pin.entityId);
   } catch (cause) {
     status = cause instanceof Error ? cause.message : String(cause);
@@ -295,65 +296,65 @@ $effect(() => {
 });
 </script>
 
-<aside class="map-link-panel" aria-label="Link location">
+<aside class="map-link-panel" aria-label={$ui("Link location")}>
   <header>
     <div>
-      <span>Link location</span>
+      <span>{$ui("Link location")}</span>
       <strong>{anchorLabel(anchor)}</strong>
     </div>
-    <button type="button" class="quiet" aria-label="Close link panel" onclick={onclose}>×</button>
+    <button type="button" class="quiet" aria-label={$ui("Close link panel")} onclick={onclose}>×</button>
   </header>
 
   {#if arming || !anchor}
-    <p class="hint">Click the map to choose a location.</p>
+    <p class="hint">{$ui("Click the map to choose a location.")}</p>
   {/if}
 
   {#if !arming && anchor}
     {#if anchor.kind !== "provider-feature"}
       <div class="coords">
-        <label>X<input type="number" min="0" max="1" step="0.001" bind:value={pointX} /></label>
-        <label>Y<input type="number" min="0" max="1" step="0.001" bind:value={pointY} /></label>
+        <label>{$ui("X")}<input type="number" min="0" max="1" step="0.001" bind:value={pointX} /></label>
+        <label>{$ui("Y")}<input type="number" min="0" max="1" step="0.001" bind:value={pointY} /></label>
       </div>
       <div class="row">
-        <button type="button" class="quiet" onclick={applyCoordinates}>Apply coordinates</button>
-        <button type="button" class="quiet" onclick={onresnap}>Use map click</button>
+        <button type="button" class="quiet" onclick={applyCoordinates}>{$ui("Apply coordinates")}</button>
+        <button type="button" class="quiet" onclick={onresnap}>{$ui("Use map click")}</button>
       </div>
     {/if}
 
     {#if contextualExisting.length > 0}
-      <div class="existing-links" aria-label="Links at this location">
+      <div class="existing-links" aria-label={$ui("Links at this location")}>
         {#each contextualExisting as pin (pin.id)}
           <div class="existing-row">
             <div>
               <strong>{pin.label || pin.role}</strong>
-              <small>{pin.resolution === "unresolved" ? "Deleted or missing target" : pin.role}</small>
+              <small>{pin.resolution === "unresolved" ? $ui("Deleted or missing target") : pin.role}</small>
             </div>
             <div class="row">
               {#if onopen}<button
                   type="button"
                   class="quiet"
                   disabled={busy || pin.resolution === "unresolved"}
-                  onclick={() => onopen?.(pin.entityId)}>Open</button
+                  onclick={() => onopen?.(pin.entityId)}>{$ui("Open")}</button
                 >{/if}
-              <button type="button" class="quiet" disabled={busy} onclick={() => void unlink(pin)}>Unlink</button>
+              <button type="button" class="quiet" disabled={busy} onclick={() => void unlink(pin)}>{$ui("Unlink")}</button>
             </div>
           </div>
         {/each}
       </div>
     {/if}
 
-    <label class="stack">Role<input type="text" maxlength="64" bind:value={role} /></label>
+    <label class="stack">{$ui("Role")}<input type="text" maxlength="64" bind:value={role} /></label>
 
-    <div class="mode-row" role="group" aria-label="Link mode">
-      <button type="button" class:active={mode === "existing"} onclick={() => (mode = "existing")}>Existing</button>
-      <button type="button" class:active={mode === "create"} onclick={() => (mode = "create")}>Create</button>
+    <div class="mode-row" role="group" aria-label={$ui("Link mode")}>
+      <button type="button" class:active={mode === "existing"} onclick={() => (mode = "existing")}>{$ui("Existing")}</button>
+      <button type="button" class:active={mode === "create"} onclick={() => (mode = "create")}>{$ui("Create")}</button>
     </div>
 
     {#if mode === "existing"}
-      <input type="search" placeholder="Search entities…" bind:value={search} />
-      <div class="entity-list" role="listbox" aria-label="Entities">
+      <input type="search" placeholder={$ui("Search entities…")} bind:value={search} />
+      <div class="entity-list" role="listbox" aria-label={$ui("Entities")}>
         {#if entities.length === 0}
-          <p>{search.trim() ? "No matching entities." : "No entities to link yet."}</p>
+          <p>{search.trim() ? $ui("No matching entities.") : $ui("No entities to link yet.")}</p>
         {:else}
           {#each entities as entity (entity.id)}
             <button
@@ -372,27 +373,27 @@ $effect(() => {
         type="button"
         class="primary"
         disabled={busy || !anchor || !selectedEntityId}
-        onclick={() => void linkExisting()}>Link entity</button>
+        onclick={() => void linkExisting()}>{$ui("Link entity")}</button>
     {:else}
       <input
         type="text"
         placeholder={role === "lake"
-          ? "Lake name"
+          ? $ui("Lake name")
           : role === "river"
-            ? "River name"
+            ? $ui("River name")
             : role === "landmass"
-              ? "Landmass name"
+              ? $ui("Landmass name")
               : role === "city"
-                ? "City name"
+                ? $ui("City name")
                 : role === "province"
-                  ? "Province name"
-                  : "New entry name"}
+                  ? $ui("Province name")
+                  : $ui("New entry name")}
         maxlength="120"
         bind:value={createName} />
       {#if createTypes.length === 0}
-        <p class="hint">Enable a lore module with entity types to create entries from the map.</p>
+        <p class="hint">{$ui("Enable a lore module with entity types to create entries from the map.")}</p>
       {:else}
-        <select bind:value={createType} aria-label="Entity type">
+        <select bind:value={createType} aria-label={$ui("Entity type")}>
           {#each createTypes as option (option.value)}
             <option value={option.value}>{option.label}</option>
           {/each}
@@ -402,7 +403,7 @@ $effect(() => {
         type="button"
         class="primary"
         disabled={busy || !anchor || !createName.trim() || !createType}
-        onclick={() => void createAndLink()}>Create and link</button>
+        onclick={() => void createAndLink()}>{$ui("Create and link")}</button>
     {/if}
   {/if}
 

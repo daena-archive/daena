@@ -1,4 +1,6 @@
 <script lang="ts">
+import { nativeErrorText } from "$lib/i18n/native-errors.ts";
+import { ui } from "$lib/i18n/ui";
 import { tick } from "svelte";
 import type { IconRef } from "../../../packages/plugin-sdk/src/generated";
 import EntityIcon from "./EntityIcon.svelte";
@@ -24,10 +26,10 @@ let popoverStyle = $state("");
 let svgError = $state("");
 const selectedLabel = $derived(
   value.kind === "catalog"
-    ? (CATALOG_ICON_OPTIONS.find((option) => option.id === value.id)?.label ?? "Unknown")
+    ? (CATALOG_ICON_OPTIONS.find((option) => option.id === value.id)?.label ?? $ui("Unknown"))
     : value.kind === "plugin-svg"
-      ? "Plugin SVG"
-      : "Custom SVG",
+      ? $ui("Plugin SVG")
+      : $ui("Custom SVG"),
 );
 const filtered = $derived(
   CATALOG_ICON_OPTIONS.filter((option) => option.label.toLowerCase().includes(query.trim().toLowerCase())),
@@ -99,14 +101,14 @@ $effect(() => {
     bind:this={trigger}
     class="picker-trigger"
     aria-expanded={open}
-    aria-label={`Choose icon: ${selectedLabel}`}
+    aria-label={$ui("Choose icon: {0}", selectedLabel)}
     title={selectedLabel}
     onclick={togglePicker}>
     <EntityIcon icon={value} size={17} />
   </button>
   {#if open}
     <div class="picker-popover" bind:this={popover} style={popoverStyle}>
-      <input bind:value={query} aria-label="Search icons" placeholder="Search icons…" />
+      <input bind:value={query} aria-label={$ui("Search icons")} placeholder={$ui("Search icons…")} />
       <div class="icon-grid">
         {#each filtered as option}
           <button
@@ -122,9 +124,9 @@ $effect(() => {
           </button>
         {/each}
       </div>
-      {#if filtered.length === 0}<span class="empty">No matching icons</span>{/if}
+      {#if filtered.length === 0}<span class="empty">{$ui("No matching icons")}</span>{/if}
       <div class="svg-upload">
-        <button type="button" onclick={() => fileInput?.click()}>Use SVG file</button>
+        <button type="button" onclick={() => fileInput?.click()}>{$ui("Use SVG file")}</button>
         <input
           bind:this={fileInput}
           type="file"
@@ -142,7 +144,7 @@ $effect(() => {
               closePicker();
             }
           }} />
-        {#if svgError}<span>{svgError}</span>{/if}
+        {#if svgError}<span>{$nativeErrorText(svgError)}</span>{/if}
       </div>
     </div>
   {/if}

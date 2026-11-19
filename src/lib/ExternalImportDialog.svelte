@@ -1,4 +1,6 @@
 <script lang="ts">
+import { nativeErrorText } from "$lib/i18n/native-errors.ts";
+import { ui } from "$lib/i18n/ui";
 import { onMount, tick } from "svelte";
 import { listen } from "@tauri-apps/api/event";
 import { FileText, FolderOpen, X, AlertTriangle, CircleCheck, LoaderCircle } from "@lucide/svelte";
@@ -288,7 +290,7 @@ function applyStatus(next: ExternalImportAnalysisStatus) {
   if (status && next.sessionId !== status.sessionId) return;
   status = next;
   if (next.state === "ready") void preparePreview();
-  if (next.state === "failed") error = next.error ? displayError(next.error) : "Analysis failed.";
+  if (next.state === "failed") error = next.error ? displayError(next.error) : $ui("Analysis failed.");
 }
 
 async function pollStatus() {
@@ -437,21 +439,21 @@ onMount(() => {
     onkeydown={(event) => event.stopPropagation()}>
     <header class="import-header">
       <div>
-        <span class="kicker">PROJECT IMPORT</span>
-        <h2 id="external-import-title">Import external material</h2>
-        <p>Analyze, inspect, and map source material before anything is added to this project.</p>
+        <span class="kicker">{$ui("PROJECT IMPORT")}</span>
+        <h2 id="external-import-title">{$ui("Import external material")}</h2>
+        <p>{$ui("Analyze, inspect, and map source material before anything is added to this project.")}</p>
       </div>
-      <button class="icon-button" type="button" aria-label="Close import" onclick={() => void closeDialog()}>
+      <button class="icon-button" type="button" aria-label={$ui("Close import")} onclick={() => void closeDialog()}>
         <X size={17} strokeWidth={1.8} />
       </button>
     </header>
 
-    {#if error}<p class="message error-message" role="alert">{error}</p>{/if}
+    {#if error}<p class="message error-message" role="alert">{$nativeErrorText(error)}</p>{/if}
 
     {#if !status}
-      <section class="source-step" aria-label="Choose import source">
+      <section class="source-step" aria-label={$ui("Choose import source")}>
         <label>
-          <span>Importer</span>
+          <span>{$ui("Importer")}</span>
           <select bind:value={importerKey} disabled={busy || importers.length === 0} onchange={normalizeSourceKind}>
             {#each importers as importer (importerKeyOf(importer))}
               <option value={importerKeyOf(importer)}>{importer.name}</option>
@@ -460,17 +462,17 @@ onMount(() => {
           {#if activeImporter()}<small>{activeImporter()!.description}</small>{/if}
         </label>
         <fieldset>
-          <legend>Source</legend>
+          <legend>{$ui("Source")}</legend>
           <div class="source-kinds">
             <label class:active={sourceKind === "folder" && importerSupports("folder")}>
               <input type="radio" bind:group={sourceKind} value="folder" disabled={!importerSupports("folder")} />
               <FolderOpen size={19} strokeWidth={1.7} /><span
-                ><strong>Folder</strong><small>Analyze supported files recursively</small></span>
+                ><strong>{$ui("Folder")}</strong><small>{$ui("Analyze supported files recursively")}</small></span>
             </label>
             <label class:active={sourceKind === "file" && importerSupports("file")}>
               <input type="radio" bind:group={sourceKind} value="file" disabled={!importerSupports("file")} />
               <FileText size={19} strokeWidth={1.7} /><span
-                ><strong>Single file</strong><small>Documents, ZIP archives, or MediaWiki XML</small></span>
+                ><strong>{$ui("Single file")}</strong><small>{$ui("Documents, ZIP archives, or MediaWiki XML")}</small></span>
             </label>
           </div>
         </fieldset>
@@ -479,86 +481,75 @@ onMount(() => {
           type="button"
           disabled={busy || !activeImporter() || !importerSupports(sourceKind)}
           onclick={chooseAndAnalyze}>
-          {busy ? "Opening…" : `Choose ${sourceKind}`}
+          {busy ? $ui("Opening…") : $ui("Choose {0}", sourceKind)}
         </button>
       </section>
     {:else if status.state === "queued" || status.state === "analyzing"}
       <section class="analysis-step" aria-live="polite" aria-busy="true">
         <LoaderCircle class="spinner" size={28} strokeWidth={1.7} />
         <div>
-          <span class="kicker">ANALYZING</span>
-          <h3>{sourceName || "Selected source"}</h3>
+          <span class="kicker">{$ui("ANALYZING")}</span>
+          <h3>{sourceName || $ui("Selected source")}</h3>
         </div>
         <div class="progress-grid">
-          <div><strong>{status.processedEntries}</strong><span>Entries inspected</span></div>
-          <div><strong>{status.stagedObjectCount}</strong><span>Documents staged</span></div>
-          <div><strong>{status.unsupportedCount}</strong><span>Unsupported</span></div>
-          <div><strong>{Math.round(status.sourceBytes / 1024).toLocaleString()}</strong><span>KB read</span></div>
+          <div><strong>{status.processedEntries}</strong><span>{$ui("Entries inspected")}</span></div>
+          <div><strong>{status.stagedObjectCount}</strong><span>{$ui("Documents staged")}</span></div>
+          <div><strong>{status.unsupportedCount}</strong><span>{$ui("Unsupported")}</span></div>
+          <div><strong>{Math.round(status.sourceBytes / 1024).toLocaleString()}</strong><span>{$ui("KB read")}</span></div>
         </div>
         {#if status.currentSourcePath}<p class="current-path">{status.currentSourcePath}</p>{/if}
-        <button class="secondary-button" type="button" disabled={busy} onclick={cancelAnalysis}>Cancel analysis</button>
+        <button class="secondary-button" type="button" disabled={busy} onclick={cancelAnalysis}>{$ui("Cancel analysis")}</button>
       </section>
     {:else if status.state === "cancelled" || status.state === "failed"}
       <section class="empty-step">
         <AlertTriangle size={28} strokeWidth={1.6} />
-        <h3>{status.state === "cancelled" ? "Analysis cancelled" : "Could not analyze this source"}</h3>
-        <p>No project content was changed.</p>
-        <button class="primary-button" type="button" onclick={startOver}>Choose another source</button>
+        <h3>{status.state === "cancelled" ? $ui("Analysis cancelled") : $ui("Could not analyze this source")}</h3>
+        <p>{$ui("No project content was changed.")}</p>
+        <button class="primary-button" type="button" onclick={startOver}>{$ui("Choose another source")}</button>
       </section>
     {:else if report}
       <section class="result-step" aria-live="polite">
         <CircleCheck size={32} strokeWidth={1.6} />
         <div>
-          <span class="kicker">IMPORT COMPLETE</span>
-          <h3>Project content was updated</h3>
-          <p>
-            Created {report.created.length}, mapped {report.mapped.length}, and skipped
-            {report.skippedSourcePaths.length} source {report.skippedSourcePaths.length === 1 ? "item" : "items"}.
-            Imported {report.assets.length}
-            {report.assets.length === 1 ? "attachment" : "attachments"} and {report.relationships.length}
-            {report.relationships.length === 1 ? "relationship" : "relationships"}. Converted
-            {report.fields.length}
-            {report.fields.length === 1 ? "field" : "fields"}; reported
-            {report.unsupported.length} unsupported {report.unsupported.length === 1 ? "item" : "items"} and
-            {report.missingReferences.length} missing
-            {report.missingReferences.length === 1 ? "reference" : "references"}.
-          </p>
+          <span class="kicker">{$ui("IMPORT COMPLETE")}</span>
+          <h3>{$ui("Project content was updated")}</h3>
+          <p> {$ui("Created {0}, mapped {1}, and skipped {2} source {3}. Imported {4} {5} and {6} {7}. Converted {8} {9}; reported {10} unsupported {11} and {12} missing {13}.", report.created.length, report.mapped.length, report.skippedSourcePaths.length, report.skippedSourcePaths.length === 1 ? $ui("item") : $ui("items"), report.assets.length, report.assets.length === 1 ? "attachment" : "attachments", report.relationships.length, report.relationships.length === 1 ? $ui("relationship") : $ui("relationships"), report.fields.length, report.fields.length === 1 ? $ui("field") : $ui("fields"), report.unsupported.length, report.unsupported.length === 1 ? $ui("item") : $ui("items"), report.missingReferences.length, report.missingReferences.length === 1 ? "reference" : "references")} </p>
         </div>
         {#if report.decisions.length || report.assets.length || report.relationships.length || report.unsupported.length}
           <div class="result-list">
             {#each [...report.created, ...report.mapped] as item}
               <div>
-                <strong>{item.sourcePath}</strong><span>{item.entityType ?? "Existing entity"} · {item.entityId}</span>
+                <strong>{item.sourcePath}</strong><span>{item.entityType ?? $ui("Existing entity")} · {item.entityId}</span>
               </div>
             {/each}
             {#each report.assets as asset}
-              <div><strong>{asset.sourcePath}</strong><span>Attachment · {asset.filename}</span></div>
+              <div><strong>{asset.sourcePath}</strong><span>{$ui("Attachment · {0}", asset.filename)}</span></div>
             {/each}
             {#each report.relationships as relationship}
               <div>
                 <strong>{relationship.relationshipType}</strong><span
-                  >Relationship · {relationship.sourceEntityId} → {relationship.targetEntityId}</span>
+                  >{$ui("Relationship · {0} → {1}", relationship.sourceEntityId, relationship.targetEntityId)}</span>
               </div>
             {/each}
             {#each report.fields as field}
               <div>
                 <strong>{field.sourcePath} · {field.sourceKey}</strong><span
-                  >Field · {field.namespace}:{field.key}</span>
+                  >{$ui("Field · {0}:{1}", field.namespace, field.key)}</span>
               </div>
             {/each}
             {#each report.decisions.filter((decision) => decision.decision === "skip") as decision}
-              <div><strong>{decision.sourcePath}</strong><span>Decision · skipped</span></div>
+              <div><strong>{decision.sourcePath}</strong><span>{$ui("Decision · skipped")}</span></div>
             {/each}
             {#each report.unsupported as item}
-              <div><strong>{item.source_path}</strong><span>Unsupported · {item.reason}</span></div>
+              <div><strong>{item.source_path}</strong><span>{$ui("Unsupported · {0}", item.reason)}</span></div>
             {/each}
             {#each report.missingReferences as reference}
               <div>
-                <strong>{reference.sourcePath}</strong><span>Missing {reference.kind} · {reference.target}</span>
+                <strong>{reference.sourcePath}</strong><span>{$ui("Missing {0} · {1}", reference.kind, reference.target)}</span>
               </div>
             {/each}
             {#each report.diagnostics as diagnostic}
-              <div><strong>{diagnostic.code}</strong><span>{diagnostic.message}</span></div>
+              <div><strong>{diagnostic.code}</strong><span>{$nativeErrorText(diagnostic.message)}</span></div>
             {/each}
           </div>
         {/if}
@@ -566,32 +557,30 @@ onMount(() => {
           <div class="message warning-message">
             <AlertTriangle size={15} strokeWidth={1.8} />
             <span
-              >Imported with {report.warnings.length} acknowledged warning{report.warnings.length === 1
+              >{$ui("Imported with {0} acknowledged warning{1}.", report.warnings.length, report.warnings.length === 1
                 ? ""
-                : "s"}.</span>
+                : $ui("s"))}</span>
           </div>
         {/if}
       </section>
     {:else if status.result}
       <div class="preview-shell">
-        <section class="summary-row" aria-label="Analysis summary">
-          <div><strong>{status.result.summary.document_count}</strong><span>Documents</span></div>
-          <div><strong>{status.result.summary.folder_count}</strong><span>Folders</span></div>
-          <div><strong>{status.result.summary.asset_count}</strong><span>Assets</span></div>
-          <div><strong>{status.result.summary.unsupported_count}</strong><span>Unsupported</span></div>
+        <section class="summary-row" aria-label={$ui("Analysis summary")}>
+          <div><strong>{status.result.summary.document_count}</strong><span>{$ui("Documents")}</span></div>
+          <div><strong>{status.result.summary.folder_count}</strong><span>{$ui("Folders")}</span></div>
+          <div><strong>{status.result.summary.asset_count}</strong><span>{$ui("Assets")}</span></div>
+          <div><strong>{status.result.summary.unsupported_count}</strong><span>{$ui("Unsupported")}</span></div>
           <div>
             <strong>{status.result.summary.warning_count + status.result.summary.error_count}</strong><span
-              >Diagnostics</span>
+              >{$ui("Diagnostics")}</span>
           </div>
           <div class:needs-attention={(plan?.unresolvedDecisionCount ?? 0) > 0}>
-            <strong>{plan?.unresolvedDecisionCount ?? "—"}</strong><span>Unresolved mappings</span>
+            <strong>{plan?.unresolvedDecisionCount ?? "—"}</strong><span>{$ui("Unresolved mappings")}</span>
           </div>
         </section>
 
         {#if catalog().entityTypes.length === 0}
-          <p class="message error-message">
-            No enabled plugin currently contributes an entity type. Enable a plugin before mapping imported items.
-          </p>
+          <p class="message error-message"> {$ui("No enabled plugin currently contributes an entity type. Enable a plugin before mapping imported items.")} </p>
         {/if}
         {#if plan?.issues.length}<div class="message warning-message" role="status">
             <AlertTriangle size={15} strokeWidth={1.8} />
@@ -600,31 +589,25 @@ onMount(() => {
         {#if validation}
           <section class:invalid={validation.errorCount > 0} class="validation-panel" aria-live="polite">
             <div>
-              <strong>{validation.errorCount > 0 ? "Resolve validation errors" : "Plan validated"}</strong>
-              <span>
-                {validation.createCount} create · {validation.mapCount} map · {validation.skipCount} skip ·
-                {validation.assetCount} assets · {validation.relationshipCount} relationships ·
-                {validation.warningCount} warnings
-              </span>
+              <strong>{validation.errorCount > 0 ? $ui("Resolve validation errors") : $ui("Plan validated")}</strong>
+              <span> {$ui("{0} create · {1} map · {2} skip · {3} assets · {4} relationships · {5} warnings", validation.createCount, validation.mapCount, validation.skipCount, validation.assetCount, validation.relationshipCount, validation.warningCount)} </span>
             </div>
             {#if validation.issues.length}
               <ul>
                 {#each validation.issues as issue}
-                  <li class={issue.severity}><strong>{issue.code}</strong> {issue.message}</li>
+                  <li class={issue.severity}><strong>{issue.code}</strong> {$nativeErrorText(issue.message)}</li>
                 {/each}
               </ul>
             {/if}
             {#if confirmCommit && validation.validationId}
               <div class="commit-confirmation">
-                <strong>Commit this validated plan?</strong>
-                <span>The changes are applied as one atomic project mutation.</span>
+                <strong>{$ui("Commit this validated plan?")}</strong>
+                <span>{$ui("The changes are applied as one atomic project mutation.")}</span>
                 {#if validation.warningCount > 0}
                   <label>
-                    <input type="checkbox" bind:checked={acknowledgeWarnings} />
-                    I reviewed and accept the {validation.warningCount} warning{validation.warningCount === 1
+                    <input type="checkbox" bind:checked={acknowledgeWarnings} /> {$ui("I reviewed and accept the {0} warning{1}.", validation.warningCount, validation.warningCount === 1
                       ? ""
-                      : "s"}.
-                  </label>
+                      : $ui("s"))} </label>
                 {/if}
               </div>
             {/if}
@@ -632,9 +615,9 @@ onMount(() => {
         {/if}
 
         <div class="preview-grid">
-          <section class="item-list" aria-label="Staged items">
+          <section class="item-list" aria-label={$ui("Staged items")}>
             <div class="panel-heading">
-              <div><span class="kicker">STAGED ITEMS</span><strong>{page?.totalItems ?? 0} total</strong></div>
+              <div><span class="kicker">{$ui("STAGED ITEMS")}</span><strong>{$ui("{0} total", page?.totalItems ?? 0)}</strong></div>
               {#if previewLoading}<LoaderCircle class="spinner" size={16} />{/if}
             </div>
             <div class="item-scroll">
@@ -649,21 +632,21 @@ onMount(() => {
               <button
                 type="button"
                 disabled={pageOffset === 0 || previewLoading}
-                onclick={() => loadPage(Math.max(0, pageOffset - pageSize))}>Previous</button>
+                onclick={() => loadPage(Math.max(0, pageOffset - pageSize))}>{$ui("Previous")}</button>
               <span>{pageOffset + 1}–{Math.min(pageOffset + pageSize, page?.totalItems ?? 0)}</span>
               <button
                 type="button"
                 disabled={!page || pageOffset + pageSize >= page.totalItems || previewLoading}
-                onclick={() => loadPage(pageOffset + pageSize)}>Next</button>
+                onclick={() => loadPage(pageOffset + pageSize)}>{$ui("Next")}</button>
             </div>
           </section>
 
-          <section class="item-inspector" aria-label="Selected staged item">
+          <section class="item-inspector" aria-label={$ui("Selected staged item")}>
             {#if inspectedItem?.kind === "object"}
               {@const object = selectedObject()!}
               <div class="inspector-heading">
                 <div>
-                  <span class="kicker">DOCUMENT</span>
+                  <span class="kicker">{$ui("DOCUMENT")}</span>
                   <h3>{object.title}</h3>
                   <small>{object.source_path}</small>
                 </div>
@@ -671,22 +654,22 @@ onMount(() => {
               </div>
               <div class="decision-card">
                 <label>
-                  <span>Import action</span>
+                  <span>{$ui("Import action")}</span>
                   <select
                     value={decisions[object.id]?.kind ?? ""}
                     onchange={(event) => {
                       const kind = event.currentTarget.value as ImportObjectDecision["kind"];
                       if (kind) setObjectAction(object, kind);
                     }}>
-                    <option value="">Create (default)</option>
-                    <option value="create">Create new entity</option>
-                    <option value="skip">Skip this item</option>
-                    <option value="map_to_existing" disabled={entities.length === 0}>Map to existing entity</option>
+                    <option value="">{$ui("Create (default)")}</option>
+                    <option value="create">{$ui("Create new entity")}</option>
+                    <option value="skip">{$ui("Skip this item")}</option>
+                    <option value="map_to_existing" disabled={entities.length === 0}>{$ui("Map to existing entity")}</option>
                   </select>
                 </label>
                 {#if objectDecision(object).kind === "map_to_existing"}
                   <label>
-                    <span>Existing entity</span>
+                    <span>{$ui("Existing entity")}</span>
                     <select
                       value={existingTargetId(object)}
                       onchange={(event) => setExistingTarget(object, event.currentTarget.value)}>
@@ -701,18 +684,18 @@ onMount(() => {
                 <div class="mapping-card">
                   <div class="mapping-heading">
                     <div>
-                      <span class="kicker">MAPPING</span><strong
+                      <span class="kicker">{$ui("MAPPING")}</span><strong
                         >{planLoading
-                          ? "Updating candidate plan…"
-                          : effectiveEntityType(object) || "Needs a type"}</strong>
+                          ? $ui("Updating candidate plan…")
+                          : effectiveEntityType(object) || $ui("Needs a type")}</strong>
                     </div>
                     {#if !planLoading && effectiveEntityType(object)}<CircleCheck size={17} strokeWidth={1.8} />{/if}
                   </div>
-                  <div class="scope-tabs" role="group" aria-label="Mapping override scope">
+                  <div class="scope-tabs" role="group" aria-label={$ui("Mapping override scope")}>
                     <button
                       class:active={mappingScope === "global"}
                       type="button"
-                      onclick={() => (mappingScope = "global")}>All items</button>
+                      onclick={() => (mappingScope = "global")}>{$ui("All items")}</button>
                     <button
                       class:active={mappingScope === "category"}
                       type="button"
@@ -720,36 +703,36 @@ onMount(() => {
                       onclick={() => {
                         mappingCategory = mappingCategory || selectedCategories()[0] || "";
                         mappingScope = "category";
-                      }}>Category</button>
+                      }}>{$ui("Category")}</button>
                     <button
                       class:active={mappingScope === "folder"}
                       type="button"
                       disabled={!selectedFolder()}
-                      onclick={() => (mappingScope = "folder")}>Folder</button>
+                      onclick={() => (mappingScope = "folder")}>{$ui("Folder")}</button>
                     <button class:active={mappingScope === "item"} type="button" onclick={() => (mappingScope = "item")}
-                      >This item</button>
+                      >{$ui("This item")}</button>
                   </div>
                   {#if mappingScope === "category" && selectedCategories().length > 0}
                     <label>
-                      <span>Source category</span>
+                      <span>{$ui("Source category")}</span>
                       <select bind:value={mappingCategory}>
                         {#each selectedCategories() as category}<option value={category}>{category}</option>{/each}
                       </select>
                     </label>
                   {/if}
                   <label
-                    ><span>Entity type</span><select
+                    ><span>{$ui("Entity type")}</span><select
                       value={currentDecision().entityType ?? ""}
                       onchange={(event) => setEntityType(event.currentTarget.value)}>
                       <option value=""
-                        >{mappingScope === "global" ? "Choose a type" : "Inherit broader mapping"}</option>
+                        >{mappingScope === "global" ? $ui("Choose a type") : $ui("Inherit broader mapping")}</option>
                       {#each catalog().entityTypes as choice}<option value={choice.id}
                           >{choice.moduleName} · {choice.label}</option
                         >{/each}
                     </select></label>
                   {#if Object.keys(object.fields ?? {}).length > 0}
                     <div class="mapping-fields">
-                      <span>Source fields</span>{#each Object.keys(object.fields ?? {}).sort() as sourceKey}<label
+                      <span>{$ui("Source fields")}</span>{#each Object.keys(object.fields ?? {}).sort() as sourceKey}<label
                           ><span class="source-field"
                             ><code>{sourceKey}</code><small>{previewValue(object.fields?.[sourceKey])}</small></span
                           ><select
@@ -757,8 +740,8 @@ onMount(() => {
                             onchange={(event) => setFieldMapping(sourceKey, event.currentTarget.value)}
                             ><option value=""
                               >{mappingScope === "global"
-                                ? "Preserve as unmapped metadata"
-                                : "Inherit broader mapping"}</option
+                                ? $ui("Preserve as unmapped metadata")
+                                : $ui("Inherit broader mapping")}</option
                             >{#each fieldsForEntity(effectiveEntityType(object)) as choice}<option value={choice.id}
                                 >{choice.moduleName} · {choice.label}</option
                               >{/each}</select
@@ -768,12 +751,12 @@ onMount(() => {
                   {/if}
                   {#if relationshipSources(object).length > 0}
                     <div class="mapping-fields">
-                      <span>Resolved source links</span>{#each relationshipSources(object) as sourceKey}<label
+                      <span>{$ui("Resolved source links")}</span>{#each relationshipSources(object) as sourceKey}<label
                           ><code>{sourceKey}</code><select
                             value={currentDecision().relationshipMappings?.[sourceKey] ?? ""}
                             onchange={(event) => setFieldMapping(sourceKey, event.currentTarget.value, true)}
                             ><option value=""
-                              >{mappingScope === "global" ? "Leave unresolved" : "Inherit broader mapping"}</option
+                              >{mappingScope === "global" ? $ui("Leave unresolved") : $ui("Inherit broader mapping")}</option
                             >{#each catalog().relationships as choice}<option value={choice.id}
                                 >{choice.moduleName} · {choice.label}</option
                               >{/each}</select
@@ -783,54 +766,54 @@ onMount(() => {
                   {/if}
                   {#if catalog().relationships.length === 0 && relationshipSources(object).length > 0}
                     <small
-                      >No enabled relationship type without required metadata can accept resolved source links.</small>
+                      >{$ui("No enabled relationship type without required metadata can accept resolved source links.")}</small>
                   {/if}
                   {#if mappingScope === "folder" && selectedFolder()}<small
-                      >Overrides items under <code>{selectedFolder()}</code>.</small
+                      >{$ui("Overrides items under")} <code>{selectedFolder()}</code>.</small
                     >{/if}
                   {#if mappingScope === "category" && mappingCategory}<small
-                      >Overrides items tagged with source category <code>{mappingCategory}</code>.</small
+                      >{$ui("Overrides items tagged with source category")} <code>{mappingCategory}</code>.</small
                     >{/if}
                 </div>
               {/if}
               {#if (object.aliases?.length ?? 0) > 0 || (object.tags?.length ?? 0) > 0 || Object.keys(object.metadata ?? {}).length > 0}
                 <div class="source-context">
-                  <span class="kicker">SOURCE CONTEXT</span>
-                  {#if object.aliases?.length}<p><strong>Aliases</strong>{object.aliases.join(", ")}</p>{/if}
-                  {#if object.tags?.length}<p><strong>Tags / categories</strong>{object.tags.join(", ")}</p>{/if}
+                  <span class="kicker">{$ui("SOURCE CONTEXT")}</span>
+                  {#if object.aliases?.length}<p><strong>{$ui("Aliases")}</strong>{object.aliases.join(", ")}</p>{/if}
+                  {#if object.tags?.length}<p><strong>{$ui("Tags / categories")}</strong>{object.tags.join(", ")}</p>{/if}
                   {#each Object.entries(object.metadata ?? {}).sort( ([left], [right]) => left.localeCompare(right) ) as [key, value]}
                     <p><strong>{key}</strong>{previewValue(value)}</p>
                   {/each}
                 </div>
               {/if}
               <div class="document-preview">
-                <span class="kicker">SOURCE PREVIEW</span>
-                <pre>{object.body?.body ?? "No document body."}</pre>
+                <span class="kicker">{$ui("SOURCE PREVIEW")}</span>
+                <pre>{object.body?.body ?? $ui("No document body.")}</pre>
               </div>
               {#if (object.links ?? []).length}
                 <div class="diagnostics">
-                  <span class="kicker">DISCOVERED LINKS</span>
+                  <span class="kicker">{$ui("DISCOVERED LINKS")}</span>
                   {#each object.links ?? [] as link}
                     <p class={link.resolution === "missing" ? "error" : ""}>
                       <strong>{link.kind}</strong>{link.target} · {link.resolution}
-                      {#if link.resolved_object_id}<small>target {link.resolved_object_id.slice(0, 12)}</small>{/if}
+                      {#if link.resolved_object_id}<small>{$ui("target {0}", link.resolved_object_id.slice(0, 12))}</small>{/if}
                     </p>
                   {/each}
                 </div>
               {/if}
               {#if object.diagnostics?.length}<div class="diagnostics">
-                  <span class="kicker">DIAGNOSTICS</span>{#each object.diagnostics as diagnostic}<p
+                  <span class="kicker">{$ui("DIAGNOSTICS")}</span>{#each object.diagnostics as diagnostic}<p
                       class={diagnostic.severity}>
-                      <strong>{diagnostic.code}</strong>{diagnostic.message}
+                      <strong>{diagnostic.code}</strong>{$nativeErrorText(diagnostic.message)}
                     </p>{/each}
                 </div>{/if}
               {#if Object.keys(object.raw_source_data ?? {}).length > 0}<details>
-                  <summary>Raw source data</summary>
+                  <summary>{$ui("Raw source data")}</summary>
                   <pre>{JSON.stringify(object.raw_source_data, null, 2)}</pre>
                 </details>{/if}
             {:else if inspectedItem?.kind === "unsupported"}
               <div class="unsupported-detail">
-                <AlertTriangle size={24} strokeWidth={1.7} /><span class="kicker">UNSUPPORTED SOURCE DATA</span>
+                <AlertTriangle size={24} strokeWidth={1.7} /><span class="kicker">{$ui("UNSUPPORTED SOURCE DATA")}</span>
                 <h3>{inspectedItem.value.source_path}</h3>
                 <p>{inspectedItem.value.reason}</p>
                 <pre>{JSON.stringify(inspectedItem.value.raw_metadata ?? {}, null, 2)}</pre>
@@ -843,12 +826,9 @@ onMount(() => {
               </div>
             {:else if inspectedItem?.kind === "asset"}
               <div class="unsupported-detail">
-                <FileText size={24} strokeWidth={1.7} /><span class="kicker">ASSET</span>
+                <FileText size={24} strokeWidth={1.7} /><span class="kicker">{$ui("ASSET")}</span>
                 <h3>{inspectedItem.value.filename}</h3>
-                <p>
-                  {inspectedItem.value.source_path} · {inspectedItem.value.size.toLocaleString()} bytes ·
-                  {inspectedItem.value.mime_type ?? "unknown media type"}
-                </p>
+                <p> {$ui("{0} · {1} bytes · {2}", inspectedItem.value.source_path, inspectedItem.value.size.toLocaleString(), inspectedItem.value.mime_type ?? $ui("unknown media type"))} </p>
                 <pre>{JSON.stringify(
                     {
                       contentHash: inspectedItem.value.content_hash,
@@ -859,7 +839,7 @@ onMount(() => {
                     2,
                   )}</pre>
               </div>
-            {:else}<div class="empty-inspector">Select an item to inspect it.</div>{/if}
+            {:else}<div class="empty-inspector">{$ui("Select an item to inspect it.")}</div>{/if}
           </section>
         </div>
       </div>
@@ -867,31 +847,31 @@ onMount(() => {
 
     <footer class="import-footer">
       <div>
-        <strong>{report ? "Import committed" : "No project changes yet"}</strong><span
+        <strong>{report ? $ui("Import committed") : $ui("No project changes yet")}</strong><span
           >{report
-            ? `Request ${report.requestId.slice(0, 12)}`
+            ? $ui("Request {0}", report.requestId.slice(0, 12))
             : plan
-              ? `Candidate ${plan.planId.slice(7, 19)}`
-              : "Analysis and mapping are preview-only."}</span>
+              ? $ui("Candidate {0}", plan.planId.slice(7, 19))
+              : $ui("Analysis and mapping are preview-only.")}</span>
       </div>
       <div>
         {#if status?.state === "ready" && !report}
           <button class="secondary-button" type="button" disabled={validating || committing} onclick={startOver}
-            >Start over</button>
+            >{$ui("Start over")}</button>
           <button class="secondary-button" type="button" disabled={validating || committing} onclick={validatePlan}
-            >{validating ? "Validating…" : "Validate plan"}</button>
+            >{validating ? $ui("Validating…") : $ui("Validate plan")}</button>
           {#if validation?.validationId && validation.errorCount === 0 && !confirmCommit}
-            <button class="primary-button" type="button" onclick={() => (confirmCommit = true)}>Review commit</button>
+            <button class="primary-button" type="button" onclick={() => (confirmCommit = true)}>{$ui("Review commit")}</button>
           {:else if validation?.validationId && validation.errorCount === 0 && confirmCommit}
             <button
               class="primary-button"
               type="button"
               disabled={committing || (validation.warningCount > 0 && !acknowledgeWarnings)}
-              onclick={commitPlan}>{committing ? "Committing…" : "Commit import"}</button>
+              onclick={commitPlan}>{committing ? $ui("Committing…") : $ui("Commit import")}</button>
           {/if}
         {/if}
         <button class={report ? "primary-button" : "secondary-button"} type="button" onclick={() => void closeDialog()}
-          >Close</button>
+          >{$ui("Close")}</button>
       </div>
     </footer>
   </div>

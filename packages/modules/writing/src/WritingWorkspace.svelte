@@ -1,4 +1,5 @@
 <script lang="ts">
+import { pluginText } from "../../plugin-i18n.ts";
 import { onMount } from "svelte";
 import RichTextEditor from "../../../../src/lib/editor/RichTextEditor.svelte";
 import MarkdownArticle from "../../../../src/lib/markdown/MarkdownArticle.svelte";
@@ -112,7 +113,7 @@ const sync = createDraftSync({
 });
 
 const editable = $derived(shellEditable && !loading && !conflict && view !== null && aiDialog === null);
-const statusLabel = $derived(pending ? "Unsaved changes" : awaitingSave ? "Saving…" : savedNote ? "Saved" : "");
+const statusLabel = $derived(pending ? $pluginText("Unsaved changes") : awaitingSave ? $pluginText("Saving…") : savedNote ? $pluginText("Saved") : "");
 
 function startLoad(message: Extract<WritingHostMessage, { type: "writing.load" }>) {
   const seq = ++loadSeq;
@@ -140,7 +141,7 @@ async function show(seq: number, message: Extract<WritingHostMessage, { type: "w
     const document = await loadWritingDocument(rpc, message.entityId, normalizeDocument);
     if (seq !== loadSeq) return;
     view = document ? { ...document, token: message.token, placeholder: message.placeholder } : null;
-    if (!document) loadError = "This entry is no longer available.";
+    if (!document) loadError = $pluginText("This entry is no longer available.");
     mentioned = [];
     if (document) void resolveMentions(seq, document.markdown);
   } catch (cause) {
@@ -221,7 +222,7 @@ async function prepareAiRun(): Promise<string | null> {
   await sync.publishNow();
   if (aiDialog !== dialog || !view || view.token !== dialog.token) return null;
   // The shell's own path stops when it cannot save first; a draft the shell did not get is still waiting here.
-  if (sync.hasUnsent()) throw new Error("Your latest changes could not be sent to be saved. Try again in a moment.");
+  if (sync.hasUnsent()) throw new Error($pluginText("Your latest changes could not be sent to be saved. Try again in a moment."));
   aiSnapshot = { entityId: view.entityId, token: view.token, markdown: view.markdown };
   return view.markdown;
 }
@@ -381,23 +382,23 @@ onMount(() => {
     {#if view}
       {@const source = view}
       <header class="writing-header">
-        <h2 title="Double-click to edit" ondblclick={requestRename}>{source.title}</h2>
+        <h2 title={$pluginText("Double-click to edit")} ondblclick={requestRename}>{source.title}</h2>
         <div class="writing-controls">
           <div class="writing-entity-actions">
-            <button type="button" aria-label={`Rename ${source.title}`} onclick={requestRename}>Rename</button>
-            <button type="button" aria-label={`Archive ${source.title}`} onclick={requestArchive}>Archive</button>
+            <button type="button" aria-label={$pluginText("Rename {name}", { name: source.title })} onclick={requestRename}>{$pluginText("Rename")}</button>
+            <button type="button" aria-label={$pluginText("Archive {name}", { name: source.title })} onclick={requestArchive}>{$pluginText("Archive")}</button>
           </div>
-          <div class="writing-mode-toggle" aria-label="Document mode">
+          <div class="writing-mode-toggle" aria-label={$pluginText("Document mode")}>
             <button
               type="button"
               class:active={mode === "read"}
               aria-pressed={mode === "read"}
-              onclick={() => setMode("read")}>Article</button
+              onclick={() => setMode("read")}>{$pluginText("Article")}</button
             ><button
               type="button"
               class:active={mode === "edit"}
               aria-pressed={mode === "edit"}
-              onclick={() => setMode("edit")}>Edit</button>
+              onclick={() => setMode("edit")}>{$pluginText("Edit")}</button>
           </div>
           <span class="writing-status" role="status" aria-live="polite">{statusLabel}</span>
         </div>
@@ -406,14 +407,14 @@ onMount(() => {
         <div class="writing-conflict" role="alert">
           <div class="writing-conflict-copy">
             <strong
-              >{conflict.canOverwrite ? "This entry changed elsewhere" : "Canonical source needs attention"}</strong>
+              >{conflict.canOverwrite ? $pluginText("This entry changed elsewhere") : $pluginText("Canonical source needs attention")}</strong>
             <p>{conflict.message}</p>
           </div>
           <div class="writing-conflict-actions">
-            <button type="button" onclick={() => chooseConflict("reload")}>Reload disk</button>
+            <button type="button" onclick={() => chooseConflict("reload")}>{$pluginText("Reload disk")}</button>
             <button type="button" disabled={!conflict.canOverwrite} onclick={() => chooseConflict("overwrite")}
-              >Keep mine (overwrite)</button>
-            <button type="button" onclick={() => chooseConflict("recovery")}>Save recovery copy</button>
+              >{$pluginText("Keep mine (overwrite)")}</button>
+            <button type="button" onclick={() => chooseConflict("recovery")}>{$pluginText("Save recovery copy")}</button>
           </div>
         </div>
       {/if}
@@ -456,11 +457,11 @@ onMount(() => {
     {:else if loadError}
       <p class="writing-state writing-error" role="alert">{loadError}</p>
     {:else if loading}
-      <p class="writing-state" role="status" aria-live="polite">Loading entry…</p>
+      <p class="writing-state" role="status" aria-live="polite">{$pluginText("Loading entry…")}</p>
     {:else}
       <div class="writing-state" role="status">
-        <h3>{requested ? "Nothing to show." : "Your draft is waiting."}</h3>
-        <p>Select an entry from the collection, or create something new to begin writing.</p>
+        <h3>{requested ? $pluginText("Nothing to show.") : $pluginText("Your draft is waiting.")}</h3>
+        <p>{$pluginText("Select an entry from the collection, or create something new to begin writing.")}</p>
       </div>
     {/if}
   </div>

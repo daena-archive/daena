@@ -1,4 +1,5 @@
 <script lang="ts">
+import { ui } from "$lib/i18n/ui";
 import type { FieldDefinition } from "$lib/project/client";
 import DateEditor from "$lib/date/DateEditor.svelte";
 import RelationshipPicker from "$lib/RelationshipPicker.svelte";
@@ -107,7 +108,7 @@ const hasDateValue = $derived(value != null && value !== "");
       readonly={readOnly}
       rows="3"
       value={String(value ?? "")}
-      placeholder={`Add ${field.label.toLowerCase()}`}
+      placeholder={$ui("Add {0}", field.label.toLowerCase())}
       oninput={(event) => emit((event.currentTarget as HTMLTextAreaElement).value)}></textarea>
   {:else if field.type === "number"}
     <input
@@ -117,7 +118,7 @@ const hasDateValue = $derived(value != null && value !== "");
       disabled={locked}
       readonly={readOnly}
       value={String(value ?? "")}
-      placeholder={`Add ${field.label.toLowerCase()}`}
+      placeholder={$ui("Add {0}", field.label.toLowerCase())}
       oninput={(event) => emit((event.currentTarget as HTMLInputElement).value)} />
   {:else if field.type === "boolean"}
     <label class="schema-field-checkbox" for={inputId}>
@@ -128,7 +129,7 @@ const hasDateValue = $derived(value != null && value !== "");
         disabled={locked}
         checked={value === true}
         onchange={(event) => emit((event.currentTarget as HTMLInputElement).checked)} />
-      <span>Yes</span>
+      <span>{$ui("Yes")}</span>
     </label>
   {:else if field.type === "enum"}
     <select
@@ -138,7 +139,7 @@ const hasDateValue = $derived(value != null && value !== "");
       multiple={field.multiple ?? false}
       value={field.multiple ? (Array.isArray(value) ? value : []) : String(value ?? "")}
       onchange={(event) => updateEnum(event, field.multiple ?? false)}>
-      <option value="">Choose {field.label.toLowerCase()}</option>
+      <option value="">{$ui("Choose {0}", field.label.toLowerCase())}</option>
       {#each field.options ?? [] as option}
         <option value={option}>{option}</option>
       {/each}
@@ -150,7 +151,7 @@ const hasDateValue = $derived(value != null && value !== "");
       disabled={locked}
       value={String(value ?? "")}
       onchange={(event) => emit((event.currentTarget as HTMLSelectElement).value)}>
-      <option value="">Choose {field.label.toLowerCase()}</option>
+      <option value="">{$ui("Choose {0}", field.label.toLowerCase())}</option>
       {#each field.options ?? [] as option}
         <option value={option}>{option}</option>
       {/each}
@@ -179,9 +180,7 @@ const hasDateValue = $derived(value != null && value !== "");
         }}
         onSelectCalendar={(id) => onSelectCalendar?.(id)} />
     {:else}
-      <button class="date-empty" type="button" disabled={locked} onclick={() => (dateEditorOpen = true)}>
-        Add a date
-      </button>
+      <button class="date-empty" type="button" disabled={locked} onclick={() => (dateEditorOpen = true)}> {$ui("Add a date")} </button>
     {/if}
   {:else}
     <input

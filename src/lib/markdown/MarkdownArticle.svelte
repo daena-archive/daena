@@ -1,4 +1,5 @@
 <script lang="ts">
+import { ui } from "$lib/i18n/ui";
 import type { Entity } from "$lib/project/client";
 import type { OpenIntent } from "$lib/navigation/open-intent";
 import { headingOutlineFromTree, parseMarkdown } from "./index.ts";
@@ -16,8 +17,8 @@ $: entityIds = new Set(entities.filter((entity) => !entity.deleted).map((entity)
 
 <div class="markdown-article">
   {#if showOutline && outline.length > 1}
-    <nav class="markdown-toc" aria-label="Table of contents">
-      <strong>On this page</strong>
+    <nav class="markdown-toc" aria-label={$ui("Table of contents")}>
+      <strong>{$ui("On this page")}</strong>
       <ol>
         {#each outline as item}
           <li class={`depth-${item.depth}`}><a href={`#${item.id}`}>{item.text}</a></li>

@@ -1,4 +1,5 @@
 <script lang="ts">
+import { ui } from "$lib/i18n/ui";
 import { RotateCcw } from "@lucide/svelte";
 import type { EntityTypeColor, IconRef } from "../../../packages/plugin-sdk/src/generated";
 import IconPicker from "$lib/entity-icons/IconPicker.svelte";
@@ -26,22 +27,20 @@ let {
 
 <div class="type-appearance-picker" class:compact>
   {#if compact && showReset && onReset}
-    <button type="button" class="reset-button" aria-label="Reset to package default" onclick={onReset}>
+    <button type="button" class="reset-button" aria-label={$ui("Reset to package default")} onclick={onReset}>
       <RotateCcw size={12} strokeWidth={1.8} aria-hidden="true" />
     </button>
   {/if}
   <div class="appearance-controls">
-    <IconPicker label="Icon" value={value.icon} onChange={(icon) => onChange({ ...value, icon })} />
+    <IconPicker label={$ui("Icon")} value={value.icon} onChange={(icon) => onChange({ ...value, icon })} />
     <TypeColorPicker
-      label="Color"
+      label={$ui("Color")}
       value={value.iconColor}
       onChange={(iconColor) => onChange({ ...value, iconColor })} />
   </div>
   {#if !compact && showReset && onReset}
-    <button type="button" class="reset-button" aria-label="Reset to package default" onclick={onReset}>
-      <RotateCcw size={12} strokeWidth={1.8} aria-hidden="true" />
-      Reset
-    </button>
+    <button type="button" class="reset-button" aria-label={$ui("Reset to package default")} onclick={onReset}>
+      <RotateCcw size={12} strokeWidth={1.8} aria-hidden="true" /> {$ui("Reset")} </button>
   {/if}
 </div>
 

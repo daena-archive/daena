@@ -1,4 +1,6 @@
 <script lang="ts">
+import { nativeErrorText } from "$lib/i18n/native-errors.ts";
+import { ui } from "$lib/i18n/ui";
 import { X, Settings2, FolderOpen, ChevronLeft, Sun, Moon, Monitor, Download } from "@lucide/svelte";
 import { checkAppUpdate, formatUpdateMessage, openDownloadPage, type AppUpdateCheck, type UpdateChannelPreference } from "$lib/appUpdate";
 import { displayLanguage, languageOptions, messages, setDisplayLanguage } from "$lib/i18n";
@@ -54,7 +56,7 @@ let {
 let updateBusy = $state(false);
 let updateResult = $state<AppUpdateCheck | null>(null);
 let updateError = $state("");
-let updateMessage = $derived(updateResult ? formatUpdateMessage(updateResult, $messages.settings) : updateError);
+let updateMessage = $derived(updateResult ? formatUpdateMessage(updateResult, $messages.settings) : $nativeErrorText(updateError));
 
 function packIsSelected(pluginId: string, themeId: string) {
   return themePack?.pluginId === pluginId && themePack?.themeId === themeId;
@@ -231,7 +233,7 @@ async function handleClose() {
               <span class="heading-icon"><Download size={14} strokeWidth={1.8} aria-hidden="true" /></span>
               <h4>{$messages.settings.about}</h4>
             </div>
-            <span class="block-hint">v{version}</span>
+            <span class="block-hint">{$ui("v{0}", version)}</span>
           </div>
           <div class="theme-options update-channel-options" role="group" aria-label={$messages.settings.updateChannel}>
             <button

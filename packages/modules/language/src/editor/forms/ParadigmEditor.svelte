@@ -1,4 +1,5 @@
 <script lang="ts">
+import { pluginText } from "../../../../plugin-i18n.ts";
 import {
   DISTANCE_VALUES,
   EXTRA_DEMONSTRATIVE_AXES,
@@ -86,7 +87,7 @@ function handleCell(cellId: string, patch: Partial<Omit<ParadigmCell, "id" | "co
 <Group>
   {#if draft.systemId === "pronouns.personal"}
     <p class="language-empty" role="status">
-      Start with person and number. Add other distinctions only if the language uses them.
+      {$pluginText("Start with person and number. Add other distinctions only if the language uses them.")}
     </p>
     {@render axisChecks("Person", "person", PERSON_VALUES)}
     {@render axisChecks("Number", "number", NUMBER_VALUES)}
@@ -97,9 +98,9 @@ function handleCell(cellId: string, patch: Partial<Omit<ParadigmCell, "id" | "co
     {@const distanceSelected = new Set(
       config.distances ?? axes.find((axis) => axis.id === "distance")?.values.map((item) => item.id),
     )}
-    <p class="language-empty" role="status">The grid is generated only from the dimensions you select.</p>
+    <p class="language-empty" role="status">{$pluginText("The grid is generated only from the dimensions you select.")}</p>
     <TemplateChecks
-      legend="Distance distinctions"
+      legend={$pluginText("Distance distinctions")}
       options={toChecks(DISTANCE_VALUES)}
       selected={distanceSelected}
       {locked}
@@ -112,11 +113,11 @@ function handleCell(cellId: string, patch: Partial<Omit<ParadigmCell, "id" | "co
   {:else if draft.systemId === "verbs.argument-indexing"}
     {@const config = draft.config as ArgumentIndexingConfig}
     <p class="language-empty" role="status">
-      Describe whether the verb changes based on who takes part. This is not always the same as Agreement.
+      {$pluginText("Describe whether the verb changes based on who takes part. This is not always the same as Agreement.")}
     </p>
     <ChoiceCards
       name="participants"
-      legend="Do verbs change based on their participants?"
+      legend={$pluginText("Do verbs change based on their participants?")}
       options={PARTICIPANT_OPTIONS}
       value={config.participants}
       {locked}
@@ -126,7 +127,7 @@ function handleCell(cellId: string, patch: Partial<Omit<ParadigmCell, "id" | "co
     {#if config.participants && config.participants !== "none"}
       <ChoiceCards
         name="representation"
-        legend="What kind of forms are these?"
+        legend={$pluginText("What kind of forms are these?")}
         options={REPRESENTATION_OPTIONS}
         value={config.representation}
         {locked}
@@ -134,7 +135,7 @@ function handleCell(cellId: string, patch: Partial<Omit<ParadigmCell, "id" | "co
           applySystemMutation(draft, setArgumentRepresentation(draft, value as ArgumentRepresentation));
         }} />
       {#if agreements.length}
-        <Field label="Analyze as Agreement (optional)">
+        <Field label={$pluginText("Analyze as Agreement (optional)")}>
           <select
             name="agreementRecordId"
             value={config.agreementRecordId ?? ""}
@@ -142,7 +143,7 @@ function handleCell(cellId: string, patch: Partial<Omit<ParadigmCell, "id" | "co
             onchange={(event) => {
               applySystemMutation(draft, setArgumentAgreement(draft, event.currentTarget.value || undefined));
             }}>
-            <option value="">Do not link an Agreement system</option>
+            <option value="">{$pluginText("Do not link an Agreement system")}</option>
             {#each agreements as agreement (agreement.id)}
               <option value={agreement.id}>{agreement.title}</option>
             {/each}
@@ -150,7 +151,7 @@ function handleCell(cellId: string, patch: Partial<Omit<ParadigmCell, "id" | "co
         </Field>
       {/if}
       {#if config.representation === "flexible-table"}
-        <Field label="Flexible table notes">
+        <Field label={$pluginText("Flexible table notes")}>
           <textarea rows="4" name="flexibleNotes" bind:value={config.flexibleNotes} disabled={locked}></textarea>
         </Field>
       {:else if !config.agreementRecordId}
@@ -160,8 +161,7 @@ function handleCell(cellId: string, patch: Partial<Omit<ParadigmCell, "id" | "co
         <ParadigmGrid {axes} {cells} {locked} oncell={handleCell} />
       {:else}
         <p class="language-empty" role="status">
-          This display is linked to an Agreement system. Edit the relationship there instead of copying person/number
-          rules.
+          {$pluginText("This display is linked to an Agreement system. Edit the relationship there instead of copying person/number rules.")}
         </p>
       {/if}
     {/if}
@@ -198,7 +198,7 @@ function handleCell(cellId: string, patch: Partial<Omit<ParadigmCell, "id" | "co
 {#snippet extraAxes(extras: { id: string; label: string; values: { id: string; label: string }[] }[])}
   {#if !locked}
     <select
-      aria-label="Add distinction"
+      aria-label={$pluginText("Add distinction")}
       onchange={(event) => {
         const id = event.currentTarget.value;
         if (!id) return;
@@ -212,11 +212,11 @@ function handleCell(cellId: string, patch: Partial<Omit<ParadigmCell, "id" | "co
               ),
         );
       }}>
-      <option value="">Add distinction…</option>
+      <option value="">{$pluginText("Add distinction…")}</option>
       {#each extras.filter((extra) => !axes.some((axis) => axis.id === extra.id)) as extra (extra.id)}
         <option value={extra.id}>{extra.label}</option>
       {/each}
-      <option value="custom">Custom dimension</option>
+      <option value="custom">{$pluginText("Custom dimension")}</option>
     </select>
   {/if}
   {#each axes.filter((axis) => {
@@ -233,13 +233,13 @@ function handleCell(cellId: string, patch: Partial<Omit<ParadigmCell, "id" | "co
         onclick={() => {
           applySystemMutation(draft, addCustomAxisValue(draft, axis.id));
         }}>
-        Add value
+        {$pluginText("Add value")}
       </button>
       <button
         type="button"
         class="language-button secondary language-danger"
         onclick={() => applyMutation(removeParadigmAxis(draft, axis.id, { referenced: referencedIds }))}>
-        Remove distinction
+        {$pluginText("Remove distinction")}
       </button>
     {/if}
   {/each}

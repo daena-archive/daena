@@ -1,4 +1,6 @@
 <script lang="ts">
+import { nativeErrorText } from "$lib/i18n/native-errors.ts";
+import { ui } from "$lib/i18n/ui";
 import type { Snippet } from "svelte";
 
 interface Props {
@@ -21,20 +23,16 @@ let { visible, loading, loadError, saving, saveError, dirty, savedAt, actions, o
 {#if visible}
   <div class="editor-status" role="status" aria-live="polite">
     {#if loading}
-      <span class="status-dot status-saving"></span> Loading…
-    {:else if loadError}
-      <span class="status-dot status-warning"></span><span title={loadError}>Could not load entry</span>
-      <button class="quiet-button" type="button" onclick={onRetryLoad}>Retry</button>
+      <span class="status-dot status-saving"></span> {$ui("Loading…")} {:else if loadError}
+      <span class="status-dot status-warning"></span><span title={$nativeErrorText(loadError)}>{$ui("Could not load entry")}</span>
+      <button class="quiet-button" type="button" onclick={onRetryLoad}>{$ui("Retry")}</button>
     {:else if saving}
-      <span class="status-dot status-saving"></span> Saving…
-    {:else if saveError}
-      <span class="status-dot status-warning"></span><span title={saveError}>Save paused — retrying</span>
-      <button class="quiet-button" type="button" onclick={onRetrySave}>Retry now</button>
+      <span class="status-dot status-saving"></span> {$ui("Saving…")} {:else if saveError}
+      <span class="status-dot status-warning"></span><span title={$nativeErrorText(saveError)}>{$ui("Save paused — retrying")}</span>
+      <button class="quiet-button" type="button" onclick={onRetrySave}>{$ui("Retry now")}</button>
     {:else if dirty}
-      <span class="status-dot status-warning"></span> Unsaved changes
-    {:else if savedAt}
-      <span class="status-saved">✓</span> Saved {savedAt}
-    {/if}
+      <span class="status-dot status-warning"></span> {$ui("Unsaved changes")} {:else if savedAt}
+      <span class="status-saved">✓</span> {$ui("Saved {0}", savedAt)} {/if}
     {#if actions}{@render actions()}{/if}
   </div>
 {/if}

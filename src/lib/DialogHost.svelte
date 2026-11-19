@@ -1,4 +1,6 @@
 <script lang="ts">
+import { ui } from "$lib/i18n/ui";
+import { messages } from "$lib/i18n";
 import { X } from "@lucide/svelte";
 import { dialogState, resolveDialog } from "./dialogs.svelte";
 
@@ -59,10 +61,13 @@ function submitPrompt() {
       onclick={(event) => event.stopPropagation()}>
       <div class="dialog-heading">
         <div>
-          <span class="panel-kicker">DAENA</span><strong id="shared-dialog-title">{dialogState.current.title}</strong>
+          <span class="panel-kicker">{$ui("DAENA")}</span><strong id="shared-dialog-title">{dialogState.current.title}</strong>
         </div>
-        <button type="button" class="dialog-close" aria-label="Cancel dialog" onclick={() => settle(null)}
-          ><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
+        <button
+          type="button"
+          class="dialog-close"
+          aria-label={$messages.dialog.cancelDialog}
+          onclick={() => settle(null)}><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
       </div>
       <p id="shared-dialog-message" class="dialog-message">{dialogState.current.message}</p>
       {#if dialogState.current.kind === "prompt"}
@@ -82,7 +87,7 @@ function submitPrompt() {
           }} />
       {/if}
       <div class="dialog-actions">
-        <button type="button" class="dialog-cancel" onclick={() => settle(null)}>Cancel</button>
+        <button type="button" class="dialog-cancel" onclick={() => settle(null)}>{$messages.dialog.cancel}</button>
         <button
           type="button"
           class:dialog-danger={dialogState.current.kind === "confirm" && dialogState.current.danger}

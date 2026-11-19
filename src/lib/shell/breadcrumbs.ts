@@ -1,3 +1,4 @@
+import { localizeUi } from "../i18n/ui.ts";
 import type { WorkspaceSection } from "$lib/modules/workspace";
 
 export type ShellBreadcrumb = {
@@ -13,11 +14,11 @@ export function breadcrumbViewLabel(options: {
 }): string | null {
   const { section, view, tabLabel } = options;
   if (section === "lore") {
-    if (view === "wiki") return "Wiki";
-    if (view === "graph") return "Graph";
+    if (view === "wiki") return localizeUi("Wiki");
+    if (view === "graph") return localizeUi("Graph");
     return null;
   }
-  if (section === "houses") return view === "tree" ? "Tree" : null;
+  if (section === "houses") return view === "tree" ? localizeUi("Tree") : null;
   if (section === "writing" || section === "timeline") {
     if (view === "timeline") return null;
     const label = tabLabel?.trim() ?? "";
@@ -28,13 +29,14 @@ export function breadcrumbViewLabel(options: {
 
 export function shellBreadcrumbs(options: {
   home?: boolean;
+  homeLabel?: string;
   settingsLabel?: string | null;
   sectionLabel: string;
   viewLabel?: string | null;
   entityName?: string | null;
   pluginLabel?: string | null;
 }): ShellBreadcrumb[] {
-  if (options.home) return [{ key: "home", label: "Home" }];
+  if (options.home) return [{ key: "home", label: options.homeLabel ?? "Home" }];
   if (options.settingsLabel) return [{ key: "settings", label: options.settingsLabel }];
   const items: ShellBreadcrumb[] = [{ key: "section", label: options.sectionLabel, action: "section" }];
   if (options.pluginLabel) {

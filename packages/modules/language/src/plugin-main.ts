@@ -1,3 +1,4 @@
+import { listenForPluginLanguage } from "../../plugin-i18n.ts";
 import "./plugin.css";
 import { flushSync, mount } from "svelte";
 import manifestJson from "../manifest.json";
@@ -31,6 +32,8 @@ import {
 /** Only used when schema.list does not list Language; see pickLanguageManifest. */
 const bundledManifest = manifestJson as unknown as ModuleManifest;
 const root = document.querySelector<HTMLElement>("#language-root");
+
+listenForPluginLanguage("Language");
 
 async function start(target: HTMLElement): Promise<void> {
   // Large lexicons and long documents arrive in one answer, past the SDK's 256 KiB default.

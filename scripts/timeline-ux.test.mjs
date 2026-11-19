@@ -14,10 +14,14 @@ assert.match(
   /new TimelineCtor\([\s\S]*?groups,\s*options,\s*\)/,
   "vis-timeline receives semantic groups before its options",
 );
-assert.match(source, /createLayerChip\("Lifelines", layerCounts\.lifelines/, "lifelines expose a counted layer chip");
 assert.match(
   source,
-  /createLayerChip\("Project dates", layerCounts\.dates/,
+  /createLayerChip\(t\("Lifelines"\), layerCounts\.lifelines/,
+  "lifelines expose a counted layer chip",
+);
+assert.match(
+  source,
+  /createLayerChip\(t\("Project dates"\), layerCounts\.dates/,
   "project dates expose a counted layer chip",
 );
 assert.match(
@@ -26,7 +30,7 @@ assert.match(
   "timeline labels types from effective manifests",
 );
 assert.match(source, /resolveEntityTypeLabel\(type, typeLabels\)/, "timeline resolves schema names for type filters");
-assert.match(source, /search\.placeholder = "Name, type, place…"/, "timeline exposes contextual search");
+assert.match(source, /search\.placeholder = t\("Name, type, place…"\)/, "timeline exposes contextual search");
 assert.match(source, /All history/, "timeline can scope to one era or all history");
 assert.match(source, /Unplaced in this era/, "era-only events stay unplaced inside an era scope");
 assert.match(source, /timeline-details timeline-inspector/, "selected items render in a dedicated inspector");

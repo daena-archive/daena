@@ -1,3 +1,4 @@
+import { localizeUi } from "../i18n/ui.ts";
 /**
  * Shell side of the daena.writing webview bridge (see docs/plans/writing-isolation.md).
  *
@@ -308,7 +309,7 @@ export function writingConflictMessage(
     entityId,
     message: attention
       ? conflict.diagnostics[0]
-      : "Your unsaved document and details are preserved. Choose how to reconcile them before saving.",
+      : localizeUi("Your unsaved document and details are preserved. Choose how to reconcile them before saving."),
     // A source that needs attention cannot be overwritten, as in the shell's own conflict actions.
     canOverwrite: !attention,
   };

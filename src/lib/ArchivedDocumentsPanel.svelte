@@ -1,4 +1,5 @@
 <script lang="ts">
+import { ui } from "$lib/i18n/ui";
 import { Archive, RotateCcw, Trash2 } from "@lucide/svelte";
 import { onMount } from "svelte";
 import { confirmDialog } from "$lib/dialogs.svelte";
@@ -49,9 +50,9 @@ async function restoreEntry(entry: Entity) {
   if (busyId) return;
   if (
     !(await confirmDialog({
-      title: `Restore "${entry.name}"?`,
-      message: "Returns the entry to the workspace and search.",
-      confirmLabel: "Restore",
+      title: $ui("Restore \"{0}\"?", entry.name),
+      message: $ui("Returns the entry to the workspace and search."),
+      confirmLabel: $ui("Restore"),
     }))
   )
     return;
@@ -60,7 +61,7 @@ async function restoreEntry(entry: Entity) {
   try {
     await project.restoreEntity(entry.id, { expectedRevision: entry.revision });
     items = items.filter((item) => item.id !== entry.id);
-    onToast?.(`"${entry.name}" restored.`);
+    onToast?.($ui("\"{0}\" restored.", entry.name));
     onChanged?.();
   } catch (cause) {
     onToast?.(cause instanceof Error ? cause.message : String(cause));
@@ -73,9 +74,9 @@ async function purgeEntry(entry: Entity) {
   if (busyId) return;
   if (
     !(await confirmDialog({
-      title: `Delete "${entry.name}" permanently?`,
-      message: "Removes the entry, its content, and relationships. This cannot be undone.",
-      confirmLabel: "Delete permanently",
+      title: $ui("Delete \"{0}\" permanently?", entry.name),
+      message: $ui("Removes the entry, its content, and relationships. This cannot be undone."),
+      confirmLabel: $ui("Delete permanently"),
       danger: true,
     }))
   )
@@ -85,7 +86,7 @@ async function purgeEntry(entry: Entity) {
   try {
     await project.purgeEntity(entry.id, { expectedRevision: entry.revision });
     items = items.filter((item) => item.id !== entry.id);
-    onToast?.(`"${entry.name}" deleted permanently.`);
+    onToast?.($ui("\"{0}\" deleted permanently.", entry.name));
     onChanged?.();
   } catch (cause) {
     onToast?.(cause instanceof Error ? cause.message : String(cause));
@@ -102,31 +103,31 @@ onMount(() => {
 <div class="section-heading">
   <span class="heading-icon"><Archive size={17} /></span>
   <div>
-    <span class="kicker">ARCHIVE</span>
-    <h2>Archived entries</h2>
-    <p>Entries archived from the workspace are kept here until you restore or permanently delete them.</p>
+    <span class="kicker">{$ui("ARCHIVE")}</span>
+    <h2>{$ui("Archived entries")}</h2>
+    <p>{$ui("Entries archived from the workspace are kept here until you restore or permanently delete them.")}</p>
   </div>
 </div>
 
 {#if loading}
-  <p class="archive-status">Loading archived entries…</p>
+  <p class="archive-status">{$ui("Loading archived entries…")}</p>
 {:else if items.length === 0}
   <section class="operation-card">
-    <p class="archive-empty">No archived entries.</p>
+    <p class="archive-empty">{$ui("No archived entries.")}</p>
   </section>
 {:else}
-  <section class="archive-list" aria-label="Archived entries">
+  <section class="archive-list" aria-label={$ui("Archived entries")}>
     {#each items as entry (entry.id)}
       <article class="archive-row">
         <div class="archive-copy">
           <strong>{entry.name}</strong>
-          <small>{typeLabel(entry.entity_type)} · Archived {formatRuntimeTimestampLabel(entry.updated_at)}</small>
+          <small>{$ui("{0} · Archived {1}", typeLabel(entry.entity_type), formatRuntimeTimestampLabel(entry.updated_at))}</small>
         </div>
         <div class="action-row">
           <button type="button" class="quiet-button" disabled={busyId !== null} onclick={() => void restoreEntry(entry)}
-            ><RotateCcw size={14} /> Restore</button>
+            ><RotateCcw size={14} /> {$ui("Restore")}</button>
           <button type="button" class="danger-button" disabled={busyId !== null} onclick={() => void purgeEntry(entry)}
-            ><Trash2 size={14} /> Delete permanently</button>
+            ><Trash2 size={14} /> {$ui("Delete permanently")}</button>
         </div>
       </article>
     {/each}

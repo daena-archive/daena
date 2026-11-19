@@ -39,13 +39,13 @@ const relationshipPanel = await read("src/lib/houses/FamilyRelationshipPanel.sve
 const shell = await read("src/routes/+page.svelte");
 
 assert.match(surface, /TREE_SCOPES\.membersPlusImmediateFamily/);
-assert.match(surface, /aria-label="House tree scope"/);
-assert.match(surface, /aria-label="Back to people and houses"/);
+assert.match(surface, /aria-label=\{\$ui\("House tree scope"\)\}/);
+assert.match(surface, /aria-label=\{\$ui\("Back to people and houses"\)\}/);
 assert.match(surface, /family-topbar-back/);
-assert.match(surface, /aria-label="Navigation"/);
-assert.match(surface, /aria-label="View"/);
-assert.match(surface, /aria-label="Expansion"/);
-assert.match(surface, /aria-label="More view options"/);
+assert.match(surface, /aria-label=\{\$ui\("Navigation"\)\}/);
+assert.match(surface, /aria-label=\{\$ui\("View"\)\}/);
+assert.match(surface, /aria-label=\{\$ui\("Expansion"\)\}/);
+assert.match(surface, /aria-label=\{\$ui\("More view options"\)\}/);
 assert.match(surface, /Show minimap/);
 assert.match(surface, /Reduced detail/);
 assert.match(surface, /TREE_LEGEND\.member/);
@@ -55,8 +55,8 @@ assert.match(surface, /closeDock/);
 assert.match(surface, /dockDismissed/);
 assert.doesNotMatch(surface, /selectedPersonId = \[\.\.\.people\.keys\(\)\]/);
 assert.match(surface, /onSurfaceKeydown/);
-assert.doesNotMatch(surface, /aria-label="View settings"/);
-assert.equal((surface.match(/aria-label="Secondary field"/g) ?? []).length, 1, "secondary field appears once");
+assert.doesNotMatch(surface, /aria-label=\{\$ui\("View settings"\)\}/);
+assert.equal((surface.match(/aria-label=\{\$ui\("Secondary field"\)\}/g) ?? []).length, 1, "secondary field appears once");
 
 assert.match(surface, /scope-cap-banner/);
 assert.match(surface, /queueFocusPerson/);
@@ -78,8 +78,8 @@ assert.doesNotMatch(canvas, /role="application"/);
 assert.match(personPanel, /ENTITY_ACTIONS\.editIdentity/);
 assert.match(personPanel, /ENTITY_ACTIONS\.archive/);
 assert.match(personPanel, /data-dock-focus/);
-assert.match(personPanel, /aria-label="Edit relationship"/);
-assert.match(personPanel, /aria-label="Close details"/);
+assert.match(personPanel, /aria-label=\{\$ui\("Edit relationship"\)\}/);
+assert.match(personPanel, /aria-label=\{\$ui\("Close details"\)\}/);
 
 const personNode = await read("src/lib/houses/FamilyPersonNode.svelte");
 assert.match(personNode, /tabindex=\{cardTabIndex\}/);

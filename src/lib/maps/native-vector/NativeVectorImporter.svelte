@@ -1,4 +1,5 @@
 <script lang="ts">
+import { ui } from "$lib/i18n/ui";
 import { onMount } from "svelte";
 import { FileJson, Image, Maximize2, Minimize2 } from "@lucide/svelte";
 import type { Entity } from "$lib/project/client";
@@ -56,33 +57,33 @@ onMount(() => {
 });
 </script>
 
-<section class="importer" aria-label={mode === "geojson" ? "Import a GeoJSON vector map" : "Import an image map"}>
+<section class="importer" aria-label={mode === "geojson" ? $ui("Import a GeoJSON vector map") : $ui("Import an image map")}>
   <WorkspaceTopbar
-    title={mode === "geojson" ? "Import vector map" : "Import image"}
-    subtitle="Native vector map"
+    title={mode === "geojson" ? $ui("Import vector map") : $ui("Import image")}
+    subtitle={$ui("Native vector map")}
     icon={brandIcon}
-    backLabel="Back to map details"
+    backLabel={$ui("Back to map details")}
     onBack={cancel}
-    actionsLabel="Map import actions">
+    actionsLabel={$ui("Map import actions")}>
     <div class="header-actions" data-workspace-topbar-actions>
       {#if accepting}
-        <button type="button" class="primary" disabled>Importing…</button>
+        <button type="button" class="primary" disabled>{$ui("Importing…")}</button>
       {/if}
       <button
         type="button"
         class="icon-button"
         class:active={fullscreen}
-        aria-label={fullscreen ? "Exit full screen" : "Full screen"}
+        aria-label={fullscreen ? $ui("Exit full screen") : $ui("Full screen")}
         aria-pressed={fullscreen}
-        title={fullscreen ? "Exit full screen" : "Full screen"}
+        title={fullscreen ? $ui("Exit full screen") : $ui("Full screen")}
         onclick={toggleFullscreen}
         >{#if fullscreen}<Minimize2 {...iconProps} />{:else}<Maximize2 {...iconProps} />{/if}</button>
     </div>
   </WorkspaceTopbar>
   <div class="import-stage" role="status">
-    <p>{accepting ? "Importing…" : message || "Choose a file…"}</p>
+    <p>{accepting ? $ui("Importing…") : message || $ui("Choose a file…")}</p>
     {#if message && !accepting}
-      <button type="button" class="primary" onclick={() => void importFile()}>Try again</button>
+      <button type="button" class="primary" onclick={() => void importFile()}>{$ui("Try again")}</button>
     {/if}
   </div>
 </section>

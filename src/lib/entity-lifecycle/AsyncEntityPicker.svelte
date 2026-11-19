@@ -1,4 +1,6 @@
 <script lang="ts">
+import { nativeErrorText } from "$lib/i18n/native-errors.ts";
+import { ui } from "$lib/i18n/ui";
 import { Search } from "@lucide/svelte";
 import { humanizeTypeId } from "../../../packages/module-api/src/entityTypeLabels.ts";
 import {
@@ -20,14 +22,14 @@ let {
   selectedIds = [],
   pageSize = 20,
   debounceMs = 180,
-  placeholder = "Search…",
-  ariaLabel = "Search entities",
+  placeholder = $ui("Search…"),
+  ariaLabel = $ui("Search entities"),
   openOnFocus = true,
   dropdown = true,
   disabled = false,
-  emptyMessage = "No matching entities.",
-  resultsSectionLabel = "People",
-  searchingMessage = "Searching…",
+  emptyMessage = $ui("No matching entities."),
+  resultsSectionLabel = $ui("People"),
+  searchingMessage = $ui("Searching…"),
   sortField = "name" as AsyncEntitySortField,
   sortDirection = "asc" as AsyncEntitySortDirection,
   recents = [],
@@ -77,7 +79,7 @@ const showTypeLabel = $derived((entityTypes?.length ?? 0) !== 1);
 const showRecents = $derived(showMenu && !query.trim() && recents.length > 0);
 
 function optionTypeLabel(type: string | null | undefined) {
-  if (!type) return "Uncategorized";
+  if (!type) return $ui("Uncategorized");
   return humanizeTypeId(type);
 }
 const optionItems = $derived.by(() => {
@@ -282,10 +284,10 @@ $effect(() => {
   {#if showMenu}
     <div class="async-entity-menu" id={listboxId} role="listbox" aria-label={ariaLabel}>
       {#if error}
-        <p class="async-entity-error" role="alert">{error}</p>
+        <p class="async-entity-error" role="alert">{$nativeErrorText(error)}</p>
       {/if}
       {#if showRecents}
-        <span class="async-entity-section">Recent</span>
+        <span class="async-entity-section">{$ui("Recent")}</span>
       {/if}
       {#if busy && page.items.length === 0 && !showRecents}
         <p class="async-entity-hint">{searchingMessage}</p>
@@ -323,12 +325,12 @@ $effect(() => {
               type="button"
               class="quiet-button"
               disabled={busy || page.offset === 0}
-              onclick={() => void load(Math.max(0, page.offset - pageSize))}>Previous</button>
+              onclick={() => void load(Math.max(0, page.offset - pageSize))}>{$ui("Previous")}</button>
             <button
               type="button"
               class="quiet-button"
               disabled={busy || (!page.hasMore && page.offset + page.items.length >= page.total)}
-              onclick={() => void load(page.offset + pageSize)}>Next</button>
+              onclick={() => void load(page.offset + pageSize)}>{$ui("Next")}</button>
           </div>
         {/if}
       {/if}

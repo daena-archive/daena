@@ -1,3 +1,4 @@
+import { localizeUi } from "../i18n/ui.ts";
 import type { Entity, GitChange } from "$lib/project/client";
 
 export type ChangeGroup = {
@@ -91,15 +92,15 @@ export function snapshotChangeLabel(path: string) {
   const relative = parts.join("/");
   const fileLabel =
     relative === "document.md"
-      ? "Document"
+      ? localizeUi("Document")
       : relative === "relationships.json"
-        ? "Relationships"
+        ? localizeUi("Relationships")
         : relative === "assets.json"
-          ? "Asset links"
+          ? localizeUi("Asset links")
           : relative === "entity.json"
-            ? "Identity"
+            ? localizeUi("Identity")
             : relative.startsWith("fields/")
-              ? `Field · ${relative.slice("fields/".length)}`
+              ? localizeUi("Field · {0}", relative.slice("fields/".length))
               : relative;
   return fileLabel;
 }
@@ -213,7 +214,7 @@ export function buildChangeGroups(paths: string[], entityList: Entity[]): Change
       id: `plugin:${pluginId}`,
       kind: "plugin",
       title: pluginId,
-      subtitle: "Plugin config",
+      subtitle: localizeUi("Plugin config"),
       paths: pluginPaths,
     });
   }
@@ -226,7 +227,7 @@ export function buildChangeGroups(paths: string[], entityList: Entity[]): Change
       id: `asset:${assetPath}`,
       kind: "asset",
       title: filename,
-      subtitle: `Asset · ${folder}`,
+      subtitle: localizeUi("Asset · {0}", folder),
       paths: assetPaths,
     });
   }

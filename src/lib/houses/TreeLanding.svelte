@@ -1,4 +1,6 @@
 <script lang="ts">
+import { nativeErrorText } from "$lib/i18n/native-errors.ts";
+import { ui } from "$lib/i18n/ui";
 import type { EntitySummary, ModuleContext } from "../../../packages/module-api/src/index";
 import type { Snippet } from "svelte";
 import { Castle, ChevronRight, Plus, Search, UserPlus } from "@lucide/svelte";
@@ -181,11 +183,11 @@ $effect(() => {
 <section class="landing">
   <header class="landing-copy">
     <div>
-      <span class="overline">TREE</span>
-      <h1>Choose a root</h1>
-      <p>Open a person neighborhood, or the kinship tree of a house.</p>
+      <span class="overline">{$ui("TREE")}</span>
+      <h1>{$ui("Choose a root")}</h1>
+      <p>{$ui("Open a person neighborhood, or the kinship tree of a house.")}</p>
     </div>
-    <div class="landing-create" role="group" aria-label="Create">
+    <div class="landing-create" role="group" aria-label={$ui("Create")}>
       <button type="button" class="primary-button" onclick={() => (onNewPerson ? onNewPerson() : undefined)}
         ><UserPlus size={14} strokeWidth={1.8} aria-hidden="true" /> {ENTITY_ACTIONS.newPerson}</button>
       <button type="button" class="quiet-button" onclick={() => (onNewHouse ? onNewHouse() : undefined)}
@@ -197,8 +199,8 @@ $effect(() => {
     <section class="panel" aria-labelledby="landing-people-title">
       <div class="panel-heading">
         <div>
-          <span class="panel-kicker">PEOPLE</span>
-          <strong id="landing-people-title">{peopleTotal} {peopleTotal === 1 ? "person" : "people"}</strong>
+          <span class="panel-kicker">{$ui("PEOPLE")}</span>
+          <strong id="landing-people-title">{peopleTotal} {peopleTotal === 1 ? $ui("person") : $ui("people")}</strong>
         </div>
       </div>
       <label class="search-field">
@@ -207,22 +209,22 @@ $effect(() => {
           <input
             type="search"
             bind:value={peopleQuery}
-            placeholder="Search people"
+            placeholder={$ui("Search people")}
             role="combobox"
             aria-expanded="true"
             aria-autocomplete="list"
             aria-controls={peopleListId}
             aria-activedescendant={peopleActiveIndex >= 0 ? `${peopleListId}-option-${peopleActiveIndex}` : undefined}
-            aria-label="Search people"
+            aria-label={$ui("Search people")}
             onkeydown={onPeopleSearchKeydown} />
         </span>
       </label>
-      <div class="panel-list" id={peopleListId} role="listbox" aria-label="People">
-        {#if peopleError}<p class="error" role="alert">{peopleError}</p>{/if}
-        {#if peopleBusy && people.length === 0}<p class="hint">Loading people…</p>
+      <div class="panel-list" id={peopleListId} role="listbox" aria-label={$ui("People")}>
+        {#if peopleError}<p class="error" role="alert">{$nativeErrorText(peopleError)}</p>{/if}
+        {#if peopleBusy && people.length === 0}<p class="hint">{$ui("Loading people…")}</p>
         {:else if emptyPeople}
-          <p class="hint">No people yet. Use {ENTITY_ACTIONS.newPerson} above — they also appear in Lore.</p>
-        {:else if people.length === 0}<p class="hint">No people match this search.</p>
+          <p class="hint">{$ui("No people yet. Use {0} above — they also appear in Lore.", ENTITY_ACTIONS.newPerson)}</p>
+        {:else if people.length === 0}<p class="hint">{$ui("No people match this search.")}</p>
         {:else}
           {#each people as person, index (person.id)}
             <button
@@ -239,7 +241,7 @@ $effect(() => {
               {:else}
                 <span class="item-glyph fallback" aria-hidden="true">{person.name.slice(0, 1)}</span>
               {/if}
-              <span class="item-copy"><strong>{person.name}</strong><small>Person</small></span>
+              <span class="item-copy"><strong>{person.name}</strong><small>{$ui("Person")}</small></span>
               <span class="item-arrow" aria-hidden="true"><ChevronRight size={16} strokeWidth={1.8} /></span>
             </button>
           {/each}
@@ -251,12 +253,12 @@ $effect(() => {
             type="button"
             class="quiet-button"
             disabled={peopleOffset === 0}
-            onclick={() => void searchPeople(Math.max(0, peopleOffset - pageSize))}>Previous</button>
+            onclick={() => void searchPeople(Math.max(0, peopleOffset - pageSize))}>{$ui("Previous")}</button>
           <button
             type="button"
             class="quiet-button"
             disabled={peopleOffset + people.length >= peopleTotal}
-            onclick={() => void searchPeople(peopleOffset + pageSize)}>Next</button>
+            onclick={() => void searchPeople(peopleOffset + pageSize)}>{$ui("Next")}</button>
         </div>
       {/if}
     </section>
@@ -264,8 +266,8 @@ $effect(() => {
     <section class="panel" aria-labelledby="landing-houses-title">
       <div class="panel-heading">
         <div>
-          <span class="panel-kicker">HOUSES</span>
-          <strong id="landing-houses-title">{housesTotal} {housesTotal === 1 ? "house" : "houses"}</strong>
+          <span class="panel-kicker">{$ui("HOUSES")}</span>
+          <strong id="landing-houses-title">{housesTotal} {housesTotal === 1 ? $ui("house") : $ui("houses")}</strong>
         </div>
       </div>
       <label class="search-field">
@@ -274,24 +276,24 @@ $effect(() => {
           <input
             type="search"
             bind:value={housesQuery}
-            placeholder="Search houses"
+            placeholder={$ui("Search houses")}
             role="combobox"
             aria-expanded="true"
             aria-autocomplete="list"
             aria-controls={housesListId}
             aria-activedescendant={housesActiveIndex >= 0 ? `${housesListId}-option-${housesActiveIndex}` : undefined}
-            aria-label="Search houses"
+            aria-label={$ui("Search houses")}
             onkeydown={onHousesSearchKeydown} />
         </span>
       </label>
-      <div class="panel-list" id={housesListId} role="listbox" aria-label="Houses">
-        {#if housesError}<p class="error" role="alert">{housesError}</p>{/if}
+      <div class="panel-list" id={housesListId} role="listbox" aria-label={$ui("Houses")}>
+        {#if housesError}<p class="error" role="alert">{$nativeErrorText(housesError)}</p>{/if}
         {#if housesBusy && houses.length === 0}
-          <p class="hint">Loading houses…</p>
+          <p class="hint">{$ui("Loading houses…")}</p>
         {:else if emptyHouses}
-          <p class="hint">No houses yet. Use {ENTITY_ACTIONS.newHouse} above to start a lineage.</p>
+          <p class="hint">{$ui("No houses yet. Use {0} above to start a lineage.", ENTITY_ACTIONS.newHouse)}</p>
         {:else if houses.length === 0}
-          <p class="hint">No houses match this search.</p>
+          <p class="hint">{$ui("No houses match this search.")}</p>
         {:else}
           {#each houses as house, index (house.id)}
             {@const summary = houseSummaries.get(house.id)}
@@ -320,12 +322,12 @@ $effect(() => {
             type="button"
             class="quiet-button"
             disabled={housesOffset === 0}
-            onclick={() => void loadHouses(Math.max(0, housesOffset - pageSize))}>Previous</button>
+            onclick={() => void loadHouses(Math.max(0, housesOffset - pageSize))}>{$ui("Previous")}</button>
           <button
             type="button"
             class="quiet-button"
             disabled={housesOffset + houses.length >= housesTotal}
-            onclick={() => void loadHouses(housesOffset + pageSize)}>Next</button>
+            onclick={() => void loadHouses(housesOffset + pageSize)}>{$ui("Next")}</button>
         </div>
       {/if}
     </section>

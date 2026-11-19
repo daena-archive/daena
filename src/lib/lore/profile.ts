@@ -1,3 +1,4 @@
+import { localizeUi } from "../i18n/ui.ts";
 import { evaluateFormula, formulaHasCycle, parseFormula } from "./profileFormula.ts";
 import { canonicalPresetOrigin, isPresetOrigin } from "./profilePresetSeed.ts";
 
@@ -190,7 +191,7 @@ function parseValue(raw: unknown, componentLabel: string, errors: string[]): Pro
 
 export function profileValidationErrors(input: unknown): string[] {
   const errors: string[] = [];
-  if (!input || typeof input !== "object" || Array.isArray(input)) return ["Profile must be an object"];
+  if (!input || typeof input !== "object" || Array.isArray(input)) return [localizeUi("Profile must be an object")];
   const document = input as Record<string, unknown>;
   if (document.schemaVersion !== PROFILE_SCHEMA_VERSION) errors.push("Unsupported Profile version");
   if (document.presetOrigin !== undefined && !isPresetOrigin(String(document.presetOrigin))) {
@@ -388,7 +389,7 @@ function readProfile(input: unknown): ProfileDocument {
     ...(allocation ? { allocation } : {}),
     components: (document.components as Record<string, unknown>[]).map((component) => {
       const value = parseValue(component.value, "Component", []);
-      if (!value) throw new Error("Profile component is missing a value");
+      if (!value) throw new Error(localizeUi("Profile component is missing a value"));
       const scale = Array.isArray(component.scale)
         ? component.scale.map((entry) => String(entry).trim()).filter(Boolean)
         : undefined;

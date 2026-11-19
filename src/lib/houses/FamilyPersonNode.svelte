@@ -1,4 +1,5 @@
 <script lang="ts">
+import { ui } from "$lib/i18n/ui";
 import { Handle, Position } from "@xyflow/svelte";
 import { formatCalendarDate } from "$lib/date";
 import { BRANCH_DIRECTIONS, type BranchDirection, type FamilyPerson, type HiddenCounts } from "./model.ts";
@@ -77,7 +78,7 @@ function chipVisible(direction: BranchDirection) {
 
 function chipText(direction: BranchDirection) {
   const { unit, units } = BRANCH_COPY[direction];
-  if (chipHiding(direction)) return `Hide ${units}`;
+  if (chipHiding(direction)) return $ui("Hide {0}", units);
   const count = chipCount(direction);
   const n = countLabel(count, Boolean(data.hidden?.truncated), data.hidden?.lowerBound ?? 0);
   const word = count === 1 && n === "1" ? unit : units;
@@ -135,10 +136,10 @@ const cardAriaLabel = $derived.by(() => {
         <span class="house">{data.houses[0]}{data.houses.length > 1 ? ` +${data.houses.length - 1}` : ""}</span>
       {/if}
       {#if data.roleBadge}<em class="role-badge">{data.roleBadge}</em>{/if}
-      {#if data.isRoot}<em class="root-badge">Root</em>{/if}
+      {#if data.isRoot}<em class="root-badge">{$ui("Root")}</em>{/if}
     </div>
     {#if hasBranchChips}
-      <div class="branches" role="group" aria-label="Hidden relatives" aria-roledescription="branch controls">
+      <div class="branches" role="group" aria-label={$ui("Hidden relatives")} aria-roledescription="branch controls">
         {#each BRANCH_DIRECTIONS as direction (direction)}
           {#if chipVisible(direction)}
             <button

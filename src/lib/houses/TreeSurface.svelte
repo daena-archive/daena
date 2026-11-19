@@ -1,4 +1,6 @@
 <script lang="ts">
+import { nativeErrorText } from "$lib/i18n/native-errors.ts";
+import { ui } from "$lib/i18n/ui";
 import type { EntitySummary, ModuleContext, Relationship, UUID } from "../../../packages/module-api/src/index";
 import type { Snippet } from "svelte";
 import { untrack } from "svelte";
@@ -129,7 +131,7 @@ let rerootCandidate = $state<{ id: string; name: string } | null>(null);
 let truncationLowerBound = $state(0);
 let recentMenu = $state<{ id: string; name: string }[]>([]);
 let secondaryField = $state(DEFAULT_SECONDARY_FIELD);
-let secondaryFields = $state<{ key: string; label: string }[]>([{ key: DEFAULT_SECONDARY_FIELD, label: "Occupation" }]);
+let secondaryFields = $state<{ key: string; label: string }[]>([{ key: DEFAULT_SECONDARY_FIELD, label: $ui("Occupation") }]);
 let limits = $state<TreeLimits>(readTreeLimits());
 let settingsOpen = $state(false);
 let settingsEl = $state<HTMLElement | null>(null);
@@ -217,7 +219,7 @@ const personConnections = $derived.by(() => {
     if (!people.has(rel.sourceId)) continue;
     items.push({
       id: rel.id,
-      label: `Parent · ${people.get(rel.sourceId)?.name ?? rel.sourceId}`,
+      label: $ui("Parent · {0}", people.get(rel.sourceId)?.name ?? rel.sourceId),
       otherId: rel.sourceId,
       relationshipId: rel.id,
     });
@@ -226,7 +228,7 @@ const personConnections = $derived.by(() => {
     if (rel.kind !== "parent" || rel.sourceId !== selectedPersonId || !people.has(rel.targetId)) continue;
     items.push({
       id: rel.id,
-      label: `Child · ${people.get(rel.targetId)?.name ?? rel.targetId}`,
+      label: $ui("Child · {0}", people.get(rel.targetId)?.name ?? rel.targetId),
       otherId: rel.targetId,
       relationshipId: rel.id,
     });
@@ -239,7 +241,7 @@ const personConnections = $derived.by(() => {
     if (!people.has(other)) continue;
     items.push({
       id: rel.id,
-      label: `Partner · ${people.get(other)?.name ?? other}`,
+      label: $ui("Partner · {0}", people.get(other)?.name ?? other),
       otherId: other,
       relationshipId: rel.id,
     });
@@ -1062,7 +1064,7 @@ function applyRelationshipDelete(id: string) {
 </script>
 
 <!-- svelte-ignore a11y_no_static_element_interactions, a11y_no_noninteractive_element_interactions, a11y_no_noninteractive_element_to_interactive_role, a11y_no_redundant_roles -->
-<section class="surface" role="region" aria-label="Family tree workspace" tabindex="-1" onkeydown={onSurfaceKeydown}>
+<section class="surface" role="region" aria-label={$ui("Family tree workspace")} tabindex="-1" onkeydown={onSurfaceKeydown}>
   <!-- Topbar — mirrors WorkspaceTopbar language -->
   <div class="family-topbar" role="banner">
     <div class="family-topbar-main">
@@ -1071,26 +1073,25 @@ function applyRelationshipDelete(id: string) {
           type="button"
           class="family-topbar-back"
           onclick={goToLanding}
-          aria-label="Back to people and houses"
-          title="Back to people and houses">
+          aria-label={$ui("Back to people and houses")}
+          title={$ui("Back to people and houses")}>
           <ArrowLeft size={15} strokeWidth={1.8} aria-hidden="true" />
         </button>
       {/if}
       <span class="family-mark" aria-hidden="true"><UsersRound size={16} strokeWidth={1.8} /></span>
       <div class="family-copy">
-        <strong>{houseId ? houseName || "House" : rootId ? (people.get(rootId)?.name ?? "Houses") : "Houses"}</strong>
+        <strong>{houseId ? houseName || $ui("House") : rootId ? (people.get(rootId)?.name ?? $ui("Houses")) : $ui("Houses")}</strong>
         <small title={subtitle}>{subtitle}</small>
       </div>
       {#if nav}<div class="family-topbar-nav">{@render nav()}</div>{/if}
       {#if loading && positioned}
-        <span class="topbar-busy" aria-live="polite" aria-label="Updating family tree">
-          <span class="busy-dot" aria-hidden="true"></span> Updating…
-        </span>
+        <span class="topbar-busy" aria-live="polite" aria-label={$ui("Updating family tree")}>
+          <span class="busy-dot" aria-hidden="true"></span> {$ui("Updating…")} </span>
       {/if}
     </div>
     {#if rootId}
-      <div class="family-topbar-actions" role="toolbar" aria-label="Tree view actions">
-        <div class="toolbar-group" role="group" aria-label="Navigation">
+      <div class="family-topbar-actions" role="toolbar" aria-label={$ui("Tree view actions")}>
+        <div class="toolbar-group" role="group" aria-label={$ui("Navigation")}>
           {#if houseId}
             <FamilyRootPicker
               {context}
@@ -1102,15 +1103,13 @@ function applyRelationshipDelete(id: string) {
             <FamilyRootPicker {context} compact dropdown recents={recentMenu} onSelect={selectRoot} />
           {/if}
         </div>
-        <div class="toolbar-group" role="group" aria-label="View">
-          <button type="button" class="workspace-topbar-action" onclick={fitView} title="Fit to view">
-            <Maximize2 size={14} strokeWidth={1.8} aria-hidden="true" /> Fit
-          </button>
+        <div class="toolbar-group" role="group" aria-label={$ui("View")}>
+          <button type="button" class="workspace-topbar-action" onclick={fitView} title={$ui("Fit to view")}>
+            <Maximize2 size={14} strokeWidth={1.8} aria-hidden="true" /> {$ui("Fit")} </button>
         </div>
-        <div class="toolbar-group" role="group" aria-label="Expansion">
-          <button type="button" class="workspace-topbar-action" onclick={resetView} title="Reset branches">
-            <RotateCcw size={14} strokeWidth={1.8} aria-hidden="true" /> Reset
-          </button>
+        <div class="toolbar-group" role="group" aria-label={$ui("Expansion")}>
+          <button type="button" class="workspace-topbar-action" onclick={resetView} title={$ui("Reset branches")}>
+            <RotateCcw size={14} strokeWidth={1.8} aria-hidden="true" /> {$ui("Reset")} </button>
         </div>
         <div class="settings" bind:this={settingsEl}>
           <button
@@ -1119,29 +1118,29 @@ function applyRelationshipDelete(id: string) {
             bind:this={settingsButtonEl}
             aria-expanded={settingsOpen}
             aria-haspopup="dialog"
-            aria-label="More view options"
+            aria-label={$ui("More view options")}
             onclick={openSettings}>
             <Settings2 size={16} strokeWidth={1.8} aria-hidden="true" />
           </button>
           {#if settingsOpen}
-            <div class="settings-panel" role="dialog" aria-label="More view options" aria-modal="true">
+            <div class="settings-panel" role="dialog" aria-label={$ui("More view options")} aria-modal="true">
               <header class="settings-head">
                 <div>
-                  <span>VIEW</span>
-                  <strong>Tree options</strong>
+                  <span>{$ui("VIEW")}</span>
+                  <strong>{$ui("Tree options")}</strong>
                 </div>
                 <button
                   type="button"
                   class="settings-close"
-                  aria-label="Close view options"
+                  aria-label={$ui("Close view options")}
                   onclick={() => closeSettings(true)}><X size={15} strokeWidth={1.8} aria-hidden="true" /></button>
               </header>
               <div class="settings-body">
                 <div class="settings-fields">
                   {#if houseId}
                     <label class="settings-field">
-                      <span>Scope</span>
-                      <select aria-label="House tree scope" value={houseScope} onchange={onHouseScopeChange}>
+                      <span>{$ui("Scope")}</span>
+                      <select aria-label={$ui("House tree scope")} value={houseScope} onchange={onHouseScopeChange}>
                         <option value={TREE_SCOPES.membersOnly.id}>{TREE_SCOPES.membersOnly.label}</option>
                         <option value={TREE_SCOPES.membersPlusImmediateFamily.id}
                           >{TREE_SCOPES.membersPlusImmediateFamily.label}</option>
@@ -1149,8 +1148,8 @@ function applyRelationshipDelete(id: string) {
                     </label>
                   {/if}
                   <label class="settings-field">
-                    <span>Secondary</span>
-                    <select aria-label="Secondary field" value={secondaryField} onchange={onSecondaryChange}>
+                    <span>{$ui("Secondary")}</span>
+                    <select aria-label={$ui("Secondary field")} value={secondaryField} onchange={onSecondaryChange}>
                       {#each secondaryFields as field (field.key)}
                         <option value={field.key}>{field.label}</option>
                       {/each}
@@ -1160,55 +1159,54 @@ function applyRelationshipDelete(id: string) {
                 <div class="settings-fields">
                   {#if !houseId}
                     <label class="settings-range">
-                      <span>Ancestor generations <em>{limits.ancestorGenerations}</em></span>
+                      <span>{$ui("Ancestor generations")} <em>{limits.ancestorGenerations}</em></span>
                       <input
                         type="range"
                         min="1"
                         max={MAX_ANCESTOR_GENERATIONS}
                         step="1"
                         value={limits.ancestorGenerations}
-                        aria-label="Ancestor generations"
+                        aria-label={$ui("Ancestor generations")}
                         oninput={onAncestorChange} />
                     </label>
                     <label class="settings-range">
-                      <span>Descendant generations <em>{limits.descendantGenerations}</em></span>
+                      <span>{$ui("Descendant generations")} <em>{limits.descendantGenerations}</em></span>
                       <input
                         type="range"
                         min="1"
                         max={MAX_DESCENDANT_GENERATIONS}
                         step="1"
                         value={limits.descendantGenerations}
-                        aria-label="Descendant generations"
+                        aria-label={$ui("Descendant generations")}
                         oninput={onDescendantChange} />
                     </label>
                   {/if}
                   <label class="settings-range">
-                    <span>Visible people cap <em>{limits.visiblePersonLimit}</em></span>
+                    <span>{$ui("Visible people cap")} <em>{limits.visiblePersonLimit}</em></span>
                     <input
                       type="range"
                       min="50"
                       max={MAX_VISIBLE_PERSON_LIMIT}
                       step="50"
                       value={limits.visiblePersonLimit}
-                      aria-label="Visible people cap"
+                      aria-label={$ui("Visible people cap")}
                       oninput={onPersonCapChange} />
                   </label>
                 </div>
                 <div class="settings-toggles">
                   <label class="settings-check">
                     <input type="checkbox" checked={showMinimap} onchange={() => (showMinimap = !showMinimap)} />
-                    <span>Show minimap</span>
+                    <span>{$ui("Show minimap")}</span>
                   </label>
                   <label class="settings-check">
                     <input type="checkbox" checked={reducedDetail} onchange={() => (reducedDetail = !reducedDetail)} />
-                    <span>Reduced detail</span>
+                    <span>{$ui("Reduced detail")}</span>
                   </label>
                 </div>
                 <div class="settings-footnote">
                   {#if !houseId}
                     <small
-                      >Partners and siblings are included with each visible person. Raising the cap keeps more of the
-                      neighborhood in view.</small>
+                      >{$ui("Partners and siblings are included with each visible person. Raising the cap keeps more of the neighborhood in view.")}</small>
                   {:else}
                     <small>{TREE_SCOPES.membersOnly.description}</small>
                     <small>{TREE_SCOPES.membersPlusImmediateFamily.description}</small>
@@ -1218,9 +1216,9 @@ function applyRelationshipDelete(id: string) {
                   {/if}
                   {#if truncated}
                     <small
-                      >Relationship query truncated — counts show a lower bound ({truncationLowerBound
+                      >{$ui("Relationship query truncated — counts show a lower bound ({0}).", truncationLowerBound
                         ? `${truncationLowerBound}+`
-                        : "99+"}).</small>
+                        : "99+")}</small>
                   {/if}
                 </div>
                 {#if warnings.length > 0}
@@ -1229,11 +1227,9 @@ function applyRelationshipDelete(id: string) {
                       type="button"
                       class="quiet-button ghost small"
                       aria-expanded={warningsOpen}
-                      onclick={() => (warningsOpen = !warningsOpen)}>
-                      {warnings.length} data warning{warnings.length === 1 ? "" : "s"}
-                    </button>
+                      onclick={() => (warningsOpen = !warningsOpen)}> {$ui("{0} data warning{1}", warnings.length, warnings.length === 1 ? "" : $ui("s"))} </button>
                     {#if warningsOpen}
-                      <ul class="warnings-list" aria-label="Tree data warnings">
+                      <ul class="warnings-list" aria-label={$ui("Tree data warnings")}>
                         {#each warnings as warning, index (`${warning.relationshipId ?? warning.entityId ?? "w"}-${index}`)}
                           <li>{warning.message}</li>
                         {/each}
@@ -1250,12 +1246,9 @@ function applyRelationshipDelete(id: string) {
   </div>
 
   {#if rootId}
-    <div class="family-subbar" role="toolbar" aria-label="Tree legend">
+    <div class="family-subbar" role="toolbar" aria-label={$ui("Tree legend")}>
       <div class="subbar-legend" id="tree-legend">
-        <span class="legend-swatch solid"></span> Parent
-        <span class="legend-swatch dash-adopt"></span> Adoptive
-        <span class="legend-swatch double"></span> Partner
-        {#if houseId}
+        <span class="legend-swatch solid"></span> {$ui("Parent")} <span class="legend-swatch dash-adopt"></span> {$ui("Adoptive")} <span class="legend-swatch double"></span> {$ui("Partner")} {#if houseId}
           <span class="legend-sep" aria-hidden="true">·</span>
           <span>{TREE_LEGEND.member}</span>
           {#if houseScope === TREE_SCOPES.membersPlusImmediateFamily.id}
@@ -1272,21 +1265,21 @@ function applyRelationshipDelete(id: string) {
       {#if error}
         <div class="status-alert error" role="alert">
           <span class="status-dot"></span>
-          <span class="status-text">{error}</span>
+          <span class="status-text">{$nativeErrorText(error)}</span>
           {#if rerootCandidate}
             <button type="button" class="quiet-button pill" onclick={acceptReroot}
-              >Make {rerootCandidate.name} root</button>
+              >{$ui("Make {0} root", rerootCandidate.name)}</button>
           {/if}
           {#if error === BRANCH_TOO_LARGE}
-            <button type="button" class="quiet-button pill" onclick={() => (error = "")}>Dismiss</button>
+            <button type="button" class="quiet-button pill" onclick={() => (error = "")}>{$ui("Dismiss")}</button>
           {/if}
         </div>
       {/if}
       {#if layoutFailed}
         <div class="status-alert warning" role="alert">
           <span class="status-dot"></span>
-          <span class="status-text">Layout failed. The previous arrangement was kept.</span>
-          <button type="button" class="quiet-button pill" onclick={retryLayout}>Retry</button>
+          <span class="status-text">{$ui("Layout failed. The previous arrangement was kept.")}</span>
+          <button type="button" class="quiet-button pill" onclick={retryLayout}>{$ui("Retry")}</button>
         </div>
       {/if}
     </div>
@@ -1298,28 +1291,28 @@ function applyRelationshipDelete(id: string) {
     {:else if loading && !positioned}
       <WorkbenchState
         kind="loading"
-        title="Loading family neighborhood"
+        title={$ui("Loading family neighborhood")}
         message="Fetching people, relationships, and houses…" />
     {:else if error && !positioned}
-      <WorkbenchState kind="error" title="Could not load family" message={error}>
+      <WorkbenchState kind="error" title={$ui("Could not load family")} message={error}>
         {#snippet actions()}
           {#if rerootCandidate}
-            <button type="button" class="quiet-button" onclick={acceptReroot}>Make {rerootCandidate.name} root</button>
+            <button type="button" class="quiet-button" onclick={acceptReroot}>{$ui("Make {0} root", rerootCandidate.name)}</button>
           {/if}
-          <button type="button" class="quiet-button" onclick={() => (error = "")}>Dismiss</button>
+          <button type="button" class="quiet-button" onclick={() => (error = "")}>{$ui("Dismiss")}</button>
         {/snippet}
       </WorkbenchState>
     {:else if houseId && people.size === 0}
       <div class="workspace" class:has-dock={dockOpen}>
         <WorkbenchState
           kind="empty"
-          title="This house has no members"
+          title={$ui("This house has no members")}
           message="Add an existing person or create one here. Membership stays in Lore; removing a member does not archive or delete them.">
           {#snippet actions()}
             <button type="button" class="quiet-button" onclick={() => (addHouseMemberOpen = "link")}
-              >Add existing</button>
+              >{$ui("Add existing")}</button>
             <button type="button" class="primary-button" onclick={() => (addHouseMemberOpen = "create")}
-              >Create person</button>
+              >{$ui("Create person")}</button>
           {/snippet}
         </WorkbenchState>
         <div class="dock">
@@ -1351,9 +1344,7 @@ function applyRelationshipDelete(id: string) {
             <div class="family-groups-banner" role="status">{TREE_LEGEND.disconnectedGroups(familyGroupCount)}</div>
           {/if}
           {#if scopeTruncated}
-            <div class="scope-cap-banner" role="status">
-              Immediate family hit the visible-people cap. Some relatives outside the house were omitted.
-            </div>
+            <div class="scope-cap-banner" role="status"> {$ui("Immediate family hit the visible-people cap. Some relatives outside the house were omitted.")} </div>
           {/if}
           <TreeCanvas
             layout={positioned}

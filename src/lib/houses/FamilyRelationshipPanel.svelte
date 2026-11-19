@@ -1,4 +1,6 @@
 <script lang="ts">
+import { nativeErrorText } from "$lib/i18n/native-errors.ts";
+import { ui } from "$lib/i18n/ui";
 import type { MetadataFieldDefinition, ModuleContext } from "../../../packages/module-api/src/index";
 import { X } from "@lucide/svelte";
 import DateEditor from "$lib/date/DateEditor.svelte";
@@ -70,20 +72,20 @@ function metadataFieldsFor(
   }
   if (kind === "partner") {
     return [
-      { key: "kind", label: "Partnership type", type: "enum", required: true, options: [...PARTNER_KINDS] },
-      { key: "customLabel", label: "Custom label", type: "text" },
-      { key: "status", label: "Status", type: "enum", options: [...PARTNER_STATUSES] },
-      { key: "start", label: "Starts", type: "date" },
-      { key: "end", label: "Ends", type: "date" },
-      { key: "notes", label: "Notes", type: "text" },
+      { key: "kind", label: $ui("Partnership type"), type: "enum", required: true, options: [...PARTNER_KINDS] },
+      { key: "customLabel", label: $ui("Custom label"), type: "text" },
+      { key: "status", label: $ui("Status"), type: "enum", options: [...PARTNER_STATUSES] },
+      { key: "start", label: $ui("Starts"), type: "date" },
+      { key: "end", label: $ui("Ends"), type: "date" },
+      { key: "notes", label: $ui("Notes"), type: "text" },
     ];
   }
   return [
-    { key: "kind", label: "Parent type", type: "enum", required: true, options: [...PARENT_KINDS] },
-    { key: "customLabel", label: "Custom label", type: "text" },
-    { key: "start", label: "Starts", type: "date" },
-    { key: "end", label: "Ends", type: "date" },
-    { key: "notes", label: "Notes", type: "text" },
+    { key: "kind", label: $ui("Parent type"), type: "enum", required: true, options: [...PARENT_KINDS] },
+    { key: "customLabel", label: $ui("Custom label"), type: "text" },
+    { key: "start", label: $ui("Starts"), type: "date" },
+    { key: "end", label: $ui("Ends"), type: "date" },
+    { key: "notes", label: $ui("Notes"), type: "text" },
   ];
 }
 
@@ -131,7 +133,7 @@ async function save() {
   if (saving) return;
   const kind = String(draft.kind ?? "");
   if (kind === "custom" && !String(draft.customLabel ?? "").trim()) {
-    error = "Custom label is required.";
+    error = $ui("Custom label is required.");
     return;
   }
   saving = true;
@@ -177,7 +179,7 @@ function reloadCurrent() {
   };
   if (currentRevision) observedRevision = currentRevision;
   conflict = false;
-  error = "Loaded current values. Save will use a new request after you confirm the draft.";
+  error = $ui("Loaded current values. Save will use a new request after you confirm the draft.");
   lastFingerprint = "";
   requestId = crypto.randomUUID();
 }
@@ -190,9 +192,9 @@ async function remove() {
   if (saving) return;
   const kind = relationship.label || relationship.kind;
   const ok = await confirmDialog({
-    title: `Delete ${kind}?`,
-    message: `Remove the ${kind} relationship between ${sourceName} and ${targetName}? Both people stay in Lore.`,
-    confirmLabel: "Delete relationship",
+    title: $ui("Delete {0}?", kind),
+    message: $ui("Remove the {0} relationship between {1} and {2}? Both people stay in Lore.", kind, sourceName, targetName),
+    confirmLabel: $ui("Delete relationship"),
     danger: true,
   });
   if (!ok) return;
@@ -217,14 +219,14 @@ async function remove() {
 }
 </script>
 
-<aside class="panel" class:docked aria-label="Relationship">
+<aside class="panel" class:docked aria-label={$ui("Relationship")}>
   <header class="panel-head">
     <div>
-      <span class="kicker">RELATIONSHIP</span>
+      <span class="kicker">{$ui("RELATIONSHIP")}</span>
       <strong class="title">{relationshipTitle}</strong>
       <span class="subtitle">{relationshipTypeLabel}</span>
     </div>
-    <button type="button" class="icon-button" onclick={onClose} aria-label="Close relationship"
+    <button type="button" class="icon-button" onclick={onClose} aria-label={$ui("Close relationship")}
       ><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
   </header>
 
@@ -258,7 +260,7 @@ async function remove() {
             <button
               class="date-empty"
               type="button"
-              onclick={() => (dateEditorOpen = { ...dateEditorOpen, [field.key]: true })}>Add a date</button>
+              onclick={() => (dateEditorOpen = { ...dateEditorOpen, [field.key]: true })}>{$ui("Add a date")}</button>
           {/if}
         </div>
       {:else if field.type === "boolean"}
@@ -296,16 +298,16 @@ async function remove() {
     {/each}
   </div>
 
-  {#if error}<p class="error" role="alert">{error}</p>{/if}
+  {#if error}<p class="error" role="alert">{$nativeErrorText(error)}</p>{/if}
   {#if conflict}
     <div class="actions">
-      <button type="button" class="quiet-button" onclick={reloadCurrent}>Reload current values</button>
-      <button type="button" class="quiet-button ghost" onclick={() => (conflict = false)}>Review draft</button>
+      <button type="button" class="quiet-button" onclick={reloadCurrent}>{$ui("Reload current values")}</button>
+      <button type="button" class="quiet-button ghost" onclick={() => (conflict = false)}>{$ui("Review draft")}</button>
     </div>
   {/if}
   <div class="actions sticky-actions">
-    <button type="button" class="primary-button" disabled={saving || conflict} onclick={() => void save()}>Save</button>
-    <button type="button" class="danger-button" disabled={saving} onclick={() => void remove()}>Delete</button>
+    <button type="button" class="primary-button" disabled={saving || conflict} onclick={() => void save()}>{$ui("Save")}</button>
+    <button type="button" class="danger-button" disabled={saving} onclick={() => void remove()}>{$ui("Delete")}</button>
   </div>
 </aside>
 

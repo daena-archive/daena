@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { get } from "svelte/store";
 import { formatUpdateMessage } from "../src/lib/appUpdate.ts";
 
+import { loreFieldLabel, loreTypeLabel } from "../src/lib/i18n/lore-labels.ts";
+
 const storageKey = "daena:display-language";
 let stored = "unsupported";
 Object.defineProperty(globalThis, "localStorage", {
@@ -25,6 +27,23 @@ setDisplayLanguage("ja");
 assert.deepEqual(seen, ["Settings", "設定"]);
 unsubscribe();
 assert.equal(stored, "ja");
+const japanese = get(messages);
+const { manifestCopy } = await import("../src/lib/i18n/manifest-copy.ts");
+const { formatUi } = await import("../src/lib/i18n/ui.ts");
+const { profileComponentCopy } = await import("../src/lib/i18n/profile-copy.ts");
+const translate = (source) => formatUi("ja", source);
+assert.equal(manifestCopy(translate, "daena.lore", "template", "person", "Person"), "人物");
+assert.equal(manifestCopy(translate, "daena.lore", "template", "person", "Map"), "Map");
+assert.equal(manifestCopy(translate, "third.party", "template", "person", "Person"), "Person");
+assert.equal(profileComponentCopy("dnd", "attribute-strength", "Strength"), "筋力");
+assert.equal(profileComponentCopy("dnd", "attribute-strength", "Renamed"), "Renamed");
+assert.equal(formatUi("ja", "Close {0}", "$& {0}"), "$& {0}を閉じる");
+
+assert.equal(loreTypeLabel(japanese.loreTypes, "daena.lore:person", "Person"), "人物");
+assert.equal(loreTypeLabel(japanese.loreTypes, "other:person", "Person"), "Person");
+assert.equal(loreTypeLabel(japanese.loreTypes, "daena.lore:person", "Hero"), "Hero");
+assert.equal(loreFieldLabel(japanese.loreFields, "occupation", "Occupation"), "職業");
+assert.equal(loreFieldLabel(japanese.loreFields, "occupation", "Day job"), "Day job");
 assert.equal(get(messages).projectSwitcher.removeNamedRecent("My world"), "「My world」を最近のプロジェクトから削除");
 assert.equal(
   formatUpdateMessage(
@@ -41,6 +60,51 @@ assert.equal(
   ),
   "アップデートがあります（0.2.0-beta.1、ベータ版）",
 );
+
+const { formatNativeError, nativeErrorText } = await import("../src/lib/i18n/native-errors.ts");
+const { friendlyError, rawErrorMessage } = await import("../src/lib/shell/errors.ts");
+const codedPath = "/projects/あお {0}/project.json [project.name] name cannot be empty";
+assert.equal(
+  get(nativeErrorText)(codedPath),
+  "/projects/あお {0}/project.json [project.name] 名前を入力してください。",
+);
+assert.equal(formatNativeError("en", codedPath), codedPath);
+assert.equal(formatNativeError("ja", "unknown commit: branch {1}"), "コミットが見つかりません：branch {1}");
+assert.equal(
+  formatNativeError("ja", "relationship.self: relationship cannot target the same entity"),
+  "relationship.self: 項目を自分自身に関連づけることはできません。",
+);
+assert.equal(formatNativeError("ja", "external-service: external diagnostic"), "external-service: external diagnostic");
+assert.equal(
+  formatNativeError("ja", "plugin Sea {1} version 2.0 does not satisfy ^3.0"),
+  "プラグイン「Sea {1}」のバージョン 2.0 は条件 ^3.0 を満たしていません。",
+);
+assert.equal(
+  formatNativeError("ja", "atlas.save.failed: refused to follow a symlink"),
+  "atlas.save.failed: シンボリックリンクを経由した保存はできません。",
+);
+const inner = "atlas request ID must be a UUID";
+assert.ok(formatNativeError("ja", "maps.physical: invalid settings: " + inner)
+  .includes(formatNativeError("ja", inner)));
+assert.ok(formatNativeError("ja", "database error: " + inner).endsWith(inner));
+const externalDiagnostic = "storm ".repeat(16000);
+assert.equal(formatNativeError("ja", externalDiagnostic), externalDiagnostic);
+const { default: nativeCatalog } = await import("../src/lib/i18n/native-errors.ja.json", {
+  with: { type: "json" },
+});
+for (const [source, translation] of Object.entries(nativeCatalog)) {
+  const substitute = (text) => text.replace(/\{(\d+)\}/g, (_, i) => `外部${i}値`);
+  assert.equal(formatNativeError("ja", substitute(source)), substitute(translation), source);
+  assert.deepEqual(
+    [...translation.matchAll(/\{\d+\}/g)].map(([parameter]) => parameter).sort(),
+    [...source.matchAll(/\{\d+\}/g)].map(([parameter]) => parameter).sort(),
+    source,
+  );
+}
+assert.equal(friendlyError("cannot find undefined.md"), "cannot find undefined.md");
+const conflict = new Error("entity revision conflict: expected abc, current xyz");
+assert.match(friendlyError(conflict), /編集開始時：abc、現在：xyz/);
+assert.equal(rawErrorMessage(conflict), conflict.message);
 
 // Load a fresh store as the app would on restart.
 const restarted = await import("../src/lib/i18n/index.ts?restart");
@@ -59,4 +123,23 @@ const ephemeral = await import("../src/lib/i18n/index.ts?unavailable");
 assert.equal(get(ephemeral.displayLanguage), "en");
 ephemeral.setDisplayLanguage("ja");
 assert.equal(get(ephemeral.displayLanguage), "ja");
+// A detached plugin uses the host's language even when its own origin cannot persist preferences.
+const { listenForPluginLanguage, translatePluginText } = await import("../packages/modules/plugin-i18n.ts");
+globalThis.window = new EventTarget();
+globalThis.document = { documentElement: { lang: "en" }, title: "" };
+window.__DAENA_DISPLAY_LANGUAGE__ = "ja";
+listenForPluginLanguage("World graph");
+assert.equal(document.title, "世界の関係図");
+assert.equal(
+  translatePluginText("Displayed on the {calendar} calendar", { calendar: "Haru {1}" }),
+  "表示する暦：Haru {1}",
+);
+window.__DAENA_DISPLAY_LANGUAGE__ = "en";
+window.dispatchEvent(new Event("daena:language"));
+assert.equal(document.documentElement.lang, "en");
+assert.equal(document.title, "World graph");
+assert.equal(
+  translatePluginText("Displayed on the {calendar} calendar", { calendar: "Haru" }),
+  "Displayed on the Haru calendar",
+);
 console.log("UI language switching and persistence checks passed");

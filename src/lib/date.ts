@@ -1,3 +1,4 @@
+import { localizeUi } from "./i18n/ui.ts";
 import { chronologyCompareOrdinal, type CalendarDefinition } from "../../packages/modules/timeline/src/calendar.ts";
 import { parseCalendarDate, signedGregorianYear } from "../../packages/modules/timeline/src/calendar-date.ts";
 
@@ -52,7 +53,7 @@ export function formatRuntimeTimestampLabel(
   options: Intl.DateTimeFormatOptions = { dateStyle: "medium" },
 ): string {
   const trimmed = timestamp.trim();
-  if (!trimmed) return "Unknown";
+  if (!trimmed) return localizeUi("Unknown");
   if (/^\d+$/.test(trimmed)) {
     try {
       const ms = Number(BigInt(trimmed) / 1_000_000n);
@@ -65,7 +66,7 @@ export function formatRuntimeTimestampLabel(
     }
   }
   const date = new Date(trimmed);
-  return Number.isNaN(date.getTime()) ? "Unknown" : new Intl.DateTimeFormat(undefined, options).format(date);
+  return Number.isNaN(date.getTime()) ? localizeUi("Unknown") : new Intl.DateTimeFormat(undefined, options).format(date);
 }
 
 export function updatedDateLabel(timestamp: string) {

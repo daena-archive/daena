@@ -1,4 +1,5 @@
 <script lang="ts">
+import { ui } from "$lib/i18n/ui";
 import { onDestroy } from "svelte";
 import { safeSrc } from "./urls.ts";
 import { resolveAssetSrc, retainAssetUrl, releaseAssetUrl } from "$lib/assets/resolve";
@@ -104,10 +105,10 @@ onDestroy(() => {
       ? `${width && /^\d+$/.test(width.trim()) ? `width:${width.trim()}px;` : ""}${height && /^\d+$/.test(height.trim()) ? `height:${height.trim()}px;` : "height:auto;"}`
       : undefined} />
 {:else if loading}
-  <span class="asset-image-placeholder" aria-label={`Loading ${alt}`}>Loading image…</span>
+  <span class="asset-image-placeholder" aria-label={$ui("Loading {0}", alt)}>{$ui("Loading image…")}</span>
 {:else if error}
-  <span class="asset-image-error" role="img" aria-label={`Failed to load ${alt}`}
-    >Image unavailable: {alt} — {currentSrc}</span>
+  <span class="asset-image-error" role="img" aria-label={$ui("Failed to load {0}", alt)}
+    >{$ui("Image unavailable: {0} — {1}", alt, currentSrc)}</span>
 {:else}
   <span>{alt}</span>
 {/if}

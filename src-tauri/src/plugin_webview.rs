@@ -33,6 +33,9 @@ pub(super) fn open_plugin_webview(
         url.push_str("&view=");
         url.push_str(&percent_encode(view_id));
     }
+    let title = PLUGIN_TITLES.lock().ok()
+        .and_then(|titles| titles.get(plugin_id).filter(|text| text.source == entry.manifest.name).map(|text| text.title.clone()))
+        .unwrap_or_else(|| entry.manifest.name.clone());
     let navigation_policy = policy.clone();
     tauri::WebviewWindowBuilder::new(
         app,
@@ -45,7 +48,7 @@ pub(super) fn open_plugin_webview(
     .use_https_scheme(true)
     .initialization_script(plugin_webview_init_script())
     .on_navigation(move |url| plugin_navigation_allowed(url, &navigation_policy))
-    .title(entry.manifest.name.clone())
+    .title(title)
     .inner_size(980.0, 720.0)
     .visible(true)
     .build()

@@ -78,7 +78,7 @@ assert.equal(timelineGuideSteps({ hasCollection: true, view: "calendars", mode: 
 const page = await readFile(new URL("../src/routes/+page.svelte", import.meta.url), "utf8");
 assert.match(page, /data-guide="workspace-new"/, "New is a coach target");
 assert.match(page, /HostGuide/, "host mounts lore and timeline coaches");
-assert.match(page, /Show lore guide/, "lore header reopens the guide");
+assert.match(page, /\$messages\.workspace\.guide/, "lore header reopens the guide");
 assert.match(page, /Show timeline guide/, "timeline header reopens the guide");
 
 const coach = await readFile(new URL("../src/lib/guides/WorkspaceGuide.svelte", import.meta.url), "utf8");

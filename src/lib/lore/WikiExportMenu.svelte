@@ -1,4 +1,6 @@
 <script lang="ts">
+import { nativeErrorText } from "$lib/i18n/native-errors.ts";
+import { ui } from "$lib/i18n/ui";
 import { onMount, tick } from "svelte";
 import { ChevronDown, Code2, Download, FileText, LoaderCircle, Printer } from "@lucide/svelte";
 import { project, type WikiPageExportFormat } from "$lib/project/client";
@@ -45,7 +47,7 @@ async function exportPage(format: WikiPageExportFormat) {
     const destination = typeof selection === "string" ? selection : null;
     if (!destination) return;
     const output = await project.exportWikiPage(entityId, destination, format, manifestId);
-    message = `${articleName} exported to ${output}`;
+    message = $ui("{0} exported to {1}", articleName, output);
   } catch (cause) {
     error = cause instanceof Error ? cause.message : String(cause);
   } finally {
@@ -73,30 +75,30 @@ async function printPage() {
     {#if busy}<LoaderCircle class="spinner" size={15} strokeWidth={1.8} />{:else}<Download
         size={15}
         strokeWidth={1.8} />{/if}
-    <span>{busy ? "Exporting…" : "Export"}</span>
+    <span>{busy ? $ui("Exporting…") : $ui("Export")}</span>
     <ChevronDown size={13} strokeWidth={1.8} />
   </button>
 
   {#if open}
-    <div class="export-menu" role="menu" aria-label="Export article">
+    <div class="export-menu" role="menu" aria-label={$ui("Export article")}>
       <button type="button" role="menuitem" onclick={() => void exportPage("markdown")}>
         <span class="format-icon"><FileText size={16} strokeWidth={1.7} /></span>
-        <span><strong>Markdown</strong><small>Portable source with details and connections</small></span>
+        <span><strong>{$ui("Markdown")}</strong><small>{$ui("Portable source with details and connections")}</small></span>
       </button>
       <button type="button" role="menuitem" onclick={() => void exportPage("html")}>
         <span class="format-icon"><Code2 size={16} strokeWidth={1.7} /></span>
-        <span><strong>Standalone HTML</strong><small>Styled page with no remote dependencies</small></span>
+        <span><strong>{$ui("Standalone HTML")}</strong><small>{$ui("Styled page with no remote dependencies")}</small></span>
       </button>
       <button type="button" role="menuitem" onclick={() => void printPage()}>
         <span class="format-icon"><Printer size={16} strokeWidth={1.7} /></span>
-        <span><strong>PDF / Print</strong><small>Open the system dialog to save as PDF</small></span>
+        <span><strong>{$ui("PDF / Print")}</strong><small>{$ui("Open the system dialog to save as PDF")}</small></span>
       </button>
     </div>
   {/if}
 </div>
 
 {#if message}<p class="export-status" role="status">{message}</p>{/if}
-{#if error}<p class="export-status error" role="alert">{error}</p>{/if}
+{#if error}<p class="export-status error" role="alert">{$nativeErrorText(error)}</p>{/if}
 
 <style>
 .wiki-export {

@@ -1,4 +1,6 @@
 <script lang="ts">
+import { nativeErrorText } from "$lib/i18n/native-errors.ts";
+import { ui } from "$lib/i18n/ui";
 import { onMount, tick } from "svelte";
 import { X, ArrowRight } from "@lucide/svelte";
 import type { FieldDefinition } from "../../packages/module-api/src/index";
@@ -92,23 +94,23 @@ function isValidDate(value: unknown): boolean {
 }
 
 function invalidMessage(field: MetadataField, value: unknown): string {
-  if (field.required && !hasValue(value)) return `${field.label} is required.`;
+  if (field.required && !hasValue(value)) return $ui("{0} is required.", field.label);
   if (!hasValue(value)) return "";
-  if (field.type === "text" && typeof value !== "string") return `${field.label} must be text.`;
+  if (field.type === "text" && typeof value !== "string") return $ui("{0} must be text.", field.label);
   if (field.type === "number" && (typeof value !== "number" || !Number.isFinite(value))) {
-    return `${field.label} must be a number.`;
+    return $ui("{0} must be a number.", field.label);
   }
-  if (field.type === "boolean" && typeof value !== "boolean") return `${field.label} must be enabled or disabled.`;
-  if (field.type === "date" && !isValidDate(value)) return `${field.label} must be a valid date.`;
+  if (field.type === "boolean" && typeof value !== "boolean") return $ui("{0} must be enabled or disabled.", field.label);
+  if (field.type === "date" && !isValidDate(value)) return $ui("{0} must be a valid date.", field.label);
   if (field.type === "enum" && !field.options?.includes(String(value))) {
-    return `${field.label} must use one of the configured options.`;
+    return $ui("{0} must use one of the configured options.", field.label);
   }
   if ((field as any).type === "oneof") {
     const opts =
       field.options ??
       ((field as any).oneOf as Array<{ options?: string[] }> | undefined)?.flatMap((v) => v.options ?? []) ??
       [];
-    if (!opts.includes(String(value))) return `${field.label} must use one of the configured options.`;
+    if (!opts.includes(String(value))) return $ui("{0} must use one of the configured options.", field.label);
   }
   return "";
 }
@@ -173,7 +175,7 @@ async function submit() {
     await onSave(next);
     onClose();
   } catch (cause) {
-    saveError = cause instanceof Error ? cause.message : "Could not save relationship details.";
+    saveError = cause instanceof Error ? cause.message : $ui("Could not save relationship details.");
   } finally {
     saving = false;
   }
@@ -233,7 +235,7 @@ onMount(() => {
     onkeydown={(event) => event.stopPropagation()}>
     <header class="relationship-metadata-header">
       <div>
-        <span class="relationship-metadata-kicker">RELATIONSHIP DETAILS</span>
+        <span class="relationship-metadata-kicker">{$ui("RELATIONSHIP DETAILS")}</span>
         <h2 id={titleId()}>{humanizeId(relationship.relationship_type)}</h2>
         <p>
           <span style="display:inline-flex;vertical-align:middle" aria-hidden="true"
@@ -244,17 +246,17 @@ onMount(() => {
       <button
         type="button"
         class="relationship-metadata-close"
-        aria-label="Close relationship details"
+        aria-label={$ui("Close relationship details")}
         onclick={onClose}><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
     </header>
 
     {#if metadataFields().length === 0}
       <div class="relationship-metadata-empty">
-        <strong>No configurable properties for this relationship type</strong>
-        <p>The relationship target is <b>{targetName()}</b>. Its metadata is managed outside this module.</p>
+        <strong>{$ui("No configurable properties for this relationship type")}</strong>
+        <p>{$ui("The relationship target is")} <b>{targetName()}</b>{$ui(". Its metadata is managed outside this module.")}</p>
       </div>
       <footer class="relationship-metadata-actions">
-        <button type="button" class="relationship-metadata-primary" onclick={onClose}>Close</button>
+        <button type="button" class="relationship-metadata-primary" onclick={onClose}>{$ui("Close")}</button>
       </footer>
     {:else}
       <form
@@ -279,7 +281,7 @@ onMount(() => {
                   onClear={() => clearDateField(field.key)}
                   onSelectCalendar={(id) => setDateCalendar(field.key, id)} />
               {:else}<button class="date-empty" type="button" onclick={() => openDateEditor(field.key)}
-                  >Add a date</button
+                  >{$ui("Add a date")}</button
                 >{/if}
             {:else if field.type === "boolean"}
               <label for={`relationship-${relationship.id}-${field.key}`}>
@@ -312,7 +314,7 @@ onMount(() => {
                   id={`relationship-${relationship.id}-${field.key}`}
                   value={textValue(field.key)}
                   onchange={(event) => setValue(field.key, (event.currentTarget as HTMLSelectElement).value)}>
-                  <option value="">Choose {field.label.toLowerCase()}</option>
+                  <option value="">{$ui("Choose {0}", field.label.toLowerCase())}</option>
                   {#each field.options ?? [] as option}<option value={option}>{option}</option>{/each}
                 </select>
               </label>
@@ -324,7 +326,7 @@ onMount(() => {
                   id={`relationship-${relationship.id}-${field.key}`}
                   value={textValue(field.key)}
                   onchange={(event) => setValue(field.key, (event.currentTarget as HTMLSelectElement).value)}>
-                  <option value="">Choose {field.label.toLowerCase()}</option>
+                  <option value="">{$ui("Choose {0}", field.label.toLowerCase())}</option>
                   {#each field.options ?? [] as option}<option value={option}>{option}</option>{/each}
                   {#each (field as any).oneOf ?? [] as variant}
                     {#each variant.options ?? [] as opt}<option value={opt}>{variant.label}: {opt}</option>{/each}
@@ -339,7 +341,7 @@ onMount(() => {
                   id={`relationship-${relationship.id}-${field.key}`}
                   type="text"
                   value={textValue(field.key)}
-                  placeholder={`Add ${field.label.toLowerCase()}`}
+                  placeholder={$ui("Add {0}", field.label.toLowerCase())}
                   oninput={(event) => setValue(field.key, (event.currentTarget as HTMLInputElement).value)} />
               </label>
             {/if}
@@ -348,11 +350,11 @@ onMount(() => {
               >{/if}
           </div>
         {/each}
-        {#if saveError}<p class="relationship-metadata-error" role="alert">{saveError}</p>{/if}
+        {#if saveError}<p class="relationship-metadata-error" role="alert">{$nativeErrorText(saveError)}</p>{/if}
         <footer class="relationship-metadata-actions">
-          <button type="button" class="relationship-metadata-secondary" onclick={onClose}>Cancel</button>
+          <button type="button" class="relationship-metadata-secondary" onclick={onClose}>{$ui("Cancel")}</button>
           <button type="submit" class="relationship-metadata-primary" disabled={saving}
-            >{saving ? "Saving…" : "Save details"}</button>
+            >{saving ? $ui("Saving…") : $ui("Save details")}</button>
         </footer>
       </form>
     {/if}

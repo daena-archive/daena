@@ -1,3 +1,4 @@
+import { localizeUi } from "../../i18n/ui.ts";
 import buffer from "@turf/buffer";
 import difference from "@turf/difference";
 import { featureCollection, lineString, multiPolygon, point, polygon } from "@turf/helpers";
@@ -135,8 +136,8 @@ function featureToTurf(feature: VectorFeature): Feature<Polygon | MultiPolygon |
 
 function validateGeometry(geometry: VectorFeature["geometry"]): string | null {
   const count = geometryPositionCount(geometry);
-  if (count === 0) return "empty geometry";
-  if (count > VECTOR_MAX_FEATURE_POSITIONS) return "geometry exceeds position budget";
+  if (count === 0) return localizeUi("empty geometry");
+  if (count > VECTOR_MAX_FEATURE_POSITIONS) return localizeUi("geometry exceeds position budget");
   return null;
 }
 
@@ -164,22 +165,22 @@ function validateSelection(
   ids: readonly string[],
 ): { ok: true; features: VectorFeature[] } | { ok: false; code: string; detail: string } {
   if (ids.length === 0) {
-    return { ok: false, code: "geometry.selection.empty", detail: "Select one or more features." };
+    return { ok: false, code: "geometry.selection.empty", detail: localizeUi("Select one or more features.") };
   }
   const features = ids
     .map((id) => document.collection.features.find((feature) => feature.id === id))
     .filter((feature): feature is VectorFeature => Boolean(feature));
   if (features.length !== ids.length) {
-    return { ok: false, code: "geometry.selection.missing", detail: "One or more selected features were not found." };
+    return { ok: false, code: "geometry.selection.missing", detail: localizeUi("One or more selected features were not found.") };
   }
   const layerIds = new Set(features.map((feature) => featureLayerId(feature)));
   if (layerIds.size !== 1) {
-    return { ok: false, code: "geometry.selection.layer", detail: "Selected features must belong to one layer." };
+    return { ok: false, code: "geometry.selection.layer", detail: localizeUi("Selected features must belong to one layer.") };
   }
   const layerId = [...layerIds][0];
   const layer = findLayer(document.layers, layerId);
   if (!layerAcceptsEdits(layer)) {
-    return { ok: false, code: "geometry.layer.locked", detail: "The target layer is hidden or locked." };
+    return { ok: false, code: "geometry.layer.locked", detail: localizeUi("The target layer is hidden or locked.") };
   }
   return { ok: true, features };
 }

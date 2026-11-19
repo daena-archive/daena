@@ -1,4 +1,5 @@
 <script lang="ts">
+import { pluginText } from "../../plugin-i18n.ts";
 import { onMount } from "svelte";
 import {
   IPA_SECTION_LABELS,
@@ -80,25 +81,25 @@ function handleKeydown(event: KeyboardEvent) {
     onclick={(event) => event.stopPropagation()}>
     <header>
       <div>
-        <p>Language tools</p>
-        <h2 id="ipa-picker-title">IPA picker</h2>
+        <p>{$pluginText("Language tools")}</p>
+        <h2 id="ipa-picker-title">{$pluginText("IPA picker")}</h2>
       </div>
-      <button type="button" class="ipa-close" onclick={onclose}>Close</button>
+      <button type="button" class="ipa-close" onclick={onclose}>{$pluginText("Close")}</button>
     </header>
 
     <label class="ipa-search">
-      <span>Search by symbol or description</span>
+      <span>{$pluginText("Search by symbol or description")}</span>
       <input
         bind:this={searchInput}
         bind:value={query}
         type="search"
-        placeholder="Try postalveolar, velar nasal, long, or ʃ" />
+        placeholder={$pluginText("Try postalveolar, velar nasal, long, or ʃ")} />
     </label>
 
     <div class="ipa-scroll">
       {#if !query && recentEntries.length > 0}
         <section class="ipa-section" aria-labelledby="ipa-recent-title">
-          <h3 id="ipa-recent-title">Recently used</h3>
+          <h3 id="ipa-recent-title">{$pluginText("Recently used")}</h3>
           <div class="ipa-symbols compact">
             {#each recentEntries as entry (entry.symbol)}
               <button type="button" class="ipa-symbol" title={entry.name} onclick={() => choose(entry)}>
@@ -111,7 +112,7 @@ function handleKeydown(event: KeyboardEvent) {
       {/if}
 
       {#if filtered.length === 0}
-        <p class="ipa-empty" role="status">No IPA symbols match “{query}”.</p>
+        <p class="ipa-empty" role="status">{$pluginText("No IPA symbols match “")}{query}”.</p>
       {:else}
         {#each IPA_SECTIONS as section (section)}
           {@const sectionEntries = entries(section)}
@@ -139,7 +140,7 @@ function handleKeydown(event: KeyboardEvent) {
       {/if}
     </div>
 
-    <footer>Select as many symbols as you need. They are inserted at the field’s cursor.</footer>
+    <footer>{$pluginText("Select as many symbols as you need. They are inserted at the field’s cursor.")}</footer>
   </div>
 </div>
 

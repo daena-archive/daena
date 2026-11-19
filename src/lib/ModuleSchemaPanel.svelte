@@ -1,4 +1,7 @@
 <script lang="ts">
+import { nativeErrorText } from "$lib/i18n/native-errors.ts";
+import { manifestCopy } from "$lib/i18n/manifest-copy";
+import { ui } from "$lib/i18n/ui";
 import type {
   EntityTypeAppearanceOverride,
   EntityTypeDefinition,
@@ -94,6 +97,7 @@ let {
   pluginId = null,
   busy = false,
   message = "",
+  messageIsError = false,
   conflict = false,
   contentRevision = "",
   projectionLabelsForType = () => [],
@@ -113,6 +117,7 @@ let {
   pluginId?: string | null;
   busy?: boolean;
   message?: string;
+  messageIsError?: boolean;
   conflict?: boolean;
   /** Opaque content revision currently expected for CAS saves (display/debug). */
   contentRevision?: string;
@@ -190,7 +195,7 @@ function entityTypeLabel(typeId: string): string {
     (draft.customEntityTypes ?? []).find((type) => type.id === typeId) ??
     referenceEntityTypes.find((type) => type.id === typeId);
   const name = defined?.name.trim();
-  return name || humanizeId(typeId);
+  return name ? manifestCopy($ui, pluginId, "type", typeId, name) : humanizeId(typeId);
 }
 
 // Remounted by parent `{#key editorRemountKey}`; initial overlay is intentional.
@@ -857,7 +862,7 @@ function applyTypeFieldSelection(typeId: string, desiredKeys: string[]) {
 }
 
 function scopeLabel(entityTypes: string[] | undefined): string {
-  if (!entityTypes || entityTypes.length === 0) return "All types";
+  if (!entityTypes || entityTypes.length === 0) return $ui("All types");
   return entityTypes.map(entityTypeLabel).join(", ");
 }
 
@@ -1008,9 +1013,9 @@ async function reapplyDraftOntoCurrent() {
 async function discardChanges() {
   if (!dirty) return;
   const confirmed = await confirmDialog({
-    title: "Discard unsaved changes?",
-    message: "All unsaved types, fields, and templates will be reverted to the last saved schema.",
-    confirmLabel: "Discard",
+    title: $ui("Discard unsaved changes?"),
+    message: $ui("All unsaved types, fields, and templates will be reverted to the last saved schema."),
+    confirmLabel: $ui("Discard"),
     danger: true,
   });
   if (!confirmed) return;
@@ -1273,7 +1278,7 @@ async function confirmTypeRemoval() {
   try {
     if (entityDisposition?.action === "reassign") {
       if (!onReassignEntities) {
-        throw new Error("Entity reassignment is unavailable in this session.");
+        throw new Error($ui("Entity reassignment is unavailable in this session."));
       }
       await onReassignEntities(typeId, entityDisposition.toTypeId);
     }
@@ -1847,11 +1852,11 @@ function fieldExtrasLabel(field: FieldDefinition): string {
   const f: any = field;
   if (field.type === "enum") {
     const opts = (f.options as string[] | undefined) ?? [];
-    return `${opts.length} options${f.multiple ? " · multiple" : ""}`;
+    return $ui("{0} options{1}", opts.length, f.multiple ? " · multiple" : "");
   }
   if (field.type === "oneof") {
     const variants = (f.oneOf as any[] | undefined) ?? [];
-    return `${variants.length} variants`;
+    return $ui("{0} variants", variants.length);
   }
 
   if (field.type === "relationship") {
@@ -1985,33 +1990,28 @@ function removeCustomTemplate(id: string) {
       <SlidersHorizontal size={18} strokeWidth={1.8} aria-hidden="true" />
     </div>
     <div class="hero-copy">
-      <span class="kicker">PROJECT STRUCTURE</span>
-      <strong>Fields &amp; Types</strong>
-      <p>
-        Choose what authors see in this project. Extension defaults stay intact while project-specific types, fields,
-        and templates travel with the project.
-      </p>
+      <span class="kicker">{$ui("PROJECT STRUCTURE")}</span>
+      <strong>{$ui("Fields & Types")}</strong>
+      <p> {$ui("Choose what authors see in this project. Extension defaults stay intact while project-specific types, fields, and templates travel with the project.")} </p>
     </div>
-    <div class="hero-stats" aria-label="Overlay summary">
+    <div class="hero-stats" aria-label={$ui("Overlay summary")}>
       <span class="stat-pill"
-        ><Layers size={12} strokeWidth={1.8} aria-hidden="true" /> {effectiveTypes().length} types</span>
+        ><Layers size={12} strokeWidth={1.8} aria-hidden="true" /> {$ui("{0} types", effectiveTypes().length)}</span>
       <span class="stat-pill"
-        ><TextQuote size={12} strokeWidth={1.8} aria-hidden="true" />
-        {(draft.customFields ?? []).length + packageFields.length - (draft.disabledFields?.length ?? 0)} fields</span>
+        ><TextQuote size={12} strokeWidth={1.8} aria-hidden="true" /> {$ui("{0} fields", (draft.customFields ?? []).length + packageFields.length - (draft.disabledFields?.length ?? 0))}</span>
       <span class="stat-pill"
-        ><LayoutTemplate size={12} strokeWidth={1.8} aria-hidden="true" />
-        {(draft.customTemplates ?? []).length + packageTemplates.length - (draft.disabledTemplates?.length ?? 0)} templates</span>
+        ><LayoutTemplate size={12} strokeWidth={1.8} aria-hidden="true" /> {$ui("{0} templates", (draft.customTemplates ?? []).length + packageTemplates.length - (draft.disabledTemplates?.length ?? 0))}</span>
     </div>
   </header>
 
   {#if !projectOpen}
     <div class="empty-card">
       <div class="empty-icon"><Blocks size={20} strokeWidth={1.7} aria-hidden="true" /></div>
-      <strong>Open a project to customize Fields &amp; Types</strong>
-      <p>Project structure choices are saved inside the project and travel with it.</p>
+      <strong>{$ui("Open a project to customize Fields & Types")}</strong>
+      <p>{$ui("Project structure choices are saved inside the project and travel with it.")}</p>
     </div>
   {:else}
-    <div class="tab-bar" role="tablist" aria-label="Fields and Types sections">
+    <div class="tab-bar" role="tablist" aria-label={$ui("Fields and Types sections")}>
       <button
         type="button"
         role="tab"
@@ -2022,9 +2022,7 @@ function removeCustomTemplate(id: string) {
           closeSelectedItem();
           activeTab = "types";
         }}>
-        <Layers size={14} strokeWidth={1.8} aria-hidden="true" />
-        Types
-        <span class="tab-count">{effectiveTypes().length}</span>
+        <Layers size={14} strokeWidth={1.8} aria-hidden="true" /> {$ui("Types")} <span class="tab-count">{effectiveTypes().length}</span>
       </button>
       <button
         type="button"
@@ -2036,9 +2034,7 @@ function removeCustomTemplate(id: string) {
           closeSelectedItem();
           activeTab = "fields";
         }}>
-        <TextQuote size={14} strokeWidth={1.8} aria-hidden="true" />
-        Fields
-        <span class="tab-count"
+        <TextQuote size={14} strokeWidth={1.8} aria-hidden="true" /> {$ui("Fields")} <span class="tab-count"
           >{[...packageFields, ...(draft.customFields ?? [])].filter((f) => !isDisabled(draft.disabledFields, f.key))
             .length}</span>
       </button>
@@ -2052,36 +2048,34 @@ function removeCustomTemplate(id: string) {
           closeSelectedItem();
           activeTab = "templates";
         }}>
-        <LayoutTemplate size={14} strokeWidth={1.8} aria-hidden="true" />
-        Templates
-        <span class="tab-count"
+        <LayoutTemplate size={14} strokeWidth={1.8} aria-hidden="true" /> {$ui("Templates")} <span class="tab-count"
           >{[...packageTemplates, ...(draft.customTemplates ?? [])].filter(
             (t) => !isDisabled(draft.disabledTemplates, t.id),
           ).length}</span>
       </button>
     </div>
 
-    <div class="workbench-toolbar" aria-label="Schema workbench filters">
+    <div class="workbench-toolbar" aria-label={$ui("Schema workbench filters")}>
       {#if selectedItemId}
-        <button type="button" class="quiet narrow-back" onclick={closeSelectedItem}>← Back to list</button>
+        <button type="button" class="quiet narrow-back" onclick={closeSelectedItem}>{$ui("← Back to list")}</button>
       {/if}
       <label class="workbench-search">
-        <span>Search</span>
-        <input type="search" bind:value={listQuery} placeholder={`Search ${activeTab}…`} />
+        <span>{$ui("Search")}</span>
+        <input type="search" bind:value={listQuery} placeholder={$ui("Search {0}…", activeTab)} />
       </label>
       <label class="workbench-status">
-        <span>Status</span>
+        <span>{$ui("Status")}</span>
         <select bind:value={statusFilter}>
-          <option value="all">All</option>
-          <option value="enabled">Enabled</option>
-          <option value="disabled">Disabled</option>
-          <option value="custom">Custom</option>
-          <option value="builtin">Builtin</option>
+          <option value="all">{$ui("All")}</option>
+          <option value="enabled">{$ui("Enabled")}</option>
+          <option value="disabled">{$ui("Disabled")}</option>
+          <option value="custom">{$ui("Custom")}</option>
+          <option value="builtin">{$ui("Builtin")}</option>
         </select>
       </label>
       <label class="advanced-toggle">
         <input type="checkbox" bind:checked={showAdvanced} />
-        <span>Advanced</span>
+        <span>{$ui("Advanced")}</span>
       </label>
     </div>
 
@@ -2122,6 +2116,7 @@ function removeCustomTemplate(id: string) {
         {addCustomType} />
     {:else if activeTab === "fields"}
       <SchemaFieldsPane
+        {pluginId}
         {draft}
         {flatPackage}
         {packageFields}
@@ -2216,6 +2211,7 @@ function removeCustomTemplate(id: string) {
         {addNewFieldMetadata} />
     {:else}
       <SchemaTemplatesPane
+        {pluginId}
         {draft}
         {packageTemplates}
         {showAdvanced}
@@ -2264,20 +2260,20 @@ function removeCustomTemplate(id: string) {
           <span>{message || MUTATION_STATUS_MESSAGES.conflictBody}</span>
         {:else if previewError}
           <AlertTriangle size={13} strokeWidth={1.8} aria-hidden="true" />
-          <strong>Preview failed</strong>
-          <span>{previewError}</span>
+          <strong>{$ui("Preview failed")}</strong>
+          <span>{$nativeErrorText(previewError)}</span>
         {:else if dirty}
           <span class="dirty-dot" aria-hidden="true"></span>
-          <strong>Unsaved changes</strong>
-          <span>Review types, fields, and templates before saving.</span>
+          <strong>{$ui("Unsaved changes")}</strong>
+          <span>{$ui("Review types, fields, and templates before saving.")}</span>
         {:else if message}
-          <span class="save-message" class:error={message.startsWith("Could")}>
-            {#if message.startsWith("Could")}<AlertTriangle size={13} strokeWidth={1.8} aria-hidden="true" />{/if}
+          <span class="save-message" class:error={messageIsError}>
+            {#if messageIsError}<AlertTriangle size={13} strokeWidth={1.8} aria-hidden="true" />{/if}
             {message}
           </span>
         {:else}
           <Check size={13} strokeWidth={2} aria-hidden="true" />
-          <span>All changes saved to the project overlay.</span>
+          <span>{$ui("All changes saved to the project overlay.")}</span>
         {/if}
       </div>
       <div class="save-actions">
@@ -2305,28 +2301,28 @@ function removeCustomTemplate(id: string) {
           {/if}
         {/if}
         <button type="button" class="quiet" disabled={busy || !dirty} onclick={() => void discardChanges()}
-          ><X size={14} strokeWidth={1.8} aria-hidden="true" /> Discard</button>
+          ><X size={14} strokeWidth={1.8} aria-hidden="true" /> {$ui("Discard")}</button>
         <button type="button" class="primary save-button" disabled={busy || !dirty} onclick={() => void save()}>
-          {#if busy}<span class="spinner" aria-hidden="true"></span> Saving…{:else}<Save
+          {#if busy}<span class="spinner" aria-hidden="true"></span> {$ui("Saving…")}{:else}<Save
               size={14}
               strokeWidth={2}
-              aria-hidden="true" /> Save schema{/if}
+              aria-hidden="true" /> {$ui("Save schema")}{/if}
         </button>
       </div>
     </div>
     {#if conflictCompare}
       <details class="schema-conflict-compare" open>
-        <summary>Compare current vs draft</summary>
+        <summary>{$ui("Compare current vs draft")}</summary>
         <div class="compare-grid">
           <div>
-            <strong>Current</strong>
-            <p class="compare-meta">{conflictCompare.currentRevision || "unknown revision"}</p>
+            <strong>{$ui("Current")}</strong>
+            <p class="compare-meta">{conflictCompare.currentRevision || $ui("unknown revision")}</p>
             <p>{overlaySummary(conflictCompare.current)}</p>
             <pre>{JSON.stringify(conflictCompare.current, null, 2)}</pre>
           </div>
           <div>
-            <strong>Draft</strong>
-            <p class="compare-meta">{contentRevision || "pending revision"}</p>
+            <strong>{$ui("Draft")}</strong>
+            <p class="compare-meta">{contentRevision || $ui("pending revision")}</p>
             <p>{overlaySummary(conflictCompare.draft)}</p>
             <pre>{JSON.stringify(conflictCompare.draft, null, 2)}</pre>
           </div>
@@ -2364,14 +2360,11 @@ function removeCustomTemplate(id: string) {
         <div class="dialog-icon warn">
           <AlertTriangle size={18} strokeWidth={1.8} aria-hidden="true" />
         </div>
-        <strong id="type-remove-title">Remove {entityTypeLabel(typeRemovalPrompt.typeId)}?</strong>
-        <p>
-          Templates for this type are removed with it. Choose what should happen to every field that only applies to
-          this type before continuing.
-        </p>
+        <strong id="type-remove-title">{$ui("Remove {0}?", entityTypeLabel(typeRemovalPrompt.typeId))}</strong>
+        <p> {$ui("Templates for this type are removed with it. Choose what should happen to every field that only applies to this type before continuing.")} </p>
         {#if typeRemovalPrompt.templates.length > 0}
           <div class="type-remove-group">
-            <span>Templates to remove</span>
+            <span>{$ui("Templates to remove")}</span>
             <ul>
               {#each typeRemovalPrompt.templates as template}
                 <li><LayoutTemplate size={12} strokeWidth={1.7} aria-hidden="true" /> {template.name}</li>
@@ -2381,7 +2374,7 @@ function removeCustomTemplate(id: string) {
         {/if}
         {#if typeRemovalPrompt.exclusiveFields.length > 0}
           <div class="type-remove-group">
-            <span>Fields that only target this type</span>
+            <span>{$ui("Fields that only target this type")}</span>
             <ul>
               {#each typeRemovalPrompt.exclusiveFields as field}
                 <li>
@@ -2389,7 +2382,7 @@ function removeCustomTemplate(id: string) {
                     ><TextQuote size={12} strokeWidth={1.7} aria-hidden="true" /> {field.label}</span>
                   <code>{field.key}</code>
                   <label class="type-remove-choice">
-                    <span>Disposition</span>
+                    <span>{$ui("Disposition")}</span>
                     <select
                       value={typeRemovalPrompt.exclusiveDispositions[field.key]?.action ?? ""}
                       onchange={(event) =>
@@ -2397,15 +2390,15 @@ function removeCustomTemplate(id: string) {
                           field.key,
                           event.currentTarget.value as "remove" | "disable" | "reassign",
                         )}>
-                      <option value="" disabled>Choose…</option>
-                      <option value="remove">Remove field</option>
-                      <option value="disable">Disable field</option>
-                      <option value="reassign">Reassign</option>
+                      <option value="" disabled>{$ui("Choose…")}</option>
+                      <option value="remove">{$ui("Remove field")}</option>
+                      <option value="disable">{$ui("Disable field")}</option>
+                      <option value="reassign">{$ui("Reassign")}</option>
                     </select>
                   </label>
                   {#if typeRemovalPrompt.exclusiveDispositions[field.key]?.action === "reassign"}
                     <label class="type-remove-choice">
-                      <span>New type</span>
+                      <span>{$ui("New type")}</span>
                       <select
                         value={exclusiveReassignmentTarget(typeRemovalPrompt, field.key)}
                         onchange={(event) => updateExclusiveReassignment(field.key, event.currentTarget.value)}>
@@ -2422,33 +2415,26 @@ function removeCustomTemplate(id: string) {
         {/if}
         {#if typeRemovalPrompt.entityCount === null || (typeRemovalPrompt.entityCount ?? 0) > 0}
           <div class="type-remove-group">
-            <span>Existing entities</span>
+            <span>{$ui("Existing entities")}</span>
             <p class="type-remove-note">
-              {#if typeRemovalPrompt.entityCount == null}
-                Entity count is unavailable. Choose a destination type to reassign any entities that still use this
-                type, or confirm there are none.
-              {:else}
-                {typeRemovalPrompt.entityCount}
-                {typeRemovalPrompt.entityCount === 1 ? "entity uses" : "entities use"} this type and must be reassigned before
-                removal.
-              {/if}
+              {#if typeRemovalPrompt.entityCount == null} {$ui("Entity count is unavailable. Choose a destination type to reassign any entities that still use this type, or confirm there are none.")} {:else} {$ui("{0} {1} this type and must be reassigned before removal.", typeRemovalPrompt.entityCount, typeRemovalPrompt.entityCount === 1 ? $ui("entity uses") : $ui("entities use"))} {/if}
             </p>
             {#if typeRemovalPrompt.entityCount == null}
               <label class="type-remove-choice">
-                <span>Entities</span>
+                <span>{$ui("Entities")}</span>
                 <select
                   value={typeRemovalPrompt.entityDisposition?.action ?? ""}
                   disabled={typeRemovalPrompt.busy}
                   onchange={(event) => updateEntityDisposition(event.currentTarget.value as "none" | "reassign")}>
-                  <option value="" disabled>Choose…</option>
-                  <option value="reassign">Reassign to another type</option>
-                  <option value="none">Confirm no entities use this type</option>
+                  <option value="" disabled>{$ui("Choose…")}</option>
+                  <option value="reassign">{$ui("Reassign to another type")}</option>
+                  <option value="none">{$ui("Confirm no entities use this type")}</option>
                 </select>
               </label>
             {/if}
             {#if typeRemovalPrompt.entityDisposition?.action === "reassign" || (typeRemovalPrompt.entityCount ?? 0) > 0}
               <label class="type-remove-choice">
-                <span>Reassign entities to</span>
+                <span>{$ui("Reassign entities to")}</span>
                 <select
                   value={typeRemovalPrompt.entityDisposition?.action === "reassign"
                     ? typeRemovalPrompt.entityDisposition.toTypeId
@@ -2462,42 +2448,36 @@ function removeCustomTemplate(id: string) {
                 </select>
               </label>
               {#if effectiveTypes().filter((typeId) => typeId !== typeRemovalPrompt?.typeId).length === 0}
-                <p class="type-remove-note">
-                  Create or enable another type first — entities cannot be left without a type.
-                </p>
+                <p class="type-remove-note"> {$ui("Create or enable another type first — entities cannot be left without a type.")} </p>
               {/if}
             {/if}
           </div>
         {:else}
           <div class="type-remove-group">
-            <span>Existing entities</span>
-            <p class="type-remove-note">No entities currently use this type.</p>
+            <span>{$ui("Existing entities")}</span>
+            <p class="type-remove-note">{$ui("No entities currently use this type.")}</p>
           </div>
         {/if}
         {#if typeRemovalPrompt.sharedFields.length > 0}
           <div class="type-remove-group">
-            <span>Fields that also target other types</span>
+            <span>{$ui("Fields that also target other types")}</span>
             <ul>
               {#each typeRemovalPrompt.sharedFields as field}
                 <li>
                   <span class="field-label">{field.label}</span>
-                  <small>
-                    also {(field.entityTypes ?? [])
+                  <small> {$ui("also {0}", (field.entityTypes ?? [])
                       .filter((type) => type !== typeRemovalPrompt?.typeId)
                       .map(entityTypeLabel)
-                      .join(", ")}
-                  </small>
+                      .join(", "))} </small>
                 </li>
               {/each}
             </ul>
             <label class="type-remove-check">
               <input type="checkbox" bind:checked={typeRemovalPrompt.removeSharedFields} />
-              <span>Also remove these shared fields</span>
+              <span>{$ui("Also remove these shared fields")}</span>
             </label>
             {#if !typeRemovalPrompt.removeSharedFields}
-              <p class="type-remove-note">
-                Otherwise this type is dropped from their scope and they keep their other types.
-              </p>
+              <p class="type-remove-note"> {$ui("Otherwise this type is dropped from their scope and they keep their other types.")} </p>
             {/if}
           </div>
         {/if}
@@ -2506,13 +2486,13 @@ function removeCustomTemplate(id: string) {
         {/if}
         <div class="type-remove-actions">
           <button type="button" class="quiet" disabled={typeRemovalPrompt.busy} onclick={cancelTypeRemoval}
-            >Keep type</button>
+            >{$ui("Keep type")}</button>
           <button
             type="button"
             class="danger"
             disabled={typeRemovalPrompt.busy || !removalPlanComplete(typeRemovalPrompt)}
             onclick={() => void confirmTypeRemoval()}
-            >{#if typeRemovalPrompt.busy}Reassigning…{:else}<Trash2 size={14} strokeWidth={1.8} aria-hidden="true" /> Remove{/if}</button>
+            >{#if typeRemovalPrompt.busy}{$ui("Reassigning…")}{:else}<Trash2 size={14} strokeWidth={1.8} aria-hidden="true" /> {$ui("Remove")}{/if}</button>
         </div>
       </div>
     </div>

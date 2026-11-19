@@ -1,4 +1,6 @@
 <script lang="ts">
+import { displayLanguage } from "$lib/i18n";
+import { ui } from "$lib/i18n/ui";
 import { onDestroy, onMount } from "svelte";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
@@ -33,11 +35,11 @@ let {
 
 const PREVIEW_WIDTH = 1024;
 const PREVIEW_HEIGHT = 512;
-const PRESETS = [
-  { label: "2K", width: 2048, height: 1024 },
-  { label: "Print 4K", width: 4096, height: 2048 },
-  { label: "Print 8K", width: 8192, height: 4096 },
-] as const;
+const PRESETS = $derived([
+  { label: $ui("2K"), width: 2048, height: 1024 },
+  { label: $ui("Print 4K"), width: 4096, height: 2048 },
+  { label: $ui("Print 8K"), width: 8192, height: 4096 },
+] as const);
 const EPOCH_MIN = -100_000;
 const EPOCH_MAX = 100_000;
 const EPOCH_STEP = 10;
@@ -237,14 +239,14 @@ function applyStatus(status: AtlasJobStatus) {
     status.currentContentGeneration > status.capturedContentGeneration
   ) {
     notice =
-      "The project changed after this render. The image is from the captured generation. Render again to update.";
+      $ui("The project changed after this render. The image is from the captured generation. Render again to update.");
   }
 }
 
 async function loadCapabilities() {
   capabilities = await project.atlasCapabilities(mapId);
   if (!capabilities.supported) {
-    notice = "This map provider does not support atlas rendering.";
+    notice = $ui("This map provider does not support atlas rendering.");
     return;
   }
   styleId = capabilities.styles[0] ?? "daena-atlas-relief";
@@ -307,7 +309,7 @@ async function saveExport() {
   try {
     const status = await project.atlasArtifactSave(exportJob.jobId);
     applyStatus(status);
-    if (status.state === "saved") notice = "Saved atlas PNG.";
+    if (status.state === "saved") notice = $ui("Saved atlas PNG.");
   } catch (error) {
     notice = error instanceof Error ? error.message : String(error);
   }
@@ -342,7 +344,7 @@ async function savePreset() {
       revision: current?.revision ?? "",
     });
     capabilities = await project.atlasCapabilities(mapId);
-    notice = "Saved atlas preset.";
+    notice = $ui("Saved atlas preset.");
   } catch (error) {
     notice = error instanceof Error ? error.message : String(error);
   }
@@ -413,41 +415,38 @@ onDestroy(() => {
 });
 </script>
 
-<div class="atlas-modal" role="dialog" aria-modal="true" aria-label="Export atlas">
-  <button type="button" class="atlas-backdrop" aria-label="Close export" onclick={() => onclose?.()}></button>
+<div class="atlas-modal" role="dialog" aria-modal="true" aria-label={$ui("Export atlas")}>
+  <button type="button" class="atlas-backdrop" aria-label={$ui("Close export")} onclick={() => onclose?.()}></button>
   <section class="atlas-panel">
     <header>
       <div>
-        <span>ATLAS EXPORT</span>
-        <strong>Render atlas map</strong>
+        <span>{$ui("ATLAS EXPORT")}</span>
+        <strong>{$ui("Render atlas map")}</strong>
       </div>
-      <button type="button" onclick={() => onclose?.()}>Close</button>
+      <button type="button" onclick={() => onclose?.()}>{$ui("Close")}</button>
     </header>
     <div class="preview-frame">
       {#if previewUrl}
-        <img src={previewUrl} alt="Atlas preview" />
+        <img src={previewUrl} alt={$ui("Atlas preview")} />
       {:else}
-        <div class="preview-empty">Preview will appear here</div>
+        <div class="preview-empty">{$ui("Preview will appear here")}</div>
       {/if}
       {#if busyPreview || (previewJob && previewJob.state !== "ready-to-save" && previewJob.state !== "failed" && previewJob.state !== "cancelled")}
         <div class="map-busy" role="status">
-          <strong>{previewJob?.stage ?? "Rendering preview…"}</strong>
+          <strong>{previewJob?.stage ?? $ui("Rendering preview…")}</strong>
           {#if previewJob}<span>{previewJob.completed} / {previewJob.total}</span>{/if}
         </div>
       {/if}
     </div>
-    <p class="preview-note">
-      Rivers include atlas-only minor tributaries. They are not canonical geography and are never promoted
-      automatically.
-    </p>
-    <div class="epoch-control" aria-label="World epoch">
+    <p class="preview-note"> {$ui("Rivers include atlas-only minor tributaries. They are not canonical geography and are never promoted automatically.")} </p>
+    <div class="epoch-control" aria-label={$ui("World epoch")}>
       <input
         type="range"
         min={EPOCH_MIN}
         max={EPOCH_MAX}
         step={EPOCH_STEP}
         value={offsetYears}
-        aria-label="Epoch offset"
+        aria-label={$ui("Epoch offset")}
         oninput={(event) => setOffsetYears(clampEpoch(Number(event.currentTarget.value), EPOCH_STEP))} />
       <input
         class="epoch-year"
@@ -455,31 +454,25 @@ onDestroy(() => {
         inputmode="numeric"
         autocomplete="off"
         spellcheck="false"
-        value={Math.abs(offsetYears).toLocaleString("en-US")}
-        aria-label="Years from epoch"
+        value={Math.abs(offsetYears).toLocaleString($displayLanguage)}
+        aria-label={$ui("Years from epoch")}
         onchange={(event) => setOffsetYearsAbs(event.currentTarget.value)} />
       <span>{formatEpoch(offsetYears)}</span>
     </div>
     {#if capabilities?.timeModes.includes("calendar-year")}
-      <label>
-        Time mode
-        <select bind:value={timeKind} onchange={() => schedulePreview()}>
-          <option value="physical-offset-year">Physical offset</option>
-          <option value="calendar-year">Authored year</option>
+      <label> {$ui("Time mode")} <select bind:value={timeKind} onchange={() => schedulePreview()}>
+          <option value="physical-offset-year">{$ui("Physical offset")}</option>
+          <option value="calendar-year">{$ui("Authored year")}</option>
         </select>
       </label>
       {#if timeKind === "calendar-year"}
-        <label>
-          Authored year
-          <input type="number" bind:value={authoredYear} oninput={() => schedulePreview()} />
+        <label> {$ui("Authored year")} <input type="number" bind:value={authoredYear} oninput={() => schedulePreview()} />
         </label>
       {/if}
     {/if}
     {#if (capabilities?.presets.length ?? 0) > 0}
-      <label>
-        Preset
-        <select onchange={(event) => void applyPreset(event.currentTarget.value)}>
-          <option value="">Apply a saved preset</option>
+      <label> {$ui("Preset")} <select onchange={(event) => void applyPreset(event.currentTarget.value)}>
+          <option value="">{$ui("Apply a saved preset")}</option>
           {#each capabilities?.presets ?? [] as preset}
             <option value={preset.id}>{preset.name}</option>
           {/each}
@@ -487,16 +480,14 @@ onDestroy(() => {
       </label>
     {/if}
     <div class="style-row">
-      <label>
-        Style
-        <select bind:value={styleId} onchange={() => schedulePreview()}>
+      <label> {$ui("Style")} <select bind:value={styleId} onchange={() => schedulePreview()}>
           {#each capabilities?.styles ?? [] as id}
             <option value={id}>{styleLabel(id)}</option>
           {/each}
         </select>
       </label>
-      <input bind:value={presetName} aria-label="Preset name" placeholder="Preset name" />
-      <button type="button" onclick={() => void savePreset()}>Save preset</button>
+      <input bind:value={presetName} aria-label={$ui("Preset name")} placeholder={$ui("Preset name")} />
+      <button type="button" onclick={() => void savePreset()}>{$ui("Save preset")}</button>
     </div>
     <MapLayerVisibilityList
       variant="studio"
@@ -508,9 +499,7 @@ onDestroy(() => {
         schedulePreview();
       }} />
     <div class="output-row">
-      <label>
-        Export size
-        <select
+      <label> {$ui("Export size")} <select
           onchange={(event) => {
             const preset = PRESETS[Number(event.currentTarget.value)];
             if (!preset) return;
@@ -523,21 +512,19 @@ onDestroy(() => {
           {/each}
         </select>
       </label>
-      <label>
-        DPI metadata
-        <input type="number" min="72" max="2400" bind:value={dpi} />
-        <small>{(widthPx / dpi).toFixed(2)} × {(heightPx / dpi).toFixed(2)} in</small>
+      <label> {$ui("DPI metadata")} <input type="number" min="72" max="2400" bind:value={dpi} />
+        <small>{$ui("{0} × {1} in", (widthPx / dpi).toFixed(2), (heightPx / dpi).toFixed(2))}</small>
       </label>
     </div>
     {#if exportJob}
-      <p class="status" role="status">Export · {exportJob.state} · {exportJob.stage}</p>
+      <p class="status" role="status">{$ui("Export · {0} · {1}", exportJob.state, exportJob.stage)}</p>
     {/if}
     {#if notice}<p class="notice">{notice}</p>{/if}
     <div class="actions">
-      <button type="button" class="primary" disabled={exportBusy()} onclick={() => void runExport()}>Render</button>
-      <button type="button" onclick={() => void cancel(exportJob ?? previewJob)}>Cancel render</button>
+      <button type="button" class="primary" disabled={exportBusy()} onclick={() => void runExport()}>{$ui("Render")}</button>
+      <button type="button" onclick={() => void cancel(exportJob ?? previewJob)}>{$ui("Cancel render")}</button>
       <button type="button" disabled={exportJob?.state !== "ready-to-save"} onclick={() => void saveExport()}
-        >Save</button>
+        >{$ui("Save")}</button>
     </div>
   </section>
 </div>

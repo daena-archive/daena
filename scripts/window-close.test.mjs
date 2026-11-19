@@ -42,7 +42,7 @@ assert.match(
 
 const branches = [
   ["no project open", /if \(!ready\) \{\s*await project\.appCloseConfirm\(\);\s*return;\s*\}/],
-  ["draft could not be saved", /could not be saved\.";\s*await keepWindowOpen\(\);\s*return;/],
+  ["draft could not be saved", /could not be saved\."\);\s*await keepWindowOpen\(\);\s*return;/],
   [
     "language guard refuses",
     /if \(!\(await canLeaveLanguageSection\(\)\)\) \{\s*await keepWindowOpen\(\);\s*return;\s*\}/,

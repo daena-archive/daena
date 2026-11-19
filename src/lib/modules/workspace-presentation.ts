@@ -1,3 +1,4 @@
+import { en } from "../i18n/en.ts";
 import { workspaceSectionDescription, type WorkspaceSection } from "./workspace.ts";
 import type { EntityTypeDefinition, PluginAdminEntry } from "$lib/project/client";
 
@@ -15,18 +16,8 @@ export function schemaEntityTypeIds(schema: { entityTypes: EntityTypeDefinition[
   return schema.entityTypes.map((entityType) => entityType.id);
 }
 
-export function workspaceSectionLabel(target: WorkspaceSection) {
-  return target === "lore"
-    ? "Lore library"
-    : target === "timeline"
-      ? "Timeline"
-      : target === "writing"
-        ? "Writing Studio"
-        : target === "language"
-          ? "Languages"
-          : target === "houses"
-            ? "Houses"
-            : "Maps";
+export function workspaceSectionLabel(target: WorkspaceSection, labels = en.sections) {
+  return labels[target];
 }
 
 export function viewRenderer(

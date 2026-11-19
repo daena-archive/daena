@@ -1,4 +1,6 @@
 <script lang="ts">
+import { ui } from "$lib/i18n/ui";
+import { messages } from "$lib/i18n";
 import type { Snippet } from "svelte";
 import { ArrowLeftRight, History, Link, MapPin, Paperclip, UserRound, X } from "@lucide/svelte";
 import { trapModalTab } from "./modalFocus";
@@ -121,14 +123,14 @@ function onTabKeydown(event: KeyboardEvent) {
           <p id="entity-fields-subtitle" class="subtitle">{subtitle}</p>
         {/if}
       </div>
-      <button type="button" class="close" aria-label="Close fields" onclick={onClose}
+      <button type="button" class="close" aria-label={$messages.inspector.closeFields} onclick={onClose}
         ><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
     </div>
     {#if tabs.length > 0}
       <div
         class="tabs"
         role="tablist"
-        aria-label="Field sections"
+        aria-label={$messages.inspector.fieldSections}
         tabindex="-1"
         bind:this={tabListEl}
         onkeydown={onTabKeydown}>
@@ -166,13 +168,11 @@ function onTabKeydown(event: KeyboardEvent) {
     </div>
     <div class="footer">
       <p class="save-hint">
-        <span class="save-dot" aria-hidden="true"></span>
-        Changes save automatically{#if totalCount > 0}
-          · {totalCount} linked{/if}
+        <span class="save-dot" aria-hidden="true"></span> {$ui("Changes save automatically")}{#if totalCount > 0} {$ui("· {0} linked", totalCount)}{/if}
       </p>
       <div class="footer-actions">
-        <span class="esc-hint" aria-hidden="true"><kbd>Esc</kbd> to close</span>
-        <button type="button" class="done" onclick={onClose}>Done</button>
+        <span class="esc-hint" aria-hidden="true"><kbd>{$ui("Esc")}</kbd> {$messages.inspector.escToClose}</span>
+        <button type="button" class="done" onclick={onClose}>{$messages.inspector.done}</button>
       </div>
     </div>
   </div>

@@ -1,4 +1,5 @@
 <script lang="ts">
+import { messages } from "$lib/i18n";
 import { Search } from "@lucide/svelte";
 import { GREGORIAN_CALENDAR_ID } from "$lib/date";
 import type { Entity } from "$lib/project/client";
@@ -7,7 +8,7 @@ let {
   selectedId,
   calendars,
   onSelect,
-  label = "Calendar",
+  label,
 }: {
   selectedId: string;
   calendars: Entity[];
@@ -35,7 +36,7 @@ function isGregorian(id: string) {
 }
 
 function selectedName() {
-  if (isGregorian(selectedId)) return "Default";
+  if (isGregorian(selectedId)) return $messages.date.default;
   const found = calendars.find((c) => c.id === selectedId);
   return found ? found.name : selectedId;
 }
@@ -43,7 +44,7 @@ function selectedName() {
 function candidates() {
   const q = query.trim().toLowerCase();
   const all: Array<{ id: string; name: string; sub?: string }> = [
-    { id: GREGORIAN_CALENDAR_ID, name: "Default", sub: "Default calendar" },
+    { id: GREGORIAN_CALENDAR_ID, name: $messages.date.default, sub: $messages.date.defaultCalendar },
     ...calendars
       .filter((e) => !e.deleted)
       .map((e) => ({ id: e.id, name: e.name, sub: e.entity_type ?? "daena.timeline:calendar" })),
@@ -70,7 +71,7 @@ function select(id: string) {
       if (!root.contains(document.activeElement)) open = false;
     }, 0);
   }}>
-  <label class="calendar-picker-label" for="calendar-picker-trigger">{label}</label>
+  <label class="calendar-picker-label" for="calendar-picker-trigger">{label ?? $messages.date.calendar}</label>
   <button
     id="calendar-picker-trigger"
     type="button"
@@ -83,13 +84,16 @@ function select(id: string) {
   </button>
 
   {#if open}
-    <div class="calendar-picker-menu" role="listbox" aria-label="{label} options">
+    <div
+      class="calendar-picker-menu"
+      role="listbox"
+      aria-label={$messages.date.options(label ?? $messages.date.calendar)}>
       <div class="calendar-picker-search">
         <span aria-hidden="true"><Search size={14} strokeWidth={1.8} aria-hidden="true" /></span>
         <input
           type="text"
-          placeholder="Search calendars…"
-          aria-label="Search calendars"
+          placeholder={`${$messages.date.search}…`}
+          aria-label={$messages.date.search}
           value={query}
           onfocus={() => (open = true)}
           oninput={(e) => {
@@ -128,7 +132,7 @@ function select(id: string) {
             {#if cal.id === selectedId}<b aria-hidden="true">✓</b>{/if}
           </button>
         {:else}
-          <small class="calendar-picker-empty">No matching calendars.</small>
+          <small class="calendar-picker-empty">{$messages.date.noMatches}</small>
         {/each}
       </div>
     </div>

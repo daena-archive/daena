@@ -1,4 +1,6 @@
 <script lang="ts">
+import { displayLanguage } from "$lib/i18n";
+import { ui } from "$lib/i18n/ui";
 import { epochNotice, type LandmassSelection } from "./landmass-selection.ts";
 
 let {
@@ -35,21 +37,19 @@ let {
 {/if}
 {#if selection}
   <p class="note" role="status">{epochNotice(selection.epochOffsetYears)}</p>
-  <p class="note">{selection.label} · {selection.cellCount.toLocaleString("en-US")} cells</p>
+  <p class="note">{$ui("{0} · {1} cells", selection.label, selection.cellCount.toLocaleString($displayLanguage))}</p>
   {#if showIncludeOccupied}
     <label class="include">
-      <input type="checkbox" bind:checked={includeOccupied} disabled={busy} />
-      Include existing regions
-    </label>
+      <input type="checkbox" bind:checked={includeOccupied} disabled={busy} /> {$ui("Include existing regions")} </label>
   {/if}
   {#if covered && !includeOccupied}
-    <p class="note">Existing regions already cover this landmass. Add leftover space, or include existing regions.</p>
+    <p class="note">{$ui("Existing regions already cover this landmass. Add leftover space, or include existing regions.")}</p>
   {/if}
   <div class="actions">
-    <button type="button" disabled={busy || !canCreate} onclick={oncreate}>New overlay</button>
-    <button type="button" disabled={busy || !canAdd} onclick={onadd}>Add to overlay</button>
-    <button type="button" disabled={busy} onclick={oninvert}>Invert</button>
-    <button type="button" disabled={busy} onclick={onclear}>Clear</button>
+    <button type="button" disabled={busy || !canCreate} onclick={oncreate}>{$ui("New overlay")}</button>
+    <button type="button" disabled={busy || !canAdd} onclick={onadd}>{$ui("Add to overlay")}</button>
+    <button type="button" disabled={busy} onclick={oninvert}>{$ui("Invert")}</button>
+    <button type="button" disabled={busy} onclick={onclear}>{$ui("Clear")}</button>
   </div>
 {/if}
 

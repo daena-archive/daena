@@ -1,4 +1,5 @@
 <script lang="ts">
+import { ui } from "$lib/i18n/ui";
 import { BookOpen, Clock3, Home, Search } from "@lucide/svelte";
 import { openIntent, type OpenIntent } from "$lib/navigation/open-intent";
 
@@ -56,21 +57,21 @@ function openOnMiddleClick(event: MouseEvent, id: string) {
 }
 </script>
 
-<aside class:has-query={query.trim()} class="kb-sidebar" aria-label="Wiki navigation">
+<aside class:has-query={query.trim()} class="kb-sidebar" aria-label={$ui("Wiki navigation")}>
   <div class="sidebar-search">
     <Search size={14} strokeWidth={1.8} aria-hidden="true" />
-    <input bind:value={query} placeholder="Search the knowledge base" aria-label="Search the knowledge base" />
-    {#if searching}<span class="search-dot" aria-label="Searching"></span>{/if}
+    <input bind:value={query} placeholder={$ui("Search the knowledge base")} aria-label={$ui("Search the knowledge base")} />
+    {#if searching}<span class="search-dot" aria-label={$ui("Searching")}></span>{/if}
   </div>
 
   <nav class="sidebar-scroll">
     <button class:active={currentId === null} class="home-link" type="button" onclick={onHome}>
-      <Home size={15} strokeWidth={1.8} /> <span>Wiki home</span>
+      <Home size={15} strokeWidth={1.8} /> <span>{$ui("Wiki home")}</span>
     </button>
 
     {#if !query.trim() && recent.length > 0}
       <section class="sidebar-section">
-        <h2><Clock3 size={12} strokeWidth={1.8} /> Recently updated</h2>
+        <h2><Clock3 size={12} strokeWidth={1.8} /> {$ui("Recently updated")}</h2>
         <ul>
           {#each recent as item}
             <li>
@@ -88,10 +89,10 @@ function openOnMiddleClick(event: MouseEvent, id: string) {
     {/if}
 
     <section class="sidebar-section categories">
-      <h2><BookOpen size={12} strokeWidth={1.8} /> {query.trim() ? "Search results" : "Browse by category"}</h2>
+      <h2><BookOpen size={12} strokeWidth={1.8} /> {query.trim() ? $ui("Search results") : $ui("Browse by category")}</h2>
       {#if groups.length === 0}
         <p class="sidebar-empty">
-          {searching ? "Searching…" : query.trim() ? "No matching pages." : "No wiki pages yet."}
+          {searching ? $ui("Searching…") : query.trim() ? $ui("No matching pages.") : $ui("No wiki pages yet.")}
         </p>
       {:else}
         {#each groups as group}
@@ -115,10 +116,10 @@ function openOnMiddleClick(event: MouseEvent, id: string) {
       {/if}
     </section>
     {#if total > pageSize}
-      <nav class="sidebar-pagination" aria-label="Wiki pages">
-        <button type="button" disabled={offset === 0 || searching} onclick={onPrevious}>Previous</button>
-        <span>{offset + 1}–{Math.min(offset + pageSize, total)} of {total}</span>
-        <button type="button" disabled={!hasMore || searching} onclick={onNext}>Next</button>
+      <nav class="sidebar-pagination" aria-label={$ui("Wiki pages")}>
+        <button type="button" disabled={offset === 0 || searching} onclick={onPrevious}>{$ui("Previous")}</button>
+        <span>{$ui("{0}–{1} of {2}", offset + 1, Math.min(offset + pageSize, total), total)}</span>
+        <button type="button" disabled={!hasMore || searching} onclick={onNext}>{$ui("Next")}</button>
       </nav>
     {/if}
   </nav>

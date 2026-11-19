@@ -1,3 +1,4 @@
+import { localizeUi } from "../i18n/ui.ts";
 /**
  * Schema workbench domain: overlay normalization, package flattening,
  * author-facing labels, and list filtering. Pure TypeScript — no Svelte.
@@ -110,19 +111,19 @@ export function humanizeId(value: string): string {
 }
 
 export function fieldTypeLabel(type: FieldType): string {
-  if (type === "oneof") return "One of";
-  if (type === "boolean") return "Yes/No";
-  return type.charAt(0).toUpperCase() + type.slice(1);
+  if (type === "oneof") return localizeUi("One of");
+  if (type === "boolean") return localizeUi("Yes/No");
+  return localizeUi(type.charAt(0).toUpperCase() + type.slice(1));
 }
 
 export function fieldKindGroupLabel(type: FieldType): string {
   if ((FIELD_KIND_GROUPS.basic.types as readonly string[]).includes(type)) {
-    return FIELD_KIND_GROUPS.basic.label;
+    return localizeUi(FIELD_KIND_GROUPS.basic.label);
   }
   if ((FIELD_KIND_GROUPS.linking.types as readonly string[]).includes(type)) {
-    return FIELD_KIND_GROUPS.linking.label;
+    return localizeUi(FIELD_KIND_GROUPS.linking.label);
   }
-  return FIELD_KIND_GROUPS.advanced.label;
+  return localizeUi(FIELD_KIND_GROUPS.advanced.label);
 }
 
 export function parseOptions(value: string): string[] {
@@ -905,14 +906,14 @@ export function overlayValidationStatus(overlay: ModuleSchemaOverlay | null | un
     const normalized = normalizeOverlay(overlay);
     const emptyKeys = (normalized.customFields ?? []).filter((field) => !field.key || !field.label);
     if (emptyKeys.length > 0) {
-      return { status: "error", message: `${emptyKeys.length} field(s) missing name or key` };
+      return { status: "error", message: localizeUi("{0} field(s) missing name or key", emptyKeys.length) };
     }
     const emptyTypes = (normalized.customEntityTypes ?? []).filter((type) => !type.id || !type.name.trim());
     if (emptyTypes.length > 0) {
-      return { status: "error", message: `${emptyTypes.length} type(s) missing name or id` };
+      return { status: "error", message: localizeUi("{0} type(s) missing name or id", emptyTypes.length) };
     }
     return { status: "ok" };
   } catch (cause) {
-    return { status: "error", message: cause instanceof Error ? cause.message : "Invalid overlay" };
+    return { status: "error", message: cause instanceof Error ? cause.message : localizeUi("Invalid overlay") };
   }
 }

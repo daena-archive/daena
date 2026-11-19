@@ -1,3 +1,4 @@
+import { translatePluginText as t } from "../../plugin-i18n.ts";
 import type { Core, ElementDefinition, NodeSingular } from "cytoscape";
 import { defaultHiddenGraphRelations, relationTypeLabel } from "./graphFilters.ts";
 import type { LoreEntityRef, LoreGraphSource, LoreRelationshipRef } from "./projection-source.ts";
@@ -218,14 +219,14 @@ function renderSelection(
   const name = document.createElement("strong");
   name.textContent = entity.name;
   const type = document.createElement("small");
-  type.textContent = `${displayType(entity.type)} · ${connected.length} connection${connected.length === 1 ? "" : "s"}`;
+  type.textContent = t(connected.length === 1 ? "{type} · {count} connection" : "{type} · {count} connections", { type: displayType(entity.type), count: connected.length });
   const actionRow = document.createElement("div");
   actionRow.className = "lore-graph-toolbar-actions";
   if (source.mapsNavigationEnabled()) {
     const mapButton = document.createElement("button");
     mapButton.type = "button";
     mapButton.className = "lore-graph-map-button";
-    mapButton.textContent = "Show on map";
+    mapButton.textContent = t("Show on map");
     mapButton.onclick = () => void showOnMap(source, entity.id);
     actionRow.append(mapButton);
   }
@@ -294,9 +295,11 @@ async function showOnMap(source: LoreGraphSource, entityId: string) {
 export function mountLoreGraph(element: HTMLElement, source: LoreGraphSource) {
   let cancelled = false;
   let graph: Core | null = null;
-  const listeners = new AbortController();
+  let listeners = new AbortController();
+  let generation = 0;
   const style = createGraphStyles();
   const render = async () => {
+    const current = ++generation;
     const entityTypes = source.module.schemas.flatMap((schema) =>
       schema.entityTypes.map((entityType) => entityType.id),
     );
@@ -315,21 +318,25 @@ export function mountLoreGraph(element: HTMLElement, source: LoreGraphSource) {
           entities.some((entity) => entity.id === relationship.targetId),
       )
       .sort((left, right) => left.id.localeCompare(right.id));
-    if (cancelled) return;
+    if (cancelled || current !== generation) return;
+    listeners.abort();
+    listeners = new AbortController();
+    graph?.destroy();
+    graph = null;
 
     element.replaceChildren();
     element.className = "projection-graph";
     const shell = document.createElement("div");
     shell.className = "lore-graph-shell";
     source.reportSurfaceMeta?.({
-      subtitle: `${entities.length} entities · ${relationships.length} links`,
+      subtitle: t("{count} entities · {links} links", { count: entities.length, links: relationships.length }),
     });
     shell.append(style);
 
     if (entities.length === 0) {
       const empty = document.createElement("p");
       empty.className = "lore-graph-empty";
-      empty.textContent = "No entities yet.";
+      empty.textContent = t("No entities yet.");
       shell.append(empty);
       element.append(shell);
       return;
@@ -369,15 +376,15 @@ export function mountLoreGraph(element: HTMLElement, source: LoreGraphSource) {
     const relationsSummary = document.createElement("summary");
     const syncRelationsSummary = () => {
       const hiddenCount = hiddenRelationTypes.size;
-      relationsSummary.textContent = hiddenCount > 0 ? `Relations · ${hiddenCount} hidden` : "Relations";
+      relationsSummary.textContent = hiddenCount > 0 ? t("Relations · {count} hidden", { count: hiddenCount }) : t("Relations");
     };
     if (relationTypes.length > 0) {
       relationsMenu.className = "lore-graph-relations";
-      relationsSummary.textContent = "Relations";
+      relationsSummary.textContent = t("Relations");
       const menu = document.createElement("div");
       menu.className = "lore-graph-relations-menu";
       menu.setAttribute("role", "group");
-      menu.setAttribute("aria-label", "Relations");
+      menu.setAttribute("aria-label", t("Relations"));
       for (const type of relationTypes) {
         const option = document.createElement("label");
         option.className = "lore-graph-relations-option";
@@ -407,19 +414,19 @@ export function mountLoreGraph(element: HTMLElement, source: LoreGraphSource) {
     const zoomOutButton = document.createElement("button");
     zoomOutButton.type = "button";
     zoomOutButton.textContent = "−";
-    zoomOutButton.setAttribute("aria-label", "Zoom out");
-    zoomOutButton.title = "Zoom out";
+    zoomOutButton.setAttribute("aria-label", t("Zoom out"));
+    zoomOutButton.title = t("Zoom out");
     const zoomInButton = document.createElement("button");
     zoomInButton.type = "button";
     zoomInButton.textContent = "+";
-    zoomInButton.setAttribute("aria-label", "Zoom in");
-    zoomInButton.title = "Zoom in";
+    zoomInButton.setAttribute("aria-label", t("Zoom in"));
+    zoomInButton.title = t("Zoom in");
     const fitButton = document.createElement("button");
     fitButton.type = "button";
-    fitButton.textContent = "Fit graph";
+    fitButton.textContent = t("Fit graph");
     const layoutButton = document.createElement("button");
     layoutButton.type = "button";
-    layoutButton.textContent = "Rearrange";
+    layoutButton.textContent = t("Rearrange");
     actions.append(zoomOutButton, zoomInButton, fitButton, layoutButton);
     toolbar.append(legend, actions);
     shell.append(toolbar);
@@ -431,7 +438,7 @@ export function mountLoreGraph(element: HTMLElement, source: LoreGraphSource) {
     details.className = "lore-graph-details";
     const hint = document.createElement("small");
     hint.textContent =
-      "Hover or select an entity to inspect its connections. Click a type to show or hide it. Use Relations to filter connection types.";
+      t("Hover or select an entity to inspect its connections. Click a type to show or hide it. Use Relations to filter connection types.");
     details.append(hint);
     shell.append(details);
     element.append(shell);
@@ -439,7 +446,7 @@ export function mountLoreGraph(element: HTMLElement, source: LoreGraphSource) {
     const entityMap = new Map(entities.map((entity) => [entity.id, entity]));
     const positions = stablePositions(entities);
     const { default: createCytoscape } = await import("cytoscape");
-    if (cancelled) return;
+    if (cancelled || current !== generation) return;
     const layoutOptions = {
       animate: false,
       fit: false,
@@ -650,7 +657,7 @@ export function mountLoreGraph(element: HTMLElement, source: LoreGraphSource) {
       details.replaceChildren(hint);
     });
   };
-  render().catch((cause) => {
+  const refreshLanguage = () => render().catch((cause) => {
     if (cancelled) return;
     const message = cause instanceof Error ? cause.message : String(cause);
     const error = document.createElement("p");
@@ -658,7 +665,10 @@ export function mountLoreGraph(element: HTMLElement, source: LoreGraphSource) {
     error.textContent = message;
     element.replaceChildren(style, error);
   });
+  void refreshLanguage();
+  window.addEventListener("daena:language", refreshLanguage);
   return () => {
+    window.removeEventListener("daena:language", refreshLanguage);
     cancelled = true;
     listeners.abort();
     graph?.destroy();

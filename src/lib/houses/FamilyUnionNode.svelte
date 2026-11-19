@@ -1,4 +1,5 @@
 <script lang="ts">
+import { ui } from "$lib/i18n/ui";
 import { Handle, Position } from "@xyflow/svelte";
 import { getTreeCanvasHost } from "./treeCanvasHost.ts";
 
@@ -22,8 +23,8 @@ const members = $derived(data?.memberIds ?? []);
     <button
       type="button"
       class="dot nodrag nopan"
-      aria-label="Add child to this union — {members.length} parents"
-      title="Add child"
+      aria-label={$ui("Add child to this union — {0} parents", members.length)}
+      title={$ui("Add child")}
       onclick={(event) => {
         event.stopPropagation();
         host.onAddUnionChild(members);

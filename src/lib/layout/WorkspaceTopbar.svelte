@@ -1,4 +1,5 @@
 <script lang="ts">
+import { ui } from "$lib/i18n/ui";
 import type { Component, Snippet } from "svelte";
 import { ArrowLeft } from "@lucide/svelte";
 
@@ -6,8 +7,8 @@ let {
   title,
   subtitle = "",
   icon: Icon = null,
-  backLabel = "Back to workspace",
-  actionsLabel = "View actions",
+  backLabel = $ui("Back to workspace"),
+  actionsLabel = $ui("View actions"),
   onBack,
   brandActions,
   nav,

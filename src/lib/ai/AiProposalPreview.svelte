@@ -1,4 +1,5 @@
 <script lang="ts">
+import { ui } from "$lib/i18n/ui";
 let {
   original,
   proposal = $bindable(""),
@@ -23,28 +24,28 @@ let {
 </script>
 
 {#if busy || proposal}
-  <div class="ai-diff-grid" aria-label="AI proposal comparison">
+  <div class="ai-diff-grid" aria-label={$ui("AI proposal comparison")}>
     <section class="ai-diff-card ai-diff-original">
       <header class="ai-diff-card-header">
-        <div><strong>Original</strong><small>Current text</small></div>
-        <span class="ai-diff-badge">Read-only</span>
+        <div><strong>{$ui("Original")}</strong><small>{$ui("Current text")}</small></div>
+        <span class="ai-diff-badge">{$ui("Read-only")}</span>
       </header>
-      <pre>{original || "No existing text — this will be inserted at the cursor."}</pre>
+      <pre>{original || $ui("No existing text — this will be inserted at the cursor.")}</pre>
     </section>
     <section class="ai-diff-card ai-diff-proposal">
       <header class="ai-diff-card-header">
         <div>
-          <strong>Proposal</strong><small
-            >{cancelling ? "Stopping generation" : busy ? progressMessage : "Edit before accepting"}</small>
+          <strong>{$ui("Proposal")}</strong><small
+            >{cancelling ? $ui("Stopping generation") : busy ? progressMessage : $ui("Edit before accepting")}</small>
         </div>
-        <span class="ai-diff-badge">{cancelling ? "Stopping" : busy ? "Streaming" : "Editable"}</span>
+        <span class="ai-diff-badge">{cancelling ? $ui("Stopping") : busy ? $ui("Streaming") : $ui("Editable")}</span>
       </header>
       {#if busy}
         <span class="sr-only" role="status" aria-live="polite"
-          >{cancelling ? "Cancellation requested" : progressMessage}</span>
-        <pre class="ai-proposal-output">{streamText || (cancelling ? "Stopping generation…" : progressMessage)}</pre>
+          >{cancelling ? $ui("Cancellation requested") : progressMessage}</span>
+        <pre class="ai-proposal-output">{streamText || (cancelling ? $ui("Stopping generation…") : progressMessage)}</pre>
       {:else}
-        <textarea class="ai-proposal-editor" rows="9" bind:value={proposal} aria-label="Editable AI proposal"
+        <textarea class="ai-proposal-editor" rows="9" bind:value={proposal} aria-label={$ui("Editable AI proposal")}
         ></textarea>
       {/if}
     </section>
@@ -54,7 +55,7 @@ let {
 <div class="ai-rewrite-actions" class:ai-streaming-actions={busy}>
   {#if busy}
     <button class="quiet-button" type="button" onclick={onCancel} disabled={cancelling}
-      >{cancelling ? "Cancelling…" : "Cancel"}</button>
+      >{cancelling ? $ui("Cancelling…") : $ui("Cancel")}</button>
   {/if}
 </div>
 

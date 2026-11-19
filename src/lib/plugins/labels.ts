@@ -1,3 +1,4 @@
+import { localizeUi } from "../i18n/ui.ts";
 const CAPABILITY_LABELS: Record<string, string> = {
   "entity.read": "Read entities",
   "entity.write": "Create and edit entities",
@@ -58,45 +59,45 @@ function prefixedLabel(capability: string, prefix: string, format: (rest: string
 
 export function capabilityLabel(capability: string) {
   const exact = CAPABILITY_LABELS[capability];
-  if (exact) return exact;
+  if (exact) return localizeUi(exact);
   return (
-    prefixedLabel(capability, "event.publish:", (type) => `Publish ${type} events`) ??
-    prefixedLabel(capability, "event.subscribe:", (type) => `Subscribe to ${type} events`) ??
-    prefixedLabel(capability, "host.surface:", (surface) => `Use the ${surface} host surface`) ??
-    prefixedLabel(capability, "service.provide:", (name) => `Provide the ${name} service`) ??
-    prefixedLabel(capability, "service.call:", (name) => `Call the ${name} service`) ??
-    prefixedLabel(capability, "network:", (origin) => `Make HTTPS requests to ${origin}`) ??
+    prefixedLabel(capability, "event.publish:", (type) => localizeUi("Publish {0} events", type)) ??
+    prefixedLabel(capability, "event.subscribe:", (type) => localizeUi("Subscribe to {0} events", type)) ??
+    prefixedLabel(capability, "host.surface:", (surface) => localizeUi("Use the {0} host surface", surface)) ??
+    prefixedLabel(capability, "service.provide:", (name) => localizeUi("Provide the {0} service", name)) ??
+    prefixedLabel(capability, "service.call:", (name) => localizeUi("Call the {0} service", name)) ??
+    prefixedLabel(capability, "network:", (origin) => localizeUi("Make HTTPS requests to {0}", origin)) ??
     capability
   );
 }
 
 export function capabilityDescription(capability: string) {
   const exact = CAPABILITY_DESCRIPTIONS[capability];
-  if (exact) return exact;
+  if (exact) return localizeUi(exact);
   return (
     prefixedLabel(
       capability,
       "event.publish:",
-      (type) => `Send ${type} notifications to other plugins in this session.`,
+      (type) => localizeUi("Send {0} notifications to other plugins in this session.", type),
     ) ??
     prefixedLabel(
       capability,
       "event.subscribe:",
-      (type) => `Receive ${type} notifications from the host or other plugins.`,
+      (type) => localizeUi("Receive {0} notifications from the host or other plugins.", type),
     ) ??
     prefixedLabel(
       capability,
       "host.surface:",
-      (surface) => `Open the host-owned ${surface} surface. The plugin cannot implement this surface itself.`,
+      (surface) => localizeUi("Open the host-owned {0} surface. The plugin cannot implement this surface itself.", surface),
     ) ??
-    prefixedLabel(capability, "service.provide:", (name) => `Register as the provider for ${name} in this project.`) ??
-    prefixedLabel(capability, "service.call:", (name) => `Call the ${name} service through the host broker.`) ??
+    prefixedLabel(capability, "service.provide:", (name) => localizeUi("Register as the provider for {0} in this project.", name)) ??
+    prefixedLabel(capability, "service.call:", (name) => localizeUi("Call the {0} service through the host broker.", name)) ??
     prefixedLabel(
       capability,
       "network:",
-      (origin) => `Send brokered HTTPS requests only to ${origin}. No other network access is included.`,
+      (origin) => localizeUi("Send brokered HTTPS requests only to {0}. No other network access is included.", origin),
     ) ??
-    "This plugin requested this capability."
+    localizeUi("This plugin requested this capability.")
   );
 }
 
@@ -112,8 +113,8 @@ export function runtimeTimestampLabel(timestamp: string) {
   try {
     const ms = Number(BigInt(timestamp) / 1_000_000n);
     const date = new Date(ms);
-    return Number.isFinite(ms) && ms > 0 && !Number.isNaN(date.getTime()) ? date.toLocaleString() : "Unknown";
+    return Number.isFinite(ms) && ms > 0 && !Number.isNaN(date.getTime()) ? date.toLocaleString() : localizeUi("Unknown");
   } catch {
-    return "Unknown";
+    return localizeUi("Unknown");
   }
 }

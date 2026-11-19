@@ -1,3 +1,4 @@
+import { localizeUi } from "../i18n/ui.ts";
 import { compareCalendarDates, parseCalendarDate, type CalendarDate } from "../date.ts";
 import {
   parseProfileValue,
@@ -55,7 +56,7 @@ export type StoredProfileChange = {
 
 export function profileChangeValidationErrors(input: unknown): string[] {
   const errors: string[] = [];
-  if (!input || typeof input !== "object" || Array.isArray(input)) return ["Profile change must be an object"];
+  if (!input || typeof input !== "object" || Array.isArray(input)) return [localizeUi("Profile change must be an object")];
   const document = input as Record<string, unknown>;
   if (document.schemaVersion !== PROFILE_CHANGE_SCHEMA_VERSION) errors.push("Unsupported Profile change version");
   if (!parseCalendarDate(document.date)) errors.push("Profile change needs a date");
@@ -102,7 +103,7 @@ export function parseProfileChange(input: unknown): ProfileChangeDocument {
 function readProfileChange(input: unknown): ProfileChangeDocument {
   const document = input as Record<string, unknown>;
   const date = parseCalendarDate(document.date);
-  if (!date) throw new Error("Profile change needs a date");
+  if (!date) throw new Error(localizeUi("Profile change needs a date"));
   const eventId = typeof document.eventId === "string" ? document.eventId.trim() : "";
   const reason = typeof document.reason === "string" ? document.reason.trim() : "";
   return {
@@ -112,7 +113,7 @@ function readProfileChange(input: unknown): ProfileChangeDocument {
     ...(reason ? { reason } : {}),
     patches: (document.patches as Record<string, unknown>[]).map((patch) => {
       const value = parseProfileValue(patch.value, "Patch");
-      if (!value) throw new Error("Profile change patch is missing a value");
+      if (!value) throw new Error(localizeUi("Profile change patch is missing a value"));
       return { componentId: String(patch.componentId).trim(), value };
     }),
   };

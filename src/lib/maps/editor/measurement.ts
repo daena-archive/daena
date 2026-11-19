@@ -1,3 +1,4 @@
+import { localizeUi } from "../../i18n/ui.ts";
 import type { MapCoordinateSpace } from "../../../../packages/plugin-sdk/src/maps.ts";
 import { extentOf } from "./coordinate-space.ts";
 
@@ -96,12 +97,12 @@ export function pointDistance(a: readonly number[], b: readonly number[], space:
 
 export function measurementSummary(space: MapCoordinateSpace): string {
   const units = unitsForCoordinateSpace(space);
-  if (space.kind === "image") return `Units: ${units.label}`;
+  if (space.kind === "image") return localizeUi("Units: {0}", units.label);
   if (space.kind === "world") {
-    if (units.metresPerUnit == null) return `Units: ${units.label} (uncalibrated)`;
-    return `Units: ${units.label} (${units.metresPerUnit} m / unit)`;
+    if (units.metresPerUnit == null) return localizeUi("Units: {0} (uncalibrated)", units.label);
+    return localizeUi("Units: {0} ({1} m / unit)", units.label, units.metresPerUnit);
   }
-  return "Units: geodesic metres";
+  return localizeUi("Units: geodesic metres");
 }
 
 export function extentSize(space: MapCoordinateSpace): { width: number; height: number } {

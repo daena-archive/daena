@@ -1,4 +1,5 @@
 <script lang="ts">
+import { pluginText } from "../../../plugin-i18n.ts";
 import {
   BEHAVIOR_OPTIONS,
   CONTROLLER_OPTIONS,
@@ -49,18 +50,18 @@ function apply(next: GrammarAgreementRecord) {
 
 <Group>
   <p class="language-empty" role="status">
-    Which element determines the grammatical features? Which element changes to match it?
+    {$pluginText("Which element determines the grammatical features? Which element changes to match it?")}
   </p>
-  <Field label="Title"><input name="title" type="text" bind:value={draft.title} disabled={locked} /></Field>
+  <Field label={$pluginText("Title")}><input name="title" type="text" bind:value={draft.title} disabled={locked} /></Field>
   <ChoiceCards
     name="controller"
-    legend="Controller"
+    legend={$pluginText("Controller")}
     options={CONTROLLER_OPTIONS}
     value={draft.controller.kind}
     {locked}
     onselect={(value) => apply(setAgreementController(draft, value as AgreementControllerKind))} />
   {#if draft.controller.kind === "custom"}
-    <Field label="Custom controller">
+    <Field label={$pluginText("Custom controller")}>
       <input
         name="controllerCustom"
         type="text"
@@ -71,13 +72,13 @@ function apply(next: GrammarAgreementRecord) {
   {/if}
   <ChoiceCards
     name="target"
-    legend="Target"
+    legend={$pluginText("Target")}
     options={TARGET_OPTIONS}
     value={draft.target.kind}
     {locked}
     onselect={(value) => apply(setAgreementTarget(draft, value as AgreementTargetKind))} />
   {#if draft.target.kind === "custom"}
-    <Field label="Custom target">
+    <Field label={$pluginText("Custom target")}>
       <input
         name="targetCustom"
         type="text"
@@ -88,7 +89,7 @@ function apply(next: GrammarAgreementRecord) {
   {/if}
   {#if groups.length === 0}
     <p class="language-empty" role="status">
-      Configure number, case, classes, or pronouns first to reuse those categories here.
+      {$pluginText("Configure number, case, classes, or pronouns first to reuse those categories here.")}
     </p>
   {:else}
     <TemplateChecks
@@ -103,7 +104,7 @@ function apply(next: GrammarAgreementRecord) {
   {/if}
   {#each draft.features as feature, index (index)}
     {#if !feature.sourceSystemId}
-      <Field label="Custom feature">
+      <Field label={$pluginText("Custom feature")}>
         <div class="grammar-inventory-toolbar">
           <input name="customFeature" type="text" bind:value={feature.label} disabled={locked} />
           <button
@@ -111,7 +112,7 @@ function apply(next: GrammarAgreementRecord) {
             class="language-button secondary language-danger"
             disabled={locked}
             onclick={() => apply(removeAgreementFeature(draft, index))}>
-            Remove
+            {$pluginText("Remove")}
           </button>
         </div>
       </Field>
@@ -119,29 +120,28 @@ function apply(next: GrammarAgreementRecord) {
   {/each}
   {#if !locked}
     <button type="button" class="language-button secondary" onclick={() => apply(addCustomAgreementFeature(draft))}>
-      Add custom feature
+      {$pluginText("Add custom feature")}
     </button>
   {/if}
   {#if broken.length}
     <p class="language-empty" role="status">
-      Broken references: {broken.map((item) => item.label).join(", ")}. Edit the owning system to restore them, or
-      remove the feature.
+      {$pluginText("Broken references:")} {broken.map((item) => item.label).join(", ")}{$pluginText(". Edit the owning system to restore them, or remove the feature.")}
     </p>
   {/if}
   <ChoiceCards
     name="behavior"
-    legend="Behavior"
+    legend={$pluginText("Behavior")}
     options={BEHAVIOR_OPTIONS}
     value={draft.behavior}
     {locked}
     onselect={(value) => apply(setAgreementBehavior(draft, value as AgreementBehavior))} />
-  <Field label="Default form (optional)">
+  <Field label={$pluginText("Default form (optional)")}>
     <input name="defaultForm" type="text" bind:value={draft.defaultForm} disabled={locked} />
   </Field>
-  <Field label="Conditions (optional)">
+  <Field label={$pluginText("Conditions (optional)")}>
     <textarea rows="3" name="conditions" bind:value={draft.conditions} disabled={locked}></textarea>
   </Field>
-  <Field label="Exceptions (optional)">
+  <Field label={$pluginText("Exceptions (optional)")}>
     <textarea rows="3" name="exceptions" bind:value={draft.exceptions} disabled={locked}></textarea>
   </Field>
 </Group>

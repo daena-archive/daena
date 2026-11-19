@@ -1,4 +1,8 @@
 <script lang="ts">
+import { nativeErrorText } from "$lib/i18n/native-errors.ts";
+import { manifestCopy } from "$lib/i18n/manifest-copy";
+import { displayLanguage } from "$lib/i18n";
+import { ui } from "$lib/i18n/ui";
 import { onMount, type Snippet } from "svelte";
 import {
   ArrowLeft,
@@ -128,9 +132,9 @@ const allFields = $derived(schemas.flatMap((schema: any) => schema.fields));
 const articleOutline = $derived(documentBody ? headingOutline(documentBody) : []);
 
 function labelForType(type: string | null) {
-  if (!type) return "Uncategorized";
+  if (!type) return $ui("Uncategorized");
   const definition = allEntityTypeDefinitions.find((candidate: any) => candidate.id === type);
-  return definition?.name ?? humanizeType(type);
+  return definition ? manifestCopy($ui, manifest.id, "type", type, definition.name) : humanizeType(type);
 }
 
 function fieldsForType(entityType: string | null) {
@@ -234,7 +238,7 @@ const visibleFields = $derived(
       .filter((definition: any) => definition.type !== "relationship")
       .map((definition: any) => ({
         key: definition.key,
-        label: definition.label,
+        label: manifestCopy($ui, manifest.id, "field", definition.key, definition.label),
         value: fieldDisplay(fields[definition.key]),
       }))
       .filter((row: any) => !isEmptyValue(fields[row.key]) && row.value);
@@ -248,7 +252,7 @@ const visibleRelationshipFields = $derived(
       .filter((definition: any) => definition.type === "relationship")
       .map((definition: any) => ({
         definition,
-        label: definition.label,
+        label: manifestCopy($ui, manifest.id, "field", definition.key, definition.label),
         targets: relationships
           .map((relationship: any) => {
             const id = counterpartId(entityId, relationship, definition);
@@ -320,7 +324,7 @@ const imageContextChoices = $derived(
       {
         id: "identity:name",
         entityId: entity.id,
-        label: "Name",
+        label: $ui("Name"),
         value: entity.name,
         sourceKind: "identity",
         defaultSelected: true,
@@ -328,7 +332,7 @@ const imageContextChoices = $derived(
       {
         id: "identity:type",
         entityId: entity.id,
-        label: "Entity type",
+        label: $ui("Entity type"),
         value: labelForType(entity.entity_type),
         sourceKind: "identity",
         defaultSelected: true,
@@ -349,7 +353,7 @@ const imageContextChoices = $derived(
       choices.push({
         id: "document:description",
         entityId: entity.id,
-        label: "Article description",
+        label: $ui("Article description"),
         value: prose.slice(0, 1200),
         sourceKind: "document",
         defaultSelected: false,
@@ -370,7 +374,7 @@ const imageContextChoices = $derived(
       choices.push({
         id: `location:${location.id ?? location.locationId ?? location.mapEntityId}`,
         entityId: entity.id,
-        label: "Map location",
+        label: $ui("Map location"),
         value: location.label || location.role || "Linked location",
         sourceKind: "location",
         defaultSelected: false,
@@ -639,7 +643,7 @@ function handleEdit() {
     class="workspace-topbar-action icon"
     onclick={goBack}
     disabled={historyIndex <= 0}
-    aria-label="Back">
+    aria-label={$ui("Back")}>
     <ArrowLeft size={14} strokeWidth={1.8} />
   </button>
   <button
@@ -647,14 +651,13 @@ function handleEdit() {
     class="workspace-topbar-action icon"
     onclick={goForward}
     disabled={historyIndex >= history.length - 1}
-    aria-label="Forward"><ArrowRight size={14} strokeWidth={1.8} /></button>
+    aria-label={$ui("Forward")}><ArrowRight size={14} strokeWidth={1.8} /></button>
   {#if entity && currentId && aiEnabled && imageProvider.enabled}
     <button type="button" class="workspace-topbar-action" onclick={() => (imageGenerationOpen = true)}>
-      <ImagePlus size={14} strokeWidth={1.8} /> Generate illustration
-    </button>
+      <ImagePlus size={14} strokeWidth={1.8} /> {$ui("Generate illustration")} </button>
   {/if}
   <button type="button" class="workspace-topbar-action" onclick={handleEdit}
-    ><Pencil size={14} strokeWidth={1.8} /> Edit</button>
+    ><Pencil size={14} strokeWidth={1.8} /> {$ui("Edit")}</button>
   {#if entity && currentId}
     <WikiExportMenu entityId={currentId} manifestId={manifest.id} articleName={entity.name} />
   {/if}
@@ -662,7 +665,7 @@ function handleEdit() {
 
 {#snippet wikiAttrChips(attributes: WikiRelationshipAttribute[])}
   {#if attributes.length > 0}
-    <div class="wiki-attr-row" aria-label="Relationship details">
+    <div class="wiki-attr-row" aria-label={$ui("Relationship details")}>
       {#each attributes as attr}<span class="wiki-attr-chip" title={`${attr.label}: ${attr.value}`}
           ><strong>{attr.label}</strong>
           {attr.value}</span
@@ -671,15 +674,15 @@ function handleEdit() {
   {/if}
 {/snippet}
 
-<section class="kb-shell" aria-label="Lore knowledge base">
+<section class="kb-shell" aria-label={$ui("Lore knowledge base")}>
   <WorkspaceTopbar
-    title={`${manifest.name} knowledge base`}
-    subtitle={`${wikiTotal} published pages`}
+    title={$ui("{0} knowledge base", manifestCopy($ui, manifest.id, "module", manifest.id, manifest.name))}
+    subtitle={$ui("{0} published pages", wikiTotal)}
     icon={BookOpen}
     onBack={onClose}
     {nav}
     actions={entity && currentId ? topbarActions : undefined}
-    actionsLabel="Article actions" />
+    actionsLabel={$ui("Article actions")} />
 
   <div class="kb-workspace">
     <WikiSidebar
@@ -699,19 +702,19 @@ function handleEdit() {
       {isMac} />
 
     <main class="kb-content">
-      {#if searchError}<p class="kb-alert" role="alert">Search is unavailable: {searchError}</p>{/if}
+      {#if searchError}<p class="kb-alert" role="alert">{$ui("Search is unavailable: {0}", $nativeErrorText(searchError))}</p>{/if}
       {#if loading && !entity && entities.length === 0}
-        <div class="kb-loading" aria-live="polite">Loading knowledge base…</div>
+        <div class="kb-loading" aria-live="polite">{$ui("Loading knowledge base…")}</div>
       {:else if !currentId}
         <section class="kb-home">
           <div class="home-hero">
-            <span class="eyebrow"><Sparkles size={12} strokeWidth={1.8} /> Your world, connected</span>
-            <h1>A living reference for everything in your world.</h1>
-            <p>Search across names, article text, and structured details—or browse the collection by category.</p>
+            <span class="eyebrow"><Sparkles size={12} strokeWidth={1.8} /> {$ui("Your world, connected")}</span>
+            <h1>{$ui("A living reference for everything in your world.")}</h1>
+            <p>{$ui("Search across names, article text, and structured details—or browse the collection by category.")}</p>
             <div class="home-stats">
-              <span><strong>{wikiTotal}</strong> pages</span>
-              <span><strong>{grouped.length}</strong> categories</span>
-              <span><strong>{recent.length}</strong> recently updated</span>
+              <span><strong>{wikiTotal}</strong> {$ui("pages")}</span>
+              <span><strong>{grouped.length}</strong> {$ui("categories")}</span>
+              <span><strong>{recent.length}</strong> {$ui("recently updated")}</span>
             </div>
           </div>
 
@@ -719,8 +722,8 @@ function handleEdit() {
             <section class="home-section">
               <div class="section-heading">
                 <div>
-                  <span>CONTINUE EXPLORING</span>
-                  <h2>Recently updated</h2>
+                  <span>{$ui("CONTINUE EXPLORING")}</span>
+                  <h2>{$ui("Recently updated")}</h2>
                 </div>
               </div>
               <div class="recent-grid">
@@ -733,7 +736,7 @@ function handleEdit() {
                     <span class="recent-icon">{item.name.slice(0, 1).toUpperCase()}</span>
                     <span
                       ><small>{item.typeLabel}</small><strong>{item.name}</strong><em
-                        >Updated {formatSystemTimestamp(recentEntity?.updated_at)}</em
+                        >{$ui("Updated {0}", formatSystemTimestamp(recentEntity?.updated_at, $displayLanguage))}</em
                       ></span>
                     <ArrowRight size={15} strokeWidth={1.7} />
                   </button>
@@ -745,14 +748,14 @@ function handleEdit() {
           <section class="home-section">
             <div class="section-heading">
               <div>
-                <span>COLLECTIONS</span>
-                <h2>Browse by category</h2>
+                <span>{$ui("COLLECTIONS")}</span>
+                <h2>{$ui("Browse by category")}</h2>
               </div>
             </div>
             {#if grouped.length === 0}
               <div class="empty-state">
-                <BookOpen size={25} strokeWidth={1.5} /><strong>No wiki pages yet</strong>
-                <p>Create a Lore entry to begin building this knowledge base.</p>
+                <BookOpen size={25} strokeWidth={1.5} /><strong>{$ui("No wiki pages yet")}</strong>
+                <p>{$ui("Create a Lore entry to begin building this knowledge base.")}</p>
               </div>
             {:else}
               <div class="category-grid">
@@ -762,7 +765,7 @@ function handleEdit() {
                       <span>{group.label.slice(0, 1).toUpperCase()}</span>
                       <div>
                         <h3>{group.label}</h3>
-                        <small>{group.count} {group.count === 1 ? "page" : "pages"}</small>
+                        <small>{group.count} {group.count === 1 ? $ui("page") : $ui("pages")}</small>
                       </div>
                     </header>
                     <ul>
@@ -775,7 +778,7 @@ function handleEdit() {
                         </li>
                       {/each}
                     </ul>
-                    {#if group.count > 4}<small class="more-count">+ {group.count - 4} more in the sidebar</small>{/if}
+                    {#if group.count > 4}<small class="more-count">{$ui("+ {0} more in the sidebar", group.count - 4)}</small>{/if}
                   </article>
                 {/each}
               </div>
@@ -785,16 +788,16 @@ function handleEdit() {
       {:else if entity}
         <div class="article-grid">
           <article class="kb-article">
-            <nav class="breadcrumbs" aria-label="Breadcrumb">
-              <button type="button" onclick={goToMain}>Knowledge base</button><span>/</span><span
+            <nav class="breadcrumbs" aria-label={$ui("Breadcrumb")}>
+              <button type="button" onclick={goToMain}>{$ui("Knowledge base")}</button><span>/</span><span
                 >{labelForType(entity.entity_type)}</span>
             </nav>
             <header class="article-heading">
               <span class="article-type">{labelForType(entity.entity_type)}</span>
               <h1>{entity.name}</h1>
-              <p>Last updated {formatSystemTimestamp(entity.updated_at)}</p>
+              <p>{$ui("Last updated {0}", formatSystemTimestamp(entity.updated_at, $displayLanguage))}</p>
             </header>
-            {#if loading}<div class="article-loading">Refreshing article…</div>{/if}
+            {#if loading}<div class="article-loading">{$ui("Refreshing article…")}</div>{/if}
             {#if documentBody}
               <div class="article-body">
                 {#key currentId}
@@ -803,20 +806,20 @@ function handleEdit() {
               </div>
             {:else}
               <div class="empty-state article-empty">
-                <BookOpen size={24} strokeWidth={1.5} /><strong>This page is ready for its story.</strong>
-                <p>Add prose in the workspace editor, then return here to read it as an article.</p>
-                <button type="button" onclick={handleEdit}>Write article</button>
+                <BookOpen size={24} strokeWidth={1.5} /><strong>{$ui("This page is ready for its story.")}</strong>
+                <p>{$ui("Add prose in the workspace editor, then return here to read it as an article.")}</p>
+                <button type="button" onclick={handleEdit}>{$ui("Write article")}</button>
               </div>
             {/if}
 
             {#if assets.length > 0}
               <section class="article-section">
-                <h2><Paperclip size={16} strokeWidth={1.8} /> Attachments</h2>
+                <h2><Paperclip size={16} strokeWidth={1.8} /> {$ui("Attachments")}</h2>
                 <ul class="resource-list">
                   {#each assets as asset}<li>
                       <Diamond size={12} strokeWidth={1.8} /><span
                         ><strong>{asset.filename}</strong><small
-                          >{asset.mime_type} · {Math.max(1, Math.round(asset.size / 1024))} KB</small
+                          >{$ui("{0} · {1} KB", asset.mime_type, Math.max(1, Math.round(asset.size / 1024)))}</small
                         ></span>
                     </li>{/each}
                 </ul>
@@ -824,11 +827,11 @@ function handleEdit() {
             {/if}
             {#if mapLocations.length > 0}
               <section class="article-section">
-                <h2><MapPinned size={16} strokeWidth={1.8} /> Maps</h2>
+                <h2><MapPinned size={16} strokeWidth={1.8} /> {$ui("Maps")}</h2>
                 <ul class="resource-list">
                   {#each mapLocations as location}<li>
                       <MapPinned size={13} strokeWidth={1.8} /><span
-                        ><strong>{location.label || "Location"}</strong><small
+                        ><strong>{location.label || $ui("Location")}</strong><small
                           >{location.role} · {location.mapEntityId.slice(0, 8)}</small
                         ></span>
                     </li>{/each}
@@ -837,12 +840,12 @@ function handleEdit() {
             {/if}
           </article>
 
-          <aside class="kb-rail" aria-label="Article information">
+          <aside class="kb-rail" aria-label={$ui("Article information")}>
             <section class="info-card">
               {#if profileMediaUrl}<img
                   class="profile-media"
                   src={profileMediaUrl}
-                  alt={`${entity.name} portrait`} />{:else if profileFallback}<div class="profile-file">
+                  alt={$ui("{0} portrait", entity.name)} />{:else if profileFallback}<div class="profile-file">
                   <Diamond size={18} strokeWidth={1.7} /><span
                     ><strong>{profileFallback.filename}</strong><small>{profileFallback.mime_type}</small></span>
                 </div>{/if}
@@ -879,11 +882,11 @@ function handleEdit() {
                   </dl>
                 </div>
               {/each}
-              {#if profileError}<p class="card-empty">{profileError}</p>{/if}
+              {#if profileError}<p class="card-empty">{$nativeErrorText(profileError)}</p>{/if}
               {#if profile}
                 <div class="profile-asof">
                   <InspectorDateField
-                    label="View at date"
+                    label={$ui("View at date")}
                     fieldKey="profile-as-of"
                     value={profileAsOf}
                     editorOpen={profileAsOfOpen}
@@ -917,14 +920,12 @@ function handleEdit() {
                   asOfLabel={parseCalendarDate(profileAsOf) ? formatCalendarDate(profileAsOf) : ""} />
               {/if}
               {#if visibleFields.length === 0 && groupedWikiRelationships.length === 0 && !profile && !profileError}<p
-                  class="card-empty">
-                  No structured details yet.
-                </p>{/if}
+                  class="card-empty"> {$ui("No structured details yet.")} </p>{/if}
             </section>
 
             {#if articleOutline.length > 0}
-              <nav class="rail-card outline-card" aria-label="On this page">
-                <h2>On this page</h2>
+              <nav class="rail-card outline-card" aria-label={$ui("On this page")}>
+                <h2>{$ui("On this page")}</h2>
                 <ol>
                   {#each articleOutline as item}<li class={`depth-${item.depth}`}>
                       <a href={`#${item.id}`}>{item.text}</a>
@@ -934,11 +935,11 @@ function handleEdit() {
             {/if}
 
             <section class="rail-card connections-card">
-              <h2><Link2 size={13} strokeWidth={1.8} /> Connections</h2>
+              <h2><Link2 size={13} strokeWidth={1.8} /> {$ui("Connections")}</h2>
               {#if outbound.length === 0 && inbound.length === 0}
-                <p class="card-empty">No linked pages yet.</p>
+                <p class="card-empty">{$ui("No linked pages yet.")}</p>
               {:else}
-                {#if groupedOutbound.length > 0}<h3>From this page</h3>
+                {#if groupedOutbound.length > 0}<h3>{$ui("From this page")}</h3>
                   {#each groupedOutbound as group (group.moduleId)}
                     {#if groupedOutbound.length > 1}<h4>{group.moduleName}</h4>{/if}
                     <ul>
@@ -952,7 +953,7 @@ function handleEdit() {
                         </li>{/each}
                     </ul>
                   {/each}{/if}
-                {#if groupedInbound.length > 0}<h3>Links here</h3>
+                {#if groupedInbound.length > 0}<h3>{$ui("Links here")}</h3>
                   {#each groupedInbound as group (group.moduleId)}
                     {#if groupedInbound.length > 1}<h4>{group.moduleName}</h4>{/if}
                     <ul>
@@ -976,9 +977,9 @@ function handleEdit() {
         </div>
       {:else}
         <div class="empty-state">
-          <BookOpen size={25} strokeWidth={1.5} /><strong>Page not found</strong>
-          <p>It may have been removed or no longer belongs to this knowledge base.</p>
-          <button type="button" onclick={goToMain}>Return home</button>
+          <BookOpen size={25} strokeWidth={1.5} /><strong>{$ui("Page not found")}</strong>
+          <p>{$ui("It may have been removed or no longer belongs to this knowledge base.")}</p>
+          <button type="button" onclick={goToMain}>{$ui("Return home")}</button>
         </div>
       {/if}
     </main>

@@ -149,10 +149,10 @@ assert.equal(writing.version, "0.1.0");
 
 const pane = readFileSync(join(root, "src/lib/shell/CollectionPane.svelte"), "utf8");
 assert.match(pane, /groupedAriaLabel/);
-assert.match(pane, /Grouped by type/);
+assert.match(pane, /\$messages\.workspace\.groupedByType/);
 const shell = readFileSync(join(root, "src/routes/+page.svelte"), "utf8");
 assert.match(shell, /manuscriptStructureMode/);
-assert.match(shell, /Grouped by structure/);
+assert.match(shell, /\$messages\.workspace\.groupedByStructure/);
 assert.match(shell, /listManuscriptOutlineSummaries/);
 assert.match(shell, /outlineRoleLabel/);
 assert.match(shell, /manuscriptPathLabels/);

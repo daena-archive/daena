@@ -1,4 +1,5 @@
 <script lang="ts">
+import { schemaLabels } from "$lib/i18n/manifest-copy";
 import { nativeErrorText } from "$lib/i18n/native-errors.ts";
 import { ui } from "$lib/i18n/ui";
 import { tick } from "svelte";
@@ -12,7 +13,6 @@ import {
   type AsyncEntitySearchFn,
   type AsyncEntitySearchPage,
 } from "$lib/entity-lifecycle/asyncEntityQuery.ts";
-import { humanizeId } from "$lib/schema-workbench/model.ts";
 
 export let open = false;
 export let search: AsyncEntitySearchFn = async () => emptyAsyncEntityPage();
@@ -231,7 +231,7 @@ $: if (!open && lastFocused) {
               class:selected={selectedId === entity.id}
               onclick={() => select(entity)}>
               <strong>{entity.name}</strong><small
-                >{entity.entityType ? humanizeId(entity.entityType) : $ui("Uncategorized")}</small>
+                >{$schemaLabels.type(entity.entityType)}</small>
             </button>
           {:else}
             <p>{$ui("No matching entities.")}</p>

@@ -1,6 +1,6 @@
 <script lang="ts">
 import { nativeErrorText } from "$lib/i18n/native-errors.ts";
-import { manifestText, setPackageLocalizations } from "$lib/i18n/manifest-copy";
+import { manifestText, schemaLabels, setPackageLocalizations } from "$lib/i18n/manifest-copy";
 import { ui } from "$lib/i18n/ui";
 import { displayLanguage, menuCatalogs, messages } from "$lib/i18n";
 import { loreFieldLabel, loreTypeLabel } from "$lib/i18n/lore-labels";
@@ -1189,7 +1189,7 @@ function loreProfileEntityTypeOptions() {
     lore?.schemas.flatMap((schema) =>
       schema.entityTypes.map((type) => ({
         id: type.id.includes(":") ? type.id : `daena.lore:${type.id}`,
-        label: type.name,
+        label: $manifestText(lore.id, "type", type.id, type.name),
       })),
     ) ?? []
   );
@@ -1246,7 +1246,7 @@ function groupedEditTypes(): Array<{ heading: string; types: string[] }> {
   }
   if (enabled.size > 0) {
     const remaining = [...enabled].sort((a, b) => entityTypeLabel(a).localeCompare(entityTypeLabel(b)));
-    groups.push({ heading: "Other", types: remaining });
+    groups.push({ heading: $ui("Other"), types: remaining });
   }
   return groups;
 }
@@ -1409,10 +1409,11 @@ function chronologyCreateFields(option: CreateOption | null = selectedCreateOpti
   ];
 }
 function createChronologyWarnings() {
+  const moduleId = selectedCreateOption()?.module.id;
   return chronologyWarnings(
     chronologyCreateFields()
       .filter((item) => item.field.type === "date")
-      .map((item) => ({ label: item.field.label, value: createFieldValues[item.field.key] })),
+      .map((item) => ({ label: $manifestText(moduleId, "field", item.field.key, item.field.label), value: createFieldValues[item.field.key] })),
     createEraContexts,
     calendarDefinitions,
   );
@@ -3695,7 +3696,7 @@ function inspectorFieldLabel(definition: FieldDefinition) {
 function entityTypeLabel(entityType: string | null, fallback?: string) {
   if (!entityType) return $messages.workspace.uncategorized;
   const presentation = entityTypePresentation(entityType);
-  if (!presentation) return fallback ?? entityType;
+  if (!presentation) return $schemaLabels.type(entityType, fallback);
   return presentation.pluginId === "daena.lore"
     ? loreTypeLabel($messages.loreTypes, entityType, presentation.definition.name)
     : $manifestText(presentation.pluginId, "type", entityType, presentation.definition.name);
@@ -6021,6 +6022,7 @@ async function createWithOption(
     const fieldsForCreate: Record<string, unknown> = {};
     const relationshipsForCreate: Record<string, UUID[]> = {};
     for (const { field, required } of createFieldsFor(option)) {
+      const label = $manifestText(option.module.id, "field", field.key, field.label);
       const value = values[field.key];
       const empty =
         value === "" ||
@@ -6029,18 +6031,18 @@ async function createWithOption(
         (typeof value === "string" && value.trim() === "") ||
         (Array.isArray(value) && value.length === 0);
       if (empty) {
-        if (required) throw new Error($ui("{0} is required", field.label));
+        if (required) throw new Error($ui("{0} is required", label));
         continue;
       }
       if (field.type === "relationship") {
-        if (!Array.isArray(value)) throw new Error($ui("{0} must contain one or more entities", field.label));
+        if (!Array.isArray(value)) throw new Error($ui("{0} must contain one or more entities", label));
         relationshipsForCreate[field.key] = value as UUID[];
       } else if (field.type === "number") {
         const numberValue = typeof value === "number" ? value : Number(value);
-        if (!Number.isFinite(numberValue)) throw new Error($ui("{0} must be a number", field.label));
+        if (!Number.isFinite(numberValue)) throw new Error($ui("{0} must be a number", label));
         fieldsForCreate[field.key] = numberValue;
       } else if (field.type === "date") {
-        if (!isCompleteCalendarDate(value)) throw new Error($ui("{0} needs a year, month, and day", field.label));
+        if (!isCompleteCalendarDate(value)) throw new Error($ui("{0} needs a year, month, and day", label));
         fieldsForCreate[field.key] = parseCalendarDate(value) ?? value;
       } else {
         fieldsForCreate[field.key] = value;
@@ -6988,21 +6990,25 @@ function relationshipMetadataSummary(relationship: Relationship, definition: Fie
     return $ui("Metadata needs repair");
   }
   const fieldByKey = new Map((definition?.metadataFields ?? []).map((field) => [field.key, field]));
-  const labels = new Map((definition?.metadataFields ?? []).map((field) => [field.key, field.label]));
+  const owner = manifestOwningRelationshipType(relationship.relationship_type, modules)?.id;
   return Object.entries(metadata)
     .filter(([, value]) => value !== undefined && value !== null && value !== "")
     .slice(0, 3)
     .map(([key, value]) => {
       const field = fieldByKey.get(key);
+      const path = relationship.relationship_type + "/" + key;
+      const label = field ? $manifestText(owner, "metadata", path, field.label) : key;
       if (field?.type === "date") {
         const parsed = parseCalendarDate(value);
         if (parsed) {
           const calendar = calendarDefinitionForId(parsed.calendar);
           const formatted = formatWithCalendar(value, calendar);
-          if (formatted !== "Undated") return `${labels.get(key) ?? key}: ${formatted}`;
+          if (formatted !== "Undated") return `${label}: ${formatted}`;
         }
       }
-      return `${labels.get(key) ?? key}: ${fieldDisplayValue(value)}`;
+      const display = (field?.type === "enum" || field?.type === "oneof") && typeof value === "string"
+        ? $manifestText(owner, "metadataOption", path, value) : fieldDisplayValue(value);
+      return `${label}: ${display}`;
     })
     .join(" · ");
 }
@@ -7017,7 +7023,7 @@ async function saveRelationshipMetadata(relationship: Relationship, metadata: Re
 }
 async function confirmRemoveRelationship(definition: FieldDefinition, relationship: Relationship) {
   const target = relationshipTargetName(relationship, definition);
-  const label = definition.label ?? relationship.relationship_type;
+  const label = inspectorFieldLabel(definition);
   if (
     !(await confirmDialog({
       title: $ui("Remove {0}?", label),
@@ -8981,7 +8987,7 @@ onMount(() => {
                         >{/if}
                       {#if plugin.lifecycle.failures > 0}<span
                           class="plugin-badge danger"
-                          title={plugin.lifecycle.lastError ?? ""}
+                          title={plugin.lifecycle.lastError ? $nativeErrorText(plugin.lifecycle.lastError) : ""}
                           >{$ui("{0} failure{1}", plugin.lifecycle.failures, plugin.lifecycle.failures === 1 ? "" : $ui("s"))}</span
                         >{/if}
                     </div>
@@ -10422,9 +10428,10 @@ onMount(() => {
                     {#if eraRelationshipDefinition()}
                       {@const eraField = eraRelationshipDefinition()!}
                       <div class="property-field">
-                        <span>{eraField.label}</span>
+                        <span>{inspectorFieldLabel(eraField)}</span>
                         <RelationshipPicker
                           field={eraField}
+                          label={inspectorFieldLabel(eraField)}
                           search={searchEntitiesPaged(eraField)}
                           resolveSelected={resolveSelectedEntities}
                           selectedIds={selectedRelationshipIds(eraField)}
@@ -10506,7 +10513,7 @@ onMount(() => {
                               ><option value="">{$messages.inspector.chooseField(label)}</option
                               >{#each definition.options ?? [] as option}<option value={option}>{$manifestText(activeManifest()?.id, "option", definition.key + "/" + option, option)}</option>{/each}
                               {#each (definition as any).oneOf ?? [] as variant}
-                                {#each variant.options ?? [] as opt}<option value={opt}>{variant.label}: {opt}</option
+                                {#each variant.options ?? [] as opt}<option value={opt}>{$manifestText(activeManifest()?.id, "variant", definition.key, variant.label)}: {$manifestText(activeManifest()?.id, "option", definition.key + "/" + opt, opt)}</option
                                   >{/each}
                               {/each}</select
                             >{:else}<input
@@ -10597,7 +10604,7 @@ onMount(() => {
                                 <button
                                   class="quiet-button relationship-details-button"
                                   type="button"
-                                  aria-label={$ui("Edit details for {0} to {1}", relationship.relationship_type, relationshipTargetName(relationship, definition))}
+                                  aria-label={$ui("Edit details for {0} to {1}", inspectorFieldLabel(definition), relationshipTargetName(relationship, definition))}
                                   onclick={() => openRelationshipMetadata(relationship)}
                                   ><Pencil size={16} strokeWidth={1.8} aria-hidden="true" /></button>
                               {/if}
@@ -10693,7 +10700,7 @@ onMount(() => {
                         <strong>{relationshipSourceName(relationship)}</strong><small
                           >{entityTypeLabel(
                             entities.find((entity) => entity.id === relationship.source_id)?.entity_type ?? null,
-                          )} · {relationship.relationship_type}</small>
+                          )} · {$schemaLabels.relationship(relationship.relationship_type)}</small>
                       </button>
                     </div>{/each}
                 </div>{/if}
@@ -10802,6 +10809,7 @@ onMount(() => {
   <RelationshipMetadataDialog
     relationship={dialog.relationship}
     definition={dialog.definition}
+    pluginId={manifestOwningRelationshipType(dialog.relationship.relationship_type, modules)?.id}
     {entities}
     {calendarDefinitions}
     onSave={(metadata) => saveRelationshipMetadata(dialog.relationship, metadata)}

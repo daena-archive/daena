@@ -1,6 +1,6 @@
 <script lang="ts">
 import { nativeErrorText } from "$lib/i18n/native-errors.ts";
-import { manifestText } from "$lib/i18n/manifest-copy";
+import { manifestText, schemaLabels } from "$lib/i18n/manifest-copy";
 import { ui } from "$lib/i18n/ui";
 import { project, type Entity, type PluginAdminEntry, type HostViewData } from "$lib/project/client";
 
@@ -25,7 +25,7 @@ function fieldDefinition(namespace: string, key: string): FieldDefinition | unde
 function typeLabel(id: string) {
   const localId = id.startsWith(plugin.id + ":") ? id.slice(plugin.id.length + 1) : id;
   const type = plugin.schemas.flatMap((schema) => schema.entityTypes ?? []).find((item) => item.id === localId || item.id === plugin.id + ":" + localId);
-  return type ? $manifestText(plugin.id, "type", localId, type.name) : id;
+  return type ? $manifestText(plugin.id, "type", localId, type.name) : $schemaLabels.type(id);
 }
 
 async function refresh(entityId = selectedEntityId) {

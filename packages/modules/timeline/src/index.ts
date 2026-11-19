@@ -1,3 +1,5 @@
+import { get } from "svelte/store";
+import { manifestText } from "../../projection-labels.ts";
 import { translatePluginText as t } from "../../plugin-i18n.ts";
 import type { Timeline, DataGroup, DataItem, TimelineOptions } from "vis-timeline";
 import { buildTypeLabelMap, resolveEntityTypeLabel, type FieldRecord } from "../../../module-api/src/index";
@@ -412,7 +414,7 @@ export function mountTimeline(element: HTMLElement, source: TimelineProjectionSo
               const entityTypes = new Set(
                 source.module.schemas.flatMap((schema) => schema.entityTypes.map((entityType) => entityType.id)),
               );
-              const contributionSpecs = discoverTimelineFieldSpecs(enabledManifests, source.module.id);
+              const contributionSpecs = discoverTimelineFieldSpecs(enabledManifests, source.module.id, get(manifestText));
               const contributionNamespaces = [...new Set(contributionSpecs.map((spec) => spec.namespace))];
               const loaded: LoadedTimelineEntry[] = await Promise.all(
                 entities.map(async (entity) => {
@@ -475,7 +477,7 @@ export function mountTimeline(element: HTMLElement, source: TimelineProjectionSo
               snapshot = {
                 calendarOptions,
                 loaded,
-                typeLabels: buildTypeLabelMap([source.module, ...enabledManifests]),
+                typeLabels: buildTypeLabelMap([source.module, ...enabledManifests], (owner, type) => get(manifestText)(owner, "type", type.id, type.name)),
               };
               sourceSnapshot = snapshot;
             }
@@ -1071,7 +1073,10 @@ export function mountTimeline(element: HTMLElement, source: TimelineProjectionSo
             element.append(shell);
           }
         };
-        const refreshLanguage = () => void render();
+        const refreshLanguage = () => {
+          sourceSnapshot = null;
+          void render();
+        };
         window.addEventListener("daena:language", refreshLanguage);
         void render();
         return () => {

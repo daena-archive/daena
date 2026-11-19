@@ -130,14 +130,35 @@ pub(crate) fn effective_module_manifests(
     Ok(unpacked.into_iter().zip(enabled).collect())
 }
 
+fn manifest_for_display(
+    manifest: &PluginManifest,
+    host: &PluginHost,
+    project_id: Option<&str>,
+) -> Result<serde_json::Value, CoreError> {
+    let mut value = serde_json::to_value(manifest)
+        .map_err(|error| CoreError::Validation(error.to_string()))?;
+    if let Some(catalogs) = host.translations_for(manifest) {
+        let entry = project_id.and_then(|id| host.runtime_entry(id, &manifest.id))
+            .or_else(|| host.catalog.get(&manifest.id).cloned())
+            .ok_or_else(|| CoreError::Validation("plugin catalog entry disappeared".into()))?;
+        value["localization"] = serde_json::json!({ "source": entry.manifest, "catalogs": catalogs });
+    }
+    Ok(value)
+}
+
 pub(super) fn enabled_schema_manifests(
     project: &ProjectStore,
     host: &PluginHost,
+    requesting_plugin: &str,
 ) -> Result<Vec<serde_json::Value>, CoreError> {
+    let project_id = project.info().map(|info| info.root);
     effective_module_manifests(project, host)?
         .into_iter()
         .filter(|(_, enabled)| *enabled)
         .map(|(manifest, _)| {
+            if matches!(requesting_plugin, "daena.timeline" | "daena.lore") {
+                return manifest_for_display(&manifest, host, project_id.as_deref());
+            }
             serde_json::to_value(manifest).map_err(|error| CoreError::Validation(error.to_string()))
         })
         .collect()
@@ -157,21 +178,8 @@ pub(super) async fn module_list_manifests(
         effective_module_manifests(project, &host)?
             .into_iter()
             .map(|(manifest_struct, enabled)| {
-                let mut manifest = serde_json::to_value(&manifest_struct)
-                    .map_err(|error| CoreError::Validation(error.to_string()))?;
-                manifest
-                    .as_object_mut()
-                    .expect("manifest is an object")
-                    .insert("enabled".into(), serde_json::Value::Bool(enabled));
-                if let Some(catalogs) = host.translations_for(&manifest_struct) {
-                    let entry = project_id.as_deref().and_then(|id| host.runtime_entry(id, &manifest_struct.id))
-                        .or_else(|| host.catalog.get(&manifest_struct.id).cloned())
-                        .ok_or_else(|| CoreError::Validation("plugin catalog entry disappeared".into()))?;
-                    manifest["localization"] = serde_json::json!({
-                        "source": entry.manifest,
-                        "catalogs": catalogs
-                    });
-                }
+                let mut manifest = manifest_for_display(&manifest_struct, &host, project_id.as_deref())?;
+                manifest["enabled"] = serde_json::Value::Bool(enabled);
                 Ok(manifest)
             })
             .collect()

@@ -1,11 +1,11 @@
 <script lang="ts">
+import { manifestText, schemaLabels } from "$lib/i18n/manifest-copy";
 import { nativeErrorText } from "$lib/i18n/native-errors.ts";
 import { ui } from "$lib/i18n/ui";
 import { onMount, tick } from "svelte";
 import { X, ArrowRight } from "@lucide/svelte";
 import type { FieldDefinition } from "../../packages/module-api/src/index";
 import type { Entity, Relationship } from "$lib/project/client";
-import { humanizeId } from "$lib/schema-workbench";
 import type { CalendarDefinition } from "../../packages/modules/timeline/src/calendar";
 import {
   GREGORIAN_CALENDAR_ID,
@@ -30,6 +30,7 @@ type RelationshipDefinition = FieldDefinition & { metadataFields?: MetadataField
 let {
   relationship,
   definition,
+  pluginId,
   entities,
   calendarDefinitions = {},
   onSave,
@@ -37,6 +38,7 @@ let {
 }: {
   relationship: Relationship;
   definition: RelationshipDefinition | null;
+  pluginId?: string;
   entities: Entity[];
   calendarDefinitions?: Record<string, CalendarDefinition>;
   onSave: (metadata: Metadata) => void | Promise<void>;
@@ -54,7 +56,12 @@ let lastFocused: Element | null = null;
 let dateEditorOpen = $state<Record<string, boolean>>({});
 let dateCalendarByField = $state<Record<string, string>>({});
 
-const metadataFields = () => definition?.metadataFields ?? [];
+function metadataText(kind: "metadata" | "metadataOption" | "variant", key: string, source: string) {
+  return $manifestText(pluginId, kind, relationship.relationship_type + "/" + key, source);
+}
+const metadataFields = () => (definition?.metadataFields ?? []).map(field => ({
+  ...field, label: metadataText("metadata", field.key, field.label),
+}));
 const targetEntity = () => entities.find((entity) => entity.id === relationship.target_id);
 const targetName = () => targetEntity()?.name ?? relationship.target_id;
 const titleId = () => `relationship-metadata-title-${relationship.id}`;
@@ -236,7 +243,7 @@ onMount(() => {
     <header class="relationship-metadata-header">
       <div>
         <span class="relationship-metadata-kicker">{$ui("RELATIONSHIP DETAILS")}</span>
-        <h2 id={titleId()}>{humanizeId(relationship.relationship_type)}</h2>
+        <h2 id={titleId()}>{$schemaLabels.relationship(relationship.relationship_type)}</h2>
         <p>
           <span style="display:inline-flex;vertical-align:middle" aria-hidden="true"
             ><ArrowRight size={12} strokeWidth={1.8} /></span>
@@ -315,7 +322,7 @@ onMount(() => {
                   value={textValue(field.key)}
                   onchange={(event) => setValue(field.key, (event.currentTarget as HTMLSelectElement).value)}>
                   <option value="">{$ui("Choose {0}", field.label.toLowerCase())}</option>
-                  {#each field.options ?? [] as option}<option value={option}>{option}</option>{/each}
+                  {#each field.options ?? [] as option}<option value={option}>{metadataText("metadataOption", field.key, option)}</option>{/each}
                 </select>
               </label>
             {:else if (field as any).type === "oneof"}
@@ -327,9 +334,9 @@ onMount(() => {
                   value={textValue(field.key)}
                   onchange={(event) => setValue(field.key, (event.currentTarget as HTMLSelectElement).value)}>
                   <option value="">{$ui("Choose {0}", field.label.toLowerCase())}</option>
-                  {#each field.options ?? [] as option}<option value={option}>{option}</option>{/each}
+                  {#each field.options ?? [] as option}<option value={option}>{metadataText("metadataOption", field.key, option)}</option>{/each}
                   {#each (field as any).oneOf ?? [] as variant}
-                    {#each variant.options ?? [] as opt}<option value={opt}>{variant.label}: {opt}</option>{/each}
+                    {#each variant.options ?? [] as opt}<option value={opt}>{metadataText("variant", field.key, variant.label)}: {metadataText("metadataOption", field.key, opt)}</option>{/each}
                   {/each}
                 </select>
               </label>

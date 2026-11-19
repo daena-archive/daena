@@ -436,11 +436,11 @@ async function handleSubmit(event: SubmitEvent) {
     {/if}
   </div>
   <p class="language-pane-summary">
-    {visibleSamples.length}{sampleSearch ? $pluginText(" of {0}", { 0: String(samples.length) }) : ""} {$pluginText("sample")}{visibleSamples.length === 1 ? "" : $pluginText("s")} {$pluginText("· grouped by kind for quick browsing.")}
+    {#if sampleSearch}{$pluginText("Showing {count} of {total} samples", { count: visibleSamples.length, total: samples.length })}{:else}{$pluginText(samples.length === 1 ? "{count} sample" : "{count} samples", { count: samples.length })}{/if} {$pluginText("· grouped by kind for quick browsing.")}
   </p>
   {#if visibleSamples.length === 0}
     <div class="language-empty-card">
-      <p class="language-empty" role="status">{$pluginText("No samples match “")}{sampleSearch.trim()}”.</p>
+      <p class="language-empty" role="status">{$pluginText("No samples match “{query}”.", { query: sampleSearch.trim() })}</p>
       <button type="button" class="language-button secondary" onclick={() => (sampleSearch = "")}>{$pluginText("Clear search")}</button>
     </div>
   {:else}<div class="language-panes">
@@ -465,7 +465,7 @@ async function handleSubmit(event: SubmitEvent) {
                       <strong>{sampleTitle(record.value)}</strong>
                       <span
                         >{record.value.translation || record.value.text.trim().split("\n")[0] || $pluginText("No text yet")}</span>
-                      <small>{record.value.tokens.length} {$pluginText("token")}{record.value.tokens.length === 1 ? "" : $pluginText("s")}</small>
+                      <small>{$pluginText(record.value.tokens.length === 1 ? "{count} token" : "{count} tokens", { count: record.value.tokens.length })}</small>
                     </button>
                   </li>
                 {/each}

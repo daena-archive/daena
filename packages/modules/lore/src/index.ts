@@ -1,9 +1,10 @@
 import { translatePluginText as t } from "../../plugin-i18n.ts";
 import { get } from "svelte/store";
+import { schemaLabels } from "../../projection-labels.ts";
 import { messages } from "../../../../src/lib/i18n/index.ts";
 import { loreTypeLabel } from "../../../../src/lib/i18n/lore-labels.ts";
 import type { Core, ElementDefinition, NodeSingular } from "cytoscape";
-import { defaultHiddenGraphRelations, relationTypeLabel } from "./graphFilters.ts";
+import { defaultHiddenGraphRelations } from "./graphFilters.ts";
 import type { LoreEntityRef, LoreGraphSource, LoreRelationshipRef } from "./projection-source.ts";
 
 type NodeColors = { fill: string; border: string; text: string };
@@ -185,7 +186,7 @@ function graphElements(
           id: relationship.id,
           source: relationship.sourceId,
           target: relationship.targetId,
-          label: relationTypeLabel(relationship.type),
+          label: get(schemaLabels).relationship(relationship.type),
           relationType: relationship.type,
         },
       })),
@@ -216,14 +217,14 @@ function renderSelection(
     .map((relationship) => {
       const otherId = relationship.sourceId === entity.id ? relationship.targetId : relationship.sourceId;
       const other = entities.get(otherId);
-      return other ? `${relationTypeLabel(relationship.type)} · ${other.name}` : null;
+      return other ? `${get(schemaLabels).relationship(relationship.type)} · ${other.name}` : null;
     })
     .filter((label): label is string => Boolean(label));
   details.replaceChildren();
   const name = document.createElement("strong");
   name.textContent = entity.name;
   const type = document.createElement("small");
-  type.textContent = t(connected.length === 1 ? "{type} · {count} connection" : "{type} · {count} connections", { type: typeNames.get(displayType(entity.type)) ?? displayType(entity.type), count: connected.length });
+  type.textContent = t(connected.length === 1 ? "{type} · {count} connection" : "{type} · {count} connections", { type: typeNames.get(displayType(entity.type)) ?? get(schemaLabels).type(entity.type), count: connected.length });
   const actionRow = document.createElement("div");
   actionRow.className = "lore-graph-toolbar-actions";
   if (source.mapsNavigationEnabled()) {
@@ -361,14 +362,14 @@ export function mountLoreGraph(element: HTMLElement, source: LoreGraphSource) {
       legendItem.type = "button";
       legendItem.className = "lore-graph-legend-item";
       legendItem.setAttribute("aria-pressed", "true");
-      legendItem.title = typeNameMap.get(type) ?? type;
+      legendItem.title = typeNameMap.get(type) ?? get(schemaLabels).type(type);
       const swatch = document.createElement("span");
       swatch.className = "lore-graph-legend-swatch";
       const colors = colorsByType.get(type)!;
       swatch.style.color = colors.border;
       swatch.style.background = colors.fill;
       const label = document.createElement("span");
-      label.textContent = typeNameMap.get(type) ?? type;
+      label.textContent = typeNameMap.get(type) ?? get(schemaLabels).type(type);
       legendItem.append(swatch, label);
       legendButtons.set(type, legendItem);
       legend.append(legendItem);
@@ -392,12 +393,12 @@ export function mountLoreGraph(element: HTMLElement, source: LoreGraphSource) {
       for (const type of relationTypes) {
         const option = document.createElement("label");
         option.className = "lore-graph-relations-option";
-        option.title = type;
+        option.title = get(schemaLabels).relationship(type);
         const input = document.createElement("input");
         input.type = "checkbox";
         input.checked = !hiddenRelationTypes.has(type);
         const label = document.createElement("span");
-        label.textContent = relationTypeLabel(type);
+        label.textContent = get(schemaLabels).relationship(type);
         option.append(input, label);
         relationInputs.set(type, input);
         menu.append(option);
@@ -596,12 +597,12 @@ export function mountLoreGraph(element: HTMLElement, source: LoreGraphSource) {
           hiddenTypes.delete(type);
           legendItem.classList.remove("is-hidden");
           legendItem.setAttribute("aria-pressed", "true");
-          legendItem.title = typeNameMap.get(type) ?? type;
+          legendItem.title = typeNameMap.get(type) ?? get(schemaLabels).type(type);
         } else {
           hiddenTypes.add(type);
           legendItem.classList.add("is-hidden");
           legendItem.setAttribute("aria-pressed", "false");
-          legendItem.title = typeNameMap.get(type) ?? type;
+          legendItem.title = typeNameMap.get(type) ?? get(schemaLabels).type(type);
         }
         syncGraphVisibility();
       };

@@ -131,6 +131,7 @@ pub(super) async fn plugin_rpc(
             Err(error) => Err(error.to_string()),
             Ok(()) => {
                 let project_id = session.project_id.clone();
+                let requester = session.plugin_id.clone();
                 let plugins = state.inner().clone();
                 with_core(core, move |core| {
                     let current = core
@@ -146,7 +147,7 @@ pub(super) async fn plugin_rpc(
                         .lock()
                         .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?;
                     let manifests =
-                        enabled_schema_manifests(core.project(AuthorityContext::plugin())?, &host)?;
+                        enabled_schema_manifests(core.project(AuthorityContext::plugin())?, &host, &requester)?;
                     Ok(serde_json::Value::Array(manifests))
                 })
                 .await

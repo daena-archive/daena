@@ -200,7 +200,7 @@ $effect(() => {
       <div class="panel-heading">
         <div>
           <span class="panel-kicker">{$ui("PEOPLE")}</span>
-          <strong id="landing-people-title">{peopleTotal} {peopleTotal === 1 ? $ui("person") : $ui("people")}</strong>
+          <strong id="landing-people-title">{peopleTotal === 1 ? $ui("{0} person", 1) : $ui("{0} people", peopleTotal)}</strong>
         </div>
       </div>
       <label class="search-field">
@@ -267,7 +267,7 @@ $effect(() => {
       <div class="panel-heading">
         <div>
           <span class="panel-kicker">{$ui("HOUSES")}</span>
-          <strong id="landing-houses-title">{housesTotal} {housesTotal === 1 ? $ui("house") : $ui("houses")}</strong>
+          <strong id="landing-houses-title">{housesTotal === 1 ? $ui("{0} house", 1) : $ui("{0} houses", housesTotal)}</strong>
         </div>
       </div>
       <label class="search-field">

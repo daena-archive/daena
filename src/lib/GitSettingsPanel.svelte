@@ -1246,7 +1246,7 @@ onDestroy(() => {
           <span class="heading-icon"><Cable size={14} strokeWidth={1.8} aria-hidden="true" /></span>
           <span>
             <strong>{$ui("Sync & repository")}</strong>
-            <small>{remotes.length} {remotes.length === 1 ? $ui("remote") : $ui("remotes")} · {tool?.version}</small>
+            <small>{remotes.length === 1 ? $ui("{0} remote", 1) : $ui("{0} remotes", remotes.length)} · {tool?.version}</small>
           </span>
         </span>
         <span class="git-disclosure-chevron" aria-hidden="true">

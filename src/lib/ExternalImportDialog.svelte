@@ -1,6 +1,6 @@
 <script lang="ts">
 import { nativeErrorText } from "$lib/i18n/native-errors.ts";
-import { manifestText } from "$lib/i18n/manifest-copy";
+import { manifestText, schemaLabels } from "$lib/i18n/manifest-copy";
 import { ui } from "$lib/i18n/ui";
 import { onMount, tick } from "svelte";
 import { listen } from "@tauri-apps/api/event";
@@ -521,7 +521,7 @@ onMount(() => {
           <div class="result-list">
             {#each [...report.created, ...report.mapped] as item}
               <div>
-                <strong>{item.sourcePath}</strong><span>{item.entityType ?? $ui("Existing entity")} · {item.entityId}</span>
+                <strong>{item.sourcePath}</strong><span>{item.entityType ? $schemaLabels.type(item.entityType) : $ui("Existing entity")} · {item.entityId}</span>
               </div>
             {/each}
             {#each report.assets as asset}
@@ -529,7 +529,7 @@ onMount(() => {
             {/each}
             {#each report.relationships as relationship}
               <div>
-                <strong>{relationship.relationshipType}</strong><span
+                <strong>{$schemaLabels.relationship(relationship.relationshipType)}</strong><span
                   >{$ui("Relationship · {0} → {1}", relationship.sourceEntityId, relationship.targetEntityId)}</span>
               </div>
             {/each}
@@ -676,7 +676,7 @@ onMount(() => {
                       value={existingTargetId(object)}
                       onchange={(event) => setExistingTarget(object, event.currentTarget.value)}>
                       {#each entities.filter((entity) => !entity.deleted) as entity}
-                        <option value={entity.id}>{entity.name} · {entity.entity_type}</option>
+                        <option value={entity.id}>{entity.name} · {$schemaLabels.type(entity.entity_type)}</option>
                       {/each}
                     </select>
                   </label>

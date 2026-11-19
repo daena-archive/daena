@@ -17,9 +17,10 @@ Object.defineProperty(globalThis, "localStorage", {
   },
 });
 
-const { displayLanguage, messages, setDisplayLanguage } = await import("../src/lib/i18n/index.ts");
+const { displayLanguage, languageOptions, messages, setDisplayLanguage } = await import("../src/lib/i18n/index.ts");
 assert.equal(get(displayLanguage), "en");
 assert.equal(get(messages).projectSwitcher.open, "Open folder");
+assert.equal(languageOptions.find(option => option.value === "ja")?.status, "alpha");
 
 const seen = [];
 const unsubscribe = messages.subscribe((catalog) => seen.push(catalog.common.settings));
@@ -28,7 +29,7 @@ assert.deepEqual(seen, ["Settings", "設定"]);
 unsubscribe();
 assert.equal(stored, "ja");
 const japanese = get(messages);
-const { manifestText, setPackageLocalizations } = await import("../src/lib/i18n/manifest-copy.ts");
+const { manifestText, setPackageLocalizations, schemaLabels } = await import("../src/lib/i18n/manifest-copy.ts");
 const { formatUi } = await import("../src/lib/i18n/ui.ts");
 const { profileComponentCopy } = await import("../src/lib/i18n/profile-copy.ts");
 assert.equal(get(manifestText)("daena.lore", "template", "person", "Person"), "人物");
@@ -52,7 +53,13 @@ assert.equal(get(manifestText)(notes.id, "field", "color", "Color"), "色");
 assert.equal(get(manifestText)(notes.id, "field", "color", "Note"), "Note", "preserve a project override even if it is a catalog key");
 assert.equal(get(manifestText)(notes.id, "component", "notes/refresh", "Refresh notes"), "ノートを再読み込み");
 assert.equal(get(manifestText)("other.plugin", "field", "color", "Color"), "表示色");
+assert.equal(get(schemaLabels).type(notes.id + ":note"), "ノート");
+assert.equal(get(schemaLabels).type("other.plugin:note"), "Note", "an untranslated type keeps its own package label");
+assert.equal(get(schemaLabels).type("uninstalled:travel-log"), "Travel Log");
+assert.equal(get(schemaLabels).type(null), "未分類");
+assert.equal(get(manifestText)("daena.houses", "metadataOption", "family_parent_of/kind", "adoptive"), "養親");
 setDisplayLanguage("en");
+assert.equal(get(schemaLabels).type(notes.id + ":note"), "Note");
 assert.equal(get(manifestText)(notes.id, "field", "color", "Color"), "Color");
 setDisplayLanguage("ja");
 setPackageLocalizations([]);
@@ -166,6 +173,8 @@ assert.equal(
 );
 
 const { createPluginI18n, translatePluginMessage } = await import("../packages/plugin-sdk/dist/index.js");
+assert.equal(translatePluginMessage({ "ja-jp": { Note: " " }, ja: { Note: "ノート" } }, "ja-JP", "Note"), "ノート");
+assert.equal(translatePluginMessage({ ja: { Note: "" } }, "ja", "Note"), "Note");
 window.__DAENA_PLUGIN_CATALOGS__ = { ja: { "Open {name}": "{name}を開く" } };
 const pluginUi = createPluginI18n();
 const pluginLabels = [];

@@ -99,6 +99,7 @@ const hasDateValue = $derived(value != null && value !== "");
 
   {#if field.type === "relationship"}
     <RelationshipPicker
+      {label}
       {field}
       search={search ?? stubSearch}
       resolveSelected={resolveSelected ?? stubResolve}
@@ -161,7 +162,7 @@ const hasDateValue = $derived(value != null && value !== "");
       {/each}
       {#each (field as FieldDefinition & { oneOf?: Array<{ label: string; options?: string[] }> }).oneOf ?? [] as variant}
         {#each variant.options ?? [] as opt}
-          <option value={opt}>{variant.label}: {opt}</option>
+          <option value={opt}>{$manifestText(pluginId, "variant", field.key, variant.label)}: {$manifestText(pluginId, "option", field.key + "/" + opt, opt)}</option>
         {/each}
       {/each}
     </select>

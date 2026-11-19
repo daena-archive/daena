@@ -674,7 +674,7 @@ Ship a UTF-8 file at `locales/<language>.json` in the package root for each disp
 }
 ```
 
-In a manifest, keep names, view titles, declarative component labels, entity types, field labels, options and template names in their source language. Daena translates their display text using the package's dictionary. IDs, enum values, project overrides and saved content retain their original values. Packages may reuse the same source string with different translations. A regional locale tries its parent locale and then the original string. A missing dictionary leaves the plugin usable. Catalogs together may contain up to 1 MiB of JSON per package.
+In a manifest, keep names, view titles, declarative component labels, entity types, field labels, options and template names in their source language. Daena translates their display text using the package's dictionary. IDs, enum values, project overrides and saved content retain their original values. Packages may reuse the same source string with different translations. A regional locale tries its parent locale and then the original string. Missing or whitespace-only translations follow the same fallback. Catalogs together may contain up to 1 MiB of JSON per package.
 
 For a sandboxed UI, use the SDK to render your own text. A subscription runs immediately and again when the user changes the app language, including in detached windows. It can update labels without recreating inputs or losing edits:
 

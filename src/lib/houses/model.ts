@@ -113,7 +113,11 @@ export function formatRelationshipTypeLabel(relationship: {
 }): string {
   const custom = relationship.customLabel?.trim();
   if (custom) return custom;
-  if (relationship.label?.trim()) return relationship.label.trim();
+  if (relationship.label?.trim()) {
+    const label = relationship.label.trim();
+    const kind = relationship.partnerKind ?? relationship.parentKind;
+    return label === "Unknown" || label.toLowerCase() === kind ? localizeUi(label) : label;
+  }
   if (relationship.kind === "partner") {
     const kind = relationship.partnerKind?.trim() || "partnership";
     return localizeUi(kind.charAt(0).toUpperCase() + kind.slice(1));

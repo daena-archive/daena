@@ -1437,7 +1437,7 @@ pub(super) fn plugin_protocol_response(
                         .project(AuthorityContext::plugin())
                         .map_err(|error| error.to_string())?;
                     serde_json::Value::Array(
-                        enabled_schema_manifests(project, &host)
+                        enabled_schema_manifests(project, &host, &session.plugin_id)
                             .map_err(|error| error.to_string())?,
                     )
                 } else if matches!(

@@ -2,7 +2,7 @@ export function translatePluginMessage(catalogs, language, source) {
     let tag = language.toLowerCase();
     while (tag) {
         const messages = Object.hasOwn(catalogs, tag) ? catalogs[tag] : undefined;
-        if (messages && Object.hasOwn(messages, source))
+        if (messages && Object.hasOwn(messages, source) && messages[source].trim())
             return messages[source];
         const separator = tag.lastIndexOf("-");
         if (separator < 0)

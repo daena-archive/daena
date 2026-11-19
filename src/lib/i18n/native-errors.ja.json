@@ -481,7 +481,7 @@
   "atlas.save.failed: refused to follow a symlink": "atlas.save.failed: シンボリックリンクを経由した保存はできません。",
   "atlas.save.failed: render is not ready to save": "atlas.save.failed: レンダリングは保存する準備ができていません",
   "atlas.studio.request.invalid: atlas cache root must be a directory": "atlas.studio.request.invalid: atlas のキャッシュルートはディレクトリでなければなりません",
-  "atlas.studio.request.invalid: refused to regenerate a foreign cache": "atlas.studio.request.invalid: 外国のキャッシュを再生することを拒否",
+  "atlas.studio.request.invalid: refused to regenerate a foreign cache": "atlas.studio.request.invalid: 別の地図のキャッシュは再生成できません",
   "atlas.studio.request.invalid: unsupported atlas cache regen scope {0}": "atlas.studio.request.invalid: 未サポートの Atlas キャッシュ レジーナスコープ {0}",
   "atlas.studio.resource-limit: atlas studio session limit reached": "atlas.studio.resource-limit: atlas Studio セッションの制限に達しました",
   "atlas.studio.unsupported: map provider does not support atlas studio": "atlas.studio.unsupported: 地図提供者は、アトラススタジオをサポートしていません",

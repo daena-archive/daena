@@ -1,4 +1,5 @@
 <script lang="ts">
+import { schemaLabels } from "$lib/i18n/manifest-copy";
 import { ui } from "$lib/i18n/ui";
 import {
   ATLAS_OROMETRY_FEATURE_KIND,
@@ -43,7 +44,7 @@ let selectedEntityId = $state<string | null>(null);
 let createName = $state("");
 let createTypes = $state<CreateTypeOption[]>([]);
 let createType = $state("");
-let typeLabels = $state<Map<string, string>>(new Map());
+
 let status = $state("");
 let busy = $state(false);
 let existing = $state<MapPin[]>([]);
@@ -65,8 +66,7 @@ function pinMatchesAnchor(pin: MapPin, value: MapAnchor | null): boolean {
 const contextualExisting = $derived(existing.filter((pin) => pinMatchesAnchor(pin, anchor)));
 
 function entityTypeLabel(entityType: string | null | undefined): string {
-  if (!entityType) return "entry";
-  return typeLabels.get(entityType) ?? entityType;
+  return $schemaLabels.type(entityType);
 }
 
 function preferCreateType(options: CreateTypeOption[]): string {
@@ -75,7 +75,6 @@ function preferCreateType(options: CreateTypeOption[]): string {
 
 async function refreshCreateTypes() {
   const modules = await project.listModuleManifests().catch(() => []);
-  const labels = new Map<string, string>();
   const options: CreateTypeOption[] = [];
   const seen = new Set<string>();
   for (const module of modules) {
@@ -85,13 +84,11 @@ async function refreshCreateTypes() {
         if (!entityType?.id || entityType.id === MAP_ENTITY_TYPE || seen.has(entityType.id)) continue;
         seen.add(entityType.id);
         const label = entityType.name?.trim() || entityType.id;
-        labels.set(entityType.id, label);
         options.push({ value: entityType.id, label });
       }
     }
   }
   options.sort((left, right) => left.label.localeCompare(right.label));
-  typeLabels = labels;
   createTypes = options;
   if (!options.some((option) => option.value === createType)) {
     createType = preferCreateType(options);
@@ -395,7 +392,7 @@ $effect(() => {
       {:else}
         <select bind:value={createType} aria-label={$ui("Entity type")}>
           {#each createTypes as option (option.value)}
-            <option value={option.value}>{option.label}</option>
+            <option value={option.value}>{$schemaLabels.type(option.value, option.label)}</option>
           {/each}
         </select>
       {/if}

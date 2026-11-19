@@ -317,7 +317,7 @@ $effect(() => {
               value={String(draft[field.key] ?? "")}
               onchange={(event) => setDraft(field.key, (event.currentTarget as HTMLSelectElement).value)}>
               {#each field.options ?? [] as option}
-                <option value={option}>{field.key === "role" ? formatMembershipRole(option) : option}</option>
+                <option value={option}>{field.key === "role" ? formatMembershipRole(option) : $manifestText("daena.houses", "metadataOption", MEMBERSHIP_RELATIONSHIP + "/" + field.key, option)}</option>
               {/each}
             </select>
           </label>

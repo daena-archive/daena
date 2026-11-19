@@ -34,6 +34,7 @@ function appliesToEntity(spec: TimelineFieldSpec, entityType: string | null | un
 export function discoverTimelineFieldSpecs(
   manifests: readonly ModuleManifest[],
   ownerManifestId: string,
+  translate: (owner: string, kind: "field" | "timelineLabel", id: string, text: string) => string = (_, __, ___, text) => text,
 ): TimelineFieldSpec[] {
   const specs: TimelineFieldSpec[] = [];
   for (const manifest of manifests) {
@@ -48,7 +49,7 @@ export function discoverTimelineFieldSpecs(
         specs.push({
           namespace: schema.namespace,
           key: field.key,
-          label: metadata.label?.trim() || field.label,
+          label: metadata.label?.trim() ? translate(manifest.id, "timelineLabel", field.key, metadata.label) : translate(manifest.id, "field", field.key, field.label),
           entityTypes: field.entityTypes,
           role,
           group: metadata.group ?? undefined,

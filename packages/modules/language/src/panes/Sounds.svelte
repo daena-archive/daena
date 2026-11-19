@@ -378,7 +378,7 @@ function handleNotesSubmit(event: SubmitEvent) {
           <span>{$pluginText("Kind")}</span>
           <select name="kind" aria-label={$pluginText("Sound kind")} bind:value={phonemeDraft.kind}>
             {#each PHONEME_KINDS as kind (kind)}
-              <option value={kind}>{kind}</option>
+              <option value={kind}>{$pluginText(kind)}</option>
             {/each}
           </select>
         </label>
@@ -539,7 +539,7 @@ function handleNotesSubmit(event: SubmitEvent) {
   {:else}
     <section class="language-pane-section">
       <h3>{$pluginText("Sound inventory")}</h3>
-      <p>{phonemes.length} {$pluginText("sound")}{phonemes.length === 1 ? "" : $pluginText("s")} {$pluginText("· select one to edit its features.")}</p>
+      <p>{$pluginText(phonemes.length === 1 ? "{count} sound" : "{count} sounds", { count: phonemes.length })} {$pluginText("· select one to edit its features.")}</p>
       <ul class="lexeme-list">
         {#each phonemes as record (record.id)}
           <li>
@@ -549,7 +549,7 @@ function handleNotesSubmit(event: SubmitEvent) {
               aria-label={$pluginText("Edit sound {0}", { 0: String(record.value.symbol) })}
               onclick={() => openPhonemeEditor(record)}>
               <strong>{record.value.symbol}</strong>
-              <small>{record.value.kind}</small>
+              <small>{$pluginText(record.value.kind)}</small>
               <span
                 >{record.value.ipa ||
                   [record.value.place, record.value.manner, record.value.height, record.value.backness]

@@ -161,7 +161,7 @@ async function handleClose() {
             <span class="language-picker">
               <select value={$displayLanguage} onchange={(event) => setDisplayLanguage(event.currentTarget.value)}>
                 {#each languageOptions as language (language.value)}
-                  <option value={language.value} lang={language.value}>{language.label}</option>
+                  <option value={language.value} lang={language.value}>{language.status === "alpha" ? $ui("{0} (Alpha)", language.label) : language.label}</option>
                 {/each}
               </select>
               <ChevronDown size={14} strokeWidth={1.8} aria-hidden="true" />

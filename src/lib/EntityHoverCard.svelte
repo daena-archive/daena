@@ -1,4 +1,5 @@
 <script lang="ts">
+import { schemaLabels } from "$lib/i18n/manifest-copy";
 import { ui } from "$lib/i18n/ui";
 import { onMount } from "svelte";
 import { project, type Entity } from "$lib/project/client";
@@ -120,7 +121,7 @@ onMount(() => {
     aria-label={$ui("{0} preview", activeEntity.name)}
     onmouseenter={cancelHide}
     onmouseleave={scheduleHide}>
-    <span>{activeEntity.entity_type ?? $ui("Uncategorized")}</span>
+    <span>{$schemaLabels.type(activeEntity.entity_type)}</span>
     <strong>{activeEntity.name}</strong>
     {#if previewById[activeEntity.id]}
       <p>{previewById[activeEntity.id]}</p>

@@ -85,8 +85,8 @@ const personNode = await read("src/lib/houses/FamilyPersonNode.svelte");
 assert.match(personNode, /tabindex=\{cardTabIndex\}/);
 assert.match(personNode, /branchTabIndex/);
 assert.match(personNode, /Tab for branch controls/);
-assert.match(personNode, /Hide \$\{units\}/);
-assert.match(personNode, /Show \$\{chipText/);
+assert.match(personNode, /\$ui\("Hide \{0\}", \$ui\(units\)\)/);
+assert.match(personNode, /\$ui\("Show \{0\}", chipText/);
 assert.doesNotMatch(personNode, /--control-min-height/);
 
 assert.match(relationshipPanel, /formatRelationshipTitle/);

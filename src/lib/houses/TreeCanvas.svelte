@@ -1,4 +1,5 @@
 <script lang="ts">
+import { ui } from "$lib/i18n/ui";
 import {
   Background,
   BackgroundVariant,
@@ -196,6 +197,10 @@ function portHandles(edge: LayoutEdge) {
   return familyEdgeHandles(edge, layout.nodes);
 }
 
+function edgeLabel(edge: LayoutEdge) {
+  return edge.parentKind === "custom" || edge.partnerKind === "custom" ? edge.label : $ui(edge.label);
+}
+
 function flowEdges(): Edge[] {
   return layout.edges.map((edge): Edge => ({
     id: edge.id,
@@ -207,13 +212,13 @@ function flowEdges(): Edge[] {
       role: edge.role,
       parentKind: edge.parentKind,
       partnerKind: edge.partnerKind,
-      label: edge.label,
+      label: edgeLabel(edge),
       start: edge.start,
       end: edge.end,
       relationshipId: edge.relationshipId,
     }),
     selected: Boolean(edge.relationshipId && edge.relationshipId === selectedRelationshipId),
-    ariaLabel: edge.label || undefined,
+    ariaLabel: edgeLabel(edge) || undefined,
     selectable: true,
     focusable: true,
   }));
@@ -325,6 +330,11 @@ function onCanvasKeydown(event: KeyboardEvent) {
   onkeydown={onCanvasKeydown}>
   {#key `${fitToken}:${rootId}`}
     <SvelteFlow
+      ariaLabelConfig={{
+        "controls.zoomIn.ariaLabel": $ui("Zoom in"),
+        "controls.zoomOut.ariaLabel": $ui("Zoom out"),
+        "controls.fitView.ariaLabel": $ui("Fit to view"),
+      }}
       {nodes}
       {edges}
       {nodeTypes}

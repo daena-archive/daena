@@ -2425,6 +2425,7 @@ fn schema_list_returns_enabled_effective_manifests() {
     let listed = enabled_schema_manifests(
         core.project(AuthorityContext::trusted_shell()).unwrap(),
         &host,
+        "daena.timeline",
     )
     .unwrap();
     let lore = listed

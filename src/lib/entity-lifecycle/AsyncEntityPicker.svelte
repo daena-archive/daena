@@ -1,8 +1,8 @@
 <script lang="ts">
+import { schemaLabels } from "$lib/i18n/manifest-copy";
 import { nativeErrorText } from "$lib/i18n/native-errors.ts";
 import { ui } from "$lib/i18n/ui";
 import { Search } from "@lucide/svelte";
-import { humanizeTypeId } from "../../../packages/module-api/src/entityTypeLabels.ts";
 import {
   createRequestGate,
   emptyAsyncEntityPage,
@@ -79,8 +79,7 @@ const showTypeLabel = $derived((entityTypes?.length ?? 0) !== 1);
 const showRecents = $derived(showMenu && !query.trim() && recents.length > 0);
 
 function optionTypeLabel(type: string | null | undefined) {
-  if (!type) return $ui("Uncategorized");
-  return humanizeTypeId(type);
+  return $schemaLabels.type(type);
 }
 const optionItems = $derived.by(() => {
   if (!showMenu) return [] as Array<{ key: string; entity: AsyncEntityOption }>;

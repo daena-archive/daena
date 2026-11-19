@@ -844,7 +844,7 @@ async function handleSubmit(event: SubmitEvent) {
       </label>
       {#if filtered}
         <div class="language-filter-badge">
-          {activeFilterCount} {$pluginText("filter")}{activeFilterCount !== 1 ? $pluginText("s") : ""} {$pluginText("active")}
+          {$pluginText(activeFilterCount === 1 ? "{count} filter active" : "{count} filters active", { count: activeFilterCount })}
           <button
             type="button"
             class="language-filter-badge-clear"

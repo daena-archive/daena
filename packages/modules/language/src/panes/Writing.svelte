@@ -411,7 +411,7 @@ function soundLabel(phoneme: PhonemeOption) {
         {:else}
           <div class="coverage" aria-label={$pluginText("{0} of {1} sounds represented", { 0: String(coverage.represented), 1: String(coverage.total) })}>
             <div>
-              <strong>{coverage.represented} {$pluginText("of")} {coverage.total} {$pluginText("sounds represented")}</strong>
+              <strong>{$pluginText("{covered} of {total} sounds represented", { covered: coverage.represented, total: coverage.total })}</strong>
               <span
                 >{coverage.unmapped.length === 0
                   ? $pluginText("All defined sounds are represented.")
@@ -638,7 +638,7 @@ function soundLabel(phoneme: PhonemeOption) {
   <section class="language-pane-section">
     <h3>{$pluginText("Writing systems")}</h3>
     <p>
-      {orthographies.length} {$pluginText("system")}{orthographies.length === 1 ? "" : $pluginText("s")} {$pluginText("· each has its own character mappings and samples.")}
+      {$pluginText(orthographies.length === 1 ? "{count} system" : "{count} systems", { count: orthographies.length })} {$pluginText("· each has its own character mappings and samples.")}
     </p>
     <ul class="writing-system-list">
       {#each orthographies as record (record.id)}
@@ -662,10 +662,7 @@ function soundLabel(phoneme: PhonemeOption) {
                     ? $pluginText("Vertical")
                     : $pluginText("Direction unspecified")}</small>
             <span
-              >{record.value.mappings.length} {$pluginText("character")}{record.value.mappings.length === 1 ? "" : $pluginText("s")} · {systemCoverage.represented}
-              {$pluginText("of")} {systemCoverage.total} {$pluginText("sounds ·")} {record.value.samples.length} {$pluginText("sample")}{record.value.samples.length === 1
-                ? ""
-                : $pluginText("s")}</span>
+              >{$pluginText(record.value.mappings.length === 1 ? "{count} character" : "{count} characters", { count: record.value.mappings.length })} · {$pluginText("{covered} of {total} sounds represented", { covered: systemCoverage.represented, total: systemCoverage.total })} · {$pluginText(record.value.samples.length === 1 ? "{count} sample" : "{count} samples", { count: record.value.samples.length })}</span>
           </button>
         </li>
       {/each}
@@ -701,7 +698,7 @@ function soundLabel(phoneme: PhonemeOption) {
               checked={selectedBulkIds.includes(phoneme.id)}
               onchange={(event) => toggleBulkSound(phoneme.id, event.currentTarget.checked)} />
             <strong>/{soundLabel(phoneme)}/</strong>
-            <span>{phoneme.kind}</span>
+            <span>{$pluginText(phoneme.kind)}</span>
             <small>{representedIds.has(phoneme.id) ? $pluginText("Already represented") : $pluginText("Unmapped")}</small>
           </label>
         {/each}

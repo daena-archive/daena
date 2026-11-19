@@ -16,18 +16,22 @@ export function humanizeTypeId(type: string): string {
   return spaced.replace(/\b\w/g, (char) => char.toUpperCase());
 }
 
-export function buildTypeLabelMap(manifests: ReadonlyArray<LabelManifest>): Map<string, string> {
+export function buildTypeLabelMap(
+  manifests: ReadonlyArray<LabelManifest>,
+  labelFor: (owner: string | undefined, type: { id: string; name: string }) => string = (_, type) => type.name,
+): Map<string, string> {
   const map = new Map<string, string>();
   for (const manifest of manifests) {
     for (const schema of manifest.schemas ?? []) {
       for (const entityType of schema.entityTypes ?? []) {
         if (!entityType.id || !entityType.name) continue;
-        map.set(entityType.id, entityType.name);
+        const label = labelFor(manifest.id, entityType);
+        map.set(entityType.id, label);
         if (manifest.id && !entityType.id.includes(":")) {
-          map.set(`${manifest.id}:${entityType.id}`, entityType.name);
+          map.set(`${manifest.id}:${entityType.id}`, label);
         } else if (entityType.id.includes(":")) {
           const short = entityType.id.split(":").pop() ?? entityType.id;
-          if (short && !map.has(short)) map.set(short, entityType.name);
+          if (short && !map.has(short)) map.set(short, label);
         }
       }
     }
@@ -39,11 +43,6 @@ export function resolveEntityTypeLabel(type: string | null | undefined, labels: 
   if (!type) return "Unknown type";
   const labeled = labels.get(type);
   if (labeled) return labeled;
-  if (type.includes(":")) {
-    const short = type.split(":").pop() ?? type;
-    const shortLabeled = labels.get(short);
-    if (shortLabeled) return shortLabeled;
-  }
   return humanizeTypeId(type);
 }
 

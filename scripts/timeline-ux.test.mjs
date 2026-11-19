@@ -26,7 +26,7 @@ assert.match(
 );
 assert.match(
   source,
-  /buildTypeLabelMap\(\[source\.module, \.\.\.enabledManifests\]\)/,
+  /buildTypeLabelMap\(\[source\.module, \.\.\.enabledManifests\],/,
   "timeline labels types from effective manifests",
 );
 assert.match(source, /resolveEntityTypeLabel\(type, typeLabels\)/, "timeline resolves schema names for type filters");

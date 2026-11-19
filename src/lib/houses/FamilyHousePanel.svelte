@@ -101,7 +101,7 @@ async function archiveHouse() {
       {:else}
         <strong class="house-name">{houseName || $ui("House")}</strong>
       {/if}
-      <span class="meta">{members.length} {members.length === 1 ? $ui("member") : $ui("members")}</span>
+      <span class="meta">{members.length === 1 ? $ui("{0} member", 1) : $ui("{0} members", members.length)}</span>
     </div>
     <button type="button" class="icon-button" onclick={onClose} aria-label={$ui("Close house details")}
       ><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>

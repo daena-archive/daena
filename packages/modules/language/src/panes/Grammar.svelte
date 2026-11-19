@@ -589,7 +589,7 @@ function removeLink(index: number) {
       </h2>
       {#if grammarUi.starterCurrent && session?.draft.recordKind === "system"}
         {@const position = starterPosition(grammarUi.starterCurrent)}
-        <span class="language-toolbar-status">{$pluginText("Starter")} {position.current} {$pluginText("of")} {position.total}</span>
+        <span class="language-toolbar-status">{$pluginText("Starter {current} of {total}", { current: position.current, total: position.total })}</span>
       {/if}
     </div>
     <div class="language-toolbar-actions">

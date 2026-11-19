@@ -12,6 +12,7 @@ import {
 
 let {
   field,
+  label = field.label,
   selectedIds,
   onChange,
   search,
@@ -22,6 +23,7 @@ let {
   pageSize = 20,
 }: {
   field: FieldDefinition;
+  label?: string;
   selectedIds: string[];
   onChange: (ids: string[]) => void;
   /** Backend-paged search. Must not rely on a full in-memory entity list. */
@@ -123,7 +125,7 @@ $effect(() => {
 
 <div class="relationship-picker">
   {#if selectedIds.length > 0 && !hideChips}
-    <div class="relationship-selection" aria-label={$ui("Selected {0}", field.label)}>
+    <div class="relationship-selection" aria-label={$ui("Selected {0}", label)}>
       {#each selectedIds as id}
         {@const entity = entityFor(id)}
         <button
@@ -143,7 +145,7 @@ $effect(() => {
     {selectedIds}
     {pageSize}
     {placeholder}
-    ariaLabel={field.label}
+    ariaLabel={label}
     emptyMessage={$ui("No matching entities.")}
     onToggle={(entity, selected) => toggle(entity, selected)} />
   {#if canCreate}

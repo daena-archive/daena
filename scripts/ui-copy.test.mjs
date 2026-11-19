@@ -53,6 +53,28 @@ function checkDirectory(dir) {
 
 checkDirectory(join(root, "src"));
 checkDirectory(join(root, "packages/modules"));
+// Manifest-provided UI text reaches the screen through computed keys.
+for (const dir of readdirSync(join(root, "packages/modules"), { withFileTypes: true }).filter(entry => entry.isDirectory())) {
+  const files = readdirSync(join(root, "packages/modules", dir.name));
+  if (!files.includes("manifest.json")) continue;
+  const manifest = JSON.parse(readFileSync(join(root, "packages/modules", dir.name, "manifest.json"), "utf8"));
+  const labels = [manifest.name, ...manifest.commands.map(command => command.title)];
+  for (const view of manifest.views) labels.push(view.title);
+  for (const template of manifest.templates) labels.push(template.name, template.description);
+  for (const schema of manifest.schemas) {
+    for (const type of schema.entityTypes) labels.push(type.name);
+    for (const field of schema.fields) {
+      labels.push(field.timeline?.label, field.timeline?.group);
+      for (const item of [field, ...(field.metadataFields ?? [])]) {
+        labels.push(item.label, ...(item.options ?? []));
+        for (const variant of item.oneOf ?? []) labels.push(variant.label, ...(variant.options ?? []));
+      }
+    }
+  }
+  for (const label of labels.filter(Boolean)) {
+    if (!copy[label]?.trim()) messages.push([manifest.id, "missing manifest translation", label]);
+  }
+}
 assert.deepEqual(messages, [], "Application copy should use the active language catalog");
 const placeholders = (text) => (text.match(/\{\d+\}/g) ?? []).sort();
 for (const [english, japanese] of Object.entries(copy)) {

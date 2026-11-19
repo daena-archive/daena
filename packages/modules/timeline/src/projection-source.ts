@@ -1,3 +1,4 @@
+import { setPackageLocalizations } from "../../projection-labels.ts";
 import type { FieldRecord, ModuleManifest } from "../../../module-api/src/index";
 import { CALENDAR_DEFINITION_COLLECTION } from "./calendar.ts";
 
@@ -76,6 +77,7 @@ export async function createTimelineProjectionSource(
   moduleManifest: ModuleManifest = { id: "daena.timeline" } as ModuleManifest,
 ): Promise<TimelineProjectionSource> {
   const manifests = await client.call<ModuleManifest[]>("schema.list", {});
+  setPackageLocalizations(manifests);
   const mapsEnabled = mapsProviderEnabled(manifests);
   // The effective manifest carries qualified entity type ids
   // (`daena.timeline:event`) and the project's schema overlay; the bundled

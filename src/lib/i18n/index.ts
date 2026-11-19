@@ -4,8 +4,8 @@ import { ja } from "./ja.ts";
 import japaneseMenu from "./menu-ja.json" with { type: "json" };
 
 export const languageOptions = [
-  { value: "en", label: "English" },
-  { value: "ja", label: "日本語" },
+  { value: "en", label: "English", status: "stable" },
+  { value: "ja", label: "日本語", status: "alpha" },
 ] as const;
 
 export type DisplayLanguage = (typeof languageOptions)[number]["value"];

@@ -289,7 +289,7 @@ $effect(() => {
           </select>
         </label>
         <label> {$ui("Status")} <select bind:value={partnerStatus}>
-            {#each PARTNER_STATUSES as status}<option value={status}>{status}</option>{/each}
+            {#each PARTNER_STATUSES as status}<option value={status}>{$ui(status)}</option>{/each}
           </select>
         </label>
       {/if}

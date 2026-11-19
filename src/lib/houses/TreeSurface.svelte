@@ -5,6 +5,7 @@ import type { EntitySummary, ModuleContext, Relationship, UUID } from "../../../
 import type { Snippet } from "svelte";
 import { untrack } from "svelte";
 import { ArrowLeft, Maximize2, RotateCcw, Settings2, UsersRound, X } from "@lucide/svelte";
+import { manifestText } from "$lib/i18n/manifest-copy";
 import { TREE_LEGEND, TREE_SCOPES } from "$lib/entity-lifecycle/vocabulary.ts";
 import WorkbenchState from "$lib/shell/WorkbenchState.svelte";
 import FamilyHousePanel from "./FamilyHousePanel.svelte";
@@ -1151,7 +1152,7 @@ function applyRelationshipDelete(id: string) {
                     <span>{$ui("Secondary")}</span>
                     <select aria-label={$ui("Secondary field")} value={secondaryField} onchange={onSecondaryChange}>
                       {#each secondaryFields as field (field.key)}
-                        <option value={field.key}>{field.label}</option>
+                        <option value={field.key}>{$manifestText("daena.lore", "field", field.key, field.label)}</option>
                       {/each}
                     </select>
                   </label>

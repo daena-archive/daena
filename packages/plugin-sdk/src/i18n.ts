@@ -5,7 +5,7 @@ export function translatePluginMessage(catalogs: PluginCatalogs, language: strin
   let tag = language.toLowerCase();
   while (tag) {
     const messages = Object.hasOwn(catalogs, tag) ? catalogs[tag] : undefined;
-    if (messages && Object.hasOwn(messages, source)) return messages[source];
+    if (messages && Object.hasOwn(messages, source) && messages[source].trim()) return messages[source];
     const separator = tag.lastIndexOf("-");
     if (separator < 0) break;
     tag = tag.slice(0, separator);

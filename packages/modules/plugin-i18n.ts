@@ -2,6 +2,8 @@ import { derived, get } from "svelte/store";
 import { displayLanguage, setDisplayLanguage, type DisplayLanguage } from "../../src/lib/i18n/index.ts";
 import { pluginJapanese } from "./plugin-ja.ts";
 
+export { displayLanguage };
+
 type PluginText = keyof typeof pluginJapanese;
 const pluginCatalogs: Record<DisplayLanguage, Readonly<Record<string, string>>> = { en: {}, ja: pluginJapanese };
 export const pluginText = derived(

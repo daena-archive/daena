@@ -707,7 +707,7 @@ async function handleSubmit(event: SubmitEvent) {
 {:else}
   <section class="language-pane-section">
     <h3>{$pluginText("Paradigm library")}</h3>
-    <p>{paradigms.length} {$pluginText("paradigm")}{paradigms.length === 1 ? "" : $pluginText("s")} {$pluginText("· select one to edit rules or preview forms.")}</p>
+    <p>{$pluginText(paradigms.length === 1 ? "{count} paradigm" : "{count} paradigms", { count: paradigms.length })} {$pluginText("· select one to edit rules or preview forms.")}</p>
     <ul class="lexeme-list">
       {#each paradigms as record (record.id)}
         <li>
@@ -717,11 +717,9 @@ async function handleSubmit(event: SubmitEvent) {
             aria-label={$pluginText("Edit paradigm {0}", { 0: String(record.value.name) })}
             onclick={() => openParadigmEditor(record)}>
             <strong>{record.value.name}</strong>
-            <small>{record.value.kind}</small>
+            <small>{$pluginText(PARADIGM_KINDS.find(item => item.id === record.value.kind)?.label ?? record.value.kind)}</small>
             <span
-              >{record.value.slots.length} {$pluginText("slot")}{record.value.slots.length === 1 ? "" : $pluginText("s")} · {record.value.rules
-                .length}
-              {$pluginText("rule")}{record.value.rules.length === 1 ? "" : $pluginText("s")}</span>
+              >{$pluginText(record.value.slots.length === 1 ? "{count} slot" : "{count} slots", { count: record.value.slots.length })} · {$pluginText(record.value.rules.length === 1 ? "{count} rule" : "{count} rules", { count: record.value.rules.length })}</span>
           </button>
         </li>
       {/each}

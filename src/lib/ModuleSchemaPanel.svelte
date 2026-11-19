@@ -1,6 +1,6 @@
 <script lang="ts">
 import { nativeErrorText } from "$lib/i18n/native-errors.ts";
-import { manifestText } from "$lib/i18n/manifest-copy";
+import { manifestText, schemaLabels } from "$lib/i18n/manifest-copy";
 import { ui } from "$lib/i18n/ui";
 import type {
   EntityTypeAppearanceOverride,
@@ -195,7 +195,7 @@ function entityTypeLabel(typeId: string): string {
     (draft.customEntityTypes ?? []).find((type) => type.id === typeId) ??
     referenceEntityTypes.find((type) => type.id === typeId);
   const name = defined?.name.trim();
-  return name ? $manifestText(pluginId, "type", typeId, name) : humanizeId(typeId);
+  return name ? $manifestText(typeId.includes(":") ? typeId.split(":")[0] : pluginId, "type", typeId, name) : $schemaLabels.type(typeId);
 }
 
 // Remounted by parent `{#key editorRemountKey}`; initial overlay is intentional.
@@ -537,7 +537,7 @@ function selectableFieldOptions() {
     .filter((field) => !isDisabled(draft.disabledFields, field.key))
     .map((field) => ({
       key: field.key,
-      label: field.label || humanizeId(field.key),
+      label: $manifestText(pluginId, "field", field.key, field.label) || humanizeId(field.key),
       hint: fieldTypeLabel(field.type),
     }))
     .sort((left, right) => left.label.localeCompare(right.label));
@@ -2369,7 +2369,7 @@ function removeCustomTemplate(id: string) {
             <span>{$ui("Templates to remove")}</span>
             <ul>
               {#each typeRemovalPrompt.templates as template}
-                <li><LayoutTemplate size={12} strokeWidth={1.7} aria-hidden="true" /> {template.name}</li>
+                <li><LayoutTemplate size={12} strokeWidth={1.7} aria-hidden="true" /> {$manifestText(pluginId, "template", template.id, template.name)}</li>
               {/each}
             </ul>
           </div>
@@ -2381,7 +2381,7 @@ function removeCustomTemplate(id: string) {
               {#each typeRemovalPrompt.exclusiveFields as field}
                 <li>
                   <span class="field-label"
-                    ><TextQuote size={12} strokeWidth={1.7} aria-hidden="true" /> {field.label}</span>
+                    ><TextQuote size={12} strokeWidth={1.7} aria-hidden="true" /> {$manifestText(pluginId, "field", field.key, field.label)}</span>
                   <code>{field.key}</code>
                   <label class="type-remove-choice">
                     <span>{$ui("Disposition")}</span>
@@ -2419,7 +2419,7 @@ function removeCustomTemplate(id: string) {
           <div class="type-remove-group">
             <span>{$ui("Existing entities")}</span>
             <p class="type-remove-note">
-              {#if typeRemovalPrompt.entityCount == null} {$ui("Entity count is unavailable. Choose a destination type to reassign any entities that still use this type, or confirm there are none.")} {:else} {$ui("{0} {1} this type and must be reassigned before removal.", typeRemovalPrompt.entityCount, typeRemovalPrompt.entityCount === 1 ? $ui("entity uses") : $ui("entities use"))} {/if}
+              {#if typeRemovalPrompt.entityCount == null} {$ui("Entity count is unavailable. Choose a destination type to reassign any entities that still use this type, or confirm there are none.")} {:else} {typeRemovalPrompt.entityCount === 1 ? $ui("Reassign the entry using this type before removing it.") : $ui("Reassign the {0} entries using this type before removing it.", typeRemovalPrompt.entityCount)} {/if}
             </p>
             {#if typeRemovalPrompt.entityCount == null}
               <label class="type-remove-choice">
@@ -2466,7 +2466,7 @@ function removeCustomTemplate(id: string) {
             <ul>
               {#each typeRemovalPrompt.sharedFields as field}
                 <li>
-                  <span class="field-label">{field.label}</span>
+                  <span class="field-label">{$manifestText(pluginId, "field", field.key, field.label)}</span>
                   <small> {$ui("also {0}", (field.entityTypes ?? [])
                       .filter((type) => type !== typeRemovalPrompt?.typeId)
                       .map(entityTypeLabel)

@@ -1,4 +1,5 @@
 <script lang="ts">
+import { schemaLabels } from "$lib/i18n/manifest-copy";
 import { messages } from "$lib/i18n";
 import { Search } from "@lucide/svelte";
 import { GREGORIAN_CALENDAR_ID } from "$lib/date";
@@ -38,7 +39,7 @@ function isGregorian(id: string) {
 function selectedName() {
   if (isGregorian(selectedId)) return $messages.date.default;
   const found = calendars.find((c) => c.id === selectedId);
-  return found ? found.name : selectedId;
+  return found ? found.name : $messages.date.calendar;
 }
 
 function candidates() {
@@ -47,7 +48,7 @@ function candidates() {
     { id: GREGORIAN_CALENDAR_ID, name: $messages.date.default, sub: $messages.date.defaultCalendar },
     ...calendars
       .filter((e) => !e.deleted)
-      .map((e) => ({ id: e.id, name: e.name, sub: e.entity_type ?? "daena.timeline:calendar" })),
+      .map((e) => ({ id: e.id, name: e.name, sub: $schemaLabels.type(e.entity_type ?? "daena.timeline:calendar") })),
   ];
   if (!q) return all;
   return all.filter((c) => `${c.name} ${c.sub ?? ""}`.toLowerCase().includes(q));

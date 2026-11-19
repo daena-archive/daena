@@ -1,5 +1,6 @@
 <script lang="ts">
 import { nativeErrorText } from "$lib/i18n/native-errors.ts";
+import { manifestText } from "$lib/i18n/manifest-copy";
 import { ui } from "$lib/i18n/ui";
 import type { MetadataFieldDefinition, ModuleContext } from "../../../packages/module-api/src/index";
 import { X } from "@lucide/svelte";
@@ -67,7 +68,9 @@ function metadataFieldsFor(
 ): MetadataFieldDefinition[] {
   for (const schema of moduleContext.module.schemas ?? []) {
     for (const field of schema.fields ?? []) {
-      if (field.relationshipType === type && field.metadataFields?.length) return field.metadataFields;
+      if (field.relationshipType === type && field.metadataFields?.length) return field.metadataFields.map(meta => ({
+        ...meta, label: $manifestText(moduleContext.module.id, "metadata", type + "/" + meta.key, meta.label),
+      }));
     }
   }
   if (kind === "partner") {
@@ -239,7 +242,7 @@ async function remove() {
             value={String(draft[field.key] ?? "")}
             onchange={(event) => setDraft(field.key, (event.currentTarget as HTMLSelectElement).value)}>
             {#each field.options ?? [] as option}
-              <option value={option}>{option}</option>
+              <option value={option}>{$manifestText(context.module.id, "metadataOption", relationship.type + "/" + field.key, option)}</option>
             {/each}
           </select>
         </label>

@@ -1,6 +1,6 @@
 <script lang="ts">
 import { nativeErrorText } from "$lib/i18n/native-errors.ts";
-import { manifestText } from "$lib/i18n/manifest-copy";
+import { manifestText, schemaLabels } from "$lib/i18n/manifest-copy";
 import { displayLanguage } from "$lib/i18n";
 import { ui } from "$lib/i18n/ui";
 import { onMount, type Snippet } from "svelte";
@@ -135,7 +135,7 @@ const articleOutline = $derived(documentBody ? headingOutline(documentBody) : []
 function labelForType(type: string | null) {
   if (!type) return $ui("Uncategorized");
   const definition = allEntityTypeDefinitions.find((candidate: any) => candidate.id === type);
-  return definition ? $manifestText(manifest.id, "type", type, definition.name) : humanizeType(type);
+  return definition ? $manifestText(manifest.id, "type", type, definition.name) : $schemaLabels.type(type);
 }
 
 function fieldsForType(entityType: string | null) {
@@ -240,7 +240,10 @@ const visibleFields = $derived(
       .map((definition: any) => ({
         key: definition.key,
         label: $manifestText(manifest.id, "field", definition.key, definition.label),
-        value: fieldDisplay(fields[definition.key]),
+        value: fieldDisplay(["enum", "oneof"].includes(definition.type)
+          ? [fields[definition.key]].flat().map(value => typeof value === "string"
+            ? $manifestText(manifest.id, "option", definition.key + "/" + value, value) : value)
+          : fields[definition.key]),
       }))
       .filter((row: any) => !isEmptyValue(fields[row.key]) && row.value);
   })(),
@@ -300,7 +303,9 @@ function attributesForRelationship(
         label: field?.label
           ? $manifestText(manifestOwningRelationshipType(relationship.relationship_type, wikiManifests)?.id, "metadata", relationship.relationship_type + "/" + row.key, field.label)
           : row.label === row.key ? humanizeType(row.key) : row.label,
-        value: formatAttributeValue(row.raw, field),
+        value: (field?.type === "enum" || field?.type === "oneof") && typeof row.raw === "string"
+          ? $manifestText(manifestOwningRelationshipType(relationship.relationship_type, wikiManifests)?.id, "metadataOption", relationship.relationship_type + "/" + row.key, row.raw)
+          : formatAttributeValue(row.raw, field),
       };
     })
     .filter((row) => row.value !== "");
@@ -367,7 +372,7 @@ const imageContextChoices = $derived(
       choices.push({
         id: `relationship:${relationship.id}`,
         entityId: relatedId,
-        label: humanizeType(relationship.relationship_type),
+        label: $schemaLabels.relationship(relationship.relationship_type),
         value: entityName(relatedId),
         sourceKind: "relationship",
         defaultSelected: false,
@@ -768,7 +773,7 @@ function handleEdit() {
                       <span>{group.label.slice(0, 1).toUpperCase()}</span>
                       <div>
                         <h3>{group.label}</h3>
-                        <small>{group.count} {group.count === 1 ? $ui("page") : $ui("pages")}</small>
+                        <small>{group.count === 1 ? $ui("{0} page", 1) : $ui("{0} pages", group.count)}</small>
                       </div>
                     </header>
                     <ul>
@@ -947,7 +952,7 @@ function handleEdit() {
                     {#if groupedOutbound.length > 1}<h4>{$manifestText(group.moduleId, "module", group.moduleId, group.moduleName)}</h4>{/if}
                     <ul>
                       {#each group.relationships as relationship}<li>
-                          <span>{humanizeType(relationship.relationship_type)}</span><button
+                          <span>{$schemaLabels.relationship(relationship.relationship_type)}</span><button
                             type="button"
                             onclick={(event) => openEntity(relationship.target_id, openIntent(event, isMac))}
                             onauxclick={(event) => openEntityOnMiddleClick(event, relationship.target_id)}
@@ -961,7 +966,7 @@ function handleEdit() {
                     {#if groupedInbound.length > 1}<h4>{$manifestText(group.moduleId, "module", group.moduleId, group.moduleName)}</h4>{/if}
                     <ul>
                       {#each group.relationships as relationship}<li>
-                          <span>{humanizeType(relationship.relationship_type)}</span><button
+                          <span>{$schemaLabels.relationship(relationship.relationship_type)}</span><button
                             type="button"
                             onclick={(event) => openEntity(relationship.source_id, openIntent(event, isMac))}
                             onauxclick={(event) => openEntityOnMiddleClick(event, relationship.source_id)}

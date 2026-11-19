@@ -1,4 +1,5 @@
 <script lang="ts">
+import { messages } from "$lib/i18n";
 import type { WorkspaceSection } from "$lib/modules/workspace";
 import { ENTITY_ACTIONS } from "$lib/entity-lifecycle/vocabulary";
 import { openIntent, type OpenIntent } from "$lib/navigation/open-intent";
@@ -316,13 +317,13 @@ $effect(() => {
       aria-expanded={settingsActive}
       class:active={settingsActive}
       class="rail-button muted-button"
-      title="Settings"
+      title={$messages.common.settings}
       onclick={onOpenSettings}
-      onmouseenter={(e) => showTooltip(e, "Settings")}
+      onmouseenter={(e) => showTooltip(e, $messages.common.settings)}
       onmouseleave={hideTooltip}
-      onfocus={(e) => showTooltip(e, "Settings")}
+      onfocus={(e) => showTooltip(e, $messages.common.settings)}
       onblur={hideTooltip}>
-      <span class="rail-icon"><SettingsIcon size={16} strokeWidth={1.8} /></span><span>Settings</span>
+      <span class="rail-icon"><SettingsIcon size={16} strokeWidth={1.8} /></span><span>{$messages.common.settings}</span>
     </button>
     {#if ready}
       {@const collapseTitle = collapsed ? "Expand sidebar" : "Collapse sidebar"}

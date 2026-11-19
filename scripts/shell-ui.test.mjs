@@ -71,10 +71,13 @@ assert.match(resizeHandle, /ArrowLeft|ArrowRight/);
 assert.match(resizeHandle, /onpointerdown/);
 
 const projectSwitcher = components.get("src/lib/shell/ProjectSwitcher.svelte");
-assert.match(projectSwitcher, />New project</);
-assert.match(projectSwitcher, />Open folder</);
-assert.match(projectSwitcher, /Projects live in a folder on disk/);
-assert.doesNotMatch(projectSwitcher, /Open project folder/);
+assert.match(projectSwitcher, /\$messages\.projectSwitcher\.create/);
+assert.match(projectSwitcher, /\$messages\.projectSwitcher\.open\}/);
+assert.match(projectSwitcher, /\$messages\.projectSwitcher\.hint/);
+const english = await read("src/lib/i18n/en.ts");
+assert.match(english, /create: "New project"/);
+assert.match(english, /open: "Open folder"/);
+assert.match(english, /hint: "Projects live in a folder on disk\."/);
 
 const statusCenter = components.get("src/lib/shell/StatusCenter.svelte");
 assert.match(statusCenter, /aria-live="polite"/);

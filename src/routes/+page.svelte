@@ -1,4 +1,5 @@
 <script lang="ts">
+import { displayLanguage, messages } from "$lib/i18n";
 import { onMount, tick, untrack } from "svelte";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -447,6 +448,7 @@ let ready = $state(false);
 let error = $state("");
 let projectTransitionBusy = $state(false);
 let projectTransitionMessage = $state("");
+let projectTransitionClosing = $state(false);
 let projectHomeOpen = $state(true);
 function homeNewTab(): NewTab {
   return { id: crypto.randomUUID(), location: { kind: "home" }, title: "Home", icon: { kind: "home" } };
@@ -546,6 +548,10 @@ let quickOpenOpen = $state(false);
 let quickOpenSearchLoading = $state(false);
 let filterOpen = $state(false);
 let expandedGroups = $state<Set<string>>(new Set());
+$effect(() => {
+  document.documentElement.lang = $displayLanguage;
+});
+
 let railCollapsed = $state(localStorage.getItem("daena:rail-collapsed") === "true");
 
 let collectionQuery = $state<CollectionQuery>(loadCollectionQuery("lore"));
@@ -5432,10 +5438,11 @@ async function finishOpening(info?: ProjectInfo) {
   }
 }
 
-async function runProjectTransition(message: string, operation: () => Promise<void>) {
+async function runProjectTransition(message: string, operation: () => Promise<void>, { closing = false } = {}) {
   if (projectTransitionBusy) return;
   projectTransitionBusy = true;
   projectTransitionMessage = message;
+  projectTransitionClosing = closing;
   error = "";
   try {
     await operation();
@@ -5444,6 +5451,7 @@ async function runProjectTransition(message: string, operation: () => Promise<vo
   } finally {
     projectTransitionBusy = false;
     projectTransitionMessage = "";
+    projectTransitionClosing = false;
   }
 }
 
@@ -5459,13 +5467,13 @@ async function pickAndOpenProject(intent: "create" | "open") {
   showProjectMenu = false;
   try {
     const selection = await project.pickDirectory(
-      intent === "create" ? "Choose an empty folder for a new project" : "Open an existing project folder",
+      intent === "create" ? $messages.projectSwitcher.chooseNewFolder : $messages.projectSwitcher.chooseExistingFolder,
     );
     const path = typeof selection === "string" ? selection : null;
     if (!path) return;
     // Asked before the transition overlay opens, because the overlay hides the Language webview.
     if (!(await canLeaveLanguageSection())) return;
-    await runProjectTransition(intent === "create" ? "Creating project…" : "Opening project…", async () => {
+    await runProjectTransition(intent === "create" ? $messages.projectSwitcher.creating : $messages.projectSwitcher.opening, async () => {
       if (!(await flushAutoSave())) return;
       if (!(await leavePluginView({ closeWebviews: true }))) return;
       persistShellTabs();
@@ -5490,7 +5498,7 @@ async function openRecentProject(path: string) {
   if (projectTransitionBusy) return;
   showProjectMenu = false;
   if (!(await canLeaveLanguageSection())) return;
-  await runProjectTransition("Opening project…", async () => {
+  await runProjectTransition($messages.projectSwitcher.opening, async () => {
     if (!(await flushAutoSave())) return;
     if (!(await leavePluginView({ closeWebviews: true }))) return;
     persistShellTabs();
@@ -5504,13 +5512,13 @@ async function closeProject() {
   if (projectTransitionBusy) return;
   showProjectMenu = false;
   if (!(await canLeaveLanguageSection())) return;
-  await runProjectTransition("Closing project…", async () => {
+  await runProjectTransition($messages.projectSwitcher.closing, async () => {
     if (!(await flushAutoSave())) return;
     if (!(await leavePluginView({ closeWebviews: true }))) return;
     persistShellTabs();
     resetProjectSessionState();
     await project.close();
-  });
+  }, { closing: true });
 }
 
 async function flushAutoSave() {
@@ -8296,9 +8304,9 @@ onMount(() => {
         <span class="project-transition-spinner" aria-hidden="true"></span>
         <strong>{projectTransitionMessage}</strong>
         <small
-          >{projectTransitionMessage === "Closing project…"
-            ? "Returning to the project launcher."
-            : "Your project will be ready in a moment."}</small>
+          >{projectTransitionClosing
+            ? $messages.projectSwitcher.returningToLauncher
+            : $messages.projectSwitcher.projectWillBeReady}</small>
       </div>
     </div>
   {/if}
@@ -9171,9 +9179,9 @@ onMount(() => {
     {:else if !ready}
       <section class="welcome">
         <div class="welcome-copy">
-          <span class="overline">A private place for impossible worlds</span>
-          <h1>Build the world<br /><em>behind the story.</em></h1>
-          <p>Shape characters, places, factions, and history in one calm, local-first studio.</p>
+          <span class="overline">{$messages.welcome.overline}</span>
+          <h1>{$messages.welcome.heading}<br /><em>{$messages.welcome.emphasis}</em></h1>
+          <p>{$messages.welcome.description}</p>
         </div>
         <div class="welcome-map" aria-hidden="true">
           <span class="map-marker marker-atlas"><MapIcon size={21} strokeWidth={1.65} /></span>
@@ -9182,8 +9190,8 @@ onMount(() => {
           <span class="map-marker marker-tree"><TreePine size={21} strokeWidth={1.65} /></span>
         </div>
         <div class="art-card">
-          <span>ELDERMERE</span><strong>The sea remembers<br />what kingdoms forget.</strong><small
-            >Fragments · 12</small>
+          <span>ELDERMERE</span><strong>{$messages.welcome.artLine1}<br />{$messages.welcome.artLine2}</strong><small
+            >{$messages.welcome.fragments}</small>
         </div>
       </section>
     {:else if projectHomeOpen}

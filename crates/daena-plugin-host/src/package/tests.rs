@@ -343,7 +343,11 @@ fn rediscovery_rehashes_installed_packages_after_restart() {
     archive(
         &archive_path,
         &manifest("1.0.0"),
-        &[("dist/index.html", b"ok"), ("locales/daena/ja.json", br#"{"Test":"translated"}"#)],
+        &[
+            ("dist/index.html", b"ok"),
+            ("locales/ja.json", br#"{"Test":"translated"}"#),
+            ("locales/private/ja.json", br#"{"ui":{"title":"private"}}"#),
+        ],
     );
     let install_root = dir.path().join("installed");
     let mut first = PackageCatalog::default();
@@ -370,7 +374,7 @@ fn rediscovery_rehashes_installed_packages_after_restart() {
     assert_eq!(restarted.get("com.example.test", "1.0.0").unwrap().translations["ja"]["Test"], "translated");
 
     fs::write(
-        install_root.join("com.example.test/1.0.0/locales/daena/ja.json"),
+        install_root.join("com.example.test/1.0.0/locales/ja.json"),
         br#"{"Test":"other"}"#,
     )
     .unwrap();
@@ -936,6 +940,8 @@ fn plugin_cli_signed_archive_verifies_on_the_host() {
     assert!(verified.signed);
     assert_eq!(verified.manifest.publisher, "com.example");
     assert_eq!(verified.digest.len(), 64);
+    assert_eq!(verified.translations["ja"]["Field Notes"], "観察ノート");
+    assert_eq!(development_catalogs(&fixture).unwrap(), verified.translations);
 }
 
 fn run_node(args: &[&str]) {
@@ -967,7 +973,7 @@ fn copy_dir(from: &Path, to: &Path) {
 fn package_translation_files_validate_before_install() {
     let dir = tempdir().unwrap();
     let file = dir.path().join("bad.daenaplugin");
-    archive(&file, &manifest("1.0.0"), &[("dist/index.html", b"ok"), ("locales/daena/ja.json", br#"{"Test":42}"#)]);
+    archive(&file, &manifest("1.0.0"), &[("dist/index.html", b"ok"), ("locales/ja.json", br#"{"Test":42}"#)]);
     let root = dir.path().join("installed");
     let result = PackageCatalog::default().install(&file, &root, ArchiveLimits::default(), VerificationPolicy::with_unsigned_consent());
     assert!(result.unwrap_err().0.contains("invalid translation catalog"));

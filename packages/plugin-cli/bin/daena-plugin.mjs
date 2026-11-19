@@ -227,8 +227,9 @@ function inspectPackageTree(directory) {
 function validateTranslations(files) {
   let total = 0;
   for (const file of files) {
-    if (!file.name.startsWith("locales/daena/") || !file.name.endsWith(".json")) continue;
-    if (!/^locales\/daena\/[a-z]{2,8}(?:-[a-z0-9]{1,8})*\.json$/i.test(file.name))
+    const catalog = /^locales\/([^/]*)\.json$/.exec(file.name);
+    if (!catalog) continue;
+    if (!/^[a-z]{2,8}(?:-[a-z0-9]{1,8})*$/i.test(catalog[1]))
       throw new Error(`invalid translation locale: ${file.name}`);
     total += file.data ? file.data.length : statSync(file.path).size;
     if (total > 1024 * 1024) throw new Error("plugin translations exceed 1 MiB");

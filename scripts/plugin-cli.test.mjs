@@ -2,7 +2,7 @@
 
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createZipArchive, readZipArchive } from "../packages/plugin-cli/bin/zip.mjs";
@@ -13,6 +13,8 @@ const temporary = mkdtempSync(join(tmpdir(), "daena-plugin-cli-"));
 try {
   const fixture = join(temporary, "fixture");
   cpSync(join(workspace, "examples/plugins/declarative"), fixture, { recursive: true });
+  mkdirSync(join(fixture, "locales", "private"));
+  writeFileSync(join(fixture, "locales", "private", "ja.json"), '{"ui":{"title":"private"}}');
   const init = join(temporary, "initialized");
   execFileSync("node", [cli, "init", init, "--id", "com.example.cli-fixture"], { encoding: "utf8" });
   const initialized = JSON.parse(readFileSync(join(init, "manifest.json"), "utf8"));
@@ -24,9 +26,9 @@ try {
   assert.equal(JSON.parse(validation).ok, true);
   const brokenCatalog = join(temporary, "broken-catalog.daenaplugin");
   const unsignedEntries = readZipArchive(readFileSync(archive));
-  assert.ok(unsignedEntries.some(entry => entry.name === "locales/daena/ja.json"));
+  assert.ok(unsignedEntries.some(entry => entry.name === "locales/ja.json"));
   writeFileSync(brokenCatalog, createZipArchive(unsignedEntries.map(entry =>
-    entry.name === "locales/daena/ja.json" ? { ...entry, data: Buffer.from('{"Color":7}') } : entry
+    entry.name === "locales/ja.json" ? { ...entry, data: Buffer.from('{"Color":7}') } : entry
   )));
   assert.throws(() => execFileSync("node", [cli, "validate", brokenCatalog], { stdio: "pipe" }), /invalid translation catalog/);
   const legacyArchive = join(temporary, "legacy.wbplugin");

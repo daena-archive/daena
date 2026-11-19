@@ -1,4 +1,4 @@
-/** Flat message dictionaries from this package's locales/daena/<language>.json files. */
+/** Flat message dictionaries from this package's locales/<language>.json files. */
 export type PluginCatalogs = Readonly<Record<string, Readonly<Record<string, string>>>>;
 export declare function translatePluginMessage(catalogs: PluginCatalogs, language: string, source: string): string;
 /** Read and observe the app language without opening an RPC session. */

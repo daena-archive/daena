@@ -38,7 +38,7 @@ assert.equal(get(manifestText)("daena.writing", "option", "status/drafting", "dr
 assert.equal(get(manifestText)("daena.writing", "option", "custom/drafting", "drafting"), "drafting");
 assert.equal(get(manifestText)("daena.houses", "metadata", "family_member_of/role", "Role"), "役割");
 const { default: notes } = await import("../examples/plugins/declarative/manifest.json", { with: { type: "json" } });
-const { default: notesJa } = await import("../examples/plugins/declarative/locales/daena/ja.json", { with: { type: "json" } });
+const { default: notesJa } = await import("../examples/plugins/declarative/locales/ja.json", { with: { type: "json" } });
 const installedNotes = structuredClone(notes);
 installedNotes.schemas[0].entityTypes[0].id = notes.id + ":note";
 const otherNotes = { ...notes, id: "other.plugin" };

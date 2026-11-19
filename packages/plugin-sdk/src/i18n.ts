@@ -1,4 +1,4 @@
-/** Flat message dictionaries from this package's locales/daena/<language>.json files. */
+/** Flat message dictionaries from this package's locales/<language>.json files. */
 export type PluginCatalogs = Readonly<Record<string, Readonly<Record<string, string>>>>;
 
 export function translatePluginMessage(catalogs: PluginCatalogs, language: string, source: string): string {

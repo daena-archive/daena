@@ -32,14 +32,22 @@ const HOST_API_VERSION: &str = "1.1.0";
 pub const MAX_PLUGIN_ICON_SVG_BYTES: usize = 32 * 1024;
 /// Package-owned text, indexed by normalized display language and source string.
 pub type PluginCatalogs = BTreeMap<String, BTreeMap<String, String>>;
-const LOCALE_DIR: &str = "locales/daena/";
+const LOCALE_DIR: &str = "locales/";
 const MAX_CATALOG_TEXT_BYTES: usize = 1024 * 1024;
+
+fn catalog_locale(path: &str) -> Option<&str> {
+    let name = path.strip_prefix(LOCALE_DIR)?;
+    if name.contains('/') {
+        return None;
+    }
+    name.strip_suffix(".json")
+}
 
 fn package_catalogs(files: &PackageFiles) -> Result<PluginCatalogs, PackageError> {
     let mut catalogs = PluginCatalogs::new();
     let mut total = 0;
     for (path, bytes) in files {
-        let Some(tag) = path.strip_prefix(LOCALE_DIR).and_then(|name| name.strip_suffix(".json")) else {
+        let Some(tag) = catalog_locale(path) else {
             continue;
         };
         let mut parts = tag.split('-');
@@ -75,7 +83,7 @@ pub(super) fn development_catalogs(root: &Path) -> Result<PluginCatalogs, Packag
     let mut files = Vec::new();
     let mut size = 0;
     for (name, path) in paths {
-        if !name.ends_with(".json") {
+        if catalog_locale(&name).is_none() {
             continue;
         }
         size += fs::metadata(&path).map_err(io_error)?.len();

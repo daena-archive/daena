@@ -664,7 +664,7 @@ machine-readable or architectural contract it summarizes:
 
 ### Localizing a plugin
 
-Ship a UTF-8 file at `locales/daena/<language>.json` in the package root for each display language you support. No manifest change or capability grant is required. The host reads these files from the installed package version selected for the project. Each file is a flat JSON object mapping source strings to translations. For example, `locales/daena/ja.json` for Date Lens contains:
+Ship a UTF-8 file at `locales/<language>.json` in the package root for each display language you support. No manifest change or capability grant is required. The host reads these files from the installed package version selected for the project. Each file is a flat JSON object mapping source strings to translations. For example, `locales/ja.json` for Date Lens contains:
 
 ```json
 {

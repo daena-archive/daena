@@ -95,14 +95,15 @@ export function pointDistance(a: readonly number[], b: readonly number[], space:
     : planarDistance(a[0], a[1], b[0], b[1]);
 }
 
-export function measurementSummary(space: MapCoordinateSpace): string {
+export function measurementSummary(space: MapCoordinateSpace, translate = localizeUi): string {
   const units = unitsForCoordinateSpace(space);
-  if (space.kind === "image") return localizeUi("Units: {0}", units.label);
+  if (space.kind === "image") return translate("Units: {0}", translate("pixels"));
   if (space.kind === "world") {
-    if (units.metresPerUnit == null) return localizeUi("Units: {0} (uncalibrated)", units.label);
-    return localizeUi("Units: {0} ({1} m / unit)", units.label, units.metresPerUnit);
+    const label = units.id === "world-unit" && units.label === "World units" ? translate("World units") : units.label;
+    if (units.metresPerUnit == null) return translate("Units: {0} (uncalibrated)", label);
+    return translate("Units: {0} ({1} m / unit)", label, units.metresPerUnit);
   }
-  return localizeUi("Units: geodesic metres");
+  return translate("Units: geodesic metres");
 }
 
 export function extentSize(space: MapCoordinateSpace): { width: number; height: number } {

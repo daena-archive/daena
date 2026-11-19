@@ -32,8 +32,8 @@ let {
           disabled={locked}
           onchange={() => onselect(option.value)} />
         <strong>{$pluginText(option.label)}</strong>
-        {#if option.expansion}<span>{option.expansion}</span>{/if}
-        {#if option.example}<em>{option.example}</em>{/if}
+        {#if option.expansion}<span>{$pluginText(option.expansion)}</span>{/if}
+        {#if option.example}<em>{$pluginText(option.example)}</em>{/if}
       </label>
     {/each}
   </div>

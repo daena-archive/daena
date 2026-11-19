@@ -7,7 +7,7 @@ import { parse } from "svelte/compiler";
 const root = fileURLToPath(new URL("../", import.meta.url));
 const copy = JSON.parse(readFileSync(join(root, "src/lib/i18n/ui-ja.json"), "utf8"));
 const messages = [];
-const attrs = /^(?:title|placeholder|alt|aria-label|aria-description|description|subtitle|hint|label|[\w]+(?:Label|Placeholder|Message|Description|Hint))$/;
+const attrs = /^(?:title|placeholder|alt|aria-label|aria-description|description|subtitle|hint|label|message|caption|tooltip|heading|[\w]+(?:Label|Placeholder|Message|Description|Hint))$/;
 const hasWords = (value) => /[a-zA-Z]{2}/.test(value);
 
 function checkMarkup(node, file) {

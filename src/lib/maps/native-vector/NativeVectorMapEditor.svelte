@@ -405,7 +405,7 @@ const overlayAuthoring = $derived.by((): AtlasOverlayAuthoring | null => {
 const listedRasters = $derived(
   commandStack ? listedBackgrounds(commandStack.document) : backgroundsFromDescriptor(mapField?.value),
 );
-const unitsLabel = $derived(measurementSummary(coordinateSpace));
+const unitsLabel = $derived(measurementSummary(coordinateSpace, $ui));
 const snapEnabled = $derived(commandStack ? snapEnabledFromDescriptor(commandStack.document.descriptor) : true);
 const selectedOpFeatures = $derived(
   selectedFeatureIds
@@ -2133,7 +2133,7 @@ function deleteOverlayFeatures(ids: string[]) {
 
 function addLayer() {
   if (!commandStack || layers.filter(isVectorLayer).length >= VECTOR_MAX_LAYERS) return;
-  const built = buildCreateLayer(commandStack.document, `Layer ${layers.filter(isVectorLayer).length + 1}`);
+  const built = buildCreateLayer(commandStack.document, $ui("Layer {0}", layers.filter(isVectorLayer).length + 1));
   dispatchCommand(built.command);
   switchLayer(built.layer.id);
   setTool("select");
@@ -2819,7 +2819,7 @@ onMount(() => {
               <span class="panel-kicker">{$ui("Map layers")}</span>
               <strong>{$ui("{0} layers · {1} features", listedLayers.length, uiFeatureCollection().features.length)}</strong>
               <small class="map-panel-subtitle"
-                >{unitsLabel}{listedRasters.length ? ` · ${listedRasters.length} ${listedRasters.length === 1 ? "raster" : "rasters"}` : ""}</small>
+                >{unitsLabel}{listedRasters.length ? $ui(listedRasters.length === 1 ? " · {0} raster" : " · {0} rasters", listedRasters.length) : ""}</small>
             </div>
             <button
               type="button"
@@ -2974,7 +2974,7 @@ onMount(() => {
                           <span class="layer-meta"
                             >{layer.kind === "vector" && layer.overlayFamily
                               ? overlayFamilyLabel(layer.overlayFamily)
-                              : layer.kind} · {isRasterLayer(layer)
+                              : $ui(layer.kind)} · {isRasterLayer(layer)
                               ? $ui("raster")
                               : $ui("{0} feats", featureCountForLayer(draft, layer.id))}{layer.locked
                               ? $ui(" · locked")
@@ -3342,16 +3342,17 @@ onMount(() => {
                   {/if}
                   <div class="raster-list" role="list">
                     {#each listedRasters as raster (raster.id)}
+                      {@const rasterLabel = raster.name === "Base image" && raster.assetId === commandStack?.document.descriptor.previewAssetId ? $ui("Base image") : raster.name}
                       <div class="raster-card" role="listitem">
                         <div class="raster-card-main">
                           <span class="raster-icon"><ImageIcon size={13} strokeWidth={1.8} aria-hidden="true" /></span>
-                          <span class="raster-name">{raster.name}</span>
+                          <span class="raster-name">{rasterLabel}</span>
                           <div class="raster-actions">
                             <button
                               type="button"
                               class="mini-icon"
                               aria-pressed={raster.visible}
-                              aria-label={raster.visible ? $ui("Hide {0}", raster.name) : $ui("Show {0}", raster.name)}
+                              aria-label={raster.visible ? $ui("Hide {0}", rasterLabel) : $ui("Show {0}", rasterLabel)}
                               onclick={() =>
                                 dispatchCommand(
                                   setBackgroundVisibilityCommand(raster.id, !raster.visible, raster.visible),
@@ -3362,13 +3363,13 @@ onMount(() => {
                             <button
                               type="button"
                               class="mini-icon"
-                              aria-label={$ui("Replace {0}", raster.name)}
+                              aria-label={$ui("Replace {0}", rasterLabel)}
                               onclick={() => void replaceRaster(raster)}
                               ><ImageIcon size={14} strokeWidth={1.8} /></button>
                             <button
                               type="button"
                               class="mini-icon danger"
-                              aria-label={$ui("Remove {0}", raster.name)}
+                              aria-label={$ui("Remove {0}", rasterLabel)}
                               onclick={() => removeRaster(raster)}><Trash2 size={14} strokeWidth={1.8} /></button>
                             <button
                               type="button"
@@ -3385,7 +3386,7 @@ onMount(() => {
                           </div>
                         </div>
                         {#if openRasterMenuId === raster.id}
-                          <div class="layer-menu" role="menu" tabindex="-1" aria-label={$ui("Actions for {0}", raster.name)}>
+                          <div class="layer-menu" role="menu" tabindex="-1" aria-label={$ui("Actions for {0}", rasterLabel)}>
                             <button
                               type="button"
                               role="menuitem"
@@ -3415,7 +3416,7 @@ onMount(() => {
                             max="1"
                             step="0.05"
                             value={raster.opacity}
-                            aria-label={$ui("{0} opacity", raster.name)}
+                            aria-label={$ui("{0} opacity", rasterLabel)}
                             oninput={(event) =>
                               dispatchCommand(
                                 setBackgroundOpacityCommand(
@@ -3558,7 +3559,7 @@ onMount(() => {
                       >{selectedFeatures.length === 1
                         ? (featureName(primary) ?? $ui("Untitled feature"))
                         : $ui("{0} features selected", selectedFeatures.length)}</strong>
-                    <p class="section-note"> {$ui("{0} · {1} vertices", primary.geometry.type, selectedFeatures.reduce((sum, f) => sum + featureVertexCount(f), 0))}{#if selectedFeatures.length === 1}
+                    <p class="section-note"> {$ui("{0} · {1} vertices", $ui(primary.geometry.type), selectedFeatures.reduce((sum, f) => sum + featureVertexCount(f), 0))}{#if selectedFeatures.length === 1}
                         · {featureSemanticType(primary)}{/if}
                     </p>
                   </div>

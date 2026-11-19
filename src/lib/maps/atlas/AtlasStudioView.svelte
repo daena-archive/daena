@@ -475,7 +475,12 @@ function namedPlaceLabel(hit: AtlasStudioInspectHit) {
 }
 
 function styleLabel(id: string) {
-  return atlasStyleLabel(id);
+  return $ui(atlasStyleLabel(id));
+}
+
+function physicalLayerLabel(layer: { id: string; name: string }) {
+  const customName = viewerLayerName(layer.id);
+  return customName && customName !== layer.name ? customName : $ui(layer.name);
 }
 
 const studioLayerBook = $derived([
@@ -487,7 +492,7 @@ const studioLayerBook = $derived([
         id: layer.id,
         name: layer.name,
         enabled: layer.defaultVisible,
-        meta: overlayFamilyLabel(overlayLayerFamily(layer)),
+        meta: $ui(overlayFamilyLabel(overlayLayerFamily(layer))),
         overlay: true,
       })) ?? [],
   },
@@ -496,7 +501,7 @@ const studioLayerBook = $derived([
     label: $ui("Physical"),
     layers: layers.map((layer) => ({
       id: layer.id,
-      name: layer.name,
+      name: physicalLayerLabel(layer),
       enabled: layer.enabled,
     })),
   },
@@ -548,7 +553,7 @@ async function loadCapabilities() {
     .filter((layer) => layer.id !== "frame" && layer.role !== "vector")
     .map((layer) => ({
       id: layer.id,
-      name: viewerLayerName(layer.id) ?? layer.name,
+      name: layer.name,
       enabled: viewerLayerEnabled(layer.id) ?? (layer.defaultVisible || isAtlasLayerEnabledByDefault(layer.id)),
     }));
 }
@@ -909,7 +914,7 @@ function resetView() {
 }
 
 function titleCase(value: string) {
-  return value ? `${value[0].toUpperCase()}${value.slice(1)}` : value;
+  return value ? $ui(`${value[0].toUpperCase()}${value.slice(1)}`) : value;
 }
 
 function formatMetres(mm: number) {
@@ -2124,7 +2129,7 @@ async function applyPreset(id: string) {
 onMount(() => {
   void listen<AtlasStudioProgress>(ATLAS_STUDIO_PROGRESS_EVENT, (event) => {
     if (event.payload.mapEntityId !== mapId) return;
-    stage = `${event.payload.stage} · ${event.payload.completed}/${event.payload.total}`;
+    stage = `${$ui(event.payload.stage)} · ${event.payload.completed}/${event.payload.total}`;
   }).then((fn) => {
     unlisten = fn;
   });

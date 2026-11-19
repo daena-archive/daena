@@ -71,7 +71,7 @@ function tectonicStyleHint(style: "any" | "mega" | "giant-scraps" | "dual" | "sc
   }
 }
 
-let name = $state("Physical World");
+let name = $state("");
 let seed = $state(nextPhysicalSeed());
 let evolutionPreset = $state<"young" | "mature" | "old">("mature");
 let tectonicStyle = $state<"any" | "mega" | "giant-scraps" | "dual" | "scattered">("any");
@@ -251,7 +251,7 @@ function climateSummary() {
   const itcz = `${(metrics.itczLatitudeMilliDeg / 1000).toFixed(1)}°`;
   const easterlies = Math.round(metrics.easterlyCellPpm / 10_000);
   const strength =
-    metrics.meanWindSpeedMilli < 400 ? "light" : metrics.meanWindSpeedMilli < 1_200 ? "moderate" : "strong";
+    metrics.meanWindSpeedMilli < 400 ? $ui("light") : metrics.meanWindSpeedMilli < 1_200 ? $ui("moderate") : $ui("strong");
   const rain = $ui("{0} mm/year typical rainfall", metrics.meanPrecipitationMmPerYear.toLocaleString($displayLanguage));
   const humidity = $ui("{0}% of saturation", Math.round(metrics.meanHumidityPpm / 10_000));
   const dryness =
@@ -264,9 +264,9 @@ function climateSummary() {
           : $ui("arid land");
   const seasonRain =
     metrics.meanSeasonalPrecipitationRangeMm > 0
-      ? ` Solstice rainfall typically differs by ${metrics.meanSeasonalPrecipitationRangeMm.toLocaleString($displayLanguage)} mm.`
+      ? $ui(" Solstice rainfall typically differs by {0} mm.", metrics.meanSeasonalPrecipitationRangeMm.toLocaleString($displayLanguage))
       : "";
-  const biome = biomeLegendEntry(metrics.dominantLandBiome).name;
+  const biome = $ui(biomeLegendEntry(metrics.dominantLandBiome).name);
   const stormsPerYear = (metrics.expectedStormsPerYearMilli ?? 0) / 1_000;
   const storms =
     metrics.stormProneOceanPpm > 50_000
@@ -276,35 +276,35 @@ function climateSummary() {
 }
 
 function formatAridityLabel(ppm: number) {
-  if (ppm < 200_000) return "humid";
-  if (ppm < 500_000) return "sub-humid";
-  if (ppm < 800_000) return "semi-arid";
-  return "arid";
+  if (ppm < 200_000) return $ui("humid");
+  if (ppm < 500_000) return $ui("sub-humid");
+  if (ppm < 800_000) return $ui("semi-arid");
+  return $ui("arid");
 }
 
 function climateStats(): Array<{ label: string; value: string }> {
   if (!climate) return [];
   const metrics = climate.metrics;
   const strength =
-    metrics.meanWindSpeedMilli < 400 ? "light" : metrics.meanWindSpeedMilli < 1_200 ? "moderate" : "strong";
+    metrics.meanWindSpeedMilli < 400 ? $ui("light") : metrics.meanWindSpeedMilli < 1_200 ? $ui("moderate") : $ui("strong");
   const stormsPerYear = (metrics.expectedStormsPerYearMilli ?? 0) / 1_000;
   return [
     { label: $ui("Warmest"), value: formatCentiC(metrics.maximumSeasonalTemperatureCentiC) },
     { label: $ui("Coldest"), value: formatCentiC(metrics.minimumSeasonalTemperatureCentiC) },
     { label: $ui("Range"), value: formatCentiC(metrics.meanSeasonalRangeCentiC) },
-    { label: $ui("Rainfall"), value: `${metrics.meanPrecipitationMmPerYear.toLocaleString($displayLanguage)} mm/yr` },
-    { label: $ui("Humidity"), value: `${Math.round(metrics.meanHumidityPpm / 10_000)}% saturation` },
+    { label: $ui("Rainfall"), value: $ui("{0} mm/yr", metrics.meanPrecipitationMmPerYear.toLocaleString($displayLanguage)) },
+    { label: $ui("Humidity"), value: $ui("{0}% saturation", Math.round(metrics.meanHumidityPpm / 10_000)) },
     { label: $ui("Land"), value: formatAridityLabel(metrics.meanLandAridityPpm) },
     { label: $ui("Winds"), value: strength },
-    { label: $ui("Biome"), value: biomeLegendEntry(metrics.dominantLandBiome).name },
-    { label: $ui("Storms"), value: `${stormsPerYear.toFixed(1)}/yr` },
+    { label: $ui("Biome"), value: $ui(biomeLegendEntry(metrics.dominantLandBiome).name) },
+    { label: $ui("Storms"), value: $ui("{0}/yr", stormsPerYear.toFixed(1)) },
     {
       label: $ui("Growing"),
-      value: `${(((metrics.meanLandGrowingSeasonPpm ?? 0) / 1_000_000) * 12).toFixed(1)} mo`,
+      value: $ui("{0} mo", (((metrics.meanLandGrowingSeasonPpm ?? 0) / 1_000_000) * 12).toFixed(1)),
     },
     {
       label: $ui("Dry / wet"),
-      value: `${(((metrics.meanLandDrySeasonPpm ?? 0) / 1_000_000) * 12).toFixed(1)} / ${(((metrics.meanLandWetSeasonPpm ?? 0) / 1_000_000) * 12).toFixed(1)} mo`,
+      value: $ui("{0} / {1} mo", (((metrics.meanLandDrySeasonPpm ?? 0) / 1_000_000) * 12).toFixed(1), (((metrics.meanLandWetSeasonPpm ?? 0) / 1_000_000) * 12).toFixed(1)),
     },
   ];
 }
@@ -402,7 +402,7 @@ function inspectClimate(anchor: MapAnchor) {
   const storm = Math.round((climate.stormSuitabilityPpm[index] ?? 0) / 10_000);
   const track = Math.round((climate.stormTrackPpm[index] ?? 0) / 10_000);
   const intensity = Math.round((climate.stormIntensityPpm[index] ?? 0) / 10_000);
-  climateSample = `${entry.name} because ${entry.reason}. Warmer solstice ${formatCentiC(Math.max(summerT, winterT))}, colder ${formatCentiC(Math.min(summerT, winterT))}, ${heightM} m above sea, ${rain.toLocaleString($displayLanguage)} mm/year, humidity ${humidity}% of saturation, ${aridity}. Storm genesis ${storm}%, track ${track}%, intensity ${intensity}%.${iceNote}`;
+  climateSample = $ui("{0} because {1}. Warmer solstice {2}, colder {3}, {4} m above sea, {5} mm/year, humidity {6}% of saturation, {7}. Storm genesis {8}%, track {9}%, intensity {10}%.{11}", $ui(entry.name), $nativeErrorText(entry.reason), formatCentiC(Math.max(summerT, winterT)), formatCentiC(Math.min(summerT, winterT)), heightM, rain.toLocaleString($displayLanguage), humidity, aridity, storm, track, intensity, iceNote);
 }
 
 function headline() {
@@ -615,7 +615,7 @@ async function accept() {
   busy = true;
   activeJobId = null;
   try {
-    const accepted = await project.acceptPhysicalMap(status.jobId, name.trim() || "Physical World");
+    const accepted = await project.acceptPhysicalMap(status.jobId, name.trim() || $ui("Physical World"));
     oncreated?.(accepted.entity);
   } catch (cause) {
     busy = false;
@@ -758,7 +758,7 @@ onMount(() => {
                     ><span
                       class="physical-biome-swatch"
                       style={`background: rgb(${entry.fill[0]}, ${entry.fill[1]}, ${entry.fill[2]})`}></span
-                    >{entry.name}</span>
+                    >{$ui(entry.name)}</span>
                 {/each}
               </p>
             {/if}
@@ -928,7 +928,7 @@ onMount(() => {
         <div class="physical-statusbar" role="status">
           {#if busy}
             <span class="physical-status-progress"
-              >{status?.stage ?? $ui("Starting")}…{#if status && status.total > 0}
+              >{$ui(status?.stage ?? "Starting")}…{#if status && status.total > 0}
                 {status.completed} / {status.total}{/if}</span>
           {:else if status?.state === "completed"}
             <span class="physical-status-progress"
@@ -980,13 +980,13 @@ onMount(() => {
             onMapPick={inspectClimate} />
           {#if busy}
             <div class="physical-map-stage" role="status">
-              <strong>{status?.stage ?? $ui("Starting")}…</strong>
+              <strong>{$ui(status?.stage ?? "Starting")}…</strong>
               {#if status && status.total > 0}<span>{status.completed} / {status.total}</span>{/if}
               <span class="physical-stage-hint">{$ui("You can cancel; nothing is saved until you accept.")}</span>
             </div>
           {:else if preview.features.length === 0 && !raster}
             <div class="physical-map-empty-hint">
-              <p> {$ui("No preview yet. Set the seed and planet on the left, then click")} <strong>{$ui("Generate world")}</strong> {$ui("below.")} </p>
+              <p> {$ui("No preview yet. Choose a seed and planet, then generate the world.")} </p>
             </div>
           {/if}
         </div>

@@ -4,6 +4,7 @@ import { Bot, Cloud, Cpu, KeyRound, Plus, Server, Sparkles, Trash2 } from "@luci
 import ImageProviderSettingsCard from "$lib/ai/ImageProviderSettingsCard.svelte";
 import {
   mergePromptTemplates,
+  promptTemplateCopy,
   overlayFromTemplates,
   type PromptKind,
   type PromptTemplate,
@@ -405,7 +406,7 @@ function statusCopy() {
               type="button"
               class:active={template.id === selectedTemplateId}
               onclick={() => (selectedTemplateId = template.id)}>
-              <span>{template.label}</span>
+              <span>{promptTemplateCopy($ui, template, "label")}</span>
               {#if template.enabled === false}<small>{$ui("off")}</small>{/if}
             </button>
           {/each}
@@ -415,13 +416,13 @@ function statusCopy() {
         <div class="template-editor">
           <label class="field"
             >{$ui("Name")} <input
-              value={selectedTemplate.label}
+              value={promptTemplateCopy($ui, selectedTemplate, "label")}
               oninput={(event) => updateSelected({ label: event.currentTarget.value })} />
           </label>
           <label class="field"
             >{$ui("Instruction")} <textarea
               rows="7"
-              value={selectedTemplate.instruction}
+              value={promptTemplateCopy($ui, selectedTemplate, "instruction")}
               oninput={(event) => updateSelected({ instruction: event.currentTarget.value })}></textarea>
           </label>
           <div class="capability-row">

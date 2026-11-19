@@ -1,4 +1,7 @@
 import { translatePluginText as t } from "../../plugin-i18n.ts";
+import { get } from "svelte/store";
+import { messages } from "../../../../src/lib/i18n/index.ts";
+import { loreTypeLabel } from "../../../../src/lib/i18n/lore-labels.ts";
 import type { Core, ElementDefinition, NodeSingular } from "cytoscape";
 import { defaultHiddenGraphRelations, relationTypeLabel } from "./graphFilters.ts";
 import type { LoreEntityRef, LoreGraphSource, LoreRelationshipRef } from "./projection-source.ts";
@@ -200,6 +203,7 @@ function renderSelection(
   relationships: LoreRelationshipRef[],
   source: LoreGraphSource,
   hiddenRelationTypes: Set<string>,
+  typeNames: Map<string, string>,
 ) {
   const entity = isGraphNode(nodeOrEntity) ? entities.get(nodeOrEntity.id()) : nodeOrEntity;
   if (!entity) return;
@@ -219,7 +223,7 @@ function renderSelection(
   const name = document.createElement("strong");
   name.textContent = entity.name;
   const type = document.createElement("small");
-  type.textContent = t(connected.length === 1 ? "{type} · {count} connection" : "{type} · {count} connections", { type: displayType(entity.type), count: connected.length });
+  type.textContent = t(connected.length === 1 ? "{type} · {count} connection" : "{type} · {count} connections", { type: typeNames.get(displayType(entity.type)) ?? displayType(entity.type), count: connected.length });
   const actionRow = document.createElement("div");
   actionRow.className = "lore-graph-toolbar-actions";
   if (source.mapsNavigationEnabled()) {
@@ -305,7 +309,7 @@ export function mountLoreGraph(element: HTMLElement, source: LoreGraphSource) {
     );
     const typeNameMap = new Map(
       source.module.schemas.flatMap((schema) =>
-        schema.entityTypes.map((entityType) => [entityType.id, entityType.name]),
+        schema.entityTypes.map((entityType) => [entityType.id, source.module.id === "daena.lore" ? loreTypeLabel(get(messages).loreTypes, entityType.id, entityType.name) : entityType.name]),
       ),
     );
     const entities = await source.listEntities(entityTypes);
@@ -357,7 +361,7 @@ export function mountLoreGraph(element: HTMLElement, source: LoreGraphSource) {
       legendItem.type = "button";
       legendItem.className = "lore-graph-legend-item";
       legendItem.setAttribute("aria-pressed", "true");
-      legendItem.title = type;
+      legendItem.title = typeNameMap.get(type) ?? type;
       const swatch = document.createElement("span");
       swatch.className = "lore-graph-legend-swatch";
       const colors = colorsByType.get(type)!;
@@ -552,7 +556,7 @@ export function mountLoreGraph(element: HTMLElement, source: LoreGraphSource) {
         details.replaceChildren(hint);
       } else {
         applyNeighborhoodHighlight(graph, selected[0]);
-        renderSelection(details, selected[0], entityMap, relationships, source, hiddenRelationTypes);
+        renderSelection(details, selected[0], entityMap, relationships, source, hiddenRelationTypes, typeNameMap);
       }
       if (relayout) arrangeGraph();
     };
@@ -592,12 +596,12 @@ export function mountLoreGraph(element: HTMLElement, source: LoreGraphSource) {
           hiddenTypes.delete(type);
           legendItem.classList.remove("is-hidden");
           legendItem.setAttribute("aria-pressed", "true");
-          legendItem.title = type;
+          legendItem.title = typeNameMap.get(type) ?? type;
         } else {
           hiddenTypes.add(type);
           legendItem.classList.add("is-hidden");
           legendItem.setAttribute("aria-pressed", "false");
-          legendItem.title = type;
+          legendItem.title = typeNameMap.get(type) ?? type;
         }
         syncGraphVisibility();
       };
@@ -647,7 +651,7 @@ export function mountLoreGraph(element: HTMLElement, source: LoreGraphSource) {
       graph!.elements().removeClass("selected");
       node.addClass("selected");
       node.connectedEdges().not(".type-hidden").addClass("selected");
-      renderSelection(details, node, entityMap, relationships, source, hiddenRelationTypes);
+      renderSelection(details, node, entityMap, relationships, source, hiddenRelationTypes, typeNameMap);
       applyNeighborhoodHighlight(graph!, node);
     });
     graph.on("tap", (event) => {

@@ -196,20 +196,20 @@ const memberHouseIds = $derived.by(() => {
 });
 const houseFilterId = $derived(houseId && houseScope === TREE_SCOPES.membersPlusImmediateFamily.id ? houseId : null);
 const subtitle = $derived.by(() => {
-  if (!rootId) return "Choose a person or house to explore a family neighborhood.";
+  if (!rootId) return $ui("Choose a person or house to explore a family neighborhood.");
   if (houseId) {
     const memberCount = houseMemberIds.length || houseMembers.length;
     const outsiderCount = Math.max(0, people.size - memberCount);
-    const parts = [houseName || "House", `${memberCount} ${memberCount === 1 ? "member" : "members"}`];
-    if (outsiderCount > 0) parts.push(`${outsiderCount} outside`);
-    if (scopeTruncated) parts.push("cap reached");
+    const parts = [houseName || $ui("House"), $ui(memberCount === 1 ? "{0} member" : "{0} members", memberCount)];
+    if (outsiderCount > 0) parts.push($ui("{0} outside", outsiderCount));
+    if (scopeTruncated) parts.push($ui("cap reached"));
     if (familyGroupCount > 1) parts.push(TREE_LEGEND.disconnectedGroups(familyGroupCount));
     return parts.join(" · ");
   }
-  const parts: string[] = [`${people.size} in view`];
-  if (truncated) parts.push(`truncated ${truncationLowerBound ? `(${truncationLowerBound}+)` : ""}`.trim());
-  if (warnings.length) parts.push(`${warnings.length} warning${warnings.length === 1 ? "" : "s"}`);
-  if (treeLimitsOverBudget(limits)) parts.push("over budget");
+  const parts: string[] = [$ui("{0} in view", people.size)];
+  if (truncated) parts.push(truncationLowerBound ? $ui("truncated ({0}+)", truncationLowerBound) : $ui("truncated"));
+  if (warnings.length) parts.push($ui(warnings.length === 1 ? "{0} warning" : "{0} warnings", warnings.length));
+  if (treeLimitsOverBudget(limits)) parts.push($ui("over budget"));
   return parts.join(" · ");
 });
 const personConnections = $derived.by(() => {
@@ -1292,7 +1292,7 @@ function applyRelationshipDelete(id: string) {
       <WorkbenchState
         kind="loading"
         title={$ui("Loading family neighborhood")}
-        message="Fetching people, relationships, and houses…" />
+        message={$ui("Fetching people, relationships, and houses…")} />
     {:else if error && !positioned}
       <WorkbenchState kind="error" title={$ui("Could not load family")} message={error}>
         {#snippet actions()}
@@ -1307,7 +1307,7 @@ function applyRelationshipDelete(id: string) {
         <WorkbenchState
           kind="empty"
           title={$ui("This house has no members")}
-          message="Add an existing person or create one here. Membership stays in Lore; removing a member does not archive or delete them.">
+          message={$ui("Add an existing person or create one here. Membership stays in Lore; removing a member does not archive or delete them.")}>
           {#snippet actions()}
             <button type="button" class="quiet-button" onclick={() => (addHouseMemberOpen = "link")}
               >{$ui("Add existing")}</button>

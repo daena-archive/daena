@@ -15,7 +15,7 @@ const DEFAULT_CUSTOM_DARK = "#8eb0c4";
 
 let {
   value = DEFAULT_TYPE_COLOR,
-  label = "Color",
+  label,
   onChange,
 }: {
   value?: EntityTypeColor;
@@ -32,9 +32,9 @@ let popover = $state<HTMLDivElement>();
 let pickerRoot = $state<HTMLDivElement>();
 let popoverStyle = $state("");
 
-const selectedLabel = $derived(value.kind === "preset" ? (TYPE_COLOR_PRESETS[value.id]?.label ?? value.id) : $ui("Custom"));
+const selectedLabel = $derived(value.kind === "preset" ? $ui(TYPE_COLOR_PRESETS[value.id]?.label ?? value.id) : $ui("Custom"));
 
-const draftLabel = $derived(draft.kind === "preset" ? (TYPE_COLOR_PRESETS[draft.id]?.label ?? draft.id) : $ui("Custom"));
+const draftLabel = $derived(draft.kind === "preset" ? $ui(TYPE_COLOR_PRESETS[draft.id]?.label ?? draft.id) : $ui("Custom"));
 
 const triggerStyle = $derived.by(() => {
   if (value.kind === "preset") {
@@ -155,7 +155,7 @@ $effect(() => {
 </script>
 
 <div class="color-picker" bind:this={pickerRoot}>
-  <span class="picker-label">{label}</span>
+  <span class="picker-label">{label ?? $ui("Color")}</span>
   <button
     type="button"
     bind:this={trigger}
@@ -179,8 +179,8 @@ $effect(() => {
             type="button"
             class="preset-dot"
             class:selected={draft.kind === "preset" && draft.id === preset.id}
-            title={preset.label}
-            aria-label={preset.label}
+            title={$ui(preset.label)}
+            aria-label={$ui(preset.label)}
             aria-pressed={draft.kind === "preset" && draft.id === preset.id}
             onclick={() => selectPreset(preset.id)}>
             <span class="dot" style={`--dot-fg:${preset.light.fg};--dot-bg:${preset.light.bg};`}></span>

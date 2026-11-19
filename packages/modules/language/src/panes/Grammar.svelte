@@ -199,9 +199,9 @@ async function loadGrammar() {
 
 const session = $derived(grammarUi.editing);
 const section = $derived(GRAMMAR_SECTIONS.find((item) => item.id === grammarUi.section));
-const hits = $derived(searchGrammar(grammarUi.query, grammarUi.index));
+const hits = $derived(searchGrammar(grammarUi.query, grammarUi.index, $pluginText));
 const starterRemaining = $derived(remainingStarterSystems(grammarUi.index));
-const glanceRows = $derived(grammarGlance(grammarUi.index));
+const glanceRows = $derived(grammarGlance(grammarUi.index, $pluginText));
 const agreementRecords = $derived(
   grammarUi.index.agreements.flatMap((item): AgreementRecord[] =>
     item.value.recordKind === "agreement" ? [{ ...item, value: item.value }] : [],
@@ -259,12 +259,12 @@ const ctx: GrammarPaneContext = $derived({
 
 const editorTitle = $derived.by(() => {
   const current = session;
-  if (!current) return "Grammar";
+  if (!current) return $pluginText("Grammar");
   const value = current.draft;
-  if (value.recordKind === "system") return grammarSystemDescriptor(value.systemId)?.label ?? "System";
-  if (value.recordKind === "agreement") return current.recordId ? value.title || "Agreement" : "New agreement system";
-  if (value.recordKind === "custom-rule") return current.recordId ? "Custom rule" : "New custom rule";
-  return "Agreement";
+  if (value.recordKind === "system") return $pluginText(grammarSystemDescriptor(value.systemId)?.label ?? "System");
+  if (value.recordKind === "agreement") return current.recordId ? value.title || $pluginText("Agreement") : $pluginText("New agreement system");
+  if (value.recordKind === "custom-rule") return current.recordId ? $pluginText("Custom rule") : $pluginText("New custom rule");
+  return $pluginText("Agreement");
 });
 
 $effect(() => {
@@ -273,7 +273,7 @@ $effect(() => {
   if (session) {
     if (section) {
       crumbs.push({
-        label: section.label,
+        label: $pluginText(section.label),
         onclick: async () => {
           if (!(await tryLeaveGrammar(grammarUi, windowConfirm))) return;
           grammarUi.editing = null;
@@ -283,7 +283,7 @@ $effect(() => {
     }
     crumbs.push({ label: editorTitle });
   } else if (section) {
-    crumbs.push({ label: section.label });
+    crumbs.push({ label: $pluginText(section.label) });
   }
   setBreadcrumbExtra(crumbs);
   return () => setBreadcrumbExtra([]);
@@ -618,7 +618,7 @@ function removeLink(index: number) {
     <form class="language-editor" onsubmit={handleSubmit}>
       {#if session.draft.recordKind === "system"}
         {@const systemDraft = session.draft}
-        <p class="language-empty" role="status">{grammarSystemDescriptor(systemDraft.systemId)?.hint}</p>
+        <p class="language-empty" role="status">{$pluginText(grammarSystemDescriptor(systemDraft.systemId)?.hint ?? "")}</p>
         {#if systemDraft.status === "not-used"}
           <label class="language-field">
             <span>{$pluginText("Why it is not used (optional)")}</span>
@@ -655,7 +655,7 @@ function removeLink(index: number) {
         <div class="grammar-status-actions">
           <div class="grammar-status-current">
             <span>{$pluginText("Section status")}</span>
-            <strong>{grammarStatusLabel(systemDraft.status)}</strong>
+            <strong>{$pluginText(grammarStatusLabel(systemDraft.status))}</strong>
           </div>
           <div class="language-inline">
             <button
@@ -903,7 +903,7 @@ function removeLink(index: number) {
                 await goSystem(grammarUi, diagnostic.systemId!, windowConfirm);
               }}
               >{$pluginText("Open")}
-              {grammarSystemDescriptor(diagnostic.systemId)?.label ?? diagnostic.systemId}</button>
+              {$pluginText(grammarSystemDescriptor(diagnostic.systemId)?.label ?? diagnostic.systemId)}</button>
           {:else if diagnostic.recordIds[0] && grammarUi.index.agreements.some((item) => item.id === diagnostic.recordIds[0])}
             <button
               type="button"
@@ -924,10 +924,10 @@ function removeLink(index: number) {
           {/if}
           {#each hits as hit}
             <button type="button" class="grammar-system" onclick={() => handleSearchHit(hit)}>
-              <strong>{hit.label}</strong>
+              <strong>{hit.kind === "system" ? $pluginText(hit.label) : hit.label}</strong>
               <span
                 >{$pluginText(GRAMMAR_SECTIONS.find((entry) => entry.id === hit.sectionId)?.label ?? "")} ·
-                {hit.status ? grammarStatusLabel(hit.status) : hit.summary}</span>
+                {hit.status ? $pluginText(grammarStatusLabel(hit.status)) : hit.summary}</span>
             </button>
           {/each}
         </div>
@@ -943,7 +943,7 @@ function removeLink(index: number) {
             </p>
             <ol class="grammar-starter-list">
               {#each starterRemaining as systemId (systemId)}
-                <li>{starterStepLabel(systemId)}</li>
+                <li>{$pluginText(starterStepLabel(systemId))}</li>
               {/each}
             </ol>
             <div class="language-inline">
@@ -956,8 +956,8 @@ function removeLink(index: number) {
         {/if}
         <div class="grammar-cards">
           {#each GRAMMAR_SECTIONS as entry (entry.id)}
-            {@const summary = sectionCardSummary(grammarUi.index, entry.id)}
-            {@const notUsed = summary.notUsed ? ` · ${summary.notUsed} not used` : ""}
+            {@const summary = sectionCardSummary(grammarUi.index, entry.id, $pluginText)}
+            {@const notUsed = summary.notUsed && summary.configured ? ` · ${$pluginText("{count} not used", { count: summary.notUsed })}` : ""}
             {@const progress = summary.total > 0 ? Math.round((summary.configured / summary.total) * 100) : 0}
             <button
               type="button"
@@ -984,7 +984,7 @@ function removeLink(index: number) {
         </div>
         <dl class="grammar-glance" aria-label={$pluginText("At a glance")}>
           {#each glanceRows as row}
-            <dt>{row.label}</dt>
+            <dt>{$pluginText(row.label)}</dt>
             <dd>{row.value}</dd>
           {/each}
         </dl>
@@ -1083,10 +1083,10 @@ function removeLink(index: number) {
               {@const record = grammarUi.index.systems.get(system.id)?.value}
               {@const duplicate = grammarUi.index.duplicates.has(system.id)}
               {@const summary = duplicate
-                ? "Duplicate records — edits disabled"
+                ? $pluginText("Duplicate records — edits disabled")
                 : record?.recordKind === "system"
-                  ? summarizeSystem(system.id, record)
-                  : grammarStatusLabel("unconfigured")}
+                  ? summarizeSystem(system.id, record, $pluginText)
+                  : $pluginText(grammarStatusLabel("unconfigured"))}
               <button
                 type="button"
                 class="grammar-system"

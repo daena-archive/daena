@@ -192,6 +192,7 @@ import {
   aiActionRequest,
   emptyAiProvider,
   instructionFor,
+  promptTemplateCopy,
   mergePromptTemplates,
   overlayFromTemplates,
   type PromptOverlay,
@@ -1053,12 +1054,21 @@ function manifestForWorkspaceSection(target: WorkspaceSection): ModuleManifest |
 function sectionEntityTypeDefs(target: WorkspaceSection) {
   return (
     manifestForWorkspaceSection(target)?.schemas.flatMap((schema) =>
-      schema.entityTypes.map((entityType) => ({ id: entityType.id, name: entityType.name })),
+      schema.entityTypes.map((entityType) => ({ id: entityType.id, name: manifestCopy($ui, workspaceModuleId(target), "type", entityType.id, entityType.name) })),
     ) ?? []
   );
 }
+function builtinCollectionLabel(id: string, label: string) {
+  if (id === "events") return $ui("Events");
+  if (id === "calendars") return $ui("Calendars");
+  if (id === "manuscripts") return $ui("Manuscripts");
+  if (id === "reference") return $ui("Reference");
+  return label;
+}
 function collectionTabsFor(target: WorkspaceSection) {
-  return workspaceCollectionTabs(target, sectionEntityTypeDefs(target));
+  return workspaceCollectionTabs(target, sectionEntityTypeDefs(target)).map((tab) => ({
+    ...tab, label: builtinCollectionLabel(tab.id, tab.label),
+  }));
 }
 function activeCollectionTab(target: WorkspaceSection = section) {
   const tabs = collectionTabsFor(target);
@@ -1085,7 +1095,7 @@ function workspaceViewNavItems() {
       label: view.id === "tree" ? $messages.workspace.tree : $messages.sections.houses,
     }));
   }
-  return views;
+  return views.map((view) => ({ ...view, label: view.id === "timeline" ? $ui("Timeline") : builtinCollectionLabel(view.id, view.label) }));
 }
 function enabledWorkspaceSections() {
   return workspaceSectionOrder.filter((target) =>
@@ -3516,18 +3526,19 @@ function dismissTransientMenus(): boolean {
   return dismissed;
 }
 
+function projectSectionLabel(destination: ProjectSection) {
+  if (destination === "data") return $ui("Project · Data & recovery");
+  if (destination === "extensions") return $ui("Project · Extensions");
+  if (destination === "fields") return $ui("Project · Fields & Types");
+  if (destination === "ai") return $ui("Project · AI");
+  if (destination === "snapshots") return $ui("Project · Snapshots");
+  if (destination === "archive") return $ui("Project · Archive");
+  if (destination === "advanced") return $ui("Project · Advanced");
+  return $messages.workspace.project;
+}
+
 function sectionLabel() {
-  if (showSettings) {
-    if (settingsSurface === "application") return $messages.common.settings;
-    if (projectSection === "data") return $ui("Project · Data & recovery");
-    if (projectSection === "extensions") return $ui("Project · Extensions");
-    if (projectSection === "fields") return $ui("Project · Fields & Types");
-    if (projectSection === "ai") return $ui("Project · AI");
-    if (projectSection === "snapshots") return $ui("Project · Snapshots");
-    if (projectSection === "archive") return $ui("Project · Archive");
-    if (projectSection === "advanced") return $ui("Project · Advanced");
-    return $messages.workspace.project;
-  }
+  if (showSettings) return settingsSurface === "application" ? $messages.common.settings : projectSectionLabel(projectSection);
   if (projectHomeOpen) return $messages.workspace.home;
   return workspaceSectionLabel(section, $messages.sections);
 }
@@ -3574,6 +3585,8 @@ function currentTabPresentation(): { title: string; tooltip: string; icon: TabIc
 
 function inactiveTabTitle(tab: ShellTab): string {
   if (tab.location.kind === "home") return $messages.workspace.home;
+  if (tab.location.kind === "project") return projectSectionLabel(tab.location.section);
+  if (tab.location.kind === "settings") return $messages.common.settings;
   if (tab.icon.kind !== "entity") return tab.title;
   const entityId = tab.location.kind === "workspace" || tab.location.kind === "plugin" ? tab.location.entityId : null;
   if (!entityId) return tab.title;
@@ -3614,11 +3627,11 @@ function workspaceHeadingDescription() {
 
 function collectionLabel() {
   if (section === "lore") return $messages.workspace.entries;
-  if (section === "language") return "languages";
-  if (section === "maps") return "maps";
-  if (section === "houses") return "houses";
+  if (section === "language") return $ui("languages");
+  if (section === "maps") return $ui("maps");
+  if (section === "houses") return $ui("houses");
   const tab = activeCollectionTab();
-  if (!tab) return "entries";
+  if (!tab) return $ui("entries");
   if (tab.id === "reference") return $ui("reference pages");
   return tab.label.toLowerCase();
 }
@@ -3637,14 +3650,14 @@ function collectionKicker() {
 
 function createLabel() {
   if (section === "lore") return $messages.workspace.entry.toLocaleLowerCase($displayLanguage);
-  if (section === "language") return "language";
-  if (section === "maps") return "map";
-  if (section === "houses") return "house";
+  if (section === "language") return $ui("language");
+  if (section === "maps") return $ui("map");
+  if (section === "houses") return $ui("house");
   const tab = activeCollectionTab();
-  if (!tab) return "entry";
-  if (tab.id === "events") return "event";
-  if (tab.id === "calendars") return "calendar";
-  if (tab.id === "manuscripts") return "manuscript";
+  if (!tab) return $ui("entry");
+  if (tab.id === "events") return $ui("event");
+  if (tab.id === "calendars") return $ui("calendar");
+  if (tab.id === "manuscripts") return $ui("manuscript");
   if (tab.id === "reference") return $ui("reference page");
   return tab.label.toLowerCase();
 }
@@ -6338,7 +6351,7 @@ function quickOpenItems(): QuickOpenItem[] {
       id: `create:${option.key}`,
       category: "Create",
       label: $ui("Create {0}", templateName(option)),
-      description: $ui("{0} · open focused creation", option.module.name),
+      description: $ui("{0} · open focused creation", manifestCopy($ui, option.module.id, "module", option.module.id, option.module.name)),
       keywords: [option.module.name, option.template.entityType, templateDescription(option) ?? ""],
       icon: presentation.icon,
       pluginId: presentation.pluginId,
@@ -7229,7 +7242,7 @@ async function toggleModule(id: ModuleId) {
   if (!installed.enabled) {
     askConfirm(
       $ui("Grant plugin capabilities"),
-      $ui("Choose which of {0}'s requested capabilities to grant. This dialog is owned by Daena; the plugin cannot change its wording.", installed.name),
+      $ui("Choose which of {0}'s requested capabilities to grant. This dialog is owned by Daena; the plugin cannot change its wording.", manifestCopy($ui, installed.id, "module", installed.id, installed.name)),
       $ui("Enable plugin"),
       async (granted) => {
         await project.enableModule(id, granted);
@@ -7792,7 +7805,7 @@ async function togglePluginEnabled(plugin: PluginAdminEntry) {
   if (!plugin.enabled) {
     askConfirm(
       $ui("Grant plugin capabilities"),
-      $ui("Choose which of {0}'s requested capabilities to grant. This dialog is owned by Daena; the plugin cannot change its wording.", plugin.name),
+      $ui("Choose which of {0}'s requested capabilities to grant. This dialog is owned by Daena; the plugin cannot change its wording.", manifestCopy($ui, plugin.id, "module", plugin.id, plugin.name)),
       $ui("Enable plugin"),
       async (granted) => {
         pluginActionId = plugin.id;
@@ -7831,7 +7844,7 @@ async function togglePluginEnabled(plugin: PluginAdminEntry) {
 async function reviewPluginCapabilities(plugin: PluginAdminEntry) {
   askConfirm(
     $ui("Review plugin capabilities"),
-    $ui("Choose which of {0}'s requested capabilities to grant. This dialog is owned by Daena; the plugin cannot change its wording.", plugin.name),
+    $ui("Choose which of {0}'s requested capabilities to grant. This dialog is owned by Daena; the plugin cannot change its wording.", manifestCopy($ui, plugin.id, "module", plugin.id, plugin.name)),
     $ui("Update capabilities"),
     async (granted) => {
       pluginActionId = plugin.id;
@@ -8371,7 +8384,7 @@ onMount(() => {
     tools={pluginViews().map((item) => ({
       key: item.key,
       title: pluginViewLabel(item),
-      ariaLabel: `Open ${item.plugin.name}: ${item.view.title}`,
+      ariaLabel: $ui("Open {0}", pluginViewLabel(item)),
       active: navigationActive(item),
     }))}
     homeActive={projectHomeOpen && !showSettings}
@@ -8543,7 +8556,8 @@ onMount(() => {
                       autocomplete="off" /></label
                   >{#snippet createFieldControl(item: CreateField)}
                     <SchemaFieldInput
-                      field={{ ...item.field, label: manifestCopy($ui, createOption?.module.id, "field", item.field.key, item.field.label) }}
+                      field={item.field}
+                      pluginId={createOption?.module.id}
                       required={item.required}
                       idPrefix="create"
                       class="create-input-field"
@@ -8585,11 +8599,10 @@ onMount(() => {
                       onclick={() => (createMoreDetailsOpen = !createMoreDetailsOpen)}
                       ><span
                         ><strong>{$ui("More details")}</strong><small
-                          >{$ui("{0} optional {1}{2}", optionalFields.length, optionalFields.length === 1
-                            ? $ui("field")
-                            : $ui("fields"), createOption.template.document !== undefined
-                            ? `${optionalFields.length > 0 ? " and an " : "An "}opening note`
-                            : "")}</small
+                          >{createOption.template.document !== undefined
+                            ? optionalFields.length === 0 ? $ui("Opening note") : optionalFields.length === 1
+                              ? $ui("Optional field and opening note") : $ui("{0} optional fields and an opening note", optionalFields.length)
+                            : optionalFields.length === 1 ? $ui("Optional field") : $ui("{0} optional fields", optionalFields.length)}</small
                         ></span
                       ><ChevronDown
                         size={16}
@@ -8905,7 +8918,7 @@ onMount(() => {
                 <article class="plugin-card">
                   <header class="plugin-card-head">
                     <div class="plugin-card-title">
-                      <strong>{entry.name}</strong><span class="plugin-id">{entry.id}</span>
+                      <strong>{manifestCopy($ui, entry.id, "module", entry.id, entry.name)}</strong><span class="plugin-id">{entry.id}</span>
                     </div>
                   </header>
                   <div class="plugin-card-meta">
@@ -8935,7 +8948,7 @@ onMount(() => {
                 <article class="plugin-card">
                   <header class="plugin-card-head">
                     <div class="plugin-card-title">
-                      <strong>{plugin.name}</strong><span class="plugin-id">{plugin.id}</span>
+                      <strong>{manifestCopy($ui, plugin.id, "module", plugin.id, plugin.name)}</strong><span class="plugin-id">{plugin.id}</span>
                     </div>
                     <div class="plugin-badges">
                       <span class:badge-off={!plugin.enabled} class="plugin-badge"
@@ -9747,7 +9760,7 @@ onMount(() => {
                     pluginId={rowIcon.pluginId}
                     size={16}
                     box={40} /><span class="item-copy"
-                    ><strong>{entity.name}</strong><small>{outlineRoleLabel(node, hasParent)}</small></span>
+                    ><strong>{entity.name}</strong><small>{$ui(outlineRoleLabel(node, hasParent))}</small></span>
                 </button>
                 <EntityRowActions
                   entityName={entity.name}
@@ -10122,7 +10135,7 @@ onMount(() => {
                   <WorkbenchState
                     kind="loading"
                     title={$ui("Loading entry")}
-                    message="Reading the document, details, relationships, and assets." />
+                    message={$ui("Reading the document, details, relationships, and assets.")} />
                 {:else if selectedLoadError}
                   {#snippet retrySelectedLoad()}<button
                       class="quiet-button"
@@ -10263,7 +10276,7 @@ onMount(() => {
                           !aiRewriteOpen}
                         fullscreen={editorFullscreen}
                         aiEnabled={projectInfo?.aiEnabled ?? false}
-                        aiTemplates={aiPromptTemplates.filter((template) => template.kind === "editor")}
+                        aiTemplates={aiPromptTemplates.filter((template) => template.kind === "editor").map((template) => ({ ...template, label: promptTemplateCopy($ui, template, "label") }))}
                         onChange={updateDocumentBody}
                         onSelectionChange={setAiSelection}
                         onAiRequest={openAiAction}
@@ -10471,14 +10484,14 @@ onMount(() => {
                                   : []
                                 : String(fields[definition.key] ?? "")}
                               onchange={(event) => updateField(definition, event)}
-                              >{#each definition.options ?? [] as option}<option value={option}>{option}</option
+                              >{#each definition.options ?? [] as option}<option value={option}>{manifestCopy($ui, activeManifest()?.id, "option", definition.key + "/" + option, option)}</option
                                 >{/each}</select
                             >{:else if (definition as any).type === "oneof"}<select
                               aria-label={label}
                               value={String(fields[definition.key] ?? "")}
                               onchange={(event) => updateField(definition, event)}
                               ><option value="">{$messages.inspector.chooseField(label)}</option
-                              >{#each definition.options ?? [] as option}<option value={option}>{option}</option>{/each}
+                              >{#each definition.options ?? [] as option}<option value={option}>{manifestCopy($ui, activeManifest()?.id, "option", definition.key + "/" + option, option)}</option>{/each}
                               {#each (definition as any).oneOf ?? [] as variant}
                                 {#each variant.options ?? [] as opt}<option value={opt}>{variant.label}: {opt}</option
                                   >{/each}
@@ -10588,7 +10601,7 @@ onMount(() => {
                   </section>{/snippet}
                 {#each groupedInspectorRelationships() as group (`${inspectedEntity?.id ?? ""}:${group.moduleId}`)}
                   {@const groupCount = relationshipGroupLinkCount(group.fields)}
-                  <InspectorSection title={group.moduleName} count={groupCount} open={groupCount > 0} sticky>
+                  <InspectorSection title={manifestCopy($ui, group.moduleId, "module", group.moduleId, group.moduleName)} count={groupCount} open={groupCount > 0} sticky>
                     {#each group.fields as definition (definition.key)}{@render inspectorRelationshipField(
                         definition,
                       )}{/each}

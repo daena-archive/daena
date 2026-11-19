@@ -32,8 +32,8 @@ function isSelected(id: string) {
           onchange={() => ontoggle(option.id)} />
         <span>
           <strong>{$pluginText(option.label)}</strong>
-          {#if option.meaning}<small>{option.meaning}</small>{/if}
-          {#if option.example}<em>{option.example}</em>{/if}
+          {#if option.meaning}<small>{$pluginText(option.meaning)}</small>{/if}
+          {#if option.example}<em>{$pluginText(option.example)}</em>{/if}
         </span>
       </label>
     {/each}

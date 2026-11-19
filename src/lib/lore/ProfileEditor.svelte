@@ -1,6 +1,6 @@
 <script lang="ts">
 import { nativeErrorText } from "$lib/i18n/native-errors.ts";
-import { profileComponentCopy, presetCopy } from "../i18n/profile-copy.ts";
+import { profileKindCopy, profileComponentCopy, presetCopy } from "../i18n/profile-copy.ts";
 import { ui } from "$lib/i18n/ui";
 import type { Component } from "svelte";
 import type { ModuleManifest } from "../../../packages/module-api/src/index";
@@ -196,7 +196,8 @@ const tabs = $derived.by(() => {
   ];
   for (const [id, label, layout, items] of extra) {
     if (!items.length) continue;
-    built.push({ id, label, sections: [{ id, title: label, layout, items }] });
+    const title = $ui(label);
+    built.push({ id, label: title, sections: [{ id, title, layout, items }] });
   }
   return built;
 });
@@ -209,7 +210,7 @@ const preview = $derived(
     )
     .slice(0, 4)
     .map(
-      (component) => `${shortName(component.name)} ${component.value.type === "number" ? component.value.value : ""}`,
+      (component) => `${shortName(profileComponentCopy(draft.presetOrigin, component.id, component.name))} ${component.value.type === "number" ? component.value.value : ""}`,
     )
     .join(" · "),
 );
@@ -756,12 +757,13 @@ async function removeHistoryRow(change: StoredProfileChange) {
               <section class="preset-group">
                 <h3>{$ui("All Presets")}</h3>
                 {#each presetGroups.others as group (group.genre ?? "")}
+                  {@const genre = group.genre && presetCopy(group.presets[0]?.id, "genre", group.genre)}
                   <div class="preset-genre">
-                    {#if group.genre}<h4>{group.genre}</h4>{/if}
+                    {#if genre}<h4>{genre}</h4>{/if}
                     <div
                       class="preset-grid"
                       role="group"
-                      aria-label={group.genre ? $ui("{0} presets", group.genre) : $ui("Presets")}>
+                      aria-label={genre ? $ui("{0} presets", genre) : $ui("Presets")}>
                       {#each group.presets as preset (preset.id)}
                         {@render presetCard(preset)}
                       {/each}
@@ -805,7 +807,7 @@ async function removeHistoryRow(change: StoredProfileChange) {
                 {#each selectedPresetPreview as component (component.id)}
                   <li>
                     <strong>{profileComponentCopy(selectedPreset, component.id, component.name)}</strong>
-                    <span>{component.kind}</span>
+                    <span>{profileKindCopy(component.kind)}</span>
                   </li>
                 {/each}
               </ul>

@@ -8,7 +8,8 @@ import AsyncEntityPicker from "$lib/entity-lifecycle/AsyncEntityPicker.svelte";
 import { toAsyncEntityPage } from "$lib/entity-lifecycle/asyncEntityQuery.ts";
 import { ENTITY_ACTION_CONFIRM, MUTATION_STATUS, MUTATION_STATUS_MESSAGES } from "$lib/entity-lifecycle/vocabulary.ts";
 import { confirmDialog } from "$lib/dialogs.svelte";
-import { MEMBERSHIP_RELATIONSHIP, PERSON_TYPE, type HouseMemberRecord } from "./model.ts";
+import { manifestCopy } from "$lib/i18n/manifest-copy";
+import { formatMembershipRole, MEMBERSHIP_RELATIONSHIP, PERSON_TYPE, type HouseMemberRecord } from "./model.ts";
 import { defaultMembershipDraft, membershipMetadataFields } from "./membershipFields.ts";
 import {
   classifyMutationError,
@@ -311,18 +312,18 @@ $effect(() => {
       {#each fields as field (field.key)}
         {#if field.type === "enum"}
           <label class="field">
-            <span>{field.label}</span>
+            <span>{manifestCopy($ui, "daena.houses", "metadata", MEMBERSHIP_RELATIONSHIP + "/" + field.key, field.label)}</span>
             <select
               value={String(draft[field.key] ?? "")}
               onchange={(event) => setDraft(field.key, (event.currentTarget as HTMLSelectElement).value)}>
               {#each field.options ?? [] as option}
-                <option value={option}>{option}</option>
+                <option value={option}>{field.key === "role" ? formatMembershipRole(option) : option}</option>
               {/each}
             </select>
           </label>
         {:else if field.key === "notes"}
           <label class="field"
-            ><span>{field.label}</span>
+            ><span>{manifestCopy($ui, "daena.houses", "metadata", MEMBERSHIP_RELATIONSHIP + "/" + field.key, field.label)}</span>
             <textarea
               rows="3"
               value={String(draft[field.key] ?? "")}
@@ -330,7 +331,7 @@ $effect(() => {
             ></label>
         {:else}
           <label class="field">
-            <span>{field.label}</span>
+            <span>{manifestCopy($ui, "daena.houses", "metadata", MEMBERSHIP_RELATIONSHIP + "/" + field.key, field.label)}</span>
             <input
               value={String(draft[field.key] ?? "")}
               oninput={(event) => setDraft(field.key, (event.currentTarget as HTMLInputElement).value)} />

@@ -6,7 +6,7 @@ import maps from "../../../packages/modules/maps/manifest.json" with { type: "js
 import timeline from "../../../packages/modules/timeline/manifest.json" with { type: "json" };
 import writing from "../../../packages/modules/writing/manifest.json" with { type: "json" };
 
-type CopyKind = "module" | "type" | "field" | "template" | "templateDescription" | "view";
+type CopyKind = "module" | "type" | "option" | "metadata" | "field" | "template" | "templateDescription" | "timelineGroup" | "timelineLabel" | "view";
 const originals = new Map<string, string>();
 const bundled = [houses, language, lore, maps, timeline, writing] as unknown as ModuleManifest[];
 
@@ -21,7 +21,15 @@ for (const manifest of bundled) {
   remember("module", manifest.id, manifest.name);
   for (const schema of manifest.schemas ?? []) {
     for (const type of schema.entityTypes ?? []) remember("type", type.id, type.name);
-    for (const field of schema.fields ?? []) remember("field", field.key, field.label);
+    for (const field of schema.fields ?? []) {
+      remember("field", field.key, field.label);
+      remember("timelineGroup", field.key, field.timeline?.group);
+      remember("timelineLabel", field.key, field.timeline?.label);
+      for (const metadata of field.metadataFields ?? []) {
+        remember("metadata", field.relationshipType + "/" + metadata.key, metadata.label);
+      }
+      for (const option of field.options ?? []) remember("option", field.key + "/" + option, option);
+    }
   }
   for (const template of manifest.templates ?? []) {
     remember("template", template.id, template.name);

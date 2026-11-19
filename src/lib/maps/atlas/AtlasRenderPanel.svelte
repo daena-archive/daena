@@ -74,7 +74,7 @@ function viewerLayerEnabled(atlasLayerId: string): boolean | null {
 }
 
 function styleLabel(id: string) {
-  return atlasStyleLabel(id);
+  return $ui(atlasStyleLabel(id));
 }
 
 let capabilities = $state<AtlasRenderCapabilities | null>(null);
@@ -170,9 +170,9 @@ function exportBusy() {
 }
 
 function formatEpoch(offset: number) {
-  if (offset === 0) return "at epoch";
-  if (offset < 0) return "years before epoch";
-  return "years after epoch";
+  if (offset === 0) return $ui("at epoch");
+  if (offset < 0) return $ui("years before epoch");
+  return $ui("years after epoch");
 }
 
 function previewDimensions(): { width: number; height: number } {
@@ -433,7 +433,7 @@ onDestroy(() => {
       {/if}
       {#if busyPreview || (previewJob && previewJob.state !== "ready-to-save" && previewJob.state !== "failed" && previewJob.state !== "cancelled")}
         <div class="map-busy" role="status">
-          <strong>{previewJob?.stage ?? $ui("Rendering preview…")}</strong>
+          <strong>{$ui(previewJob?.stage ?? "Rendering preview…")}</strong>
           {#if previewJob}<span>{previewJob.completed} / {previewJob.total}</span>{/if}
         </div>
       {/if}
@@ -492,6 +492,7 @@ onDestroy(() => {
     <MapLayerVisibilityList
       variant="studio"
       defaultCollapsed
+      label={$ui("Layers")}
       {layers}
       onToggle={(id) => {
         layers = layers.map((layer) => (layer.id === id ? { ...layer, enabled: !layer.enabled } : layer));
@@ -508,7 +509,7 @@ onDestroy(() => {
           }}>
           {#each PRESETS as preset, index}
             <option value={index} selected={preset.width === widthPx}
-              >{preset.label} ({preset.width}×{preset.height})</option>
+              >{$ui(preset.label)} ({preset.width}×{preset.height})</option>
           {/each}
         </select>
       </label>
@@ -517,7 +518,7 @@ onDestroy(() => {
       </label>
     </div>
     {#if exportJob}
-      <p class="status" role="status">{$ui("Export · {0} · {1}", exportJob.state, exportJob.stage)}</p>
+      <p class="status" role="status">{$ui("Export · {0} · {1}", $ui(exportJob.state), $ui(exportJob.stage))}</p>
     {/if}
     {#if notice}<p class="notice">{notice}</p>{/if}
     <div class="actions">

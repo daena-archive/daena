@@ -1,5 +1,6 @@
 <script lang="ts">
 import { nativeErrorText } from "$lib/i18n/native-errors.ts";
+import { displayLanguage } from "$lib/i18n";
 import { ui } from "$lib/i18n/ui";
 import {
   X,
@@ -112,7 +113,7 @@ let aiMessageLastSequence = $state(-1);
 let aiMessageUnlisten: (() => void) | null = null;
 let wrapDiffLines = $state(false);
 let expandedSnapshotGroups = $state<string[]>([]);
-let snapshotChangeGroups = $derived(groupSnapshotChanges(snapshotChanges, entities));
+let snapshotChangeGroups = $derived(groupSnapshotChanges(snapshotChanges, entities, $ui));
 let commitMessageTitle = $derived(snapshotMessageTitle(commitMessage));
 let commitMessageBody = $derived(snapshotMessageBody(commitMessage));
 let diffLines = $derived(
@@ -355,7 +356,7 @@ function toggleSnapshotGroup(label: string) {
     : [...expandedSnapshotGroups, label];
 }
 
-let changeGroups = $derived(buildChangeGroups(preflight?.staging_paths ?? [], entities));
+let changeGroups = $derived(buildChangeGroups(preflight?.staging_paths ?? [], entities, $ui));
 
 let selectedPaths = $derived(selectedPathsFromGroups(selectedGroupIds, changeGroups));
 let selectedFileCount = $derived(selectedPaths.length);
@@ -553,17 +554,17 @@ function generateMessage() {
     other: selected.filter((group) => group.kind === "project").length,
   };
   const parts = [
-    buckets.entities ? `${buckets.entities} entit${buckets.entities === 1 ? "y" : "ies"}` : "",
-    buckets.plugins ? `${buckets.plugins} plugin${buckets.plugins === 1 ? "" : "s"}` : "",
-    buckets.assets ? `${buckets.assets} asset${buckets.assets === 1 ? "" : "s"}` : "",
-    buckets.other ? "project settings" : "",
+    buckets.entities ? $ui(buckets.entities === 1 ? "{0} entity" : "{0} entities", buckets.entities) : "",
+    buckets.plugins ? $ui(buckets.plugins === 1 ? "{0} plugin" : "{0} plugins", buckets.plugins) : "",
+    buckets.assets ? $ui(buckets.assets === 1 ? "{0} asset" : "{0} assets", buckets.assets) : "",
+    buckets.other ? $ui("project settings") : "",
   ].filter(Boolean);
-  const headline = `Update ${parts.join(", ") || `${selected.length} change${selected.length === 1 ? "" : "s"}`}`;
+  const headline = $ui("Update {0}", parts.join($ui(", ")));
   const list = selected
     .slice(0, 12)
     .map((group) => `- ${group.title}${group.subtitle ? ` (${group.subtitle})` : ""}`)
     .join("\n");
-  const more = selected.length > 12 ? `\n- …and ${selected.length - 12} more` : "";
+  const more = selected.length > 12 ? `\n- ${$ui("…and {0} more", selected.length - 12)}` : "";
   commitMessage = `${headline}\n\n${list}${more}\n`;
   messageExpanded = false;
 }
@@ -701,7 +702,7 @@ async function selectCommit(hash: string) {
       historyMessages = { ...historyMessages, [hash]: message };
       snapshotChanges = changes;
       const groups = groupSnapshotChanges(changes, entities);
-      expandedSnapshotGroups = groups[0] ? [groups[0].label] : [];
+      expandedSnapshotGroups = groups[0] ? [groups[0].id] : [];
       firstChangedPath = changes[0]?.path ?? null;
     }
   });
@@ -1080,7 +1081,7 @@ onDestroy(() => {
                 </span>
                 <span class="git-history-copy">
                   <strong>{entry.subject || $ui("Untitled snapshot")}</strong>
-                  <small>{snapshotDateLabel(entry.date)}</small>
+                  <small>{snapshotDateLabel(entry.date, $displayLanguage)}</small>
                 </span>
               </button>
               {#if expandedHistoryHash === entry.hash}
@@ -1126,7 +1127,7 @@ onDestroy(() => {
                 <span class="panel-kicker">{$ui("SNAPSHOT DETAILS")}</span>
                 <strong id="snapshot-title">{snapshotEntry?.subject ?? $ui("Snapshot details")}</strong>
                 <small class="git-snapshot-meta"
-                  >{snapshotEntry ? snapshotDateLabel(snapshotEntry.date) : $ui("Snapshot")}</small>
+                  >{snapshotEntry ? snapshotDateLabel(snapshotEntry.date, $displayLanguage) : $ui("Snapshot")}</small>
                 {#if selectedCommitMessage}
                   {@const messageBody = snapshotMessageBody(selectedCommitMessage)}
                   {#if messageBody}
@@ -1167,20 +1168,20 @@ onDestroy(() => {
                       <button
                         type="button"
                         class="git-change-category-toggle"
-                        onclick={() => toggleSnapshotGroup(group.label)}>
+                        onclick={() => toggleSnapshotGroup(group.id)}>
                         <span class="git-tree-chevron" aria-hidden="true"
-                          >{#if snapshotGroupExpanded(group.label)}<ChevronDown
+                          >{#if snapshotGroupExpanded(group.id)}<ChevronDown
                               size={14}
                               strokeWidth={1.8}
                               aria-hidden="true" />{:else}<ChevronRight
                               size={14}
                               strokeWidth={1.8}
                               aria-hidden="true" />{/if}</span>
-                        <span class="git-change-kind">{group.kind === "other" ? $ui("Changes") : group.kind}</span>
+                        <span class="git-change-kind">{group.kind === "other" ? $ui("Changes") : $ui(group.kind)}</span>
                         <span>{group.label}</span>
                         <small>{group.changes.length}</small>
                       </button>
-                      {#if snapshotGroupExpanded(group.label)}<ul class="git-path-list compact">
+                      {#if snapshotGroupExpanded(group.id)}<ul class="git-path-list compact">
                           {#each group.changes as change (change.path)}
                             <li>
                               <button

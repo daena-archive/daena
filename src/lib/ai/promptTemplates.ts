@@ -111,6 +111,16 @@ export const BUNDLED_PROMPT_TEMPLATES: PromptTemplate[] = [
   },
 ];
 
+export function promptTemplateCopy(
+  translate: (source: string) => string,
+  template: { id: string; bundled?: boolean; label: string; instruction?: string },
+  field: "label" | "instruction",
+): string {
+  const value = template[field] ?? "";
+  const original = template.bundled && BUNDLED_PROMPT_TEMPLATES.find((item) => item.id === template.id);
+  return original && original[field] === value ? translate(value) : value;
+}
+
 export function emptyAiProvider(): {
   id: string;
   name: string;

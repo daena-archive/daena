@@ -26,13 +26,13 @@ let popoverStyle = $state("");
 let svgError = $state("");
 const selectedLabel = $derived(
   value.kind === "catalog"
-    ? (CATALOG_ICON_OPTIONS.find((option) => option.id === value.id)?.label ?? $ui("Unknown"))
+    ? $ui(CATALOG_ICON_OPTIONS.find((option) => option.id === value.id)?.label ?? "Unknown")
     : value.kind === "plugin-svg"
       ? $ui("Plugin SVG")
       : $ui("Custom SVG"),
 );
 const filtered = $derived(
-  CATALOG_ICON_OPTIONS.filter((option) => option.label.toLowerCase().includes(query.trim().toLowerCase())),
+  CATALOG_ICON_OPTIONS.filter((option) => [option.label, $ui(option.label)].some((name) => name.toLowerCase().includes(query.trim().toLowerCase()))),
 );
 
 function placePopover() {
@@ -95,7 +95,7 @@ $effect(() => {
 </script>
 
 <div class="icon-picker" bind:this={pickerRoot}>
-  <span class="picker-label">{label}</span>
+  <span class="picker-label">{$ui(label)}</span>
   <button
     type="button"
     bind:this={trigger}
@@ -114,8 +114,8 @@ $effect(() => {
           <button
             type="button"
             class:selected={value.kind === "catalog" && value.id === option.id}
-            title={option.label}
-            aria-label={option.label}
+            title={$ui(option.label)}
+            aria-label={$ui(option.label)}
             onclick={() => {
               onChange({ kind: "catalog", id: option.id });
               closePicker();

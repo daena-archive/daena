@@ -294,7 +294,7 @@ async function seedExampleProject() {
         </div>
         <div class="project-identity">
           <div><span>{$ui("Project folder")}</span><strong title={summary.root}>{summary.root}</strong></div>
-          <div><span>{$ui("Search index")}</span><strong>{summary.indexStatus || $ui("Unknown")}</strong></div>
+          <div><span>{$ui("Search index")}</span><strong>{$ui(summary.indexStatus || "Unknown")}</strong></div>
           <div>
             <span>{$ui("AI features")}</span><button type="button" class="quiet-button" onclick={() => void goToSection("ai")}
               >{summary.aiEnabled ? $ui("Enabled") : $ui("Off")}</button>
@@ -405,7 +405,7 @@ async function seedExampleProject() {
         <section class="operation-card">
           <div>
             <strong>{$ui("Project diagnostics")}</strong>
-            <p>{$ui("Runtime index: {0}. Portable checkpoint: {1}.", summary.indexStatus || "unknown", summary.sync.state)}</p>
+            <p>{$ui("Runtime index: {0}. Portable checkpoint: {1}.", $ui(summary.indexStatus || "unknown"), $ui(summary.sync.state))}</p>
           </div>
           {#if diagnostics.length > 0}<ul class="diagnostic-list">
               {#each diagnostics as diagnostic}<li>{$nativeErrorText(diagnostic)}</li>{/each}

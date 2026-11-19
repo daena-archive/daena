@@ -12,6 +12,10 @@ function translate(value: string) {
   return Object.hasOwn(catalog, value) ? catalog[value] : value;
 }
 
+export function profileKindCopy(kind: string) {
+  return translate(kind);
+}
+
 export function presetCopy(origin: string | undefined, field: "name" | "genre" | "description", value: string) {
   const seed = origin && seeds.get(canonicalPresetOrigin(origin));
   return seed && seed[field] === value ? translate(value) : value;

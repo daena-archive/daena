@@ -393,7 +393,7 @@ function typeMatches(type: EntityTypeDefinition, origin: "builtin" | "custom"): 
     enabled: origin === "custom" || !isDisabled(draft.disabledEntityTypes, type.id),
     namespace: origin === "builtin" ? flatPackage.typeNamespace[type.id] : undefined,
     hint: localTypeId(type.id),
-    searchText: [type.name, type.id, flatPackage.typeNamespace[type.id] ?? "", "type"].join(" "),
+    searchText: [manifestCopy($ui, pluginId, "type", type.id, type.name), type.name, type.id, flatPackage.typeNamespace[type.id] ?? "", "type"].join(" "),
   });
 }
 
@@ -407,6 +407,7 @@ function fieldMatches(field: FieldDefinition, origin: "builtin" | "custom"): boo
     namespace: origin === "builtin" ? flatPackage.fieldNamespace[field.key] : undefined,
     hint: fieldTypeLabel(field.type),
     searchText: [
+      manifestCopy($ui, pluginId, "field", field.key, field.label),
       field.label,
       field.key,
       field.type,
@@ -426,6 +427,7 @@ function templateMatches(template: EntityTemplate, origin: "builtin" | "custom")
     enabled: origin === "custom" || !isDisabled(draft.disabledTemplates, template.id),
     hint: entityTypeLabel(template.entityType),
     searchText: [
+      manifestCopy($ui, pluginId, "template", template.id, template.name),
       template.name,
       template.id,
       template.description ?? "",
@@ -557,10 +559,10 @@ function effectiveTimeline(
 function timelineBadge(field: FieldDefinition): string {
   const tl = effectiveTimeline(field);
   if (!tl) return "";
-  const role = tl.role ?? "point";
-  const layer = tl.layer ?? "dates";
-  const group = tl.group ? `· ${tl.group}` : "";
-  const label = tl.label ? `· ${tl.label}` : "";
+  const role = $ui(tl.role ?? "point");
+  const layer = $ui(tl.layer ?? "dates");
+  const group = tl.group ? `· ${manifestCopy($ui, pluginId, "timelineGroup", field.key, tl.group)}` : "";
+  const label = tl.label ? `· ${manifestCopy($ui, pluginId, "timelineLabel", field.key, tl.label)}` : "";
   return `${role} · ${layer} ${group} ${label}`.trim();
 }
 
@@ -1685,7 +1687,7 @@ function effectiveBuiltinMetadata(field: FieldDefinition): MetadataFieldDefiniti
 function builtinMetadataFieldExtras(field: FieldDefinition): string {
   const eff = effectiveBuiltinMetadata(field);
   if (eff.length === 0) return "";
-  return `${eff.length} attribute${eff.length === 1 ? "" : "s"}`;
+  return $ui(eff.length === 1 ? "{0} attribute" : "{0} attributes", eff.length);
 }
 
 function startBuiltinMetadataEdit(field: FieldDefinition) {
@@ -1864,7 +1866,7 @@ function fieldExtrasLabel(field: FieldDefinition): string {
     const targets = (f.targetEntityTypes as string[] | undefined) ?? [];
     const card = f.cardinality ?? "many";
     const meta = (f.metadataFields as unknown[] | undefined)?.length ?? 0;
-    const metaSuffix = meta ? ` · ${meta} attribute${meta === 1 ? "" : "s"}` : "";
+    const metaSuffix = meta ? " · " + $ui(meta === 1 ? "{0} attribute" : "{0} attributes", meta) : "";
     return `${rel} → ${targets.map(entityTypeLabel).join(", ") || "any"} · ${card}${metaSuffix}`;
   }
   return "";
@@ -2061,7 +2063,7 @@ function removeCustomTemplate(id: string) {
       {/if}
       <label class="workbench-search">
         <span>{$ui("Search")}</span>
-        <input type="search" bind:value={listQuery} placeholder={$ui("Search {0}…", activeTab)} />
+        <input type="search" bind:value={listQuery} placeholder={$ui("Search {0}…", $ui(activeTab))} />
       </label>
       <label class="workbench-status">
         <span>{$ui("Status")}</span>

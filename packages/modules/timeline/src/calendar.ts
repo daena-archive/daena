@@ -6,6 +6,9 @@ import {
   type CalendarDate,
 } from "./calendar-date.ts";
 
+type Translate = (source: string, values?: Record<string, string | number>) => string;
+const english: Translate = (source, values) => source.replace(/\{(\w+)\}/g, (match, key) => String(values?.[key] ?? match));
+
 export const DEFAULT_CALENDAR_ID = "gregorian";
 export const CALENDAR_DEFINITION_COLLECTION = "calendar-definition";
 export const CALENDAR_DEFINITION_SCHEMA_VERSION = 1;
@@ -300,16 +303,16 @@ export function calendarHasStructure(definition: CalendarDefinition): boolean {
   return definition.months.length > 0 || definition.weekdays.length > 0 || definition.seasons.length > 0;
 }
 
-export function validateCalendarDefinition(definition: CalendarDefinition): CalendarIssue[] {
+export function validateCalendarDefinition(definition: CalendarDefinition, translate: Translate = english): CalendarIssue[] {
   const issues: CalendarIssue[] = [];
   for (const month of definition.months) {
-    if (!month.name) issues.push({ level: "error", message: "A month must have a name." });
+    if (!month.name) issues.push({ level: "error", message: translate("A month must have a name.") });
     if (!Number.isInteger(month.days) || month.days < 1) {
-      issues.push({ level: "error", message: `${month.name || "A month"} must contain at least one day.` });
+      issues.push({ level: "error", message: translate("{month} must contain at least one day.", { month: month.name || translate("A month") }) });
     }
   }
   if (definition.weekdays.some((day) => !day.name)) {
-    issues.push({ level: "error", message: "Every weekday needs a name." });
+    issues.push({ level: "error", message: translate("Every weekday needs a name.") });
   }
   const monthCount = definition.months.length;
   if (monthCount > 0) {
@@ -317,7 +320,7 @@ export function validateCalendarDefinition(definition: CalendarDefinition): Cale
       if (season.startMonth > monthCount || season.endMonth > monthCount) {
         issues.push({
           level: "error",
-          message: `${season.name || "A season"} refers to a month that does not exist.`,
+          message: translate("{season} refers to a month that does not exist.", { season: season.name || translate("A season") }),
         });
       }
     }
@@ -325,13 +328,13 @@ export function validateCalendarDefinition(definition: CalendarDefinition): Cale
   if (!calendarHasStructure(definition)) {
     issues.push({
       level: "warning",
-      message: "This calendar currently has no structure, so dates still use Gregorian.",
+      message: translate("This calendar currently has no structure, so dates still use Gregorian."),
     });
   }
   if (definition.allowNegativeYears && !definition.eraLabels?.bce?.trim()) {
     issues.push({
       level: "error",
-      message: "A label for years before the epoch is required when allowing negative years.",
+      message: translate("A label for years before the epoch is required when allowing negative years."),
     });
   }
   return issues;
@@ -575,17 +578,17 @@ export function previewCalendarParts(definition: CalendarDefinition): CalendarPa
   };
 }
 
-export function calendarSummary(definition: CalendarDefinition): string {
+export function calendarSummary(definition: CalendarDefinition, translate: Translate = english): string {
   const yearLength = computedYearLength(definition);
   const format = definition.dateFormat?.trim() || DEFAULT_DATE_FORMAT;
-  if (!yearLength) return "No year structure yet. Dates still use Gregorian.";
-  return `${definition.months.length} months · ${yearLength} days · ${format}`;
+  if (!yearLength) return translate("No year structure yet. Dates still use Gregorian.");
+  return translate("{months} months · {days} days · {format}", { months: definition.months.length, days: yearLength, format });
 }
 
-export function epochSummary(definition: CalendarDefinition): string {
+export function epochSummary(definition: CalendarDefinition, translate: Translate = english): string {
   const epoch = definition.epoch ?? { year: 1, month: 1, day: 1 };
   const start = definition.startingYear ?? 1;
-  return `Year ${start} begins on Gregorian ${epoch.year}-${epoch.month ?? 1}-${epoch.day ?? 1}`;
+  return translate("Year {start} begins on Gregorian {year}-{month}-{day}", { start, year: epoch.year, month: epoch.month ?? 1, day: epoch.day ?? 1 });
 }
 
 export function formatWithCalendar(value: unknown, definition: CalendarDefinition | null): string {

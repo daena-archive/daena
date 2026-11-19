@@ -1,5 +1,6 @@
 <script lang="ts">
 import { nativeErrorText } from "$lib/i18n/native-errors.ts";
+import { manifestCopy } from "$lib/i18n/manifest-copy";
 import { ui } from "$lib/i18n/ui";
 import { onMount, tick } from "svelte";
 import { listen } from "@tauri-apps/api/event";
@@ -79,6 +80,7 @@ let lastFocused: Element | null = null;
 const catalog = () => buildExternalImportMappingCatalog(modules);
 const importerKeyOf = (importer: ExternalImporterDescriptor) => `${importer.pluginId ?? ""}:${importer.id}`;
 const activeImporter = () => importers.find((importer) => importerKeyOf(importer) === importerKey) ?? null;
+const selectedImporter = $derived(activeImporter());
 const importerSupports = (kind: "file" | "folder") => activeImporter()?.sourceKinds.includes(kind) ?? false;
 const selectedPageItem = () => inspectedItem;
 const selectedObject = (): StagedObject | null => {
@@ -456,10 +458,10 @@ onMount(() => {
           <span>{$ui("Importer")}</span>
           <select bind:value={importerKey} disabled={busy || importers.length === 0} onchange={normalizeSourceKind}>
             {#each importers as importer (importerKeyOf(importer))}
-              <option value={importerKeyOf(importer)}>{importer.name}</option>
+              <option value={importerKeyOf(importer)}>{importer.pluginId ? importer.name : $ui(importer.name)}</option>
             {/each}
           </select>
-          {#if activeImporter()}<small>{activeImporter()!.description}</small>{/if}
+          {#if selectedImporter}<small>{selectedImporter.pluginId ? selectedImporter.description : $ui(selectedImporter.description)}</small>{/if}
         </label>
         <fieldset>
           <legend>{$ui("Source")}</legend>
@@ -481,7 +483,7 @@ onMount(() => {
           type="button"
           disabled={busy || !activeImporter() || !importerSupports(sourceKind)}
           onclick={chooseAndAnalyze}>
-          {busy ? $ui("Opening…") : $ui("Choose {0}", sourceKind)}
+          {busy ? $ui("Opening…") : $ui("Choose {0}", $ui(sourceKind))}
         </button>
       </section>
     {:else if status.state === "queued" || status.state === "analyzing"}
@@ -513,7 +515,7 @@ onMount(() => {
         <div>
           <span class="kicker">{$ui("IMPORT COMPLETE")}</span>
           <h3>{$ui("Project content was updated")}</h3>
-          <p> {$ui("Created {0}, mapped {1}, and skipped {2} source {3}. Imported {4} {5} and {6} {7}. Converted {8} {9}; reported {10} unsupported {11} and {12} missing {13}.", report.created.length, report.mapped.length, report.skippedSourcePaths.length, report.skippedSourcePaths.length === 1 ? $ui("item") : $ui("items"), report.assets.length, report.assets.length === 1 ? "attachment" : "attachments", report.relationships.length, report.relationships.length === 1 ? $ui("relationship") : $ui("relationships"), report.fields.length, report.fields.length === 1 ? $ui("field") : $ui("fields"), report.unsupported.length, report.unsupported.length === 1 ? $ui("item") : $ui("items"), report.missingReferences.length, report.missingReferences.length === 1 ? "reference" : "references")} </p>
+          <p> {$ui("Created {0}, mapped {1}, and skipped {2} source {3}. Imported {4} {5} and {6} {7}. Converted {8} {9}; reported {10} unsupported {11} and {12} missing {13}.", report.created.length, report.mapped.length, report.skippedSourcePaths.length, report.skippedSourcePaths.length === 1 ? $ui("item") : $ui("items"), report.assets.length, report.assets.length === 1 ? $ui("attachment") : $ui("attachments"), report.relationships.length, report.relationships.length === 1 ? $ui("relationship") : $ui("relationships"), report.fields.length, report.fields.length === 1 ? $ui("field") : $ui("fields"), report.unsupported.length, report.unsupported.length === 1 ? $ui("item") : $ui("items"), report.missingReferences.length, report.missingReferences.length === 1 ? $ui("reference") : $ui("references"))} </p>
         </div>
         {#if report.decisions.length || report.assets.length || report.relationships.length || report.unsupported.length}
           <div class="result-list">
@@ -541,7 +543,7 @@ onMount(() => {
               <div><strong>{decision.sourcePath}</strong><span>{$ui("Decision · skipped")}</span></div>
             {/each}
             {#each report.unsupported as item}
-              <div><strong>{item.source_path}</strong><span>{$ui("Unsupported · {0}", item.reason)}</span></div>
+              <div><strong>{item.source_path}</strong><span>{$ui("Unsupported · {0}", $nativeErrorText(item.reason))}</span></div>
             {/each}
             {#each report.missingReferences as reference}
               <div>
@@ -727,7 +729,7 @@ onMount(() => {
                       <option value=""
                         >{mappingScope === "global" ? $ui("Choose a type") : $ui("Inherit broader mapping")}</option>
                       {#each catalog().entityTypes as choice}<option value={choice.id}
-                          >{choice.moduleName} · {choice.label}</option
+                          >{manifestCopy($ui, choice.moduleId, "module", choice.moduleId, choice.moduleName)} · {manifestCopy($ui, choice.moduleId, "type", choice.id, choice.label)}</option
                         >{/each}
                     </select></label>
                   {#if Object.keys(object.fields ?? {}).length > 0}
@@ -743,7 +745,7 @@ onMount(() => {
                                 ? $ui("Preserve as unmapped metadata")
                                 : $ui("Inherit broader mapping")}</option
                             >{#each fieldsForEntity(effectiveEntityType(object)) as choice}<option value={choice.id}
-                                >{choice.moduleName} · {choice.label}</option
+                                >{manifestCopy($ui, choice.moduleId, "module", choice.moduleId, choice.moduleName)} · {manifestCopy($ui, choice.moduleId, "field", choice.key, choice.label)}</option
                               >{/each}</select
                           ></label
                         >{/each}
@@ -758,7 +760,7 @@ onMount(() => {
                             ><option value=""
                               >{mappingScope === "global" ? $ui("Leave unresolved") : $ui("Inherit broader mapping")}</option
                             >{#each catalog().relationships as choice}<option value={choice.id}
-                                >{choice.moduleName} · {choice.label}</option
+                                >{manifestCopy($ui, choice.moduleId, "module", choice.moduleId, choice.moduleName)} · {manifestCopy($ui, choice.moduleId, "field", choice.key, choice.label)}</option
                               >{/each}</select
                           ></label
                         >{/each}

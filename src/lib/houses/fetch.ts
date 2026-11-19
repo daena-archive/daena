@@ -511,9 +511,9 @@ export function formatHouseMemberSummary(
 ): string {
   if (!summary) return options?.pending ? localizeUi("Loading…") : localizeUi("0 members");
   const count = summary.memberCount;
-  const parts = [`${count} ${count === 1 ? "member" : "members"}`];
-  if (summary.headName) parts.push(`Head ${summary.headName}`);
-  if (summary.heirName) parts.push(`Heir ${summary.heirName}`);
+  const parts = [localizeUi(count === 1 ? "{0} member" : "{0} members", count)];
+  if (summary.headName) parts.push(localizeUi("Head {0}", summary.headName));
+  if (summary.heirName) parts.push(localizeUi("Heir {0}", summary.heirName));
   return parts.join(" · ");
 }
 

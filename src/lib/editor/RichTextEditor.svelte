@@ -1981,7 +1981,7 @@ onMount(() => {
     editable,
     editorProps: {
       attributes: {
-        "aria-label": "Document editor",
+        "aria-label": $ui("Document editor"),
         "aria-multiline": "true",
         spellcheck: "true",
       },
@@ -2224,6 +2224,8 @@ $: if (editor && entities) {
     }
   });
 }
+$: if (editor) editor.view.dom.setAttribute("aria-label", $ui("Document editor"));
+
 $: if (editor && editor.isEditable !== editable) {
   editor.setEditable(editable);
   if (editable) clearAiRequest();

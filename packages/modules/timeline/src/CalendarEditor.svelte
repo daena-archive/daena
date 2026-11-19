@@ -55,7 +55,7 @@ let helpHideTimer: ReturnType<typeof setTimeout> | undefined;
 let eras = $state<{ id: UUID; name: string }[]>([]);
 let creatingEra = $state(false);
 
-const issues = $derived(validateCalendarDefinition(draft));
+const issues = $derived(validateCalendarDefinition(draft, $pluginText));
 const errors = $derived(issues.filter((issue) => issue.level === "error"));
 const yearLength = $derived(computedYearLength(draft));
 const activePreset = $derived(matchYearPreset(draft));
@@ -301,8 +301,8 @@ $effect(() => {
     <h3>{$pluginText("Calendar")}</h3>
     <button type="button" onclick={openModal}>{$pluginText("Configure calendar")}</button>
   </div>
-  <p>{calendarSummary(saved)}</p>
-  <p>{epochSummary(saved)}</p>
+  <p>{calendarSummary(saved, $pluginText)}</p>
+  <p>{epochSummary(saved, $pluginText)}</p>
   <div class="calendar-era-list">
     <div class="calendar-group-head">
       <h4>{$pluginText("Historical eras")}</h4>

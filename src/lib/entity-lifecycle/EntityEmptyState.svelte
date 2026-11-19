@@ -1,4 +1,5 @@
 <script lang="ts">
+import { messages } from "$lib/i18n";
 import type { Snippet } from "svelte";
 import { Plus } from "@lucide/svelte";
 import { ENTITY_ACTIONS } from "./vocabulary.ts";
@@ -30,7 +31,7 @@ let {
     <button class="empty-create" type="button" onclick={onCreate}>
       <span style="display:inline-flex;vertical-align:middle" aria-hidden="true"
         ><Plus size={16} strokeWidth={1.8} /></span>
-      {createLabel ? `${ENTITY_ACTIONS.new} ${createLabel}` : ENTITY_ACTIONS.new}
+      {createLabel ? $messages.workspace.newNamed(createLabel) : ENTITY_ACTIONS.new}
     </button>
   {/if}
 </div>

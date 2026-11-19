@@ -1,4 +1,5 @@
 <script lang="ts">
+import { manifestCopy } from "$lib/i18n/manifest-copy";
 import { ui } from "$lib/i18n/ui";
 import ModuleSchemaPanel from "$lib/ModuleSchemaPanel.svelte";
 import type { EntityTemplate, EntityTypeDefinition, FieldDefinition, ModuleSchemaOverlay } from "$lib/project/client";
@@ -150,7 +151,7 @@ function handleDirtyChange(next: boolean) {
                   <Puzzle size={18} strokeWidth={1.8} />
                 </span>
                 <span class="card-copy">
-                  <strong>{plugin.name}</strong>
+                  <strong>{manifestCopy($ui, plugin.id, "module", plugin.id, plugin.name)}</strong>
                   <span class="card-meta">
                     <span
                       >{$ui("{0} Types · {1} Fields · {2} Templates", plugin.typeCount ?? 0, plugin.fieldCount ?? 0, plugin.templateCount ?? 0)}</span>
@@ -179,18 +180,17 @@ function handleDirtyChange(next: boolean) {
               <div
                 class="schema-plugin-card is-managed"
                 role="group"
-                aria-label={$ui("{0} managed by extension", plugin.name)}>
+                aria-label={$ui("{0} managed by extension", manifestCopy($ui, plugin.id, "module", plugin.id, plugin.name))}>
                 <span class="card-icon" aria-hidden="true">
                   <Puzzle size={18} strokeWidth={1.8} />
                 </span>
                 <span class="card-copy">
-                  <strong>{plugin.name}</strong>
+                  <strong>{manifestCopy($ui, plugin.id, "module", plugin.id, plugin.name)}</strong>
                   <span class="card-meta">
                     <span class="card-state is-managed-state">{$ui("Managed by extension")}</span>
                   </span>
                   <span class="card-id"
-                    >{plugin.reason ??
-                      $ui("Schema structure is owned by this extension and is not project-customizable.")}</span>
+                    >{$ui(plugin.reason ?? "Schema structure is owned by this extension and is not project-customizable.")}</span>
                 </span>
               </div>
             </li>
@@ -207,7 +207,7 @@ function handleDirtyChange(next: boolean) {
         <span class="crumb-icon" aria-hidden="true">
           <Puzzle size={13} strokeWidth={1.9} />
         </span>
-        {selectedPluginName || selectedPluginId}
+        {manifestCopy($ui, selectedPluginId, "module", selectedPluginId ?? "", selectedPluginName || selectedPluginId || "")}
       </span>
       {#if editorDirty}
         <span class="schema-dirty-hint"><span class="dirty-dot" aria-hidden="true"></span> {$ui("Unsaved changes")}</span>

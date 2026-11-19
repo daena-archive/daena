@@ -9,7 +9,7 @@ import type { EntityFieldsTab, EntityFieldsTabId } from "./entityFields";
 let {
   title,
   subtitle = null,
-  kicker = "FIELDS",
+  kicker,
   tabs,
   activeTab = $bindable(),
   relationships,
@@ -117,7 +117,7 @@ function onTabKeydown(event: KeyboardEvent) {
     onkeydown={onKeydown}>
     <div class="heading">
       <div class="heading-copy">
-        <span class="panel-kicker">{kicker}</span>
+        <span class="panel-kicker">{kicker ?? $ui("FIELDS")}</span>
         <strong id="entity-fields-title">{title}</strong>
         {#if subtitle}
           <p id="entity-fields-subtitle" class="subtitle">{subtitle}</p>

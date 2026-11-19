@@ -1,7 +1,7 @@
 <script lang="ts">
 import { nativeErrorText } from "$lib/i18n/native-errors.ts";
 import { ui } from "$lib/i18n/ui";
-import { X, Settings2, FolderOpen, ChevronLeft, Sun, Moon, Monitor, Download } from "@lucide/svelte";
+import { X, Settings2, FolderOpen, ChevronDown, ChevronLeft, Languages, Sun, Moon, Monitor, Download } from "@lucide/svelte";
 import { checkAppUpdate, formatUpdateMessage, openDownloadPage, type AppUpdateCheck, type UpdateChannelPreference } from "$lib/appUpdate";
 import { displayLanguage, languageOptions, messages, setDisplayLanguage } from "$lib/i18n";
 import type { ThemePreference } from "$lib/theme";
@@ -154,12 +154,18 @@ async function handleClose() {
             <span class="block-hint">{$messages.settings.appearanceHint}</span>
           </div>
           <label class="display-language">
-            <span>{$messages.settings.displayLanguage}</span>
-            <select value={$displayLanguage} onchange={(event) => setDisplayLanguage(event.currentTarget.value)}>
-              {#each languageOptions as language (language.value)}
-                <option value={language.value} lang={language.value}>{language.label}</option>
-              {/each}
-            </select>
+            <span class="language-label">
+              <Languages size={16} strokeWidth={1.8} aria-hidden="true" />
+              {$messages.settings.displayLanguage}
+            </span>
+            <span class="language-picker">
+              <select value={$displayLanguage} onchange={(event) => setDisplayLanguage(event.currentTarget.value)}>
+                {#each languageOptions as language (language.value)}
+                  <option value={language.value} lang={language.value}>{language.label}</option>
+                {/each}
+              </select>
+              <ChevronDown size={14} strokeWidth={1.8} aria-hidden="true" />
+            </span>
           </label>
           <div class="theme-options" role="group" aria-label={$messages.settings.colorTheme}>
             <button
@@ -524,14 +530,55 @@ async function handleClose() {
 .display-language {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   flex-wrap: wrap;
-  gap: 0.5rem;
-  margin-bottom: 0.75rem;
+  gap: 8px 16px;
+  color: var(--ink-soft);
+  font-size: 12px;
+  font-weight: 600;
 }
-
-.display-language select {
+.language-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+.language-picker {
+  display: grid;
+  align-items: center;
+  min-width: min(10rem, 100%);
+  max-width: 100%;
+  color: var(--ink-muted);
+}
+.language-picker select,
+.language-picker :global(svg) {
+  grid-area: 1 / 1;
+}
+.language-picker select {
+  appearance: none;
+  -webkit-appearance: none;
+  box-sizing: border-box;
+  min-width: 0;
+  min-height: 36px;
+  padding: 0 36px 0 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: var(--surface-subtle);
+  color: var(--ink);
   font: inherit;
-  color: inherit;
+  cursor: pointer;
+}
+.language-picker select:hover {
+  border-color: var(--accent-soft);
+  background: var(--surface-warm);
+}
+.language-picker select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.language-picker :global(svg) {
+  justify-self: end;
+  margin-inline-end: 12px;
+  pointer-events: none;
 }
 
 .block-heading {

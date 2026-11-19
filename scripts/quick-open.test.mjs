@@ -60,6 +60,9 @@ assert.match(quickOpen, /aria-activedescendant/, "Quick Open exposes its active 
 assert.match(quickOpen, /trapModalTab/, "Quick Open traps focus while open");
 assert.match(shell, /createDialogView/, "creation uses one progressive dialog state");
 assert.match(shell, /create-template-tiles/, "the creation menu presents templates as tiles");
+for (const option of ["option", "createOption"]) {
+  assert.ok(shell.includes(`{templateDescription(${option})}`), "the gallery and form use the same localized description");
+}
 assert.match(shell, /handleCreateDialogKeydown/, "the template gallery supports arrow navigation and tab trapping");
 assert.match(shell, /"ArrowLeft", "ArrowRight"/, "tile navigation supports both axes");
 assert.match(shell, /requiredCreateFields/, "focused creation derives required fields from the template");

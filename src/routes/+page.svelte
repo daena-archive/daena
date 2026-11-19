@@ -1327,7 +1327,9 @@ function templateName(option: CreateOption) {
 }
 function templateDescription(option: CreateOption) {
   const text = option.template.description;
-  return text && $manifestText(option.module.id, "templateDescription", option.template.id, text);
+  if (text?.trim()) return $manifestText(option.module.id, "templateDescription", option.template.id, text);
+  const label = entityTypeLabel(option.template.entityType, "");
+  return label ? $ui("Entry type: {0}", label) : $ui("Create an entry from this template.");
 }
 function iconForCreateOption(option: CreateOption): { icon: IconRef; pluginId: string; iconColor: EntityTypeColor } {
   const entityType = option.module.schemas
@@ -3690,10 +3692,10 @@ function inspectorFieldLabel(definition: FieldDefinition) {
     : $manifestText(moduleId, "field", definition.key, definition.label);
 }
 
-function entityTypeLabel(entityType: string | null) {
+function entityTypeLabel(entityType: string | null, fallback?: string) {
   if (!entityType) return $messages.workspace.uncategorized;
   const presentation = entityTypePresentation(entityType);
-  if (!presentation) return entityType;
+  if (!presentation) return fallback ?? entityType;
   return presentation.pluginId === "daena.lore"
     ? loreTypeLabel($messages.loreTypes, entityType, presentation.definition.name)
     : $manifestText(presentation.pluginId, "type", entityType, presentation.definition.name);
@@ -6361,7 +6363,7 @@ function quickOpenItems(): QuickOpenItem[] {
       category: "Create",
       label: $ui("Create {0}", templateName(option)),
       description: $ui("{0} · open focused creation", $manifestText(option.module.id, "module", option.module.id, option.module.name)),
-      keywords: [option.module.name, option.template.entityType, templateDescription(option) ?? ""],
+      keywords: [option.module.name, option.template.entityType, templateDescription(option)],
       icon: presentation.icon,
       pluginId: presentation.pluginId,
       iconColor: presentation.iconColor,
@@ -8523,7 +8525,7 @@ onMount(() => {
                     onclick={returnToCreationMenu}>{$ui("All templates")}</button
                   ><span class="panel-kicker">{$manifestText(createOption.module.id, "module", createOption.module.id, createOption.module.name).toUpperCase()}</span><strong
                     id="create-dialog-title">{$ui("Create {0}", templateName(createOption))}</strong>
-                  <p>{templateDescription(createOption) ?? $ui("Create a new {0}.", createOption.template.entityType)}</p>{/if}
+                  <p>{templateDescription(createOption)}</p>{/if}
               </div>
               <button
                 type="button"
@@ -8536,7 +8538,7 @@ onMount(() => {
                 {#each createGroups() as group}<section class="create-template-group">
                     <div class="create-template-group-heading">
                       <span>{$manifestText(group.module.id, "module", group.module.id, group.module.name)}</span><small
-                        >{group.options.length} {group.options.length === 1 ? $ui("template") : $ui("templates")}</small>
+                        >{group.options.length === 1 ? $ui("{0} template", 1) : $ui("{0} templates", group.options.length)}</small>
                     </div>
                     <div class="create-template-tiles">
                       {#each group.options as option}{@const optionIcon = iconForCreateOption(option)}<button
@@ -8552,7 +8554,7 @@ onMount(() => {
                             size={19}
                             box={40} /><span class="create-template-copy"><strong>{templateName(option)}</strong></span
                           ><span class="create-template-arrow">›</span><span class="create-template-detail"
-                            ><small>{templateDescription(option) ?? option.template.entityType}</small></span
+                            ><small>{templateDescription(option)}</small></span
                           ></button
                         >{/each}
                     </div>

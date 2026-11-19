@@ -1,5 +1,5 @@
 <script lang="ts">
-import { manifestCopy } from "$lib/i18n/manifest-copy";
+import { manifestText } from "$lib/i18n/manifest-copy";
 import { ui } from "$lib/i18n/ui";
 import type { EntityTemplate, FieldDefinition } from "$lib/project/client";
 import SchemaFieldInput from "./SchemaFieldInput.svelte";
@@ -58,9 +58,9 @@ $effect(() => {
   <header class="preview-heading">
     <span class="preview-kicker"
       ><Eye size={12} strokeWidth={1.8} aria-hidden="true" /> {$ui("Preview — Create form")} <span class="preview-badge">{$ui("Read-only")}</span></span>
-    <strong>{manifestCopy($ui, pluginId, "template", template.id, template.name)}</strong>
+    <strong>{$manifestText(pluginId, "template", template.id, template.name)}</strong>
     {#if template.description}
-      <p>{manifestCopy($ui, pluginId, "templateDescription", template.id, template.description)}</p>
+      <p>{$manifestText(pluginId, "templateDescription", template.id, template.description)}</p>
     {:else}
       <p>{$ui("Read-only preview of the create dialog for this template.")}</p>
     {/if}
@@ -76,7 +76,7 @@ $effect(() => {
         readonly={readOnly}
         disabled={readOnly}
         bind:value={name}
-        placeholder={$ui("e.g. {0}", manifestCopy($ui, pluginId, "template", template.id, template.name))} />
+        placeholder={$ui("e.g. {0}", $manifestText(pluginId, "template", template.id, template.name))} />
     </label>
 
     {#each requiredFields as item}

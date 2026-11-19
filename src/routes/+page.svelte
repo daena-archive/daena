@@ -1,6 +1,6 @@
 <script lang="ts">
 import { nativeErrorText } from "$lib/i18n/native-errors.ts";
-import { bundledWindowTitles, manifestCopy } from "$lib/i18n/manifest-copy";
+import { manifestText, setPackageLocalizations } from "$lib/i18n/manifest-copy";
 import { ui } from "$lib/i18n/ui";
 import { displayLanguage, menuCatalogs, messages } from "$lib/i18n";
 import { loreFieldLabel, loreTypeLabel } from "$lib/i18n/lore-labels";
@@ -548,6 +548,8 @@ let lifecycleToast = $state<LifecycleToast | null>(null);
 let lifecycleToastTimer = 0;
 let mapLocations = $state<MapLocation[]>([]);
 let modules = $state<InstalledModule[]>([]);
+let installedLocalizations = $state<InstalledModule[]>([]);
+$effect(() => setPackageLocalizations(modules.length ? modules : installedLocalizations));
 let globalQuery = $state("");
 let quickOpenOpen = $state(false);
 let quickOpenSearchLoading = $state(false);
@@ -555,7 +557,7 @@ let filterOpen = $state(false);
 let expandedGroups = $state<Set<string>>(new Set());
 $effect(() => {
   document.documentElement.lang = $displayLanguage;
-  void project.pluginLanguageSync($displayLanguage, menuCatalogs[$displayLanguage], bundledWindowTitles($ui)).catch(() => {});
+  void project.pluginLanguageSync($displayLanguage, menuCatalogs[$displayLanguage], Object.fromEntries(modules.map(({ id, name }) => [id, { source: name, title: $manifestText(id, "module", id, name) }]))).catch(() => {});
 });
 
 let railCollapsed = $state(localStorage.getItem("daena:rail-collapsed") === "true");
@@ -794,7 +796,7 @@ function schemaReferenceEntityTypes(moduleId: string | null) {
       for (const entityType of schema.entityTypes ?? []) {
         if (seen.has(entityType.id)) continue;
         seen.add(entityType.id);
-        types.push({ id: entityType.id, name: entityType.name });
+        types.push({ id: entityType.id, name: $manifestText(dependency.id, "type", entityType.id, entityType.name) });
       }
     }
   }
@@ -1054,7 +1056,7 @@ function manifestForWorkspaceSection(target: WorkspaceSection): ModuleManifest |
 function sectionEntityTypeDefs(target: WorkspaceSection) {
   return (
     manifestForWorkspaceSection(target)?.schemas.flatMap((schema) =>
-      schema.entityTypes.map((entityType) => ({ id: entityType.id, name: manifestCopy($ui, workspaceModuleId(target), "type", entityType.id, entityType.name) })),
+      schema.entityTypes.map((entityType) => ({ id: entityType.id, name: $manifestText(workspaceModuleId(target), "type", entityType.id, entityType.name) })),
     ) ?? []
   );
 }
@@ -1321,11 +1323,11 @@ function createGroups(): CreateGroup[] {
   return [...groups.values()];
 }
 function templateName(option: CreateOption) {
-  return manifestCopy($ui, option.module.id, "template", option.template.id, option.template.name);
+  return $manifestText(option.module.id, "template", option.template.id, option.template.name);
 }
 function templateDescription(option: CreateOption) {
   const text = option.template.description;
-  return text && manifestCopy($ui, option.module.id, "templateDescription", option.template.id, text);
+  return text && $manifestText(option.module.id, "templateDescription", option.template.id, text);
 }
 function iconForCreateOption(option: CreateOption): { icon: IconRef; pluginId: string; iconColor: EntityTypeColor } {
   const entityType = option.module.schemas
@@ -1510,9 +1512,9 @@ function sectionEnabled() {
   return modules.find((module) => module.id === activeModuleId())?.enabled ?? false;
 }
 
-async function closeNativePluginWebviews() {
+async function closeNativePluginWebviews(includeDetached = true) {
   try {
-    await project.closeAllPluginWebviews();
+    await project.closeAllPluginWebviews(includeDetached);
   } catch {
     // The webview cleanup is best effort so browser previews remain usable.
   }
@@ -1547,7 +1549,8 @@ async function resolveDirtyMapSession(): Promise<boolean> {
 
 /**
  * Leaves whatever plugin surface is open. Native plugin webviews are only closed when a
- * full-surface plugin view (host or sandbox) was open, or when the caller asks for it.
+ * full-surface view was open. Detached windows follow app language changes and stay
+ * open across navigation. Project transitions explicitly close all windows.
  * The Language content pane is not one of those: its SandboxView owns its webview and
  * closes it when it unmounts, so closing every webview here would blank a pane that stays.
  */
@@ -1557,7 +1560,7 @@ async function leavePluginView(options: { closeWebviews?: boolean } = {}): Promi
   editorFullscreen = false;
   hostView = null;
   sandboxView = null;
-  if (fullSurfaceOpen || options.closeWebviews) await closeNativePluginWebviews();
+  if (fullSurfaceOpen || options.closeWebviews) await closeNativePluginWebviews(options.closeWebviews ?? false);
   return true;
 }
 
@@ -2225,8 +2228,8 @@ function handleWritingStateEvent(event: WritingStateEvent) {
 }
 
 function pluginViewLabel(item: { plugin: { id: string; name: string }; view: { id: string; title: string } }) {
-  const name = manifestCopy($ui, item.plugin.id, "module", item.plugin.id, item.plugin.name);
-  const title = manifestCopy($ui, item.plugin.id, "view", item.view.id, item.view.title);
+  const name = $manifestText(item.plugin.id, "module", item.plugin.id, item.plugin.name);
+  const title = $manifestText(item.plugin.id, "view", item.view.id, item.view.title);
   return item.plugin.name === item.view.title ? name : `${name} · ${title}`;
 }
 
@@ -3587,6 +3590,10 @@ function inactiveTabTitle(tab: ShellTab): string {
   if (tab.location.kind === "home") return $messages.workspace.home;
   if (tab.location.kind === "project") return projectSectionLabel(tab.location.section);
   if (tab.location.kind === "settings") return $messages.common.settings;
+  if (tab.icon.kind === "plugin") {
+    const item = pluginNavigationItemByKey(tab.icon.key);
+    if (item) return pluginViewLabel(item);
+  }
   if (tab.icon.kind !== "entity") return tab.title;
   const entityId = tab.location.kind === "workspace" || tab.location.kind === "plugin" ? tab.location.entityId : null;
   if (!entityId) return tab.title;
@@ -3676,9 +3683,11 @@ function emptyEditorKicker() {
 }
 
 function inspectorFieldLabel(definition: FieldDefinition) {
-  return activeManifest()?.id === "daena.lore" && namespaceForField(definition) === "lore"
+  const owner = definition.relationshipType && manifestOwningRelationshipType(definition.relationshipType, modules);
+  const moduleId = owner ? owner.id : activeManifest()?.id;
+  return moduleId === "daena.lore" && namespaceForField(definition) === "lore"
     ? loreFieldLabel($messages.loreFields, definition.key, definition.label)
-    : manifestCopy($ui, activeManifest()?.id, "field", definition.key, definition.label);
+    : $manifestText(moduleId, "field", definition.key, definition.label);
 }
 
 function entityTypeLabel(entityType: string | null) {
@@ -3687,7 +3696,7 @@ function entityTypeLabel(entityType: string | null) {
   if (!presentation) return entityType;
   return presentation.pluginId === "daena.lore"
     ? loreTypeLabel($messages.loreTypes, entityType, presentation.definition.name)
-    : manifestCopy($ui, presentation.pluginId, "type", entityType, presentation.definition.name);
+    : $manifestText(presentation.pluginId, "type", entityType, presentation.definition.name);
 }
 
 /** Opens the projection for the current section: Chronology in Timeline, otherwise the Lore World graph. */
@@ -4991,8 +5000,8 @@ function themePackChoices() {
     return {
       pluginId: pack.pluginId,
       themeId: pack.themeId,
-      name: pack.name,
-      pluginName: pack.pluginName,
+      name: $manifestText(pack.pluginId, "theme", pack.themeId, pack.name),
+      pluginName: $manifestText(pack.pluginId, "module", pack.pluginId, pack.pluginName),
       accent: tokens.accent ?? fallback.accent,
       surface: tokens.surface ?? fallback.surface,
       canvas: tokens.canvas ?? fallback.canvas,
@@ -6351,7 +6360,7 @@ function quickOpenItems(): QuickOpenItem[] {
       id: `create:${option.key}`,
       category: "Create",
       label: $ui("Create {0}", templateName(option)),
-      description: $ui("{0} · open focused creation", manifestCopy($ui, option.module.id, "module", option.module.id, option.module.name)),
+      description: $ui("{0} · open focused creation", $manifestText(option.module.id, "module", option.module.id, option.module.name)),
       keywords: [option.module.name, option.template.entityType, templateDescription(option) ?? ""],
       icon: presentation.icon,
       pluginId: presentation.pluginId,
@@ -7242,7 +7251,7 @@ async function toggleModule(id: ModuleId) {
   if (!installed.enabled) {
     askConfirm(
       $ui("Grant plugin capabilities"),
-      $ui("Choose which of {0}'s requested capabilities to grant. This dialog is owned by Daena; the plugin cannot change its wording.", manifestCopy($ui, installed.id, "module", installed.id, installed.name)),
+      $ui("Choose which of {0}'s requested capabilities to grant. This dialog is owned by Daena; the plugin cannot change its wording.", $manifestText(installed.id, "module", installed.id, installed.name)),
       $ui("Enable plugin"),
       async (granted) => {
         await project.enableModule(id, granted);
@@ -7272,6 +7281,7 @@ async function toggleModule(id: ModuleId) {
 async function loadThemePacks() {
   try {
     const view = await project.adminView();
+    installedLocalizations = view.plugins.filter((plugin) => plugin.localization);
     themePacks = collectInstalledThemePacks(view.plugins);
     applyCurrentAppearance();
   } catch {
@@ -7284,6 +7294,7 @@ async function refreshAdmin() {
   try {
     const view = await project.adminView();
     adminPlugins = view.plugins;
+    installedLocalizations = view.plugins.filter((plugin) => plugin.localization);
     themePacks = collectInstalledThemePacks(view.plugins);
     applyCurrentAppearance();
     try {
@@ -7696,7 +7707,7 @@ async function confirmUpgrade() {
     upgradePreview = null;
     await refreshAdmin();
     modules = await project.listModuleManifests();
-    error = $ui("Upgraded {0} to {1}.", preview.entry.name, preview.version);
+    error = $ui("Upgraded {0} to {1}.", $manifestText(preview.entry.id, "module", preview.entry.id, preview.entry.name), preview.version);
   } catch (cause) {
     error = friendlyError(cause);
   } finally {
@@ -7747,26 +7758,26 @@ async function runConfirm() {
 async function confirmRollback(plugin: PluginAdminEntry, version: string) {
   askConfirm(
     $ui("Roll back plugin"),
-    $ui("Restore {0} to version {1}? The pre-upgrade backup will be restored and the previous version reactivated.", plugin.name, version),
+    $ui("Restore {0} to version {1}? The pre-upgrade backup will be restored and the previous version reactivated.", $manifestText(plugin.id, "module", plugin.id, plugin.name), version),
     $ui("Roll back"),
     async () => {
       await project.rollbackPlugin(plugin.id, version);
       await refreshAdmin();
       modules = await project.listModuleManifests();
-      error = $ui("Rolled {0} back to {1}.", plugin.name, version);
+      error = $ui("Rolled {0} back to {1}.", $manifestText(plugin.id, "module", plugin.id, plugin.name), version);
     },
   );
 }
 async function confirmUninstall(plugin: PluginAdminEntry, version: string) {
   askConfirm(
     $ui("Uninstall code"),
-    $ui("Remove {0} {1} from the plugin library? It will still be listed if another version is installed.", plugin.name, version),
+    $ui("Remove {0} {1} from the plugin library? It will still be listed if another version is installed.", $manifestText(plugin.id, "module", plugin.id, plugin.name), version),
     $ui("Uninstall"),
     async () => {
       await project.uninstallPluginCode(plugin.id, version);
       await refreshAdmin();
       modules = await project.listModuleManifests();
-      error = $ui("Uninstalled {0} {1}.", plugin.name, version);
+      error = $ui("Uninstalled {0} {1}.", $manifestText(plugin.id, "module", plugin.id, plugin.name), version);
     },
   );
 }
@@ -7776,7 +7787,7 @@ async function retryPlugin(plugin: PluginAdminEntry) {
     modules = await project.listModuleManifests();
     await reconcileWorkspaceSection();
     await refreshAdmin();
-    error = $ui("Retried {0}.", plugin.name);
+    error = $ui("Retried {0}.", $manifestText(plugin.id, "module", plugin.id, plugin.name));
   } catch (cause) {
     error = friendlyError(cause);
   }
@@ -7805,7 +7816,7 @@ async function togglePluginEnabled(plugin: PluginAdminEntry) {
   if (!plugin.enabled) {
     askConfirm(
       $ui("Grant plugin capabilities"),
-      $ui("Choose which of {0}'s requested capabilities to grant. This dialog is owned by Daena; the plugin cannot change its wording.", manifestCopy($ui, plugin.id, "module", plugin.id, plugin.name)),
+      $ui("Choose which of {0}'s requested capabilities to grant. This dialog is owned by Daena; the plugin cannot change its wording.", $manifestText(plugin.id, "module", plugin.id, plugin.name)),
       $ui("Enable plugin"),
       async (granted) => {
         pluginActionId = plugin.id;
@@ -7844,7 +7855,7 @@ async function togglePluginEnabled(plugin: PluginAdminEntry) {
 async function reviewPluginCapabilities(plugin: PluginAdminEntry) {
   askConfirm(
     $ui("Review plugin capabilities"),
-    $ui("Choose which of {0}'s requested capabilities to grant. This dialog is owned by Daena; the plugin cannot change its wording.", manifestCopy($ui, plugin.id, "module", plugin.id, plugin.name)),
+    $ui("Choose which of {0}'s requested capabilities to grant. This dialog is owned by Daena; the plugin cannot change its wording.", $manifestText(plugin.id, "module", plugin.id, plugin.name)),
     $ui("Update capabilities"),
     async (granted) => {
       pluginActionId = plugin.id;
@@ -8510,7 +8521,7 @@ onMount(() => {
                     class="create-dialog-back"
                     disabled={createBusy}
                     onclick={returnToCreationMenu}>{$ui("All templates")}</button
-                  ><span class="panel-kicker">{manifestCopy($ui, createOption.module.id, "module", createOption.module.id, createOption.module.name).toUpperCase()}</span><strong
+                  ><span class="panel-kicker">{$manifestText(createOption.module.id, "module", createOption.module.id, createOption.module.name).toUpperCase()}</span><strong
                     id="create-dialog-title">{$ui("Create {0}", templateName(createOption))}</strong>
                   <p>{templateDescription(createOption) ?? $ui("Create a new {0}.", createOption.template.entityType)}</p>{/if}
               </div>
@@ -8524,7 +8535,7 @@ onMount(() => {
             {#if createDialogView === "templates"}<div class="create-template-gallery">
                 {#each createGroups() as group}<section class="create-template-group">
                     <div class="create-template-group-heading">
-                      <span>{manifestCopy($ui, group.module.id, "module", group.module.id, group.module.name)}</span><small
+                      <span>{$manifestText(group.module.id, "module", group.module.id, group.module.name)}</span><small
                         >{group.options.length} {group.options.length === 1 ? $ui("template") : $ui("templates")}</small>
                     </div>
                     <div class="create-template-tiles">
@@ -8690,7 +8701,7 @@ onMount(() => {
           <div class="new-form-heading">
             <div>
               <span class="panel-kicker">{$ui("UPDATE PLUGIN")}</span><strong
-                >{$ui("Update {0} to v{1}", preview.entry.name, preview.version)}</strong>
+                >{$ui("Update {0} to v{1}", $manifestText(preview.entry.id, "module", preview.entry.id, preview.entry.name), preview.version)}</strong>
             </div>
             <button type="button" class="new-form-close" onclick={() => (upgradePreview = null)}
               ><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
@@ -8918,7 +8929,7 @@ onMount(() => {
                 <article class="plugin-card">
                   <header class="plugin-card-head">
                     <div class="plugin-card-title">
-                      <strong>{manifestCopy($ui, entry.id, "module", entry.id, entry.name)}</strong><span class="plugin-id">{entry.id}</span>
+                      <strong>{$manifestText(entry.id, "module", entry.id, entry.name)}</strong><span class="plugin-id">{entry.id}</span>
                     </div>
                   </header>
                   <div class="plugin-card-meta">
@@ -8948,7 +8959,7 @@ onMount(() => {
                 <article class="plugin-card">
                   <header class="plugin-card-head">
                     <div class="plugin-card-title">
-                      <strong>{manifestCopy($ui, plugin.id, "module", plugin.id, plugin.name)}</strong><span class="plugin-id">{plugin.id}</span>
+                      <strong>{$manifestText(plugin.id, "module", plugin.id, plugin.name)}</strong><span class="plugin-id">{plugin.id}</span>
                     </div>
                     <div class="plugin-badges">
                       <span class:badge-off={!plugin.enabled} class="plugin-badge"
@@ -9414,7 +9425,7 @@ onMount(() => {
               instanceId={shownWebviewInstance}
               holdMount={shellNavigationBusy}
               viewId={sandboxView.view?.id}
-              title={sandboxView.plugin.name} />
+              title={$manifestText(sandboxView.plugin.id, "module", sandboxView.plugin.id, sandboxView.plugin.name)} />
           {/key}
         {/key}
       </SpecializedSurface>
@@ -10484,14 +10495,14 @@ onMount(() => {
                                   : []
                                 : String(fields[definition.key] ?? "")}
                               onchange={(event) => updateField(definition, event)}
-                              >{#each definition.options ?? [] as option}<option value={option}>{manifestCopy($ui, activeManifest()?.id, "option", definition.key + "/" + option, option)}</option
+                              >{#each definition.options ?? [] as option}<option value={option}>{$manifestText(activeManifest()?.id, "option", definition.key + "/" + option, option)}</option
                                 >{/each}</select
                             >{:else if (definition as any).type === "oneof"}<select
                               aria-label={label}
                               value={String(fields[definition.key] ?? "")}
                               onchange={(event) => updateField(definition, event)}
                               ><option value="">{$messages.inspector.chooseField(label)}</option
-                              >{#each definition.options ?? [] as option}<option value={option}>{manifestCopy($ui, activeManifest()?.id, "option", definition.key + "/" + option, option)}</option>{/each}
+                              >{#each definition.options ?? [] as option}<option value={option}>{$manifestText(activeManifest()?.id, "option", definition.key + "/" + option, option)}</option>{/each}
                               {#each (definition as any).oneOf ?? [] as variant}
                                 {#each variant.options ?? [] as opt}<option value={opt}>{variant.label}: {opt}</option
                                   >{/each}
@@ -10601,7 +10612,7 @@ onMount(() => {
                   </section>{/snippet}
                 {#each groupedInspectorRelationships() as group (`${inspectedEntity?.id ?? ""}:${group.moduleId}`)}
                   {@const groupCount = relationshipGroupLinkCount(group.fields)}
-                  <InspectorSection title={manifestCopy($ui, group.moduleId, "module", group.moduleId, group.moduleName)} count={groupCount} open={groupCount > 0} sticky>
+                  <InspectorSection title={$manifestText(group.moduleId, "module", group.moduleId, group.moduleName)} count={groupCount} open={groupCount > 0} sticky>
                     {#each group.fields as definition (definition.key)}{@render inspectorRelationshipField(
                         definition,
                       )}{/each}

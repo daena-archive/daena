@@ -1,4 +1,7 @@
 {
+  "invalid translation locale: {0}": "翻訳ファイルの言語タグを確認してください：{0}",
+  "invalid translation catalog {0}: {1}": "翻訳ファイル {0} を読み込めません：{1}",
+  "plugin translations exceed 1 MiB": "プラグインの翻訳ファイルは合計1 MiBまでです。",
   "60 % land on a water-poor planet: dry interiors, salt lakes and closed basins.": "陸地が60%を占める水の少ない惑星。内陸は乾燥し、塩湖や閉鎖流域が広がります。",
   "A DOCX drawing had no safe, supported image payload and was omitted.": "DOCX図面は、安全でサポートされた画像のペイロードがなく、省略されました。",
   "A DOCX field instruction was omitted while retaining displayed text.": "表示されたテキストを保持しながらDOCX フィールドの指示が省略されました。",

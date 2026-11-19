@@ -1,6 +1,6 @@
 <script lang="ts">
 import { nativeErrorText } from "$lib/i18n/native-errors.ts";
-import { manifestCopy } from "$lib/i18n/manifest-copy";
+import { manifestText } from "$lib/i18n/manifest-copy";
 import { ui } from "$lib/i18n/ui";
 import { onMount, tick } from "svelte";
 import { listen } from "@tauri-apps/api/event";
@@ -458,10 +458,10 @@ onMount(() => {
           <span>{$ui("Importer")}</span>
           <select bind:value={importerKey} disabled={busy || importers.length === 0} onchange={normalizeSourceKind}>
             {#each importers as importer (importerKeyOf(importer))}
-              <option value={importerKeyOf(importer)}>{importer.pluginId ? importer.name : $ui(importer.name)}</option>
+              <option value={importerKeyOf(importer)}>{importer.pluginId ? $manifestText(importer.pluginId, "importer", importer.id, importer.name) : $ui(importer.name)}</option>
             {/each}
           </select>
-          {#if selectedImporter}<small>{selectedImporter.pluginId ? selectedImporter.description : $ui(selectedImporter.description)}</small>{/if}
+          {#if selectedImporter}<small>{selectedImporter.pluginId ? $manifestText(selectedImporter.pluginId, "importerDescription", selectedImporter.id, selectedImporter.description) : $ui(selectedImporter.description)}</small>{/if}
         </label>
         <fieldset>
           <legend>{$ui("Source")}</legend>
@@ -729,7 +729,7 @@ onMount(() => {
                       <option value=""
                         >{mappingScope === "global" ? $ui("Choose a type") : $ui("Inherit broader mapping")}</option>
                       {#each catalog().entityTypes as choice}<option value={choice.id}
-                          >{manifestCopy($ui, choice.moduleId, "module", choice.moduleId, choice.moduleName)} · {manifestCopy($ui, choice.moduleId, "type", choice.id, choice.label)}</option
+                          >{$manifestText(choice.moduleId, "module", choice.moduleId, choice.moduleName)} · {$manifestText(choice.moduleId, "type", choice.id, choice.label)}</option
                         >{/each}
                     </select></label>
                   {#if Object.keys(object.fields ?? {}).length > 0}
@@ -745,7 +745,7 @@ onMount(() => {
                                 ? $ui("Preserve as unmapped metadata")
                                 : $ui("Inherit broader mapping")}</option
                             >{#each fieldsForEntity(effectiveEntityType(object)) as choice}<option value={choice.id}
-                                >{manifestCopy($ui, choice.moduleId, "module", choice.moduleId, choice.moduleName)} · {manifestCopy($ui, choice.moduleId, "field", choice.key, choice.label)}</option
+                                >{$manifestText(choice.moduleId, "module", choice.moduleId, choice.moduleName)} · {$manifestText(choice.moduleId, "field", choice.key, choice.label)}</option
                               >{/each}</select
                           ></label
                         >{/each}
@@ -760,7 +760,7 @@ onMount(() => {
                             ><option value=""
                               >{mappingScope === "global" ? $ui("Leave unresolved") : $ui("Inherit broader mapping")}</option
                             >{#each catalog().relationships as choice}<option value={choice.id}
-                                >{manifestCopy($ui, choice.moduleId, "module", choice.moduleId, choice.moduleName)} · {manifestCopy($ui, choice.moduleId, "field", choice.key, choice.label)}</option
+                                >{$manifestText(choice.moduleId, "module", choice.moduleId, choice.moduleName)} · {$manifestText(choice.moduleId, "field", choice.key, choice.label)}</option
                               >{/each}</select
                           ></label
                         >{/each}

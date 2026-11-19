@@ -914,7 +914,7 @@ export interface GitResetResult {
   rebuild: ExternalChangeReport;
 }
 export type { ModuleManifest };
-export type ProjectModuleManifest = ModuleManifest & { enabled: boolean };
+export type ProjectModuleManifest = ModuleManifest & { enabled: boolean; localization?: import("../i18n/manifest-copy").PackageLocalization };
 export type WikiPageExportFormat = "markdown" | "html";
 export interface InstalledPluginVersion {
   id: string;

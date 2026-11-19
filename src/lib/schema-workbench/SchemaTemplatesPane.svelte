@@ -1,5 +1,5 @@
 <script lang="ts">
-import { manifestCopy } from "$lib/i18n/manifest-copy";
+import { manifestText } from "$lib/i18n/manifest-copy";
 import { ui } from "$lib/i18n/ui";
 import type { EntityTemplate, FieldDefinition, ModuleSchemaOverlay } from "$lib/project/client";
 import { defaultFieldValue, humanizeId } from "$lib/schema-workbench";
@@ -164,7 +164,7 @@ function selectBuiltinTemplate(template: EntityTemplate) {
               <button type="button" class="item-select" onclick={() => selectBuiltinTemplate(template)}>
                 <div class="item-main">
                   <div class="item-title-row">
-                    <strong>{manifestCopy($ui, pluginId, "template", template.id, template.name)}</strong>
+                    <strong>{$manifestText(pluginId, "template", template.id, template.name)}</strong>
                     <span class="type-pill ghost">{entityTypeLabel(template.entityType)}</span>
                     {#if isDisabled(draft.disabledTemplates, template.id)}<span class="disabled-pill"
                         ><EyeOff size={10} strokeWidth={1.8} aria-hidden="true" /> {$ui("Disabled")}</span
@@ -172,7 +172,7 @@ function selectBuiltinTemplate(template: EntityTemplate) {
                   </div>
                   <span class="meta"
                     >{$ui("{0} fields", Object.keys(fieldsForTemplate(template, true)).length)} <span class="dot">·</span>
-                    {template.description ? manifestCopy($ui, pluginId, "templateDescription", template.id, template.description) : $ui("Builtin template")}
+                    {template.description ? $manifestText(pluginId, "templateDescription", template.id, template.description) : $ui("Builtin template")}
                     {#if showAdvanced}<span class="dot">·</span> <code>{template.id}</code>{/if}
                   </span>
                 </div>
@@ -215,14 +215,14 @@ function selectBuiltinTemplate(template: EntityTemplate) {
               <button type="button" class="item-select" onclick={() => startTemplateEdit(template)}>
                 <div class="item-main">
                   <div class="item-title-row">
-                    <strong>{manifestCopy($ui, pluginId, "template", template.id, template.name)}</strong>
+                    <strong>{$manifestText(pluginId, "template", template.id, template.name)}</strong>
                     <span class="type-pill ghost">{entityTypeLabel(template.entityType)}</span>
                   </div>
                   <span class="meta">
                     {entityTypeLabel(template.entityType)}
                     {#if template.description}
                       <span class="dot">·</span>
-                      {manifestCopy($ui, pluginId, "templateDescription", template.id, template.description)}
+                      {$manifestText(pluginId, "templateDescription", template.id, template.description)}
                     {/if}
                     {#if showAdvanced}<span class="dot">·</span> <code>{template.id}</code>{/if}
                   </span>
@@ -232,13 +232,13 @@ function selectBuiltinTemplate(template: EntityTemplate) {
                 <button
                   type="button"
                   class="quiet icon"
-                  aria-label={$ui("Edit {0}", manifestCopy($ui, pluginId, "template", template.id, template.name))}
+                  aria-label={$ui("Edit {0}", $manifestText(pluginId, "template", template.id, template.name))}
                   onclick={() => startTemplateEdit(template)}
                   ><Pencil size={14} strokeWidth={1.8} aria-hidden="true" /></button>
                 <button
                   type="button"
                   class="danger icon"
-                  aria-label={$ui("Remove {0}", manifestCopy($ui, pluginId, "template", template.id, template.name))}
+                  aria-label={$ui("Remove {0}", $manifestText(pluginId, "template", template.id, template.name))}
                   onclick={() => removeCustomTemplate(template.id)}
                   ><Trash2 size={14} strokeWidth={1.8} aria-hidden="true" /></button>
               </div>
@@ -272,7 +272,7 @@ function selectBuiltinTemplate(template: EntityTemplate) {
                   class="chip select"
                   class:selected={newTemplateFieldKeys.includes(field.key)}
                   aria-pressed={newTemplateFieldKeys.includes(field.key)}
-                  onclick={() => toggleNewField(field)}>{manifestCopy($ui, pluginId, "field", field.key, field.label) || humanizeId(field.key)}</button>
+                  onclick={() => toggleNewField(field)}>{$manifestText(pluginId, "field", field.key, field.label) || humanizeId(field.key)}</button>
               {/each}
             </div>
           </div>
@@ -286,7 +286,7 @@ function selectBuiltinTemplate(template: EntityTemplate) {
                   class:selected={newTemplateRequiredFields.includes(field.key)}
                   aria-pressed={newTemplateRequiredFields.includes(field.key)}
                   onclick={() => (newTemplateRequiredFields = toggleInList(newTemplateRequiredFields, field.key))}
-                  >{manifestCopy($ui, pluginId, "field", field.key, field.label) || humanizeId(field.key)}</button>
+                  >{$manifestText(pluginId, "field", field.key, field.label) || humanizeId(field.key)}</button>
               {/each}
               {#if newTemplateFieldKeys.length === 0}
                 <span class="meta">{$ui("Select at least one included field to mark as required.")}</span>
@@ -333,13 +333,13 @@ function selectBuiltinTemplate(template: EntityTemplate) {
         <div class="block-heading">
           <div class="heading-left">
             <span class="heading-icon"><LayoutTemplate size={14} strokeWidth={1.8} aria-hidden="true" /></span>
-            <h4>{manifestCopy($ui, pluginId, "template", template.id, template.name)}</h4>
+            <h4>{$manifestText(pluginId, "template", template.id, template.name)}</h4>
           </div>
           <span class="type-pill">{$ui("Built in")}</span>
         </div>
         {#if editingBuiltinTemplateId === template.id}
           <div class="edit-form wide">
-            <div class="type-select" role="group" aria-label={$ui("Fields for {0}", manifestCopy($ui, pluginId, "template", template.id, template.name))}>
+            <div class="type-select" role="group" aria-label={$ui("Fields for {0}", $manifestText(pluginId, "template", template.id, template.name))}>
               <span class="type-select-label">{$ui("Included fields")}</span>
               <div class="chip-row compact">
                 {#each effectiveFieldsForType(template.entityType) as field}
@@ -348,11 +348,11 @@ function selectBuiltinTemplate(template: EntityTemplate) {
                     class="chip select"
                     class:selected={editingTemplateFieldKeys.includes(field.key)}
                     aria-pressed={editingTemplateFieldKeys.includes(field.key)}
-                    onclick={() => toggleEditField(field)}>{manifestCopy($ui, pluginId, "field", field.key, field.label) || humanizeId(field.key)}</button>
+                    onclick={() => toggleEditField(field)}>{$manifestText(pluginId, "field", field.key, field.label) || humanizeId(field.key)}</button>
                 {/each}
               </div>
             </div>
-            <div class="type-select" aria-label={$ui("Defaults for {0}", manifestCopy($ui, pluginId, "template", template.id, template.name))}>
+            <div class="type-select" aria-label={$ui("Defaults for {0}", $manifestText(pluginId, "template", template.id, template.name))}>
               <span class="type-select-label">{$ui("Defaults")}</span>
               {#each effectiveFieldsForType(template.entityType).filter( (field) => editingTemplateFieldKeys.includes(field.key) ) as field}
                 <SchemaFieldInput
@@ -365,7 +365,7 @@ function selectBuiltinTemplate(template: EntityTemplate) {
                     (editingTemplateFieldValues = { ...editingTemplateFieldValues, [field.key]: value })} />
               {/each}
             </div>
-            <div class="type-select" role="group" aria-label={$ui("Required fields for {0}", manifestCopy($ui, pluginId, "template", template.id, template.name))}>
+            <div class="type-select" role="group" aria-label={$ui("Required fields for {0}", $manifestText(pluginId, "template", template.id, template.name))}>
               <span class="type-select-label">{$ui("Required fields")}</span>
               <div class="chip-row compact">
                 {#each effectiveFieldsForType(template.entityType).filter( (field) => editingTemplateFieldKeys.includes(field.key) ) as field}
@@ -376,7 +376,7 @@ function selectBuiltinTemplate(template: EntityTemplate) {
                     aria-pressed={editingTemplateRequiredFields.includes(field.key)}
                     onclick={() =>
                       (editingTemplateRequiredFields = toggleInList(editingTemplateRequiredFields, field.key))}
-                    >{manifestCopy($ui, pluginId, "field", field.key, field.label) || humanizeId(field.key)}</button>
+                    >{$manifestText(pluginId, "field", field.key, field.label) || humanizeId(field.key)}</button>
                 {/each}
               </div>
             </div>
@@ -395,7 +395,7 @@ function selectBuiltinTemplate(template: EntityTemplate) {
             </div>
           </div>
         {:else}
-          <p class="subtle-note">{template.description ? manifestCopy($ui, pluginId, "templateDescription", template.id, template.description) : $ui("Builtin template")}</p>
+          <p class="subtle-note">{template.description ? $manifestText(pluginId, "templateDescription", template.id, template.description) : $ui("Builtin template")}</p>
           <SchemaTemplatePreview
               {pluginId}
             {template}
@@ -421,7 +421,7 @@ function selectBuiltinTemplate(template: EntityTemplate) {
         <div class="block-heading">
           <div class="heading-left">
             <span class="heading-icon accent"><Sparkles size={14} strokeWidth={1.8} aria-hidden="true" /></span>
-            <h4>{manifestCopy($ui, pluginId, "template", template.id, template.name)}</h4>
+            <h4>{$manifestText(pluginId, "template", template.id, template.name)}</h4>
           </div>
           <span class="type-pill">{$ui("Project custom")}</span>
         </div>
@@ -446,11 +446,11 @@ function selectBuiltinTemplate(template: EntityTemplate) {
                   class="chip select"
                   class:selected={editingTemplateFieldKeys.includes(field.key)}
                   aria-pressed={editingTemplateFieldKeys.includes(field.key)}
-                  onclick={() => toggleEditField(field)}>{manifestCopy($ui, pluginId, "field", field.key, field.label) || humanizeId(field.key)}</button>
+                  onclick={() => toggleEditField(field)}>{$manifestText(pluginId, "field", field.key, field.label) || humanizeId(field.key)}</button>
               {/each}
             </div>
           </div>
-          <div class="type-select" role="group" aria-label={$ui("Required fields for {0}", manifestCopy($ui, pluginId, "template", template.id, template.name))}>
+          <div class="type-select" role="group" aria-label={$ui("Required fields for {0}", $manifestText(pluginId, "template", template.id, template.name))}>
             <span class="type-select-label">{$ui("Required fields")}</span>
             <div class="chip-row compact">
               {#each effectiveFieldsForType(editTemplateEntityType).filter( (field) => editingTemplateFieldKeys.includes(field.key) ) as field}
@@ -461,11 +461,11 @@ function selectBuiltinTemplate(template: EntityTemplate) {
                   aria-pressed={editingTemplateRequiredFields.includes(field.key)}
                   onclick={() =>
                     (editingTemplateRequiredFields = toggleInList(editingTemplateRequiredFields, field.key))}
-                  >{manifestCopy($ui, pluginId, "field", field.key, field.label) || humanizeId(field.key)}</button>
+                  >{$manifestText(pluginId, "field", field.key, field.label) || humanizeId(field.key)}</button>
               {/each}
             </div>
           </div>
-          <div class="type-select" aria-label={$ui("Defaults for {0}", manifestCopy($ui, pluginId, "template", template.id, template.name))}>
+          <div class="type-select" aria-label={$ui("Defaults for {0}", $manifestText(pluginId, "template", template.id, template.name))}>
             <span class="type-select-label">{$ui("Defaults")}</span>
             {#each effectiveFieldsForType(editTemplateEntityType).filter( (field) => editingTemplateFieldKeys.includes(field.key) ) as field}
               <SchemaFieldInput

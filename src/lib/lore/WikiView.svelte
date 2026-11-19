@@ -1,6 +1,6 @@
 <script lang="ts">
 import { nativeErrorText } from "$lib/i18n/native-errors.ts";
-import { manifestCopy } from "$lib/i18n/manifest-copy";
+import { manifestText } from "$lib/i18n/manifest-copy";
 import { displayLanguage } from "$lib/i18n";
 import { ui } from "$lib/i18n/ui";
 import { onMount, type Snippet } from "svelte";
@@ -49,6 +49,7 @@ import {
   coveredRelationshipIds,
   groupedRelationshipFields,
   groupRelationshipsByOwningModule,
+  manifestOwningRelationshipType,
   relationshipAttributeRows,
   relationshipFieldForType,
   type ManifestLike,
@@ -134,7 +135,7 @@ const articleOutline = $derived(documentBody ? headingOutline(documentBody) : []
 function labelForType(type: string | null) {
   if (!type) return $ui("Uncategorized");
   const definition = allEntityTypeDefinitions.find((candidate: any) => candidate.id === type);
-  return definition ? manifestCopy($ui, manifest.id, "type", type, definition.name) : humanizeType(type);
+  return definition ? $manifestText(manifest.id, "type", type, definition.name) : humanizeType(type);
 }
 
 function fieldsForType(entityType: string | null) {
@@ -238,7 +239,7 @@ const visibleFields = $derived(
       .filter((definition: any) => definition.type !== "relationship")
       .map((definition: any) => ({
         key: definition.key,
-        label: manifestCopy($ui, manifest.id, "field", definition.key, definition.label),
+        label: $manifestText(manifest.id, "field", definition.key, definition.label),
         value: fieldDisplay(fields[definition.key]),
       }))
       .filter((row: any) => !isEmptyValue(fields[row.key]) && row.value);
@@ -252,7 +253,7 @@ const visibleRelationshipFields = $derived(
       .filter((definition: any) => definition.type === "relationship")
       .map((definition: any) => ({
         definition,
-        label: manifestCopy($ui, manifest.id, "field", definition.key, definition.label),
+        label: $manifestText(manifestOwningRelationshipType(definition.relationshipType, wikiManifests)?.id ?? manifest.id, "field", definition.key, definition.label),
         targets: relationships
           .map((relationship: any) => {
             const id = counterpartId(entityId, relationship, definition);
@@ -296,7 +297,9 @@ function attributesForRelationship(
       const field = metaFields.find((candidate) => candidate.key === row.key) ?? null;
       return {
         key: row.key,
-        label: row.label === row.key ? humanizeType(row.key) : row.label,
+        label: field?.label
+          ? $manifestText(manifestOwningRelationshipType(relationship.relationship_type, wikiManifests)?.id, "metadata", relationship.relationship_type + "/" + row.key, field.label)
+          : row.label === row.key ? humanizeType(row.key) : row.label,
         value: formatAttributeValue(row.raw, field),
       };
     })
@@ -676,7 +679,7 @@ function handleEdit() {
 
 <section class="kb-shell" aria-label={$ui("Lore knowledge base")}>
   <WorkspaceTopbar
-    title={$ui("{0} knowledge base", manifestCopy($ui, manifest.id, "module", manifest.id, manifest.name))}
+    title={$ui("{0} knowledge base", $manifestText(manifest.id, "module", manifest.id, manifest.name))}
     subtitle={$ui("{0} published pages", wikiTotal)}
     icon={BookOpen}
     onBack={onClose}
@@ -863,7 +866,7 @@ function handleEdit() {
               {/if}
               {#each groupedWikiRelationships as group (group.moduleId)}
                 <div class="info-rel-group">
-                  <h3>{group.moduleName}</h3>
+                  <h3>{$manifestText(group.moduleId, "module", group.moduleId, group.moduleName)}</h3>
                   <dl>
                     {#each group.rows as row}<div>
                         <dt>{row.label}</dt>
@@ -941,7 +944,7 @@ function handleEdit() {
               {:else}
                 {#if groupedOutbound.length > 0}<h3>{$ui("From this page")}</h3>
                   {#each groupedOutbound as group (group.moduleId)}
-                    {#if groupedOutbound.length > 1}<h4>{group.moduleName}</h4>{/if}
+                    {#if groupedOutbound.length > 1}<h4>{$manifestText(group.moduleId, "module", group.moduleId, group.moduleName)}</h4>{/if}
                     <ul>
                       {#each group.relationships as relationship}<li>
                           <span>{humanizeType(relationship.relationship_type)}</span><button
@@ -955,7 +958,7 @@ function handleEdit() {
                   {/each}{/if}
                 {#if groupedInbound.length > 0}<h3>{$ui("Links here")}</h3>
                   {#each groupedInbound as group (group.moduleId)}
-                    {#if groupedInbound.length > 1}<h4>{group.moduleName}</h4>{/if}
+                    {#if groupedInbound.length > 1}<h4>{$manifestText(group.moduleId, "module", group.moduleId, group.moduleName)}</h4>{/if}
                     <ul>
                       {#each group.relationships as relationship}<li>
                           <span>{humanizeType(relationship.relationship_type)}</span><button

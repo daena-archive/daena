@@ -1,5 +1,5 @@
 <script lang="ts">
-import { manifestCopy } from "$lib/i18n/manifest-copy";
+import { manifestText } from "$lib/i18n/manifest-copy";
 import { ui } from "$lib/i18n/ui";
 import type { EntityTypeColor, EntityTypeDefinition, IconRef, ModuleSchemaOverlay } from "$lib/project/client";
 import FieldPicker from "$lib/FieldPicker.svelte";
@@ -145,7 +145,7 @@ function selectBuiltinType(typeId: string) {
             <li class="list-item compact" class:selected-detail={selectedTypeId === type.id}>
               <button type="button" class="item-select" onclick={() => selectBuiltinType(type.id)}>
                 <EntityGlyph icon={appearance.icon} iconColor={appearance.iconColor} {pluginId} size={14} box={24} />
-                <span><strong>{manifestCopy($ui, pluginId, "type", type.id, type.name)}</strong><small>{disabled ? $ui("Disabled") : $ui("Enabled")}</small></span>
+                <span><strong>{$manifestText(pluginId, "type", type.id, type.name)}</strong><small>{disabled ? $ui("Disabled") : $ui("Enabled")}</small></span>
               </button>
               <button
                 type="button"
@@ -184,7 +184,7 @@ function selectBuiltinType(typeId: string) {
             <li class="list-item" class:selected-detail={selectedTypeId === type.id}>
               <button type="button" class="item-select" onclick={() => startTypeEdit(type.id)}>
                 <EntityGlyph icon={type.icon} iconColor={type.iconColor} {pluginId} size={15} box={24} />
-                <strong>{manifestCopy($ui, pluginId, "type", type.id, type.name)}</strong>
+                <strong>{$manifestText(pluginId, "type", type.id, type.name)}</strong>
               </button>
               <div class="item-actions">
                 <button
@@ -238,7 +238,7 @@ function selectBuiltinType(typeId: string) {
               {pluginId}
               size={16}
               box={30} />
-            <h4>{manifestCopy($ui, pluginId, "type", type.id, type.name)}</h4>
+            <h4>{$manifestText(pluginId, "type", type.id, type.name)}</h4>
           </div>
           <span class="type-pill">{isBuiltin ? $ui("Built in") : $ui("Project custom")}</span>
         </div>

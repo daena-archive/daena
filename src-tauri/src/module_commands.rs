@@ -153,6 +153,7 @@ pub(super) async fn module_list_manifests(
         let host = plugins
             .lock()
             .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?;
+        let project_id = project.info().map(|info| info.root);
         effective_module_manifests(project, &host)?
             .into_iter()
             .map(|(manifest_struct, enabled)| {
@@ -162,6 +163,15 @@ pub(super) async fn module_list_manifests(
                     .as_object_mut()
                     .expect("manifest is an object")
                     .insert("enabled".into(), serde_json::Value::Bool(enabled));
+                if let Some(catalogs) = host.translations_for(&manifest_struct) {
+                    let entry = project_id.as_deref().and_then(|id| host.runtime_entry(id, &manifest_struct.id))
+                        .or_else(|| host.catalog.get(&manifest_struct.id).cloned())
+                        .ok_or_else(|| CoreError::Validation("plugin catalog entry disappeared".into()))?;
+                    manifest["localization"] = serde_json::json!({
+                        "source": entry.manifest,
+                        "catalogs": catalogs
+                    });
+                }
                 Ok(manifest)
             })
             .collect()

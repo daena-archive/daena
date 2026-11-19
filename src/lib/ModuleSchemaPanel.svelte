@@ -1,6 +1,6 @@
 <script lang="ts">
 import { nativeErrorText } from "$lib/i18n/native-errors.ts";
-import { manifestCopy } from "$lib/i18n/manifest-copy";
+import { manifestText } from "$lib/i18n/manifest-copy";
 import { ui } from "$lib/i18n/ui";
 import type {
   EntityTypeAppearanceOverride,
@@ -195,7 +195,7 @@ function entityTypeLabel(typeId: string): string {
     (draft.customEntityTypes ?? []).find((type) => type.id === typeId) ??
     referenceEntityTypes.find((type) => type.id === typeId);
   const name = defined?.name.trim();
-  return name ? manifestCopy($ui, pluginId, "type", typeId, name) : humanizeId(typeId);
+  return name ? $manifestText(pluginId, "type", typeId, name) : humanizeId(typeId);
 }
 
 // Remounted by parent `{#key editorRemountKey}`; initial overlay is intentional.
@@ -393,7 +393,7 @@ function typeMatches(type: EntityTypeDefinition, origin: "builtin" | "custom"): 
     enabled: origin === "custom" || !isDisabled(draft.disabledEntityTypes, type.id),
     namespace: origin === "builtin" ? flatPackage.typeNamespace[type.id] : undefined,
     hint: localTypeId(type.id),
-    searchText: [manifestCopy($ui, pluginId, "type", type.id, type.name), type.name, type.id, flatPackage.typeNamespace[type.id] ?? "", "type"].join(" "),
+    searchText: [$manifestText(pluginId, "type", type.id, type.name), type.name, type.id, flatPackage.typeNamespace[type.id] ?? "", "type"].join(" "),
   });
 }
 
@@ -407,7 +407,7 @@ function fieldMatches(field: FieldDefinition, origin: "builtin" | "custom"): boo
     namespace: origin === "builtin" ? flatPackage.fieldNamespace[field.key] : undefined,
     hint: fieldTypeLabel(field.type),
     searchText: [
-      manifestCopy($ui, pluginId, "field", field.key, field.label),
+      $manifestText(pluginId, "field", field.key, field.label),
       field.label,
       field.key,
       field.type,
@@ -427,7 +427,7 @@ function templateMatches(template: EntityTemplate, origin: "builtin" | "custom")
     enabled: origin === "custom" || !isDisabled(draft.disabledTemplates, template.id),
     hint: entityTypeLabel(template.entityType),
     searchText: [
-      manifestCopy($ui, pluginId, "template", template.id, template.name),
+      $manifestText(pluginId, "template", template.id, template.name),
       template.name,
       template.id,
       template.description ?? "",
@@ -561,8 +561,8 @@ function timelineBadge(field: FieldDefinition): string {
   if (!tl) return "";
   const role = $ui(tl.role ?? "point");
   const layer = $ui(tl.layer ?? "dates");
-  const group = tl.group ? `· ${manifestCopy($ui, pluginId, "timelineGroup", field.key, tl.group)}` : "";
-  const label = tl.label ? `· ${manifestCopy($ui, pluginId, "timelineLabel", field.key, tl.label)}` : "";
+  const group = tl.group ? `· ${$manifestText(pluginId, "timelineGroup", field.key, tl.group)}` : "";
+  const label = tl.label ? `· ${$manifestText(pluginId, "timelineLabel", field.key, tl.label)}` : "";
   return `${role} · ${layer} ${group} ${label}`.trim();
 }
 

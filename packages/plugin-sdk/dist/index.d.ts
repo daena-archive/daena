@@ -2,6 +2,7 @@ import type { EntityRecord, Event, Migration, MigrationAuthoringOptions, Migrati
 export * from "./generated.js";
 export type { MetadataFieldDefinition } from "./generated.js";
 export * from "./maps.js";
+export * from "./i18n.js";
 export { applyPluginAppearance, hostHasFeature, mergeThemeTokens, parseThemeColor, resolveThemeTokens, validateThemeContrast, validateThemePack, } from "./theme.js";
 export declare const APPEARANCE_FEATURE = "appearance@1";
 export interface PluginRpcTransport {

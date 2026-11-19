@@ -734,7 +734,7 @@ export const project = {
   ) => invoke<void>("plugin_resize_webview", { pluginId, instanceId, bounds }),
   unmountPluginWebview: (pluginId: string, instanceId: string) =>
     invoke<void>("plugin_unmount_webview", { pluginId, instanceId }),
-  closeAllPluginWebviews: () => invoke<void>("plugin_close_all_webviews"),
+  closeAllPluginWebviews: (includeDetached = true) => invoke<void>("plugin_close_all_webviews", { includeDetached }),
   hostViewData: (pluginId: string, viewId: string, selectedEntityId?: string) =>
     invoke<HostViewData>("plugin_host_view_data", { pluginId, viewId, selectedEntityId: selectedEntityId ?? null }),
   hostViewSetField: (

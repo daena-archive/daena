@@ -1,5 +1,5 @@
 <script lang="ts">
-import { manifestCopy } from "$lib/i18n/manifest-copy";
+import { manifestText } from "$lib/i18n/manifest-copy";
 import { ui } from "$lib/i18n/ui";
 import type { FieldDefinition } from "$lib/project/client";
 import DateEditor from "$lib/date/DateEditor.svelte";
@@ -49,7 +49,7 @@ let {
   onSelectCalendar?: (id: string) => void;
 } = $props();
 
-const label = $derived(manifestCopy($ui, pluginId, "field", field.key, field.label));
+const label = $derived($manifestText(pluginId, "field", field.key, field.label));
 const inputId = $derived(`${idPrefix}-${field.key}`);
 const locked = $derived(disabled || readOnly);
 
@@ -145,7 +145,7 @@ const hasDateValue = $derived(value != null && value !== "");
       onchange={(event) => updateEnum(event, field.multiple ?? false)}>
       <option value="">{$ui("Choose {0}", label.toLowerCase())}</option>
       {#each field.options ?? [] as option}
-        <option value={option}>{manifestCopy($ui, pluginId, "option", field.key + "/" + option, option)}</option>
+        <option value={option}>{$manifestText(pluginId, "option", field.key + "/" + option, option)}</option>
       {/each}
     </select>
   {:else if field.type === "oneof"}
@@ -157,7 +157,7 @@ const hasDateValue = $derived(value != null && value !== "");
       onchange={(event) => emit((event.currentTarget as HTMLSelectElement).value)}>
       <option value="">{$ui("Choose {0}", label.toLowerCase())}</option>
       {#each field.options ?? [] as option}
-        <option value={option}>{manifestCopy($ui, pluginId, "option", field.key + "/" + option, option)}</option>
+        <option value={option}>{$manifestText(pluginId, "option", field.key + "/" + option, option)}</option>
       {/each}
       {#each (field as FieldDefinition & { oneOf?: Array<{ label: string; options?: string[] }> }).oneOf ?? [] as variant}
         {#each variant.options ?? [] as opt}

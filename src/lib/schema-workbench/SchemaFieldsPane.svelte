@@ -1,5 +1,5 @@
 <script lang="ts">
-import { manifestCopy } from "$lib/i18n/manifest-copy";
+import { manifestText } from "$lib/i18n/manifest-copy";
 import { ui } from "$lib/i18n/ui";
 import type { FieldDefinition, MetadataFieldDefinition, ModuleSchemaOverlay } from "$lib/project/client";
 import {
@@ -309,7 +309,7 @@ function selectBuiltinField(field: FieldDefinition) {
               <button type="button" class="item-select" onclick={() => selectBuiltinField(field)}>
                 <div class="item-main">
                   <div class="item-title-row">
-                    <strong>{manifestCopy($ui, pluginId, "field", field.key, field.label) || humanizeId(field.key)}</strong>
+                    <strong>{$manifestText(pluginId, "field", field.key, field.label) || humanizeId(field.key)}</strong>
                     <span class="type-pill">{fieldTypeLabel(field.type)}</span>
                     <span class:disabled-pill={isDisabled(draft.disabledFields, field.key)} class="meta">
                       {#if isDisabled(draft.disabledFields, field.key)}
@@ -374,7 +374,7 @@ function selectBuiltinField(field: FieldDefinition) {
               <button type="button" class="item-select" onclick={() => startFieldEdit(field)}>
                 <div class="item-main">
                   <div class="item-title-row">
-                    <strong>{manifestCopy($ui, pluginId, "field", field.key, field.label)}</strong><span class="type-pill">{fieldTypeLabel(field.type)}</span>
+                    <strong>{$manifestText(pluginId, "field", field.key, field.label)}</strong><span class="type-pill">{fieldTypeLabel(field.type)}</span>
                     {#if fieldExtrasLabel(field)}<span class="meta">{fieldExtrasLabel(field)}</span>{/if}
                     {#if field.type === "date" && (field as unknown as Record<string, unknown>).timeline}
                       <span class="meta">{$ui("· Timeline: {0}", timelineBadge(field))}</span>
@@ -392,13 +392,13 @@ function selectBuiltinField(field: FieldDefinition) {
                 <button
                   type="button"
                   class="quiet icon"
-                  aria-label={$ui("Edit {0}", manifestCopy($ui, pluginId, "field", field.key, field.label))}
+                  aria-label={$ui("Edit {0}", $manifestText(pluginId, "field", field.key, field.label))}
                   onclick={() => startFieldEdit(field)}
                   ><Pencil size={14} strokeWidth={1.8} aria-hidden="true" /></button>
                 <button
                   type="button"
                   class="danger icon"
-                  aria-label={$ui("Remove {0}", manifestCopy($ui, pluginId, "field", field.key, field.label))}
+                  aria-label={$ui("Remove {0}", $manifestText(pluginId, "field", field.key, field.label))}
                   onclick={() => removeCustomField(field.key)}
                   ><Trash2 size={14} strokeWidth={1.8} aria-hidden="true" /></button>
               </div>
@@ -628,13 +628,13 @@ function selectBuiltinField(field: FieldDefinition) {
         <div class="block-heading">
           <div class="heading-left">
             <span class="heading-icon"><TextQuote size={14} strokeWidth={1.8} aria-hidden="true" /></span>
-            <h4>{manifestCopy($ui, pluginId, "field", field.key, field.label) || humanizeId(field.key)}</h4>
+            <h4>{$manifestText(pluginId, "field", field.key, field.label) || humanizeId(field.key)}</h4>
           </div>
           <span class="type-pill">{fieldTypeLabel(field.type)}</span>
         </div>
         {#if editingBuiltinFieldKey === field.key}
           <div class="edit-form wide">
-            <div class="type-select" role="group" aria-label={$ui("Entity types for {0}", manifestCopy($ui, pluginId, "field", field.key, field.label))}>
+            <div class="type-select" role="group" aria-label={$ui("Entity types for {0}", $manifestText(pluginId, "field", field.key, field.label))}>
               <span class="type-select-label">{$ui("Applies to")}</span>
               <div class="chip-row compact">
                 {#each fieldScopeTypes() as type}
@@ -655,7 +655,7 @@ function selectBuiltinField(field: FieldDefinition) {
           </div>
         {:else if editingBuiltinMetadataFieldKey === field.key}
           <div class="edit-form wide">
-            <div class="type-select" role="group" aria-label={$ui("Attributes for {0}", manifestCopy($ui, pluginId, "field", field.key, field.label))}>
+            <div class="type-select" role="group" aria-label={$ui("Attributes for {0}", $manifestText(pluginId, "field", field.key, field.label))}>
               <span class="type-select-label">{$ui("Attributes")} <em>{$ui("(additive to builtin)")}</em></span>
               {#if editBuiltinMetadataDrafts.length === 0}
                 <span class="meta-hint">{$ui("No attributes yet — add a new one.")}</span>
@@ -747,7 +747,7 @@ function selectBuiltinField(field: FieldDefinition) {
           </div>
         {:else if editingTimelineFieldKey === field.key}
           <div class="edit-form wide">
-            <div class="type-select" role="group" aria-label={$ui("Timeline for {0}", manifestCopy($ui, pluginId, "field", field.key, field.label))}>
+            <div class="type-select" role="group" aria-label={$ui("Timeline for {0}", $manifestText(pluginId, "field", field.key, field.label))}>
               <span class="type-select-label">{$ui("Timeline")}</span>
               {#if showAdvanced}
                 <label>
@@ -862,7 +862,7 @@ function selectBuiltinField(field: FieldDefinition) {
         <div class="block-heading">
           <div class="heading-left">
             <span class="heading-icon accent"><Sparkles size={14} strokeWidth={1.8} aria-hidden="true" /></span>
-            <h4>{manifestCopy($ui, pluginId, "field", field.key, field.label)}</h4>
+            <h4>{$manifestText(pluginId, "field", field.key, field.label)}</h4>
           </div>
           <span class="type-pill">{fieldTypeLabel(field.type)}</span>
         </div>

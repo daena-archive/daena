@@ -28,16 +28,35 @@ assert.deepEqual(seen, ["Settings", "設定"]);
 unsubscribe();
 assert.equal(stored, "ja");
 const japanese = get(messages);
-const { manifestCopy } = await import("../src/lib/i18n/manifest-copy.ts");
+const { manifestText, setPackageLocalizations } = await import("../src/lib/i18n/manifest-copy.ts");
 const { formatUi } = await import("../src/lib/i18n/ui.ts");
 const { profileComponentCopy } = await import("../src/lib/i18n/profile-copy.ts");
-const translate = (source) => formatUi("ja", source);
-assert.equal(manifestCopy(translate, "daena.lore", "template", "person", "Person"), "人物");
-assert.equal(manifestCopy(translate, "daena.lore", "template", "person", "Map"), "Map");
-assert.equal(manifestCopy(translate, "third.party", "template", "person", "Person"), "Person");
-assert.equal(manifestCopy(translate, "daena.writing", "option", "status/drafting", "drafting"), "執筆中");
-assert.equal(manifestCopy(translate, "daena.writing", "option", "custom/drafting", "drafting"), "drafting");
-assert.equal(manifestCopy(translate, "daena.houses", "metadata", "family_member_of/role", "Role"), "役割");
+assert.equal(get(manifestText)("daena.lore", "template", "person", "Person"), "人物");
+assert.equal(get(manifestText)("daena.lore", "template", "person", "Map"), "Map");
+assert.equal(get(manifestText)("third.party", "template", "person", "Person"), "Person");
+assert.equal(get(manifestText)("daena.writing", "option", "status/drafting", "drafting"), "執筆中");
+assert.equal(get(manifestText)("daena.writing", "option", "custom/drafting", "drafting"), "drafting");
+assert.equal(get(manifestText)("daena.houses", "metadata", "family_member_of/role", "Role"), "役割");
+const { default: notes } = await import("../examples/plugins/declarative/manifest.json", { with: { type: "json" } });
+const { default: notesJa } = await import("../examples/plugins/declarative/locales/daena/ja.json", { with: { type: "json" } });
+const installedNotes = structuredClone(notes);
+installedNotes.schemas[0].entityTypes[0].id = notes.id + ":note";
+const otherNotes = { ...notes, id: "other.plugin" };
+setPackageLocalizations([
+  { id: notes.id, localization: { source: installedNotes, catalogs: { ja: notesJa } } },
+  { id: otherNotes.id, localization: { source: otherNotes, catalogs: { ja: { Color: "表示色" } } } },
+]);
+assert.equal(get(manifestText)(notes.id, "type", notes.id + ":note", "Note"), "ノート");
+assert.equal(get(manifestText)(notes.id, "module", notes.id, notes.name), "観察ノート");
+assert.equal(get(manifestText)(notes.id, "field", "color", "Color"), "色");
+assert.equal(get(manifestText)(notes.id, "field", "color", "Note"), "Note", "preserve a project override even if it is a catalog key");
+assert.equal(get(manifestText)(notes.id, "component", "notes/refresh", "Refresh notes"), "ノートを再読み込み");
+assert.equal(get(manifestText)("other.plugin", "field", "color", "Color"), "表示色");
+setDisplayLanguage("en");
+assert.equal(get(manifestText)(notes.id, "field", "color", "Color"), "Color");
+setDisplayLanguage("ja");
+setPackageLocalizations([]);
+assert.equal(get(manifestText)(notes.id, "field", "color", "Color"), "Color", "uninstalled plugin");
 assert.equal(profileComponentCopy("dnd", "attribute-strength", "Strength"), "筋力");
 assert.equal(profileComponentCopy("dnd", "attribute-strength", "Renamed"), "Renamed");
 assert.equal(formatUi("ja", "Close {0}", "$& {0}"), "$& {0}を閉じる");
@@ -145,4 +164,19 @@ assert.equal(
   translatePluginText("Displayed on the {calendar} calendar", { calendar: "Haru" }),
   "Displayed on the Haru calendar",
 );
-console.log("UI language switching and persistence checks passed");
+
+const { createPluginI18n, translatePluginMessage } = await import("../packages/plugin-sdk/dist/index.js");
+window.__DAENA_PLUGIN_CATALOGS__ = { ja: { "Open {name}": "{name}を開く" } };
+const pluginUi = createPluginI18n();
+const pluginLabels = [];
+const stop = pluginUi.subscribe(() => pluginLabels.push(pluginUi.t("Open {name}", { name: "{name} $&" })));
+window.__DAENA_DISPLAY_LANGUAGE__ = "ja-JP";
+window.dispatchEvent(new Event("daena:language"));
+window.dispatchEvent(new Event("daena:language"));
+stop();
+window.__DAENA_DISPLAY_LANGUAGE__ = "en";
+window.dispatchEvent(new Event("daena:language"));
+assert.deepEqual(pluginLabels, ["Open {name} $&", "{name} $&を開く"]);
+assert.equal(pluginUi.t("constructor"), "constructor");
+assert.equal(translatePluginMessage({ ja: { label: "親" }, "ja-jp": { label: "地域" } }, "ja-JP", "label"), "地域");
+console.log("Host and SDK language switching, package scoping and persistence checks passed");

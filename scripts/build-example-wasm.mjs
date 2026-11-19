@@ -17,6 +17,8 @@ for (const sdkOutput of [
   copyFileSync(resolve("packages/plugin-sdk/dist/index.js"), resolve(sdkOutput, "plugin-sdk.js"));
   copyFileSync(resolve("packages/plugin-sdk/dist/generated.js"), resolve(sdkOutput, "generated.js"));
   copyFileSync(resolve("packages/plugin-sdk/dist/maps.js"), resolve(sdkOutput, "maps.js"));
+  copyFileSync(resolve("packages/plugin-sdk/dist/i18n.js"), resolve(sdkOutput, "i18n.js"));
+  copyFileSync(resolve("packages/plugin-sdk/dist/i18n.js.map"), resolve(sdkOutput, "i18n.js.map"));
   copyFileSync(resolve("packages/plugin-sdk/dist/theme.js"), resolve(sdkOutput, "theme.js"));
   copyFileSync(resolve("packages/plugin-sdk/dist/index.js.map"), resolve(sdkOutput, "index.js.map"));
   copyFileSync(resolve("packages/plugin-sdk/dist/generated.js.map"), resolve(sdkOutput, "generated.js.map"));

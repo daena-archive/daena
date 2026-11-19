@@ -1,0 +1,10 @@
+{
+  "Date Lens": "日付レンズ",
+  "EXAMPLE CONSUMER": "サービス利用例",
+  "Date": "日付",
+  "Resolve through Timeline": "年表で日付を確認",
+  "Connecting to the host…": "本体に接続中…",
+  "Ready. Timeline may be optional; a missing provider returns provider-unavailable.": "準備ができました。年表が無効な場合はサービスを利用できません。",
+  "Calling daena.timeline.resolve-date@1…": "年表に日付を問い合わせています…",
+  "Resolved through the host broker.": "年表から結果を取得しました。"
+}

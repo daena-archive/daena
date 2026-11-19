@@ -413,10 +413,16 @@ fn plugin_language_sync(
     Ok(())
 }
 
-fn plugin_webview_init_script() -> String {
+fn plugin_webview_init_script(catalogs: Option<&daena_plugin_host::package::PluginCatalogs>) -> String {
+    // Parse JSON as data, including message keys such as "__proto__".
+    let catalogs = catalogs.map(|catalogs| {
+        let json = serde_json::to_string(catalogs).expect("translation catalog serializes");
+        let literal = serde_json::to_string(&json).expect("JSON string serializes");
+        format!("window.__DAENA_PLUGIN_CATALOGS__ = JSON.parse({literal});")
+    }).unwrap_or_default();
     let json = serde_json::to_string(&current_plugin_appearance()).unwrap_or_else(|_| "{}".into());
     format!(
-        "{PLUGIN_WEBVIEW_ISOLATION_SCRIPT}\n{}\n{}({json});",
+        "{PLUGIN_WEBVIEW_ISOLATION_SCRIPT}\n{catalogs}\n{}\n{}({json});",
         plugin_language_script(),
         plugin_appearance_apply_js()
     )

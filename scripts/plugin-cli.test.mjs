@@ -22,6 +22,13 @@ try {
   execFileSync("node", [cli, "package", fixture, "--output", archive], { stdio: "pipe" });
   const validation = execFileSync("node", [cli, "validate", archive], { encoding: "utf8" });
   assert.equal(JSON.parse(validation).ok, true);
+  const brokenCatalog = join(temporary, "broken-catalog.daenaplugin");
+  const unsignedEntries = readZipArchive(readFileSync(archive));
+  assert.ok(unsignedEntries.some(entry => entry.name === "locales/daena/ja.json"));
+  writeFileSync(brokenCatalog, createZipArchive(unsignedEntries.map(entry =>
+    entry.name === "locales/daena/ja.json" ? { ...entry, data: Buffer.from('{"Color":7}') } : entry
+  )));
+  assert.throws(() => execFileSync("node", [cli, "validate", brokenCatalog], { stdio: "pipe" }), /invalid translation catalog/);
   const legacyArchive = join(temporary, "legacy.wbplugin");
   writeFileSync(legacyArchive, readFileSync(archive));
   assert.throws(

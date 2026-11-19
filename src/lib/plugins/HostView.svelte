@@ -1,6 +1,6 @@
 <script lang="ts">
 import { nativeErrorText } from "$lib/i18n/native-errors.ts";
-import { manifestCopy } from "$lib/i18n/manifest-copy";
+import { manifestText } from "$lib/i18n/manifest-copy";
 import { ui } from "$lib/i18n/ui";
 import { project, type Entity, type PluginAdminEntry, type HostViewData } from "$lib/project/client";
 
@@ -18,12 +18,14 @@ let saving = $state("");
 let error = $state("");
 let refreshToken = 0;
 
-function fieldDefinition(key: string): FieldDefinition | undefined {
-  for (const schema of plugin.schemas) {
-    const field = schema.fields.find((candidate) => candidate.key === key);
-    if (field) return field;
-  }
-  return undefined;
+function fieldDefinition(namespace: string, key: string): FieldDefinition | undefined {
+  return plugin.schemas.find((schema) => schema.namespace === namespace)?.fields.find((field) => field.key === key);
+}
+
+function typeLabel(id: string) {
+  const localId = id.startsWith(plugin.id + ":") ? id.slice(plugin.id.length + 1) : id;
+  const type = plugin.schemas.flatMap((schema) => schema.entityTypes ?? []).find((item) => item.id === localId || item.id === plugin.id + ":" + localId);
+  return type ? $manifestText(plugin.id, "type", localId, type.name) : id;
 }
 
 async function refresh(entityId = selectedEntityId) {
@@ -112,11 +114,11 @@ function inputValue(key: string): string | number | boolean {
 }
 </script>
 
-<section class="host-view" aria-label={`${manifestCopy($ui, plugin.id, "module", plugin.id, plugin.name)} · ${manifestCopy($ui, plugin.id, "view", view.id, view.title)}`}>
+<section class="host-view" aria-label={`${$manifestText(plugin.id, "module", plugin.id, plugin.name)} · ${$manifestText(plugin.id, "view", view.id, view.title)}`}>
   <header class="host-view-heading">
     <div>
-      <span class="overline">{plugin.name}</span>
-      <h1>{manifestCopy($ui, plugin.id, "view", view.id, view.title)}</h1>
+      <span class="overline">{$manifestText(plugin.id, "module", plugin.id, plugin.name)}</span>
+      <h1>{$manifestText(plugin.id, "view", view.id, view.title)}</h1>
     </div>
     <span class="host-view-badge">{$ui("Host-rendered")}</span>
   </header>
@@ -129,17 +131,17 @@ function inputValue(key: string): string | number | boolean {
     <div class="host-view-components">
       {#each view.components ?? [] as component (component.id)}
         {#if component.type === "heading"}
-          <h2>{component.text}</h2>
+          <h2>{$manifestText(plugin.id, "component", view.id + "/" + component.id, component.text)}</h2>
         {:else if component.type === "text"}
-          <p class="host-view-copy">{component.text}</p>
+          <p class="host-view-copy">{$manifestText(plugin.id, "component", view.id + "/" + component.id, component.text)}</p>
         {:else if component.type === "entity-list"}
           <article class="host-view-card">
             <div class="host-view-card-heading">
-              <h2>{component.title}</h2>
+              <h2>{$manifestText(plugin.id, "component", view.id + "/" + component.id, component.title)}</h2>
               <span>{lists[component.id]?.length ?? 0}</span>
             </div>
             {#if (lists[component.id]?.length ?? 0) === 0}
-              <p class="host-view-state">{$ui("No {0} entries yet.", component.entityType)}</p>
+              <p class="host-view-state">{$ui("No {0} entries yet.", typeLabel(component.entityType))}</p>
             {:else}
               <ul class="host-view-list">
                 {#each lists[component.id] ?? [] as entity (entity.id)}
@@ -148,7 +150,7 @@ function inputValue(key: string): string | number | boolean {
                       type="button"
                       class:selected={selectedEntityId === entity.id}
                       onclick={() => selectEntity(entity)}>
-                      <strong>{entity.name}</strong><span>{entity.entity_type ?? component.entityType}</span>
+                      <strong>{entity.name}</strong><span>{typeLabel(entity.entity_type ?? component.entityType)}</span>
                     </button>
                   </li>
                 {/each}
@@ -157,7 +159,7 @@ function inputValue(key: string): string | number | boolean {
           </article>
         {:else if component.type === "entity-detail"}
           <article class="host-view-card">
-            <div class="host-view-card-heading"><h2>{component.title}</h2></div>
+            <div class="host-view-card-heading"><h2>{$manifestText(plugin.id, "component", view.id + "/" + component.id, component.title)}</h2></div>
             {#if selected}
               <dl class="host-view-detail">
                 <div>
@@ -166,7 +168,7 @@ function inputValue(key: string): string | number | boolean {
                 </div>
                 <div>
                   <dt>{$ui("Type")}</dt>
-                  <dd>{selected.entity_type ?? $ui("Unspecified")}</dd>
+                  <dd>{selected.entity_type ? typeLabel(selected.entity_type) : $ui("Unspecified")}</dd>
                 </div>
                 <div>
                   <dt>{$ui("Updated")}</dt>
@@ -179,14 +181,14 @@ function inputValue(key: string): string | number | boolean {
           </article>
         {:else if component.type === "field-form"}
           <article class="host-view-card">
-            <div class="host-view-card-heading"><h2>{component.title}</h2></div>
+            <div class="host-view-card-heading"><h2>{$manifestText(plugin.id, "component", view.id + "/" + component.id, component.title)}</h2></div>
             {#if selected}
               <div class="host-view-form">
                 {#each component.fields as key (key)}
-                  {@const field = fieldDefinition(key)}
+                  {@const field = fieldDefinition(component.namespace, key)}
                   {#if field}
                     <label>
-                      <span>{field.label}</span>
+                      <span>{$manifestText(plugin.id, "field", field.key, field.label)}</span>
                       {#if field.type === "enum"}
                         <select
                           disabled={!component.editable || saving === `${component.id}:${field.key}`}
@@ -194,7 +196,7 @@ function inputValue(key: string): string | number | boolean {
                           onchange={(event) =>
                             void saveField(component, field, (event.currentTarget as HTMLSelectElement).value)}>
                           <option value="">{$ui("Not set")}</option>
-                          {#each field.options ?? [] as option}<option value={option}>{option}</option>{/each}
+                          {#each field.options ?? [] as option}<option value={option}>{$manifestText(plugin.id, "option", field.key + "/" + option, option)}</option>{/each}
                         </select>
                       {:else if field.type === "boolean"}
                         <input
@@ -225,7 +227,7 @@ function inputValue(key: string): string | number | boolean {
               type="button"
               class="host-view-button"
               disabled={commandAction(component.command) !== "refresh-view"}
-              onclick={() => void invokeCommand(component.command)}>{component.label}</button>
+              onclick={() => void invokeCommand(component.command)}>{$manifestText(plugin.id, "component", view.id + "/" + component.id, component.label)}</button>
           </div>
         {/if}
       {/each}

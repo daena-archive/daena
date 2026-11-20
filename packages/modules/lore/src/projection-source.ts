@@ -1,3 +1,4 @@
+import { setPackageLocalizations } from "../../projection-labels.ts";
 import type { ModuleManifest } from "../../../module-api/src/index";
 
 export type LoreEntityRef = { id: string; name: string; type: string | null };
@@ -75,6 +76,7 @@ export async function createLoreGraphSource(
   bundledManifest: ModuleManifest,
 ): Promise<LoreGraphSource> {
   const manifests = await client.call<ModuleManifest[]>("schema.list", {});
+  setPackageLocalizations(manifests);
   const mapsEnabled = mapsProviderEnabled(manifests);
   // The effective manifest carries qualified entity type ids (`daena.lore:person`)
   // and the project's schema overlay; the bundled manifest.json only has local ids,

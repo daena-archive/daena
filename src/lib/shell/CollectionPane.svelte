@@ -1,4 +1,5 @@
 <script lang="ts">
+import { messages } from "$lib/i18n";
 import type { Snippet } from "svelte";
 import type { CollectionViewMode } from "$lib/modules/workspace";
 
@@ -24,7 +25,7 @@ let {
   count,
   label,
   viewMode,
-  groupedAriaLabel = "Grouped by type",
+  groupedAriaLabel,
   controls,
   children,
   footer,
@@ -42,19 +43,19 @@ let {
   class:hidden
   class:allow-overflow={allowOverflow}
   class="collection-panel panel-surface"
-  aria-label={`${label} collection`}>
+  aria-label={$messages.workspace.collection(label)}>
   <div class="panel-heading">
-    <div><span class="panel-kicker">{kicker}</span><strong>{count} {label}</strong></div>
+    <div><span class="panel-kicker">{kicker}</span><strong>{$messages.workspace.count(count, label)}</strong></div>
     <div class="view-mode-toggle">
       <button
         type="button"
         class:active={viewMode === "flat"}
-        aria-label="Flat list"
+        aria-label={$messages.workspace.flatList}
         onclick={() => onViewModeChange("flat")}>≡</button
       ><button
         type="button"
         class:active={viewMode === "grouped"}
-        aria-label={groupedAriaLabel}
+        aria-label={groupedAriaLabel ?? $messages.workspace.groupedByType}
         onclick={() => onViewModeChange("grouped")}>⊟</button>
     </div>
   </div>

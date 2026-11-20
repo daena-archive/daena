@@ -1,3 +1,4 @@
+import { localizeUi } from "./i18n/ui.ts";
 type PendingConfirm = {
   kind: "confirm";
   title: string;
@@ -56,7 +57,7 @@ export function confirmDialog(options: ConfirmOptions): Promise<boolean> {
       kind: "confirm",
       title: options.title,
       message: options.message,
-      confirmLabel: options.confirmLabel ?? "Confirm",
+      confirmLabel: options.confirmLabel ?? localizeUi("Confirm"),
       danger: options.danger ?? false,
       resolve,
     };
@@ -76,7 +77,7 @@ export function promptDialog(options: PromptOptions): Promise<string | null> {
       message: options.message,
       value: options.value ?? "",
       placeholder: options.placeholder ?? "",
-      confirmLabel: options.confirmLabel ?? "OK",
+      confirmLabel: options.confirmLabel ?? localizeUi("OK"),
       resolve,
     };
     enqueue(request);

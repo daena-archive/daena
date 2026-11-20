@@ -1,4 +1,5 @@
 <script lang="ts">
+import { ui } from "$lib/i18n/ui";
 interface Props {
   label: string;
   value: number;
@@ -51,8 +52,8 @@ function handleDoubleClick(event: MouseEvent) {
   type="button"
   class:dragging
   class="pane-resize-handle"
-  aria-label={`${label}. Current width ${Math.round(value)} pixels. Double-click to reset.`}
-  title={`${label} (${Math.round(value)} px) · Double-click to reset`}
+  aria-label={$ui("{0}. Current width {1} pixels. Double-click to reset.", label, Math.round(value))}
+  title={$ui("{0} ({1} px) · Double-click to reset", label, Math.round(value))}
   tabindex="0"
   onpointerdown={startResize}
   ondblclick={handleDoubleClick}

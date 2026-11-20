@@ -343,7 +343,11 @@ fn rediscovery_rehashes_installed_packages_after_restart() {
     archive(
         &archive_path,
         &manifest("1.0.0"),
-        &[("dist/index.html", b"ok")],
+        &[
+            ("dist/index.html", b"ok"),
+            ("locales/ja.json", br#"{"Test":"translated"}"#),
+            ("locales/private/ja.json", br#"{"ui":{"title":"private"}}"#),
+        ],
     );
     let install_root = dir.path().join("installed");
     let mut first = PackageCatalog::default();
@@ -367,11 +371,11 @@ fn rediscovery_rehashes_installed_packages_after_restart() {
         )
         .unwrap();
     assert!(rejected.is_empty(), "{rejected:?}");
-    assert_eq!(restarted.list("com.example.test").count(), 1);
+    assert_eq!(restarted.get("com.example.test", "1.0.0").unwrap().translations["ja"]["Test"], "translated");
 
     fs::write(
-        install_root.join("com.example.test/1.0.0/dist/index.html"),
-        b"tampered",
+        install_root.join("com.example.test/1.0.0/locales/ja.json"),
+        br#"{"Test":"other"}"#,
     )
     .unwrap();
     let mut tampered = PackageCatalog::load(&state_path).unwrap();
@@ -397,7 +401,7 @@ fn failed_code_removal_keeps_catalog_entry() {
         [(
             "1.0.0".into(),
             InstalledVersion {
-                plugin_id: "com.example.test".into(),
+                translations: Default::default(),                plugin_id: "com.example.test".into(),
                 version: "1.0.0".into(),
                 digest: "digest".into(),
                 root,
@@ -936,6 +940,8 @@ fn plugin_cli_signed_archive_verifies_on_the_host() {
     assert!(verified.signed);
     assert_eq!(verified.manifest.publisher, "com.example");
     assert_eq!(verified.digest.len(), 64);
+    assert_eq!(verified.translations["ja"]["Field Notes"], "観察ノート");
+    assert_eq!(development_catalogs(&fixture).unwrap(), verified.translations);
 }
 
 fn run_node(args: &[&str]) {
@@ -961,4 +967,15 @@ fn copy_dir(from: &Path, to: &Path) {
             std::fs::copy(entry.path(), target).unwrap();
         }
     }
+}
+
+#[test]
+fn package_translation_files_validate_before_install() {
+    let dir = tempdir().unwrap();
+    let file = dir.path().join("bad.daenaplugin");
+    archive(&file, &manifest("1.0.0"), &[("dist/index.html", b"ok"), ("locales/ja.json", br#"{"Test":42}"#)]);
+    let root = dir.path().join("installed");
+    let result = PackageCatalog::default().install(&file, &root, ArchiveLimits::default(), VerificationPolicy::with_unsigned_consent());
+    assert!(result.unwrap_err().0.contains("invalid translation catalog"));
+    assert!(!root.join("com.example.test/1.0.0").exists());
 }

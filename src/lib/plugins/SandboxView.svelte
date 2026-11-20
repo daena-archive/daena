@@ -1,4 +1,6 @@
 <script lang="ts">
+import { nativeErrorText } from "$lib/i18n/native-errors.ts";
+import { ui } from "$lib/i18n/ui";
 import { onMount, tick } from "svelte";
 import { project } from "$lib/project/client";
 
@@ -126,7 +128,7 @@ onMount(() => {
     await project.unmountPluginWebview(mountedPluginId, mountedInstanceId).catch(() => undefined);
     if (!alive) return;
     const bounds = currentBounds();
-    if (!bounds) throw new Error("sandbox view container is unavailable");
+    if (!bounds) throw new Error($ui("sandbox view container is unavailable"));
     const serialisedState = moduleState ? JSON.stringify(moduleState) : undefined;
     await project.mountPluginWebview(
       mountedPluginId,
@@ -163,9 +165,7 @@ onMount(() => {
 
 <section class="sandbox-view-shell" aria-label={title}>
   <div bind:this={container} class="sandbox-view-container" aria-busy={!hostMounted}>
-    {#if error}<p class="sandbox-view-error">{error}</p>{:else if !hostMounted}<p class="sandbox-view-loading">
-        Loading plugin view…
-      </p>{/if}
+    {#if error}<p class="sandbox-view-error">{$nativeErrorText(error)}</p>{:else if !hostMounted}<p class="sandbox-view-loading"> {$ui("Loading plugin view…")} </p>{/if}
   </div>
 </section>
 

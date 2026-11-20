@@ -1,4 +1,5 @@
 <script lang="ts">
+import { ui } from "$lib/i18n/ui";
 import { Check, Search, X } from "@lucide/svelte";
 
 export type FieldPickerOption = {
@@ -11,7 +12,7 @@ let {
   options,
   selected = [],
   onChange,
-  placeholder = "Search fields…",
+  placeholder = $ui("Search fields…"),
   emptyLabel = "No matching fields.",
 }: {
   options: FieldPickerOption[];
@@ -110,7 +111,7 @@ function labelFor(key: string): string {
   {#if selected.length > 0}
     <div class="picker-chips">
       {#each selected as key (key)}
-        <button type="button" class="picker-chip" title={`Remove ${labelFor(key)}`} onclick={() => remove(key)}>
+        <button type="button" class="picker-chip" title={$ui("Remove {0}", labelFor(key))} onclick={() => remove(key)}>
           <span>{labelFor(key)}</span>
           <X size={11} strokeWidth={2} aria-hidden="true" />
         </button>

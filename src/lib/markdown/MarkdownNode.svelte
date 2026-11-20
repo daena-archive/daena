@@ -1,4 +1,5 @@
 <script lang="ts">
+import { ui } from "$lib/i18n/ui";
 import MarkdownNode from "./MarkdownNode.svelte";
 import { normalizeHexColor } from "./color.ts";
 import { nodeText } from "./text.ts";
@@ -222,8 +223,8 @@ function openEntity(event: MouseEvent) {
     data-spoiler
     role="button"
     tabindex="0"
-    title="Click to reveal spoiler"
-    aria-label="Spoiler, click to reveal"
+    title={$ui("Click to reveal spoiler")}
+    aria-label={$ui("Spoiler, click to reveal")}
     onclick={(event: MouseEvent) => (event.currentTarget as HTMLElement).classList.toggle("revealed")}
     onkeydown={(event: KeyboardEvent) => {
       if (event.key === "Enter" || event.key === " ") {
@@ -254,7 +255,7 @@ function openEntity(event: MouseEvent) {
     class:entity-reference-missing={missing}
     data-entity-id={id}
     data-is-custom={custom ? "true" : undefined}
-    title={missing ? "Missing entity" : undefined}
+    title={missing ? $ui("Missing entity") : undefined}
     onclick={openEntity}
     onauxclick={openEntity}>
     {#if custom}

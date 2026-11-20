@@ -1,3 +1,4 @@
+import { listenForPluginLanguage } from "../../plugin-i18n.ts";
 import "./plugin.css";
 import { flushSync, mount } from "svelte";
 import manifestJson from "../manifest.json";
@@ -25,6 +26,8 @@ import {
 /** Only used when schema.list does not list Writing; see pickWritingManifest. */
 const bundledManifest = manifestJson as unknown as ModuleManifest;
 const root = document.querySelector<HTMLElement>("#writing-root");
+
+listenForPluginLanguage("Writing Studio");
 
 async function start(target: HTMLElement): Promise<void> {
   // Long documents arrive in one `document.list` answer, past the SDK's 256 KiB default.

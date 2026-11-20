@@ -214,19 +214,19 @@ assert.match(route, /function projectionSandboxOpen\(key\?: ProjectionSandboxKey
 const projectionTable = sourceSlice("const PROJECTION_SANDBOXES", "/** The projection whose sandbox");
 assert.match(
   projectionTable,
-  /lore: \{[^}]*pluginId: "daena\.lore"[^}]*viewId: "graph"[^}]*title: "World graph"[^}]*subtitle: "Explore entities and their connections"[^}]*icon: Network[^}]*surfaceKey: "workspace:lore:graph"/,
+  /lore: \{[^}]*pluginId: "daena\.lore"[^}]*viewId: "graph"[^}]*title: \$ui\("World graph"\)[^}]*subtitle: \$ui\("Explore entities and their connections"\)[^}]*icon: Network[^}]*surfaceKey: "workspace:lore:graph"/,
   "the World graph must open the daena.lore sandbox as the graph view",
 );
 assert.match(
   projectionTable,
-  /timeline: \{[^}]*pluginId: "daena\.timeline"[^}]*viewId: "chronology"[^}]*title: "Chronology"[^}]*subtitle: "Explore your world across time"[^}]*surfaceKey: "workspace:timeline:timeline"/,
+  /timeline: \{[^}]*pluginId: "daena\.timeline"[^}]*viewId: "chronology"[^}]*title: \$ui\("Chronology"\)[^}]*subtitle: \$ui\("Explore your world across time"\)[^}]*surfaceKey: "workspace:timeline:timeline"/,
   "Chronology must keep its daena.timeline sandbox",
 );
 const openProjection = sourceSlice("async function openProjection", "async function openLoreLibrary");
 assert.match(openProjection, /section === "timeline" \? "timeline" : "lore"/);
 assert.match(openProjection, /projectionSandboxOpen\(key\)/);
 assert.match(openProjection, /entry\.id === surface\.pluginId && entry\.enabled/);
-assert.match(openProjection, /is disabled, so \$\{surface\.title\} cannot open/);
+assert.ok(openProjection.includes('$ui("{0} is disabled, so {1} cannot open.", surface.moduleName, surface.title)'));
 assert.match(openProjection, /renderer: \{ type: "sandboxed" \}/);
 assert.match(openProjection, /renderer: "webview"/);
 assert.doesNotMatch(openProjection, /projectionView|projectionModule/);
@@ -320,7 +320,7 @@ assert.match(tauriSource, /\("daena\.writing", "\/dist\/ui\/writing\.css"\)/);
 // kept mounted across selections. It is the only editor for them; there is no flag for the old path.
 assert.match(
   route,
-  /<SandboxView\s+pluginId="daena\.writing"\s+instanceId=\{shownWebviewInstance\}\s+holdMount=\{shellNavigationBusy\}\s+viewId="writing-workspace"\s+title="Writing"\s*\/>/,
+  /<SandboxView\s+pluginId="daena\.writing"\s+instanceId=\{shownWebviewInstance\}\s+holdMount=\{shellNavigationBusy\}\s+viewId="writing-workspace"\s+title=\{\$ui\("Writing"\)\}\s*\/>/,
   "the Writing content pane must mount the isolated daena.writing webview",
 );
 assert.doesNotMatch(

@@ -1,4 +1,5 @@
 <script lang="ts">
+import { ui } from "$lib/i18n/ui";
 import { tick } from "svelte";
 import { MoreHorizontal } from "@lucide/svelte";
 import { confirmDialog } from "$lib/dialogs.svelte";
@@ -52,7 +53,7 @@ let menuRight = $state(8);
 /** Set while the menu sits at a right-click point. Null keeps it under the ⋯ trigger. */
 let menuLeft = $state<number | null>(null);
 
-const label = $derived(`Actions for ${entityName}`);
+const label = $derived($ui("Actions for {0}", entityName));
 const openInText = $derived(
   openInLabel ? `${ENTITY_ACTIONS.openIn.replace("…", "")} ${openInLabel}` : ENTITY_ACTIONS.openIn,
 );

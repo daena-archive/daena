@@ -1,4 +1,5 @@
 <script lang="ts">
+import { ui } from "$lib/i18n/ui";
 import { BaseEdge, EdgeLabel, getSmoothStepPath, getStraightPath, Position } from "@xyflow/svelte";
 import { formatCalendarDate } from "$lib/date";
 import type { ParentKind, PartnerKind } from "./model";
@@ -48,7 +49,7 @@ function activateEdge(event: KeyboardEvent) {
   host.onSelectRelationship(relationshipId);
 }
 const caption = $derived.by(() => {
-  const label = data?.label?.trim() || (partner ? "Partner" : "Parent");
+  const label = data?.label?.trim() || (partner ? $ui("Partner") : $ui("Parent"));
   const start = data?.start ? formatCalendarDate(data.start) : "";
   const end = data?.end ? formatCalendarDate(data.end) : "";
   if (start && end && start !== "Undated" && end !== "Undated") return `${label} (${start} – ${end})`;

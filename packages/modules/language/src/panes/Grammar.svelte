@@ -1,4 +1,5 @@
 <script lang="ts">
+import { pluginText } from "../i18n.ts";
 import { untrack } from "svelte";
 import { confirm } from "../confirm.svelte";
 import type { EntitySummary, ModuleContext, ModuleRecord } from "../../../../module-api/src/index";
@@ -198,9 +199,9 @@ async function loadGrammar() {
 
 const session = $derived(grammarUi.editing);
 const section = $derived(GRAMMAR_SECTIONS.find((item) => item.id === grammarUi.section));
-const hits = $derived(searchGrammar(grammarUi.query, grammarUi.index));
+const hits = $derived(searchGrammar(grammarUi.query, grammarUi.index, $pluginText));
 const starterRemaining = $derived(remainingStarterSystems(grammarUi.index));
-const glanceRows = $derived(grammarGlance(grammarUi.index));
+const glanceRows = $derived(grammarGlance(grammarUi.index, $pluginText));
 const agreementRecords = $derived(
   grammarUi.index.agreements.flatMap((item): AgreementRecord[] =>
     item.value.recordKind === "agreement" ? [{ ...item, value: item.value }] : [],
@@ -258,12 +259,12 @@ const ctx: GrammarPaneContext = $derived({
 
 const editorTitle = $derived.by(() => {
   const current = session;
-  if (!current) return "Grammar";
+  if (!current) return $pluginText("Grammar");
   const value = current.draft;
-  if (value.recordKind === "system") return grammarSystemDescriptor(value.systemId)?.label ?? "System";
-  if (value.recordKind === "agreement") return current.recordId ? value.title || "Agreement" : "New agreement system";
-  if (value.recordKind === "custom-rule") return current.recordId ? "Custom rule" : "New custom rule";
-  return "Agreement";
+  if (value.recordKind === "system") return $pluginText(grammarSystemDescriptor(value.systemId)?.label ?? "System");
+  if (value.recordKind === "agreement") return current.recordId ? value.title || $pluginText("Agreement") : $pluginText("New agreement system");
+  if (value.recordKind === "custom-rule") return current.recordId ? $pluginText("Custom rule") : $pluginText("New custom rule");
+  return $pluginText("Agreement");
 });
 
 $effect(() => {
@@ -272,7 +273,7 @@ $effect(() => {
   if (session) {
     if (section) {
       crumbs.push({
-        label: section.label,
+        label: $pluginText(section.label),
         onclick: async () => {
           if (!(await tryLeaveGrammar(grammarUi, windowConfirm))) return;
           grammarUi.editing = null;
@@ -282,7 +283,7 @@ $effect(() => {
     }
     crumbs.push({ label: editorTitle });
   } else if (section) {
-    crumbs.push({ label: section.label });
+    crumbs.push({ label: $pluginText(section.label) });
   }
   setBreadcrumbExtra(crumbs);
   return () => setBreadcrumbExtra([]);
@@ -348,7 +349,7 @@ async function handleStatusChange(status: GrammarStatus) {
     )
       return;
   } else if (value.status === "configured" && status === "not-used") {
-    if (!(await windowConfirm("Mark this section as not used? Its grammatical settings will be cleared."))) return;
+    if (!(await windowConfirm($pluginText("Mark this section as not used? Its grammatical settings will be cleared.")))) return;
   }
   current.draft = setSystemStatus(value, status);
 }
@@ -581,22 +582,22 @@ function removeLink(index: number) {
   <div class="language-toolbar">
     <div class="language-toolbar-title">
       {#if session}
-        <button type="button" class="language-button secondary" onclick={leaveEditor}>Back</button>
+        <button type="button" class="language-button secondary" onclick={leaveEditor}>{$pluginText("Back")}</button>
       {/if}
       <h2 id="grammar-editor-heading" tabindex="-1">
-        {session ? editorTitle : "Grammar"}
+        {session ? editorTitle : $pluginText("Grammar")}
       </h2>
       {#if grammarUi.starterCurrent && session?.draft.recordKind === "system"}
         {@const position = starterPosition(grammarUi.starterCurrent)}
-        <span class="language-toolbar-status">Starter {position.current} of {position.total}</span>
+        <span class="language-toolbar-status">{$pluginText("Starter {current} of {total}", { current: position.current, total: position.total })}</span>
       {/if}
     </div>
     <div class="language-toolbar-actions">
       {#if grammarUi.starterCurrent && session?.draft.recordKind === "system"}
-        <button type="button" class="language-button secondary" onclick={handleSkip}>Skip</button>
-        <button type="button" class="language-button secondary" onclick={handleExitStarter}>Exit starter</button>
+        <button type="button" class="language-button secondary" onclick={handleSkip}>{$pluginText("Skip")}</button>
+        <button type="button" class="language-button secondary" onclick={handleExitStarter}>{$pluginText("Exit starter")}</button>
       {:else if grammarUi.section || grammarUi.editing}
-        <button type="button" class="language-button secondary" onclick={handleAllSections}>All sections</button>
+        <button type="button" class="language-button secondary" onclick={handleAllSections}>{$pluginText("All sections")}</button>
       {/if}
     </div>
   </div>
@@ -604,26 +605,26 @@ function removeLink(index: number) {
     <div class="language-empty-card language-error-card">
       <p class="language-status error" role="alert">{error}</p>
       {#if selectedLanguage}
-        <button type="button" class="language-button secondary" onclick={() => void loadGrammar()}>Try again</button>
+        <button type="button" class="language-button secondary" onclick={() => void loadGrammar()}>{$pluginText("Try again")}</button>
       {/if}
     </div>
   {:else if !selectedLanguage}
     <div class="language-empty-card">
-      <p class="language-empty" role="status">Select a language to document its grammar.</p>
+      <p class="language-empty" role="status">{$pluginText("Select a language to document its grammar.")}</p>
     </div>
   {:else if paneLoading}
-    <p class="language-empty language-loading" aria-live="polite" role="status">Loading grammar systems…</p>
+    <p class="language-empty language-loading" aria-live="polite" role="status">{$pluginText("Loading grammar systems…")}</p>
   {:else if session}
     <form class="language-editor" onsubmit={handleSubmit}>
       {#if session.draft.recordKind === "system"}
         {@const systemDraft = session.draft}
-        <p class="language-empty" role="status">{grammarSystemDescriptor(systemDraft.systemId)?.hint}</p>
+        <p class="language-empty" role="status">{$pluginText(grammarSystemDescriptor(systemDraft.systemId)?.hint ?? "")}</p>
         {#if systemDraft.status === "not-used"}
           <label class="language-field">
-            <span>Why it is not used (optional)</span>
+            <span>{$pluginText("Why it is not used (optional)")}</span>
             <textarea
               rows="3"
-              placeholder="Noun roles are primarily expressed through word order and adpositions."
+              placeholder={$pluginText("Noun roles are primarily expressed through word order and adpositions.")}
               value={systemDraft.notes}
               disabled={session.locked}
               oninput={(event) => (systemDraft.notes = event.currentTarget.value)}></textarea>
@@ -643,7 +644,7 @@ function removeLink(index: number) {
             {relativePositionSummary}
             {pronounAxes} />
           <label class="language-field">
-            <span>Notes</span>
+            <span>{$pluginText("Notes")}</span>
             <textarea
               rows="4"
               value={systemDraft.notes}
@@ -653,27 +654,27 @@ function removeLink(index: number) {
         {/if}
         <div class="grammar-status-actions">
           <div class="grammar-status-current">
-            <span>Section status</span>
-            <strong>{grammarStatusLabel(systemDraft.status)}</strong>
+            <span>{$pluginText("Section status")}</span>
+            <strong>{$pluginText(grammarStatusLabel(systemDraft.status))}</strong>
           </div>
           <div class="language-inline">
             <button
               type="button"
               class="language-button secondary"
               disabled={session.locked || systemDraft.status === "unconfigured"}
-              onclick={() => handleStatusChange("unconfigured")}>Set to not configured</button>
+              onclick={() => handleStatusChange("unconfigured")}>{$pluginText("Set to not configured")}</button>
             {#if systemDraft.status === "not-used"}
               <button
                 type="button"
                 class="language-button"
                 disabled={session.locked}
-                onclick={() => handleStatusChange("configured")}>Configure this section</button>
+                onclick={() => handleStatusChange("configured")}>{$pluginText("Configure this section")}</button>
             {:else}
               <button
                 type="button"
                 class="language-button secondary language-danger"
                 disabled={session.locked}
-                onclick={() => handleStatusChange("not-used")}>Mark as not used</button>
+                onclick={() => handleStatusChange("not-used")}>{$pluginText("Mark as not used")}</button>
             {/if}
           </div>
         </div>
@@ -681,7 +682,7 @@ function removeLink(index: number) {
         {@const agreementDraft = session.draft}
         <AgreementEditor draft={agreementDraft} locked={session.locked} index={grammarUi.index} />
         <label class="language-field">
-          <span>Notes</span>
+          <span>{$pluginText("Notes")}</span>
           <textarea
             rows="4"
             value={agreementDraft.notes}
@@ -694,10 +695,10 @@ function removeLink(index: number) {
       {:else if session.draft.recordKind === "section-state"}
         {@const sectionDraft = session.draft}
         <p class="language-empty" role="status">
-          If your language does not use agreement, you can mark this section as not used.
+          {$pluginText("If your language does not use agreement, you can mark this section as not used.")}
         </p>
         <label class="language-field">
-          <span>Note (optional)</span>
+          <span>{$pluginText("Note (optional)")}</span>
           <textarea
             rows="3"
             value={sectionDraft.note ?? ""}
@@ -708,37 +709,37 @@ function removeLink(index: number) {
       {#if session.draft.recordKind === "system" || session.draft.recordKind === "custom-rule" || session.draft.recordKind === "agreement"}
         {@const recordDraft = session.draft}
         <section class="language-group">
-          <h3>Examples</h3>
-          <p class="language-empty" role="status">Add a sentence, and optionally a translation, gloss, or notes.</p>
+          <h3>{$pluginText("Examples")}</h3>
+          <p class="language-empty" role="status">{$pluginText("Add a sentence, and optionally a translation, gloss, or notes.")}</p>
           {#each recordDraft.examples as example, index (example.id)}
             <div class="grammar-example">
               <label class="language-field">
-                <span>Example</span>
+                <span>{$pluginText("Example")}</span>
                 <textarea
                   rows="2"
-                  placeholder="Nar bel tor."
+                  placeholder={$pluginText("Nar bel tor.")}
                   value={example.text}
                   disabled={session.locked}
                   oninput={(event) => (example.text = event.currentTarget.value)}></textarea>
               </label>
               <label class="language-field">
-                <span>Translation (optional)</span>
+                <span>{$pluginText("Translation (optional)")}</span>
                 <input
-                  placeholder="I eat bread."
+                  placeholder={$pluginText("I eat bread.")}
                   value={example.translation ?? ""}
                   disabled={session.locked}
                   oninput={(event) => (example.translation = event.currentTarget.value)} />
               </label>
               <label class="language-field">
-                <span>Gloss (optional)</span>
+                <span>{$pluginText("Gloss (optional)")}</span>
                 <input
-                  placeholder="1sg bread eat"
+                  placeholder={$pluginText("1sg bread eat")}
                   value={example.gloss ?? ""}
                   disabled={session.locked}
                   oninput={(event) => (example.gloss = event.currentTarget.value)} />
               </label>
               <label class="language-field">
-                <span>Notes (optional)</span>
+                <span>{$pluginText("Notes (optional)")}</span>
                 <textarea
                   rows="2"
                   value={example.notes ?? ""}
@@ -749,44 +750,44 @@ function removeLink(index: number) {
                 <button
                   type="button"
                   class="language-button secondary language-danger"
-                  onclick={() => removeExample(index)}>Remove example</button>
+                  onclick={() => removeExample(index)}>{$pluginText("Remove example")}</button>
               {/if}
             </div>
           {/each}
           {#if !session.locked}
-            <button type="button" class="language-button secondary" onclick={addExample}>Add example</button>
+            <button type="button" class="language-button secondary" onclick={addExample}>{$pluginText("Add example")}</button>
           {/if}
         </section>
         <section class="language-group">
-          <h3>Links</h3>
+          <h3>{$pluginText("Links")}</h3>
           {#each recordDraft.links as link, index (link.id)}
             <div class="language-link-row">
               <span class="language-link-kind"
                 >{link.kind === "lexeme"
-                  ? "Word"
+                  ? $pluginText("Word")
                   : link.kind === "lexeme-example"
-                    ? "Example"
+                    ? $pluginText("Example")
                     : link.kind === "sample"
-                      ? "Sample"
+                      ? $pluginText("Sample")
                       : link.kind === "paradigm"
-                        ? "Paradigm"
+                        ? $pluginText("Paradigm")
                         : link.kind}</span>
               <span class="language-link-label">{link.label || link.targetId}</span>
               {#if !session.locked}
                 <button
                   type="button"
                   class="language-button secondary language-danger"
-                  onclick={() => removeLink(index)}>Remove</button>
+                  onclick={() => removeLink(index)}>{$pluginText("Remove")}</button>
               {/if}
             </div>
           {/each}
           {#if !session.locked}
             <label class="language-field">
-              <span>Link a record</span>
-              <select aria-label="Link a record" onchange={handleAddLink}>
-                <option value="">Word, sample, or paradigm…</option>
+              <span>{$pluginText("Link a record")}</span>
+              <select aria-label={$pluginText("Link a record")} onchange={handleAddLink}>
+                <option value="">{$pluginText("Word, sample, or paradigm…")}</option>
                 {#if ctx.choices.lexemes.length > 0}
-                  <optgroup label="Words">
+                  <optgroup label={$pluginText("Words")}>
                     {#each ctx.choices.lexemes as lexeme (lexeme.id)}
                       <option value={JSON.stringify({ kind: "lexeme", targetId: lexeme.id, label: lexeme.lemma })}
                         >{lexeme.lemma}</option>
@@ -794,7 +795,7 @@ function removeLink(index: number) {
                   </optgroup>
                 {/if}
                 {#if ctx.choices.examples.length > 0}
-                  <optgroup label="Examples">
+                  <optgroup label={$pluginText("Examples")}>
                     {#each ctx.choices.examples as example (example.lexemeId + example.exampleId)}
                       <option
                         value={JSON.stringify({
@@ -807,7 +808,7 @@ function removeLink(index: number) {
                   </optgroup>
                 {/if}
                 {#if ctx.choices.samples.length > 0}
-                  <optgroup label="Samples">
+                  <optgroup label={$pluginText("Samples")}>
                     {#each ctx.choices.samples as sample (sample.id)}
                       <option value={JSON.stringify({ kind: "sample", targetId: sample.id, label: sample.title })}
                         >{sample.title}</option>
@@ -815,7 +816,7 @@ function removeLink(index: number) {
                   </optgroup>
                 {/if}
                 {#if ctx.choices.paradigms.length > 0}
-                  <optgroup label="Paradigms">
+                  <optgroup label={$pluginText("Paradigms")}>
                     {#each ctx.choices.paradigms as paradigm (paradigm.id)}
                       <option value={JSON.stringify({ kind: "paradigm", targetId: paradigm.id, label: paradigm.name })}
                         >{paradigm.name}</option>
@@ -831,10 +832,10 @@ function removeLink(index: number) {
         <p class="language-status error" role="alert">{session.validationMessage || error}</p>
       {/if}
       {#if session.duplicates && session.duplicates.length > 1}
-        <section class="language-group" aria-label="Resolve duplicate records">
-          <h3>Resolve duplicate records</h3>
+        <section class="language-group" aria-label={$pluginText("Resolve duplicate records")}>
+          <h3>{$pluginText("Resolve duplicate records")}</h3>
           <p class="language-empty" role="status">
-            Keep one record for {editorTitle} and remove the duplicates below. Edits stay locked until a single record remains.
+            {$pluginText("Keep one record for")} {editorTitle} {$pluginText("and remove the duplicates below. Edits stay locked until a single record remains.")}
           </p>
           <ul class="grammar-duplicate-list">
             {#each session.duplicates as record (record.id)}
@@ -845,7 +846,7 @@ function removeLink(index: number) {
                   class="language-button secondary language-danger"
                   disabled={grammarSaving}
                   onclick={() => void resolveDuplicate(record.id, record.revision)}>
-                  {grammarSaving ? "Removing…" : "Remove this record"}
+                  {grammarSaving ? $pluginText("Removing…") : $pluginText("Remove this record")}
                 </button>
               </li>
             {/each}
@@ -855,8 +856,8 @@ function removeLink(index: number) {
       {#if session.conflict && session.recordId && stored}
         <div class="language-inline">
           <button type="button" class="language-button secondary" onclick={handleLoadStored}
-            >Load stored version</button>
-          <button type="button" class="language-button secondary" onclick={handleKeepDraft}>Keep my draft</button>
+            >{$pluginText("Load stored version")}</button>
+          <button type="button" class="language-button secondary" onclick={handleKeepDraft}>{$pluginText("Keep my draft")}</button>
         </div>
       {/if}
       <div class="language-actions">
@@ -865,34 +866,34 @@ function removeLink(index: number) {
             <button
               type="button"
               class="language-button secondary language-danger"
-              aria-label={`Delete ${editorTitle}`}
+              aria-label={$pluginText("Delete {0}", { 0: String(editorTitle) })}
               disabled={grammarSaving}
-              onclick={handleDelete}>Delete</button>
+              onclick={handleDelete}>{$pluginText("Delete")}</button>
           {/if}
         </span>
         <span>
           <button type="button" class="language-button secondary" disabled={grammarSaving} onclick={leaveEditor}
-            >Cancel</button>
+            >{$pluginText("Cancel")}</button>
           <button type="submit" class="language-button" disabled={session.locked || grammarSaving}
-            >{grammarSaving ? "Saving…" : "Save"}</button>
+            >{grammarSaving ? $pluginText("Saving…") : $pluginText("Save")}</button>
         </span>
       </div>
     </form>
   {:else}
     <div class="language-search-row">
       <label class="language-field">
-        <span>Search grammar systems</span>
+        <span>{$pluginText("Search grammar systems")}</span>
         <input
           name="grammar-search"
-          placeholder="Search grammar systems…"
-          aria-label="Search grammar systems"
+          placeholder={$pluginText("Search grammar systems…")}
+          aria-label={$pluginText("Search grammar systems")}
           value={grammarUi.query}
           oninput={(event) => (grammarUi.query = event.currentTarget.value)} />
       </label>
     </div>
     <div class="grammar-home">
       {#each grammarUi.index.diagnostics as diagnostic}
-        <div class="grammar-diagnostic" role="group" aria-label="Grammar diagnostic">
+        <div class="grammar-diagnostic" role="group" aria-label={$pluginText("Grammar diagnostic")}>
           <p class="language-status error" role="alert">{diagnostic.message}</p>
           {#if diagnostic.systemId}
             <button
@@ -901,8 +902,8 @@ function removeLink(index: number) {
               onclick={async () => {
                 await goSystem(grammarUi, diagnostic.systemId!, windowConfirm);
               }}
-              >Open
-              {grammarSystemDescriptor(diagnostic.systemId)?.label ?? diagnostic.systemId}</button>
+              >{$pluginText("Open")}
+              {$pluginText(grammarSystemDescriptor(diagnostic.systemId)?.label ?? diagnostic.systemId)}</button>
           {:else if diagnostic.recordIds[0] && grammarUi.index.agreements.some((item) => item.id === diagnostic.recordIds[0])}
             <button
               type="button"
@@ -912,62 +913,62 @@ function removeLink(index: number) {
                 grammarUi.section = "agreement";
                 grammarUi.editing = openAgreementEditor(grammarUi.index, diagnostic.recordIds[0]);
                 grammarUi.focusTarget = "#grammar-editor-heading";
-              }}>Open agreement</button>
+              }}>{$pluginText("Open agreement")}</button>
           {/if}
         </div>
       {/each}
       {#if grammarUi.query.trim()}
         <div class="grammar-systems">
           {#if hits.length === 0}
-            <p class="language-empty" role="status">No matching grammar systems.</p>
+            <p class="language-empty" role="status">{$pluginText("No matching grammar systems.")}</p>
           {/if}
           {#each hits as hit}
             <button type="button" class="grammar-system" onclick={() => handleSearchHit(hit)}>
-              <strong>{hit.label}</strong>
+              <strong>{hit.kind === "system" ? $pluginText(hit.label) : hit.label}</strong>
               <span
-                >{GRAMMAR_SECTIONS.find((entry) => entry.id === hit.sectionId)?.label ?? ""} ·
-                {hit.status ? grammarStatusLabel(hit.status) : hit.summary}</span>
+                >{$pluginText(GRAMMAR_SECTIONS.find((entry) => entry.id === hit.sectionId)?.label ?? "")} ·
+                {hit.status ? $pluginText(grammarStatusLabel(hit.status)) : hit.summary}</span>
             </button>
           {/each}
         </div>
       {:else if !grammarUi.section}
         <p class="language-empty" role="status">
-          Define how sentences and words behave in this language. You do not need to configure every system.
+          {$pluginText("Define how sentences and words behave in this language. You do not need to configure every system.")}
         </p>
         {#if !grammarUi.starterDismissed && starterRemaining.length > 0}
           <section class="language-empty-card" data-grammar-id="starter" data-guide="language-grammar-starter">
-            <p class="language-empty" role="status">Start your grammar</p>
+            <p class="language-empty" role="status">{$pluginText("Start your grammar")}</p>
             <p class="language-empty" role="status">
-              Choose a few foundational systems now. Everything can be changed later.
+              {$pluginText("Choose a few foundational systems now. Everything can be changed later.")}
             </p>
             <ol class="grammar-starter-list">
               {#each starterRemaining as systemId (systemId)}
-                <li>{starterStepLabel(systemId)}</li>
+                <li>{$pluginText(starterStepLabel(systemId))}</li>
               {/each}
             </ol>
             <div class="language-inline">
               <button type="button" class="language-button" data-grammar-id="starter-start" onclick={handleStartStarter}
-                >{starterRemaining.length === GRAMMAR_STARTER_STEPS.length ? "Start" : "Continue starter"}</button>
+                >{starterRemaining.length === GRAMMAR_STARTER_STEPS.length ? $pluginText("Start") : $pluginText("Continue starter")}</button>
               <button type="button" class="language-button secondary" onclick={handleDismissStarter}
-                >I'll configure grammar manually</button>
+                >{$pluginText("I'll configure grammar manually")}</button>
             </div>
           </section>
         {/if}
         <div class="grammar-cards">
           {#each GRAMMAR_SECTIONS as entry (entry.id)}
-            {@const summary = sectionCardSummary(grammarUi.index, entry.id)}
-            {@const notUsed = summary.notUsed ? ` · ${summary.notUsed} not used` : ""}
+            {@const summary = sectionCardSummary(grammarUi.index, entry.id, $pluginText)}
+            {@const notUsed = summary.notUsed && summary.configured ? ` · ${$pluginText("{count} not used", { count: summary.notUsed })}` : ""}
             {@const progress = summary.total > 0 ? Math.round((summary.configured / summary.total) * 100) : 0}
             <button
               type="button"
               class="grammar-card"
               data-grammar-id={`section:${entry.id}`}
-              aria-label={`${summary.label}: ${summary.detail}${notUsed}`}
+              aria-label={`${$pluginText(summary.label)}: ${summary.detail}${notUsed}`}
               onclick={async () => {
                 await goSection(grammarUi, entry.id, windowConfirm);
               }}>
               <div class="grammar-card-header">
-                <strong>{summary.label}</strong>
+                <strong>{$pluginText(summary.label)}</strong>
                 {#if summary.total > 0}
                   <span class="grammar-card-progress">{progress}%</span>
                 {/if}
@@ -981,38 +982,38 @@ function removeLink(index: number) {
             </button>
           {/each}
         </div>
-        <dl class="grammar-glance" aria-label="At a glance">
+        <dl class="grammar-glance" aria-label={$pluginText("At a glance")}>
           {#each glanceRows as row}
-            <dt>{row.label}</dt>
+            <dt>{$pluginText(row.label)}</dt>
             <dd>{row.value}</dd>
           {/each}
         </dl>
       {:else}
         {@const currentSection = section!}
-        <h3>{currentSection.label}</h3>
-        <p class="language-empty" role="status">{currentSection.orientation}</p>
+        <h3>{$pluginText(currentSection.label)}</h3>
+        <p class="language-empty" role="status">{$pluginText(currentSection.orientation)}</p>
         {#if currentSection.id === "agreement"}
           {#if unusedAgreementState}
-            <p class="language-empty" role="status">Not used</p>
+            <p class="language-empty" role="status">{$pluginText("Not used")}</p>
             {#if unusedAgreementState.value.note}
               <p class="language-empty" role="status">{unusedAgreementState.value.note}</p>
             {/if}
             <div class="language-inline">
-              <button type="button" class="language-button" onclick={handleStartAgreement}>Add agreement system</button>
-              <button type="button" class="language-button secondary" onclick={handleOpenAgreementNotUsed}>Edit</button>
+              <button type="button" class="language-button" onclick={handleStartAgreement}>{$pluginText("Add agreement system")}</button>
+              <button type="button" class="language-button secondary" onclick={handleOpenAgreementNotUsed}>{$pluginText("Edit")}</button>
             </div>
           {:else if agreementRecords.length === 0}
             <div class="language-empty-card">
-              <p class="language-empty" role="status">{currentSection.emptyBody}</p>
+              <p class="language-empty" role="status">{$pluginText(currentSection.emptyBody)}</p>
               <div class="language-inline">
                 <button type="button" class="language-button" onclick={handleStartAgreement}
-                  >Add agreement system</button>
+                  >{$pluginText("Add agreement system")}</button>
                 <button type="button" class="language-button secondary" onclick={handleOpenAgreementNotUsed}
-                  >Mark as not used</button>
+                  >{$pluginText("Mark as not used")}</button>
               </div>
             </div>
           {:else}
-            <button type="button" class="language-button" onclick={handleStartAgreement}>Add agreement system</button>
+            <button type="button" class="language-button" onclick={handleStartAgreement}>{$pluginText("Add agreement system")}</button>
             <div class="grammar-systems">
               {#each agreementRecords as record (record.id)}
                 <button
@@ -1034,13 +1035,13 @@ function removeLink(index: number) {
         {:else if currentSection.id === "other"}
           {#if customRules.length === 0}
             <div class="language-empty-card">
-              <p class="language-empty" role="status">{currentSection.emptyBody}</p>
+              <p class="language-empty" role="status">{$pluginText(currentSection.emptyBody)}</p>
               <div class="language-inline">
-                <button type="button" class="language-button" onclick={handleAddCustomRule}>Add a custom rule</button>
+                <button type="button" class="language-button" onclick={handleAddCustomRule}>{$pluginText("Add a custom rule")}</button>
               </div>
             </div>
           {:else}
-            <button type="button" class="language-button" onclick={handleAddCustomRule}>Add a custom rule</button>
+            <button type="button" class="language-button" onclick={handleAddCustomRule}>{$pluginText("Add a custom rule")}</button>
             <div class="grammar-systems">
               {#each customRules as record (record.id)}
                 <button
@@ -1054,7 +1055,7 @@ function removeLink(index: number) {
                     grammarUi.focusTarget = "#grammar-editor-heading";
                   }}>
                   <strong>{record.value.title}</strong>
-                  <span>{record.value.tags.join(", ") || record.value.body.split("\n")[0] || "Custom rule"}</span>
+                  <span>{record.value.tags.join(", ") || record.value.body.split("\n")[0] || $pluginText("Custom rule")}</span>
                 </button>
               {/each}
             </div>
@@ -1064,7 +1065,7 @@ function removeLink(index: number) {
           {#if listed.every((system) => !grammarUi.index.systems.has(system.id) && !grammarUi.index.duplicates.has(system.id))}
             {@const first = listed[0]}
             <div class="language-empty-card">
-              <p class="language-empty" role="status">{currentSection.emptyBody}</p>
+              <p class="language-empty" role="status">{$pluginText(currentSection.emptyBody)}</p>
               {#if first}
                 <div class="language-inline">
                   <button
@@ -1082,19 +1083,19 @@ function removeLink(index: number) {
               {@const record = grammarUi.index.systems.get(system.id)?.value}
               {@const duplicate = grammarUi.index.duplicates.has(system.id)}
               {@const summary = duplicate
-                ? "Duplicate records — edits disabled"
+                ? $pluginText("Duplicate records — edits disabled")
                 : record?.recordKind === "system"
-                  ? summarizeSystem(system.id, record)
-                  : grammarStatusLabel("unconfigured")}
+                  ? summarizeSystem(system.id, record, $pluginText)
+                  : $pluginText(grammarStatusLabel("unconfigured"))}
               <button
                 type="button"
                 class="grammar-system"
                 data-grammar-id={`system:${system.id}`}
-                aria-label={`${system.label}: ${summary}`}
+                aria-label={`${$pluginText(system.label)}: ${summary}`}
                 onclick={async () => {
                   await goSystem(grammarUi, system.id, windowConfirm);
                 }}>
-                <strong>{system.label}</strong>
+                <strong>{$pluginText(system.label)}</strong>
                 <span>{summary}</span>
               </button>
             {/each}

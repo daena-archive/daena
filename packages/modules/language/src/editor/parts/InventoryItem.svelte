@@ -1,4 +1,5 @@
 <script lang="ts">
+import { pluginText } from "../../i18n.ts";
 import EditorButton from "./EditorButton.svelte";
 
 let {
@@ -25,19 +26,19 @@ let {
 <article class="grammar-inventory-item" role="listitem">
   <div class="grammar-inventory-toolbar">
     <strong>{title}</strong>
-    {#if referenced}<span>Referenced by agreement</span>{/if}
+    {#if referenced}<span>{$pluginText("Referenced by agreement")}</span>{/if}
     {#if !locked}
       <EditorButton secondary ariaLabel={`Move ${title} up`} disabled={index === 0} onclick={() => onmove?.(-1)}>
-        Up
+        {$pluginText("Up")}
       </EditorButton>
       <EditorButton
         secondary
         ariaLabel={`Move ${title} down`}
         disabled={index === total - 1}
         onclick={() => onmove?.(1)}>
-        Down
+        {$pluginText("Down")}
       </EditorButton>
-      <EditorButton secondary danger ariaLabel={`Remove ${title}`} onclick={() => onremove?.()}>Remove</EditorButton>
+      <EditorButton secondary danger ariaLabel={`Remove ${title}`} onclick={() => onremove?.()}>{$pluginText("Remove")}</EditorButton>
     {/if}
   </div>
   {@render children?.()}

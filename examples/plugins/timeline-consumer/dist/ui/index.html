@@ -7,20 +7,20 @@
       http-equiv="Content-Security-Policy"
       content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self';"
     />
-    <title>Date Lens</title>
+    <title data-i18n="Date Lens">Date Lens</title>
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body data-plugin="com.example.timeline-consumer">
     <main>
-      <p class="eyebrow">EXAMPLE CONSUMER</p>
-      <h1>Date Lens</h1>
+      <p class="eyebrow" data-i18n="EXAMPLE CONSUMER">EXAMPLE CONSUMER</p>
+      <h1 data-i18n="Date Lens">Date Lens</h1>
       <p id="status">Connecting to the host…</p>
       <form id="form">
         <label>
-          Date
+          <span data-i18n="Date">Date</span>
           <input id="date" name="date" value="0042-03-15" autocomplete="off" />
         </label>
-        <button type="submit">Resolve through Timeline</button>
+        <button type="submit" data-i18n="Resolve through Timeline">Resolve through Timeline</button>
       </form>
       <pre id="result" hidden></pre>
     </main>

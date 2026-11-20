@@ -1,3 +1,4 @@
+import { localizeUi } from "../i18n/ui.ts";
 import {
   Anchor,
   Bird,
@@ -159,15 +160,15 @@ export function userIconUrl(svg: string): string {
 }
 
 export function validateUserSvg(svg: string): string | null {
-  if (!svg || new TextEncoder().encode(svg).length > 32 * 1024) return "SVG must be smaller than 32 KiB.";
+  if (!svg || new TextEncoder().encode(svg).length > 32 * 1024) return localizeUi("SVG must be smaller than 32 KiB.");
   const lower = svg.toLowerCase();
   if (["<!doctype", "<!entity", "<?xml-stylesheet"].some((value) => lower.includes(value)))
-    return "SVG contains unsupported markup.";
+    return localizeUi("SVG contains unsupported markup.");
   const document = new DOMParser().parseFromString(svg, "image/svg+xml");
-  if (document.querySelector("parsererror")) return "SVG could not be parsed.";
+  if (document.querySelector("parsererror")) return localizeUi("SVG could not be parsed.");
   const root = document.documentElement;
   if (root.localName !== "svg" || root.namespaceURI !== "http://www.w3.org/2000/svg")
-    return "SVG needs a standard SVG root.";
+    return localizeUi("SVG needs a standard SVG root.");
   const viewBox = root
     .getAttribute("viewBox")
     ?.trim()
@@ -182,7 +183,7 @@ export function validateUserSvg(svg: string): string | null {
     viewBox[2] > 4096 ||
     viewBox[3] > 4096
   )
-    return "SVG needs a valid, bounded viewBox.";
+    return localizeUi("SVG needs a valid, bounded viewBox.");
   const elements = new Set(["svg", "g", "path", "circle", "ellipse", "line", "polyline", "polygon", "rect"]);
   const attributes = new Set([
     "xmlns",
@@ -223,16 +224,16 @@ export function validateUserSvg(svg: string): string | null {
     "focusable",
   ]);
   for (const element of [root, ...root.querySelectorAll("*")]) {
-    if (!elements.has(element.localName)) return "SVG contains an unsupported element.";
+    if (!elements.has(element.localName)) return localizeUi("SVG contains an unsupported element.");
     for (const attribute of element.attributes) {
       if (!attributes.has(attribute.name) || (attribute.namespaceURI && attribute.name !== "xmlns"))
-        return "SVG contains an unsupported attribute.";
+        return localizeUi("SVG contains an unsupported attribute.");
       const value = attribute.value.toLowerCase();
       if (["url(", "javascript:", "data:", "http:", "https:"].some((item) => value.includes(item)))
-        return "SVG contains an external or active value.";
+        return localizeUi("SVG contains an external or active value.");
     }
     for (const child of element.childNodes)
-      if (child.nodeType === Node.TEXT_NODE && child.textContent?.trim()) return "SVG icons cannot contain text.";
+      if (child.nodeType === Node.TEXT_NODE && child.textContent?.trim()) return localizeUi("SVG icons cannot contain text.");
   }
   return null;
 }

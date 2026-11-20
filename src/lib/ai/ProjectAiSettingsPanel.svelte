@@ -1,8 +1,10 @@
 <script lang="ts">
+import { ui } from "$lib/i18n/ui";
 import { Bot, Cloud, Cpu, KeyRound, Plus, Server, Sparkles, Trash2 } from "@lucide/svelte";
 import ImageProviderSettingsCard from "$lib/ai/ImageProviderSettingsCard.svelte";
 import {
   mergePromptTemplates,
+  promptTemplateCopy,
   overlayFromTemplates,
   type PromptKind,
   type PromptTemplate,
@@ -11,43 +13,43 @@ import type { AiProviderSettings, AiProviderStatus, ImageProviderSettings } from
 
 type AiProviderPreset = { id: string; name: string; endpoint: string; description: string; local: boolean };
 
-const aiProviderPresets: AiProviderPreset[] = [
+const aiProviderPresets: AiProviderPreset[] = $derived([
   {
     id: "lm-studio",
     name: "LM Studio",
     endpoint: "http://127.0.0.1:1234/v1",
-    description: "Local models on this computer",
+    description: $ui("Local models on this computer"),
     local: true,
   },
   {
     id: "ollama",
     name: "Ollama",
     endpoint: "http://127.0.0.1:11434/v1",
-    description: "Local models on this computer",
+    description: $ui("Local models on this computer"),
     local: true,
   },
   {
     id: "openai",
     name: "OpenAI",
     endpoint: "https://api.openai.com/v1",
-    description: "GPT models through OpenAI",
+    description: $ui("GPT models through OpenAI"),
     local: false,
   },
   {
     id: "openrouter",
     name: "OpenRouter",
     endpoint: "https://openrouter.ai/api/v1",
-    description: "Many hosted models behind one API",
+    description: $ui("Many hosted models behind one API"),
     local: false,
   },
   {
     id: "groq",
     name: "Groq",
     endpoint: "https://api.groq.com/openai/v1",
-    description: "Fast hosted inference",
+    description: $ui("Fast hosted inference"),
     local: false,
   },
-];
+]);
 
 let {
   enabled,
@@ -115,9 +117,9 @@ const statusReady = $derived(Boolean(aiStatus?.available && aiStatus?.modelAvail
 const templateGroups = $derived(
   (
     [
-      { kind: "editor" as PromptKind, label: "Editor" },
-      { kind: "git" as PromptKind, label: "Snapshots" },
-      { kind: "image" as PromptKind, label: "Images" },
+      { kind: "editor" as PromptKind, label: $ui("Editor") },
+      { kind: "git" as PromptKind, label: $ui("Snapshots") },
+      { kind: "image" as PromptKind, label: $ui("Images") },
     ] as const
   )
     .map((group) => ({ ...group, items: templates.filter((template) => template.kind === group.kind) }))
@@ -138,7 +140,7 @@ function chooseCustomProvider() {
     id: "openai-compatible",
     name: "OpenAI-compatible provider",
     endpoint: "",
-    description: "Any compatible endpoint",
+    description: $ui("Any compatible endpoint"),
     local: true,
   });
 }
@@ -214,42 +216,39 @@ function statusCopy() {
   <div class="section-heading">
     <span class="heading-icon"><Sparkles size={17} /></span>
     <div>
-      <span class="kicker">INTELLIGENCE</span>
-      <h2>AI</h2>
-      <p>Provider, models, and prompt templates for this project. Nothing is configured until you add it.</p>
+      <span class="kicker">{$ui("INTELLIGENCE")}</span>
+      <h2>{$ui("AI")}</h2>
+      <p>{$ui("Provider, models, and prompt templates for this project. Nothing is configured until you add it.")}</p>
     </div>
   </div>
 
   <section class="operation-card">
     <div class="split-heading">
       <div>
-        <strong>Use AI in this project</strong>
-        <p>
-          Requests run through this project's provider. Remote providers still need consent before context leaves this
-          machine.
-        </p>
+        <strong>{$ui("Use AI in this project")}</strong>
+        <p> {$ui("Requests run through this project's provider. Remote providers still need consent before context leaves this machine.")} </p>
       </div>
-      <span class:ok={enabled} class="state-pill">{enabled ? "Enabled" : "Off"}</span>
+      <span class:ok={enabled} class="state-pill">{enabled ? $ui("Enabled") : $ui("Off")}</span>
     </div>
     <div class="action-row">
       <button type="button" class={enabled ? "quiet-button" : "primary-button"} onclick={() => onToggleAi(!enabled)}>
         <Bot size={14} />
-        {enabled ? "Disable AI" : "Enable AI"}
+        {enabled ? $ui("Disable AI") : $ui("Enable AI")}
       </button>
     </div>
     {#if remote && enabled}
       <div class="sub-operation">
         <div class="split-heading">
           <div>
-            <strong>Remote access</strong>
-            <p>Allow this provider to receive project context from this machine.</p>
+            <strong>{$ui("Remote access")}</strong>
+            <p>{$ui("Allow this provider to receive project context from this machine.")}</p>
           </div>
-          <span class:ok={remoteConsent} class="state-pill">{remoteConsent ? "Allowed" : "Not allowed"}</span>
+          <span class:ok={remoteConsent} class="state-pill">{remoteConsent ? $ui("Allowed") : $ui("Not allowed")}</span>
         </div>
         <div class="action-row">
           <button type="button" class="quiet-button" onclick={() => onRemoteConsent(true)}
-            >Allow remote provider</button>
-          <button type="button" class="quiet-button" onclick={() => onRemoteConsent(false)}>Revoke</button>
+            >{$ui("Allow remote provider")}</button>
+          <button type="button" class="quiet-button" onclick={() => onRemoteConsent(false)}>{$ui("Revoke")}</button>
         </div>
       </div>
     {/if}
@@ -257,10 +256,10 @@ function statusCopy() {
 
   <section class="operation-card">
     <div>
-      <strong>Provider</strong>
-      <p>Choose a preset to fill a suggested address, then Connect to test it and list models.</p>
+      <strong>{$ui("Provider")}</strong>
+      <p>{$ui("Choose a preset to fill a suggested address, then Connect to test it and list models.")}</p>
     </div>
-    <div class="presets" role="group" aria-label="Provider presets">
+    <div class="presets" role="group" aria-label={$ui("Provider presets")}>
       {#each aiProviderPresets as preset}
         <button
           type="button"
@@ -281,32 +280,29 @@ function statusCopy() {
         aria-pressed={provider.id === "openai-compatible"}
         onclick={chooseCustomProvider}>
         <Server size={16} strokeWidth={1.8} aria-hidden="true" />
-        <span><strong>OpenAI-compatible</strong><small>Enter another compatible address</small></span>
+        <span><strong>{$ui("OpenAI-compatible")}</strong><small>{$ui("Enter another compatible address")}</small></span>
       </button>
     </div>
     <label class="field"
-      >API address
-      <input
+      >{$ui("API address")} <input
         value={provider.endpoint}
-        placeholder="http://127.0.0.1:1234/v1"
+        placeholder={$ui("http://127.0.0.1:1234/v1")}
         spellcheck="false"
         oninput={(event) => onProviderChange("endpoint", event.currentTarget.value)} />
     </label>
     <div class="field-row">
       <label class="field"
-        >Chat model
-        <input
+        >{$ui("Chat model")} <input
           value={provider.model}
           list="ai-model-options"
-          placeholder="Connect to list models"
+          placeholder={$ui("Connect to list models")}
           oninput={(event) => onProviderChange("model", event.currentTarget.value)} />
       </label>
       <label class="field"
-        >Embedding model
-        <input
+        >{$ui("Embedding model")} <input
           value={provider.embeddingModel}
           list="ai-model-options"
-          placeholder="Leave blank to reuse chat"
+          placeholder={$ui("Leave blank to reuse chat")}
           oninput={(event) => onProviderChange("embeddingModel", event.currentTarget.value)} />
       </label>
     </div>
@@ -318,16 +314,12 @@ function statusCopy() {
         <input
           type="checkbox"
           checked={provider.capabilities.includes("text.embed")}
-          onchange={(event) => toggleCapability("text.embed", event.currentTarget.checked)} />
-        Embeddings
-      </label>
+          onchange={(event) => toggleCapability("text.embed", event.currentTarget.checked)} /> {$ui("Embeddings")} </label>
       <label class="check-chip">
         <input
           type="checkbox"
           checked={provider.capabilities.includes("text.generate.structured")}
-          onchange={(event) => toggleCapability("text.generate.structured", event.currentTarget.checked)} />
-        Structured output
-      </label>
+          onchange={(event) => toggleCapability("text.generate.structured", event.currentTarget.checked)} /> {$ui("Structured output")} </label>
     </div>
     <div class="action-row">
       <button
@@ -335,7 +327,7 @@ function statusCopy() {
         class="primary-button"
         disabled={aiModelsBusy || !provider.endpoint.trim()}
         onclick={onConnect}>
-        {aiModelsBusy ? "Connecting…" : "Connect"}
+        {aiModelsBusy ? $ui("Connecting…") : $ui("Connect")}
       </button>
       {#if aiStatus || aiModelsMessage}
         <span class="status-badge" class:ok={statusReady} role="status">{statusCopy()}</span>
@@ -345,20 +337,19 @@ function statusCopy() {
       <div class="sub-operation">
         <div class="split-heading">
           <div>
-            <strong>Credentials</strong>
-            <p>{remoteCredential?.configured ? "Stored in the OS keychain." : "No OS credential configured."}</p>
+            <strong>{$ui("Credentials")}</strong>
+            <p>{remoteCredential?.configured ? $ui("Stored in the OS keychain.") : $ui("No OS credential configured.")}</p>
           </div>
           {#if remoteCredential?.configured}
-            <span class="state-pill ok">Configured</span>
+            <span class="state-pill ok">{$ui("Configured")}</span>
           {/if}
         </div>
         <div class="credential-row">
           <label class="field credential-field"
-            >API key
-            <input
+            >{$ui("API key")} <input
               type="password"
               bind:value={credentialInput}
-              placeholder="Paste a key"
+              placeholder={$ui("Paste a key")}
               autocomplete="off"
               spellcheck="false" />
           </label>
@@ -368,12 +359,12 @@ function statusCopy() {
             disabled={!credentialInput.trim() || credentialBusy}
             onclick={() => void saveRemoteCredential()}>
             <KeyRound size={14} />
-            {remoteCredential?.configured ? "Replace key" : "Save key"}
+            {remoteCredential?.configured ? $ui("Replace key") : $ui("Save key")}
           </button>
           {#if remoteCredential?.configured}
-            <button type="button" class="quiet-button" onclick={onRemoteClear}>Remove</button>
+            <button type="button" class="quiet-button" onclick={onRemoteClear}>{$ui("Remove")}</button>
           {:else}
-            <button type="button" class="quiet-button" onclick={onRemoteImport}>Import environment key</button>
+            <button type="button" class="quiet-button" onclick={onRemoteImport}>{$ui("Import environment key")}</button>
           {/if}
         </div>
       </div>
@@ -383,18 +374,18 @@ function statusCopy() {
   {#if enabled}
     <section class="operation-card">
       <div>
-        <strong>Semantic retrieval</strong>
+        <strong>{$ui("Semantic retrieval")}</strong>
         <p>
-          {aiIndexStatus?.message ?? aiIndexStatus?.state ?? "Status not checked"}{aiIndexMessage
+          {aiIndexStatus?.message ?? aiIndexStatus?.state ?? $ui("Status not checked")}{aiIndexMessage
             ? ` · ${aiIndexMessage}`
             : ""}
         </p>
       </div>
       <div class="action-row">
-        <button type="button" class="quiet-button" onclick={onAiIndexRefresh}>Refresh</button>
+        <button type="button" class="quiet-button" onclick={onAiIndexRefresh}>{$ui("Refresh")}</button>
         <button type="button" class="primary-button" disabled={aiIndexBusy} onclick={onAiIndexRebuild}
-          >{aiIndexBusy ? "Building index…" : "Build semantic index"}</button>
-        {#if aiIndexBusy}<button type="button" class="quiet-button" onclick={onAiIndexCancel}>Cancel</button>{/if}
+          >{aiIndexBusy ? $ui("Building index…") : $ui("Build semantic index")}</button>
+        {#if aiIndexBusy}<button type="button" class="quiet-button" onclick={onAiIndexCancel}>{$ui("Cancel")}</button>{/if}
       </div>
     </section>
   {/if}
@@ -403,11 +394,11 @@ function statusCopy() {
 
   <section class="operation-card">
     <div>
-      <strong>Prompt templates</strong>
-      <p>Task instructions sent with each action. Host safety rules stay in Daena and are not editable.</p>
+      <strong>{$ui("Prompt templates")}</strong>
+      <p>{$ui("Task instructions sent with each action. Host safety rules stay in Daena and are not editable.")}</p>
     </div>
     <div class="template-layout">
-      <nav class="template-list" aria-label="Prompt templates">
+      <nav class="template-list" aria-label={$ui("Prompt templates")}>
         {#each templateGroups as group}
           <p class="list-kicker">{group.label}</p>
           {#each group.items as template}
@@ -415,8 +406,8 @@ function statusCopy() {
               type="button"
               class:active={template.id === selectedTemplateId}
               onclick={() => (selectedTemplateId = template.id)}>
-              <span>{template.label}</span>
-              {#if template.enabled === false}<small>off</small>{/if}
+              <span>{promptTemplateCopy($ui, template, "label")}</span>
+              {#if template.enabled === false}<small>{$ui("off")}</small>{/if}
             </button>
           {/each}
         {/each}
@@ -424,16 +415,14 @@ function statusCopy() {
       {#if selectedTemplate}
         <div class="template-editor">
           <label class="field"
-            >Name
-            <input
-              value={selectedTemplate.label}
+            >{$ui("Name")} <input
+              value={promptTemplateCopy($ui, selectedTemplate, "label")}
               oninput={(event) => updateSelected({ label: event.currentTarget.value })} />
           </label>
           <label class="field"
-            >Instruction
-            <textarea
+            >{$ui("Instruction")} <textarea
               rows="7"
-              value={selectedTemplate.instruction}
+              value={promptTemplateCopy($ui, selectedTemplate, "instruction")}
               oninput={(event) => updateSelected({ instruction: event.currentTarget.value })}></textarea>
           </label>
           <div class="capability-row">
@@ -441,43 +430,39 @@ function statusCopy() {
               <input
                 type="checkbox"
                 checked={selectedTemplate.enabled !== false}
-                onchange={(event) => updateSelected({ enabled: event.currentTarget.checked })} />
-              Show in menus
-            </label>
+                onchange={(event) => updateSelected({ enabled: event.currentTarget.checked })} /> {$ui("Show in menus")} </label>
             {#if selectedTemplate.kind === "editor"}
               <label class="check-chip">
                 <input
                   type="checkbox"
                   checked={selectedTemplate.requiresSelection === true}
-                  onchange={(event) => updateSelected({ requiresSelection: event.currentTarget.checked })} />
-                Requires a selection
-              </label>
+                  onchange={(event) => updateSelected({ requiresSelection: event.currentTarget.checked })} /> {$ui("Requires a selection")} </label>
             {/if}
           </div>
           <div class="action-row">
             {#if selectedTemplate.bundled}
-              <button type="button" class="quiet-button" onclick={restoreSelected}>Restore default</button>
+              <button type="button" class="quiet-button" onclick={restoreSelected}>{$ui("Restore default")}</button>
             {:else}
-              <button type="button" class="quiet-button" onclick={removeSelected}><Trash2 size={14} /> Remove</button>
+              <button type="button" class="quiet-button" onclick={removeSelected}><Trash2 size={14} /> {$ui("Remove")}</button>
             {/if}
           </div>
         </div>
       {/if}
     </div>
     <div class="add-custom">
-      <strong>Add a template</strong>
+      <strong>{$ui("Add a template")}</strong>
       <div class="field-row">
-        <label class="field">Name <input bind:value={customLabel} placeholder="House voice" /></label>
+        <label class="field">{$ui("Name")} <input bind:value={customLabel} placeholder={$ui("House voice")} /></label>
       </div>
       <label class="field"
-        >Instruction <textarea rows="3" bind:value={customInstruction} placeholder="Write in this project's voice."
+        >{$ui("Instruction")} <textarea rows="3" bind:value={customInstruction} placeholder={$ui("Write in this project's voice.")}
         ></textarea
         ></label>
       <button
         type="button"
         class="quiet-button"
         disabled={!customLabel.trim() || !customInstruction.trim()}
-        onclick={addCustom}><Plus size={14} /> Add template</button>
+        onclick={addCustom}><Plus size={14} /> {$ui("Add template")}</button>
     </div>
   </section>
 </div>

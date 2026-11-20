@@ -1,4 +1,5 @@
 <script lang="ts">
+import { messages } from "$lib/i18n";
 import { ChevronDown, FolderOpen, FolderPlus, LogOut, X } from "@lucide/svelte";
 
 export interface ProjectSwitcherRecent {
@@ -55,14 +56,14 @@ $effect(() => {
 {#if !ready}
   <div class="startup-actions">
     <button class="rail-button startup-primary" onclick={onCreateProject}
-      ><span class="rail-icon"><FolderPlus size={16} strokeWidth={1.8} /></span><span>New project</span></button>
+      ><span class="rail-icon"><FolderPlus size={16} strokeWidth={1.8} /></span><span>{$messages.projectSwitcher.create}</span></button>
     <button class="rail-button" onclick={onOpenProject}
-      ><span class="rail-icon"><FolderOpen size={16} strokeWidth={1.8} /></span><span>Open folder</span></button>
+      ><span class="rail-icon"><FolderOpen size={16} strokeWidth={1.8} /></span><span>{$messages.projectSwitcher.open}</span></button>
   </div>
   {#if recentProjects.length === 0}
-    <p class="startup-hint">Projects live in a folder on disk.</p>
+    <p class="startup-hint">{$messages.projectSwitcher.hint}</p>
   {:else}
-    <div class="rail-label recent-label">RECENT PROJECTS</div>
+    <div class="rail-label recent-label">{$messages.projectSwitcher.recentTitle}</div>
     <div class="recent-projects">
       {#each recentProjects as recent (recent.root)}
         <div class="recent-project">
@@ -72,8 +73,8 @@ $effect(() => {
           </button>
           <button
             class="recent-project-remove"
-            aria-label={`Remove ${recent.name} from recent projects`}
-            title="Remove from recent projects"
+            aria-label={$messages.projectSwitcher.removeNamedRecent(recent.name)}
+            title={$messages.projectSwitcher.removeRecent}
             onclick={() => onRemoveRecent(recent.root)}><X size={12} strokeWidth={1.8} aria-hidden="true" /></button>
         </div>
       {/each}
@@ -95,16 +96,16 @@ $effect(() => {
         ><ChevronDown size={14} strokeWidth={1.8} aria-hidden="true" /></span>
     </button>
     {#if menuOpen}
-      {#if collapsed}<button class="rail-backdrop" aria-label="Close menu" onclick={() => onMenuChange(false)}></button
+      {#if collapsed}<button class="rail-backdrop" aria-label={$messages.projectSwitcher.closeMenu} onclick={() => onMenuChange(false)}></button
         >{/if}
       <div class="project-menu" role="menu" data-shell-popover="project-menu">
         <button class="rail-button" role="menuitem" onclick={onCreateProject}
-          ><span class="rail-icon"><FolderPlus size={16} strokeWidth={1.8} /></span><span>New project</span></button>
+          ><span class="rail-icon"><FolderPlus size={16} strokeWidth={1.8} /></span><span>{$messages.projectSwitcher.create}</span></button>
         <button class="rail-button" role="menuitem" onclick={onOpenProject}
-          ><span class="rail-icon"><FolderOpen size={16} strokeWidth={1.8} /></span><span>Open another folder</span
+          ><span class="rail-icon"><FolderOpen size={16} strokeWidth={1.8} /></span><span>{$messages.projectSwitcher.openAnother}</span
           ></button>
         <button class="rail-button" role="menuitem" onclick={onCloseProject}
-          ><span class="rail-icon"><LogOut size={16} strokeWidth={1.8} /></span><span>Close project</span></button>
+          ><span class="rail-icon"><LogOut size={16} strokeWidth={1.8} /></span><span>{$messages.projectSwitcher.close}</span></button>
       </div>
     {/if}
   </div>

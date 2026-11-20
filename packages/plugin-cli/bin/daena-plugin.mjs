@@ -223,11 +223,28 @@ function inspectPackageTree(directory) {
   return filesForArchive;
 }
 
+// Keep the authoring check in sync with the native package verifier.
+function validateTranslations(files) {
+  let total = 0;
+  for (const file of files) {
+    const catalog = /^locales\/([^/]*)\.json$/.exec(file.name);
+    if (!catalog) continue;
+    if (!/^[a-z]{2,8}(?:-[a-z0-9]{1,8})*$/i.test(catalog[1]))
+      throw new Error(`invalid translation locale: ${file.name}`);
+    total += file.data ? file.data.length : statSync(file.path).size;
+    if (total > 1024 * 1024) throw new Error("plugin translations exceed 1 MiB");
+    const text = new TextDecoder("utf-8", { fatal: true }).decode(file.data ?? readFileSync(file.path));
+    const messages = JSON.parse(text);
+    if (!messages || typeof messages !== "object" || Array.isArray(messages) || Object.values(messages).some(value => typeof value !== "string"))
+      throw new Error(`invalid translation catalog: ${file.name} must be an object of strings`);
+  }
+}
+
 function validateDirectory(input) {
   const directory = resolve(input);
   if (!existsSync(directory) || !statSync(directory).isDirectory())
     throw new Error(`package directory does not exist: ${directory}`);
-  inspectPackageTree(directory);
+  validateTranslations(inspectPackageTree(directory));
   const { manifest } = readManifest(directory);
   const errors = [...shapeErrors(manifest), ...sdk.validatePluginManifest(manifest)];
   for (const entrypoint of [manifest.entrypoints?.ui, manifest.entrypoints?.wasm].filter(Boolean)) {
@@ -262,6 +279,7 @@ function validateArchive(input) {
   const archive = resolve(input);
   if (!existsSync(archive)) throw new Error(`archive does not exist: ${archive}`);
   const entries = listArchive(archive);
+  validateTranslations(entries);
   const names = entries.map((entry) => entry.name);
   if (!names.includes("manifest.json")) throw new Error("archive must contain manifest.json at its root");
   let manifest;

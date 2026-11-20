@@ -1,4 +1,6 @@
 <script lang="ts">
+import { profileComponentCopy } from "../i18n/profile-copy.ts";
+import { ui } from "$lib/i18n/ui";
 import { ChevronDown } from "@lucide/svelte";
 import { profileCardGroups, profileCardRows, profileCardSummary, type ProfileDocument } from "./profile.ts";
 import { profilePresetLabel, type LoadedProfilePreset } from "./profilePresets.ts";
@@ -29,26 +31,26 @@ const canCollapse = $derived(rows.length > summary.length);
   <dl>
     {#each items as row (row.id)}
       <div>
-        <dt>{row.name}</dt>
+        <dt>{profileComponentCopy(profile.presetOrigin, row.id, row.name)}</dt>
         {#if row.value}<dd>{row.value}</dd>{/if}
       </div>
     {/each}
   </dl>
 {/snippet}
 
-<section class="profile-card" aria-label="Profile">
+<section class="profile-card" aria-label={$ui("Profile")}>
   <header>
-    <h3>Profile</h3>
+    <h3>{$ui("Profile")}</h3>
     {#if asOfLabel}<p>{asOfLabel}</p>{/if}
     {#if origin}<p>{origin}</p>{/if}
   </header>
   {#if rows.length === 0}
-    <p class="empty">No profile values yet.</p>
+    <p class="empty">{$ui("No profile values yet.")}</p>
   {:else if canCollapse}
     <dl class="summary">
       {#each summary as row (row.id)}
         <div>
-          <dt>{row.name}</dt>
+          <dt>{profileComponentCopy(profile.presetOrigin, row.id, row.name)}</dt>
           <dd>{row.value || "—"}</dd>
         </div>
       {/each}
@@ -58,7 +60,7 @@ const canCollapse = $derived(rows.length > summary.length);
         <details>
           <summary>
             <ChevronDown size={12} strokeWidth={1.8} aria-hidden="true" />
-            <span>{group.label}</span>
+            <span>{$ui(group.label)}</span>
             <small>{group.rows.length}</small>
           </summary>
           {@render valueList(group.rows)}
@@ -67,7 +69,7 @@ const canCollapse = $derived(rows.length > summary.length);
     </div>
   {:else}
     {#each groups as group (group.kind)}
-      <h4>{group.label}</h4>
+      <h4>{$ui(group.label)}</h4>
       {@render valueList(group.rows)}
     {/each}
   {/if}

@@ -1,4 +1,7 @@
 <script lang="ts">
+import { nativeErrorText } from "$lib/i18n/native-errors.ts";
+import { displayLanguage } from "$lib/i18n";
+import { ui } from "$lib/i18n/ui";
 import { ChevronRight } from "@lucide/svelte";
 import type { RouteSuggestion, RouteSuggestResult } from "$lib/project/types";
 
@@ -33,51 +36,49 @@ let {
 const selected = $derived(result?.suggestions.find((item) => item.id === selectedId) ?? null);
 
 function km(metres: number) {
-  return metres >= 10_000 ? `${Math.round(metres / 1_000)} km` : `${metres.toLocaleString("en-US")} m`;
+  return metres >= 10_000 ? `${Math.round(metres / 1_000)} km` : `${metres.toLocaleString($displayLanguage)} m`;
 }
 
 function hint() {
-  if (searching) return "Finding land routes…";
-  if (arming && startPicked) return "Start set. Click the end on land.";
-  if (arming) return "Click the start, then the end. Ocean is blocked.";
+  if (searching) return $ui("Finding land routes…");
+  if (arming && startPicked) return $ui("Start set. Click the end on land.");
+  if (arming) return $ui("Click the start, then the end. Ocean is blocked.");
   if (result)
-    return `${result.suggestionCount} suggestion${result.suggestionCount === 1 ? "" : "s"}. Accept writes a road.`;
-  return "Two clicks on land. Suggestions stay disposable until you accept one.";
+    return $ui("{0} suggestion{1}. Accept writes a road.", result.suggestionCount, result.suggestionCount === 1 ? "" : $ui("s"));
+  return $ui("Two clicks on land. Suggestions stay disposable until you accept one.");
 }
 
 const step = $derived(result ? 3 : arming && startPicked ? 2 : arming ? 1 : 0);
 </script>
 
 {#snippet pick()}
-  <ol class="steps" aria-label="Route steps">
-    <li class:done={step > 1} class:active={step === 1}>Start</li>
-    <li class:done={step > 2} class:active={step === 2}>End</li>
-    <li class:done={step > 3} class:active={step === 3}>Choose</li>
+  <ol class="steps" aria-label={$ui("Route steps")}>
+    <li class:done={step > 1} class:active={step === 1}>{$ui("Start")}</li>
+    <li class:done={step > 2} class:active={step === 2}>{$ui("End")}</li>
+    <li class:done={step > 3} class:active={step === 3}>{$ui("Choose")}</li>
   </ol>
   <p class="section-note">{hint()}</p>
   <div class="actions">
     <button type="button" class="primary" disabled={disabled || searching} onclick={onarm}>
-      {arming ? (startPicked ? "Waiting for end…" : "Waiting for start…") : "Pick start and end"}
+      {arming ? (startPicked ? $ui("Waiting for end…") : $ui("Waiting for start…")) : $ui("Pick start and end")}
     </button>
-    <button type="button" disabled={disabled || (!arming && !searching && !result && !error)} onclick={oncancel}>
-      Cancel
-    </button>
+    <button type="button" disabled={disabled || (!arming && !searching && !result && !error)} onclick={oncancel}> {$ui("Cancel")} </button>
   </div>
   {#if error}
-    <p class="section-note route-error">{error}</p>
+    <p class="section-note route-error">{$nativeErrorText(error)}</p>
   {/if}
 {/snippet}
 
 {#snippet suggestions()}
   {#if result && result.suggestions.length === 0}
-    <p class="empty-note">No land path between those points. Try different endpoints.</p>
+    <p class="empty-note">{$ui("No land path between those points. Try different endpoints.")}</p>
   {:else if result}
     <ul class="route-results">
       {#each result.suggestions as suggestion (suggestion.id)}
         <li class:active={selectedId === suggestion.id}>
           <button type="button" class="route-candidate" onclick={() => onselect(suggestion)}>
             <strong>{suggestion.label}</strong>
-            <span>{km(suggestion.lengthM)} · {suggestion.climbM.toLocaleString("en-US")} m climb</span>
+            <span>{$ui("{0} · {1} m climb", km(suggestion.lengthM), suggestion.climbM.toLocaleString($displayLanguage))}</span>
             <span>{suggestion.tradeoff}</span>
             {#each suggestion.reasons.slice(1) as reason}
               <span>{reason}</span>
@@ -85,7 +86,7 @@ const step = $derived(result ? 3 : arming && startPicked ? 2 : arming ? 1 : 0);
           </button>
           {#if selectedId === suggestion.id}
             <button type="button" class="primary" {disabled} onclick={() => onaccept(suggestion)}
-              >Accept as road</button>
+              >{$ui("Accept as road")}</button>
           {/if}
         </li>
       {/each}
@@ -94,14 +95,14 @@ const step = $derived(result ? 3 : arming && startPicked ? 2 : arming ? 1 : 0);
 {/snippet}
 
 {#if variant === "studio"}
-  <section class="route-suggest studio" aria-label="Suggested routes">
+  <section class="route-suggest studio" aria-label={$ui("Suggested routes")}>
     <div class="block">
-      <span class="kicker">Path</span>
+      <span class="kicker">{$ui("Path")}</span>
       {@render pick()}
     </div>
     {#if result}
       <div class="block">
-        <span class="kicker">Suggestions</span>
+        <span class="kicker">{$ui("Suggestions")}</span>
         {@render suggestions()}
       </div>
     {/if}
@@ -110,7 +111,7 @@ const step = $derived(result ? 3 : arming && startPicked ? 2 : arming ? 1 : 0);
   <details class="route-suggest map-section-group" open={arming || searching || Boolean(result) || Boolean(error)}>
     <summary>
       <ChevronRight size={14} strokeWidth={1.8} aria-hidden="true" />
-      <strong>Suggested routes</strong>
+      <strong>{$ui("Suggested routes")}</strong>
       {#if result}
         <span class="section-count">{result.suggestionCount}</span>
       {/if}

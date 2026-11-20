@@ -1,4 +1,6 @@
 <script lang="ts">
+import { manifestText } from "$lib/i18n/manifest-copy";
+import { ui } from "$lib/i18n/ui";
 import type { FieldDefinition, MetadataFieldDefinition, ModuleSchemaOverlay } from "$lib/project/client";
 import {
   FIELD_KIND_GROUPS,
@@ -35,6 +37,7 @@ type TimelineRole = "point" | "start" | "end";
 type TimelineLayer = "dates" | "lifelines";
 
 let {
+  pluginId,
   draft,
   flatPackage,
   packageFields,
@@ -128,6 +131,7 @@ let {
   addNewFieldMetadataOneOfVariant,
   addNewFieldMetadata,
 }: {
+  pluginId: string | null;
   draft: ModuleSchemaOverlay;
   flatPackage: FlattenedPackageSchema;
   packageFields: FieldDefinition[];
@@ -289,10 +293,10 @@ function selectBuiltinField(field: FieldDefinition) {
         onclick={() => (builtinFieldsCollapsed = !builtinFieldsCollapsed)}>
         <div class="heading-left">
           <span class="heading-icon"><TextQuote size={14} strokeWidth={1.8} aria-hidden="true" /></span>
-          <h4>Builtin fields</h4>
+          <h4>{$ui("Builtin fields")}</h4>
           <span class="count-badge">{packageFields.length}</span>
         </div>
-        <span class="block-hint">Enable fields and choose the entity types they apply to</span>
+        <span class="block-hint">{$ui("Enable fields and choose the entity types they apply to")}</span>
         <span class="collapse-icon" aria-hidden="true"
           >{#if builtinFieldsCollapsed}<ChevronRight size={14} strokeWidth={1.8} />{:else}<ChevronDown
               size={14}
@@ -305,23 +309,20 @@ function selectBuiltinField(field: FieldDefinition) {
               <button type="button" class="item-select" onclick={() => selectBuiltinField(field)}>
                 <div class="item-main">
                   <div class="item-title-row">
-                    <strong>{field.label || humanizeId(field.key)}</strong>
+                    <strong>{$manifestText(pluginId, "field", field.key, field.label) || humanizeId(field.key)}</strong>
                     <span class="type-pill">{fieldTypeLabel(field.type)}</span>
                     <span class:disabled-pill={isDisabled(draft.disabledFields, field.key)} class="meta">
                       {#if isDisabled(draft.disabledFields, field.key)}
-                        <EyeOff size={10} strokeWidth={1.8} aria-hidden="true" /> Disabled
-                      {:else}
-                        Enabled
-                      {/if}
+                        <EyeOff size={10} strokeWidth={1.8} aria-hidden="true" /> {$ui("Disabled")} {:else} {$ui("Enabled")} {/if}
                     </span>
                     {#if field.type === "relationship" && effectiveBuiltinMetadata(field).length > 0}
                       <span class="meta">{builtinMetadataFieldExtras(field)}</span>
                     {/if}
                     {#if field.type === "date"}
                       {#if isTimelineEnabled(field)}
-                        <span class="meta">· Timeline: {timelineBadge(field)}</span>
+                        <span class="meta">{$ui("· Timeline: {0}", timelineBadge(field))}</span>
                       {:else if (field as unknown as Record<string, unknown>).shared}
-                        <span class="meta">· Shared, not on Timeline</span>
+                        <span class="meta">{$ui("· Shared, not on Timeline")}</span>
                       {/if}
                     {/if}
                   </div>
@@ -341,7 +342,7 @@ function selectBuiltinField(field: FieldDefinition) {
                 class:is-hidden={isDisabled(draft.disabledFields, field.key)}
                 aria-pressed={!isDisabled(draft.disabledFields, field.key)}
                 onclick={() => toggleDisabled("disabledFields", field.key)}>
-                {isDisabled(draft.disabledFields, field.key) ? "Enable" : "Enabled"}
+                {isDisabled(draft.disabledFields, field.key) ? $ui("Enable") : $ui("Enabled")}
               </button>
             </li>
           {/each}
@@ -353,17 +354,17 @@ function selectBuiltinField(field: FieldDefinition) {
       <div class="block-heading">
         <div class="heading-left">
           <span class="heading-icon accent"><Sparkles size={14} strokeWidth={1.8} aria-hidden="true" /></span>
-          <h4>Custom fields</h4>
+          <h4>{$ui("Custom fields")}</h4>
           <span class="count-badge accent">{(draft.customFields ?? []).length}</span>
         </div>
-        <span class="block-hint">Choose at least one entity type for each field</span>
+        <span class="block-hint">{$ui("Choose at least one entity type for each field")}</span>
       </div>
       {#if (draft.customFields ?? []).length === 0}
         <div class="empty-inline">
           <Blocks size={16} strokeWidth={1.7} aria-hidden="true" />
           <div>
-            <strong>No custom fields yet</strong>
-            <span>Add a field like “Word count” or “Origin”.</span>
+            <strong>{$ui("No custom fields yet")}</strong>
+            <span>{$ui("Add a field like “Word count” or “Origin”.")}</span>
           </div>
         </div>
       {:else}
@@ -373,12 +374,12 @@ function selectBuiltinField(field: FieldDefinition) {
               <button type="button" class="item-select" onclick={() => startFieldEdit(field)}>
                 <div class="item-main">
                   <div class="item-title-row">
-                    <strong>{field.label}</strong><span class="type-pill">{fieldTypeLabel(field.type)}</span>
+                    <strong>{$manifestText(pluginId, "field", field.key, field.label)}</strong><span class="type-pill">{fieldTypeLabel(field.type)}</span>
                     {#if fieldExtrasLabel(field)}<span class="meta">{fieldExtrasLabel(field)}</span>{/if}
                     {#if field.type === "date" && (field as unknown as Record<string, unknown>).timeline}
-                      <span class="meta">· Timeline: {timelineBadge(field)}</span>
+                      <span class="meta">{$ui("· Timeline: {0}", timelineBadge(field))}</span>
                     {:else if field.type === "date" && (field as unknown as Record<string, unknown>).shared}
-                      <span class="meta">· Shared</span>
+                      <span class="meta">{$ui("· Shared")}</span>
                     {/if}
                   </div>
                   <span class="meta">
@@ -391,13 +392,13 @@ function selectBuiltinField(field: FieldDefinition) {
                 <button
                   type="button"
                   class="quiet icon"
-                  aria-label="Edit {field.label}"
+                  aria-label={$ui("Edit {0}", $manifestText(pluginId, "field", field.key, field.label))}
                   onclick={() => startFieldEdit(field)}
                   ><Pencil size={14} strokeWidth={1.8} aria-hidden="true" /></button>
                 <button
                   type="button"
                   class="danger icon"
-                  aria-label="Remove {field.label}"
+                  aria-label={$ui("Remove {0}", $manifestText(pluginId, "field", field.key, field.label))}
                   onclick={() => removeCustomField(field.key)}
                   ><Trash2 size={14} strokeWidth={1.8} aria-hidden="true" /></button>
               </div>
@@ -409,22 +410,22 @@ function selectBuiltinField(field: FieldDefinition) {
       <div class="add-form stacked">
         <div class="add-row">
           <label>
-            <span>Label</span>
+            <span>{$ui("Label")}</span>
             <input
               bind:value={newFieldLabel}
-              placeholder="Word count"
+              placeholder={$ui("Word count")}
               onkeydown={(event) => event.key === "Enter" && addCustomField()} />
           </label>
           {#if showAdvancedControl(showAdvanced, "field-key")}
             <label>
-              <span>Stable key</span><input value={ensureFieldKey(newFieldLabel)} readonly aria-readonly="true" />
+              <span>{$ui("Stable key")}</span><input value={ensureFieldKey(newFieldLabel)} readonly aria-readonly="true" />
             </label>
           {/if}
           <label>
-            <span>Kind</span>
+            <span>{$ui("Kind")}</span>
             <select bind:value={newFieldType}>
               {#each Object.values(FIELD_KIND_GROUPS) as group}
-                <optgroup label={group.label}>
+                <optgroup label={$ui(group.label)}>
                   {#each group.types as type}<option value={type}>{fieldTypeLabel(type)}</option>{/each}
                 </optgroup>
               {/each}
@@ -434,23 +435,23 @@ function selectBuiltinField(field: FieldDefinition) {
             type="button"
             class="action primary-action"
             disabled={fieldFormHasErrors(newFieldErrors) || !canAddField()}
-            onclick={addCustomField}><Plus size={14} strokeWidth={2} aria-hidden="true" /> Add field</button>
+            onclick={addCustomField}><Plus size={14} strokeWidth={2} aria-hidden="true" /> {$ui("Add field")}</button>
         </div>
         {#if newFieldType === "enum"}
           <label>
-            <span>Options <em>(comma separated)</em></span>
-            <input bind:value={newFieldOptions} placeholder="idea, drafting, revising, complete" />
+            <span>{$ui("Options")} <em>{$ui("(comma separated)")}</em></span>
+            <input bind:value={newFieldOptions} placeholder={$ui("idea, drafting, revising, complete")} />
             {#if newFieldErrors.choices}<small class="field-error">{newFieldErrors.choices}</small>{/if}
           </label>
           <label class="inline-check">
-            <input type="checkbox" bind:checked={newFieldMultiple} /><span>Allow multiple values</span>
+            <input type="checkbox" bind:checked={newFieldMultiple} /><span>{$ui("Allow multiple values")}</span>
           </label>
         {:else if newFieldType === "oneof"}
-          <div class="type-select" role="group" aria-label="One-of variants">
-            <span class="type-select-label">Choices <em>(at least one)</em></span>
+          <div class="type-select" role="group" aria-label={$ui("One-of variants")}>
+            <span class="type-select-label">{$ui("Choices")} <em>{$ui("(at least one)")}</em></span>
             {#each newFieldOneOfVariants as variant, index}
               <div class="variant-row">
-                <input bind:value={variant.label} placeholder="Variant label" />
+                <input bind:value={variant.label} placeholder={$ui("Variant label")} />
                 {#if showAdvancedControl(showAdvanced, "oneof-variants")}
                   <select bind:value={variant.type}>
                     {#each ["text", "number", "boolean", "date", "enum"] as type}
@@ -458,7 +459,7 @@ function selectBuiltinField(field: FieldDefinition) {
                     {/each}
                   </select>
                   {#if variant.type === "enum"}
-                    <input bind:value={variant.options} placeholder="Options, comma separated" />
+                    <input bind:value={variant.options} placeholder={$ui("Options, comma separated")} />
                   {/if}
                 {/if}
                 <button type="button" class="quiet icon" onclick={() => removeNewFieldOneOfVariant(index)}
@@ -466,21 +467,21 @@ function selectBuiltinField(field: FieldDefinition) {
               </div>
             {/each}
             <button type="button" class="quiet" onclick={addNewFieldOneOfVariant}
-              ><Plus size={14} strokeWidth={1.8} aria-hidden="true" /> Add variant</button>
+              ><Plus size={14} strokeWidth={1.8} aria-hidden="true" /> {$ui("Add variant")}</button>
             {#if newFieldErrors.oneOf}<small class="field-error">{newFieldErrors.oneOf}</small>{/if}
           </div>
         {:else if newFieldType === "relationship"}
           {#if showAdvancedControl(showAdvanced, "relationship-type")}
             <label>
-              <span>Relationship type ID</span>
-              <input bind:value={newFieldRelationshipType} placeholder="related_to" />
+              <span>{$ui("Relationship type ID")}</span>
+              <input bind:value={newFieldRelationshipType} placeholder={$ui("related_to")} />
               {#if newFieldErrors.relationshipType}
                 <small class="field-error">{newFieldErrors.relationshipType}</small>
               {/if}
             </label>
           {/if}
-          <div class="type-select" role="group" aria-label="Target entity types">
-            <span class="type-select-label">Target types <em>(required)</em></span>
+          <div class="type-select" role="group" aria-label={$ui("Target entity types")}>
+            <span class="type-select-label">{$ui("Target types")} <em>{$ui("(required)")}</em></span>
             <div class="chip-row compact">
               {#each fieldScopeTypes() as type}
                 <button
@@ -495,45 +496,45 @@ function selectBuiltinField(field: FieldDefinition) {
             {#if newFieldErrors.targetTypes}<small class="field-error">{newFieldErrors.targetTypes}</small>{/if}
           </div>
           <label>
-            <span>Cardinality</span>
+            <span>{$ui("Cardinality")}</span>
             <select bind:value={newFieldCardinality}>
-              <option value="many">Many</option><option value="one">One</option>
+              <option value="many">{$ui("Many")}</option><option value="one">{$ui("One")}</option>
             </select>
             {#if newFieldErrors.cardinality}<small class="field-error">{newFieldErrors.cardinality}</small>{/if}
           </label>
-          <div class="type-select" role="group" aria-label="Relationship attributes">
-            <span class="type-select-label">Attributes <em>(custom fields on the relationship)</em></span>
+          <div class="type-select" role="group" aria-label={$ui("Relationship attributes")}>
+            <span class="type-select-label">{$ui("Attributes")} <em>{$ui("(custom fields on the relationship)")}</em></span>
             {#if newFieldMetadata.length === 0}
-              <span class="meta-hint">No attributes yet — add “Since”, “Role”, “Strength” …</span>
+              <span class="meta-hint">{$ui("No attributes yet — add “Since”, “Role”, “Strength” …")}</span>
             {/if}
             {#each newFieldMetadata as meta, metaIdx}
               <div class="metadata-row">
                 <div class="metadata-main">
                   <input
                     bind:value={meta.label}
-                    placeholder="Attribute label"
+                    placeholder={$ui("Attribute label")}
                     oninput={() => {
                       if (!meta.key || slugifyFieldKey(meta.key) === slugifyFieldKey(meta.label.slice(0, -1))) {
                         meta.key = slugifyFieldKey(meta.label);
                       }
                     }} />
-                  {#if showAdvanced}<input bind:value={meta.key} placeholder="Stable key" />{/if}
+                  {#if showAdvanced}<input bind:value={meta.key} placeholder={$ui("Stable key")} />{/if}
                   <select bind:value={meta.type}>
                     {#each METADATA_FIELD_TYPES as type}<option value={type}>{fieldTypeLabel(type)}</option>{/each}
                   </select>
                   <label class="inline-check small">
-                    <input type="checkbox" bind:checked={meta.required} /><span>Required</span>
+                    <input type="checkbox" bind:checked={meta.required} /><span>{$ui("Required")}</span>
                   </label>
                   <button type="button" class="quiet icon" onclick={() => removeNewFieldMetadata(metaIdx)}
                     ><X size={12} strokeWidth={1.8} aria-hidden="true" /></button>
                 </div>
                 {#if meta.type === "enum"}
-                  <input bind:value={meta.options} placeholder="Options, comma separated" />
+                  <input bind:value={meta.options} placeholder={$ui("Options, comma separated")} />
                 {:else if meta.type === "oneof"}
                   <div class="oneof-variants nested">
                     {#each meta.oneOf as variant, variantIdx}
                       <div class="variant-row small">
-                        <input bind:value={variant.label} placeholder="Variant label" />
+                        <input bind:value={variant.label} placeholder={$ui("Variant label")} />
                         {#if showAdvanced}
                           <select bind:value={variant.type}>
                             {#each ["text", "number", "boolean", "date", "enum"] as type}
@@ -541,7 +542,7 @@ function selectBuiltinField(field: FieldDefinition) {
                             {/each}
                           </select>
                           {#if variant.type === "enum"}
-                            <input bind:value={variant.options} placeholder="Options, comma separated" />
+                            <input bind:value={variant.options} placeholder={$ui("Options, comma separated")} />
                           {/if}
                         {/if}
                         <button
@@ -552,48 +553,48 @@ function selectBuiltinField(field: FieldDefinition) {
                       </div>
                     {/each}
                     <button type="button" class="quiet small" onclick={() => addNewFieldMetadataOneOfVariant(metaIdx)}
-                      ><Plus size={12} strokeWidth={1.8} aria-hidden="true" /> Add variant</button>
+                      ><Plus size={12} strokeWidth={1.8} aria-hidden="true" /> {$ui("Add variant")}</button>
                   </div>
                 {/if}
               </div>
             {/each}
             <button type="button" class="quiet" onclick={addNewFieldMetadata}
-              ><Plus size={12} strokeWidth={1.8} aria-hidden="true" /> Add attribute</button>
-            <span class="meta-hint">Each attribute becomes a field in the relationship details dialog.</span>
+              ><Plus size={12} strokeWidth={1.8} aria-hidden="true" /> {$ui("Add attribute")}</button>
+            <span class="meta-hint">{$ui("Each attribute becomes a field in the relationship details dialog.")}</span>
           </div>
         {:else if newFieldType === "date"}
           <label class="inline-check">
             <input type="checkbox" bind:checked={newFieldShared} />
-            <span>Shared — allow Timeline and other modules to read</span>
+            <span>{$ui("Shared — allow Timeline and other modules to read")}</span>
           </label>
           {#if newFieldShared}
             <label class="inline-check">
-              <input type="checkbox" bind:checked={newFieldTimelineEnabled} /><span>Show on Timeline</span>
+              <input type="checkbox" bind:checked={newFieldTimelineEnabled} /><span>{$ui("Show on Timeline")}</span>
             </label>
             {#if newFieldTimelineEnabled}
               <div class="timeline-config">
                 {#if showAdvancedControl(showAdvanced, "timeline-role")}
                   <label>
-                    <span>Timeline role</span>
+                    <span>{$ui("Timeline role")}</span>
                     <select bind:value={newFieldTimelineRole}>
-                      <option value="point">Point</option><option value="start">Start</option><option value="end"
-                        >End</option>
+                      <option value="point">{$ui("Point")}</option><option value="start">{$ui("Start")}</option><option value="end"
+                        >{$ui("End")}</option>
                     </select>
                   </label>
                   {#if newFieldTimelineRole !== "point"}
                     <label>
-                      <span>Timeline group</span>
-                      <input bind:value={newFieldTimelineGroup} placeholder="e.g. life, existence" />
+                      <span>{$ui("Timeline group")}</span>
+                      <input bind:value={newFieldTimelineGroup} placeholder={$ui("e.g. life, existence")} />
                     </label>
                   {/if}
                 {/if}
                 <label
-                  ><span>Label</span><input bind:value={newFieldTimelineLabel} placeholder="Born, Created…" /></label>
+                  ><span>{$ui("Label")}</span><input bind:value={newFieldTimelineLabel} placeholder={$ui("Born, Created…")} /></label>
                 {#if showAdvancedControl(showAdvanced, "timeline-layer")}
                   <label>
-                    <span>Timeline layer</span>
+                    <span>{$ui("Timeline layer")}</span>
                     <select bind:value={newFieldTimelineLayer}>
-                      <option value="dates">Project dates</option><option value="lifelines">Lifelines</option>
+                      <option value="dates">{$ui("Project dates")}</option><option value="lifelines">{$ui("Lifelines")}</option>
                     </select>
                   </label>
                 {/if}
@@ -602,8 +603,8 @@ function selectBuiltinField(field: FieldDefinition) {
             {/if}
           {/if}
         {/if}
-        <div class="type-select" role="group" aria-label="Applies to entity types">
-          <span class="type-select-label">Applies to <em>(optional)</em></span>
+        <div class="type-select" role="group" aria-label={$ui("Applies to entity types")}>
+          <span class="type-select-label">{$ui("Applies to")} <em>{$ui("(optional)")}</em></span>
           <div class="chip-row compact">
             {#each fieldScopeTypes() as type}
               <button
@@ -627,14 +628,14 @@ function selectBuiltinField(field: FieldDefinition) {
         <div class="block-heading">
           <div class="heading-left">
             <span class="heading-icon"><TextQuote size={14} strokeWidth={1.8} aria-hidden="true" /></span>
-            <h4>{field.label || humanizeId(field.key)}</h4>
+            <h4>{$manifestText(pluginId, "field", field.key, field.label) || humanizeId(field.key)}</h4>
           </div>
           <span class="type-pill">{fieldTypeLabel(field.type)}</span>
         </div>
         {#if editingBuiltinFieldKey === field.key}
           <div class="edit-form wide">
-            <div class="type-select" role="group" aria-label={`Entity types for ${field.label}`}>
-              <span class="type-select-label">Applies to</span>
+            <div class="type-select" role="group" aria-label={$ui("Entity types for {0}", $manifestText(pluginId, "field", field.key, field.label))}>
+              <span class="type-select-label">{$ui("Applies to")}</span>
               <div class="chip-row compact">
                 {#each fieldScopeTypes() as type}
                   <button
@@ -649,15 +650,15 @@ function selectBuiltinField(field: FieldDefinition) {
             </div>
             <div class="edit-actions">
               <button type="button" class="action" onclick={() => (editingBuiltinFieldKey = null)}
-                ><Check size={14} strokeWidth={2} aria-hidden="true" /> Done</button>
+                ><Check size={14} strokeWidth={2} aria-hidden="true" /> {$ui("Done")}</button>
             </div>
           </div>
         {:else if editingBuiltinMetadataFieldKey === field.key}
           <div class="edit-form wide">
-            <div class="type-select" role="group" aria-label={`Attributes for ${field.label}`}>
-              <span class="type-select-label">Attributes <em>(additive to builtin)</em></span>
+            <div class="type-select" role="group" aria-label={$ui("Attributes for {0}", $manifestText(pluginId, "field", field.key, field.label))}>
+              <span class="type-select-label">{$ui("Attributes")} <em>{$ui("(additive to builtin)")}</em></span>
               {#if editBuiltinMetadataDrafts.length === 0}
-                <span class="meta-hint">No attributes yet — add a new one.</span>
+                <span class="meta-hint">{$ui("No attributes yet — add a new one.")}</span>
               {/if}
               {#each editBuiltinMetadataDrafts as meta, metaIdx}
                 {@const isBuiltinKey = builtinOriginalMetadata(field).some(
@@ -667,7 +668,7 @@ function selectBuiltinField(field: FieldDefinition) {
                   <div class="metadata-main">
                     <input
                       bind:value={meta.label}
-                      placeholder="Attribute label"
+                      placeholder={$ui("Attribute label")}
                       oninput={() => {
                         if (!meta.key || slugifyFieldKey(meta.key) === slugifyFieldKey(meta.label.slice(0, -1))) {
                           meta.key = slugifyFieldKey(meta.label);
@@ -676,32 +677,32 @@ function selectBuiltinField(field: FieldDefinition) {
                     {#if showAdvanced}
                       <input
                         bind:value={meta.key}
-                        placeholder="Stable key"
+                        placeholder={$ui("Stable key")}
                         disabled={isBuiltinKey}
-                        title={isBuiltinKey ? "Builtin key cannot be renamed" : "Metadata key"} />
+                        title={isBuiltinKey ? $ui("Builtin key cannot be renamed") : $ui("Metadata key")} />
                     {/if}
                     <select bind:value={meta.type}>
                       {#each METADATA_FIELD_TYPES as type}<option value={type}>{fieldTypeLabel(type)}</option>{/each}
                     </select>
                     <label class="inline-check small">
                       <input type="checkbox" bind:checked={meta.required} />
-                      <span>Required</span>
+                      <span>{$ui("Required")}</span>
                     </label>
                     <button
                       type="button"
                       class="quiet icon"
                       disabled={isBuiltinKey}
-                      title={isBuiltinKey ? "Builtin attributes cannot be removed (additive)" : "Remove"}
+                      title={isBuiltinKey ? $ui("Builtin attributes cannot be removed (additive)") : $ui("Remove")}
                       onclick={() => removeEditBuiltinMetadata(metaIdx)}
                       ><X size={12} strokeWidth={1.8} aria-hidden="true" /></button>
                   </div>
                   {#if meta.type === "enum"}
-                    <input bind:value={meta.options} placeholder="Options, comma separated" />
+                    <input bind:value={meta.options} placeholder={$ui("Options, comma separated")} />
                   {:else if meta.type === "oneof"}
                     <div class="oneof-variants nested">
                       {#each meta.oneOf as variant, variantIdx}
                         <div class="variant-row small">
-                          <input bind:value={variant.label} placeholder="Variant label" />
+                          <input bind:value={variant.label} placeholder={$ui("Variant label")} />
                           {#if showAdvanced}
                             <select bind:value={variant.type}>
                               {#each ["text", "number", "boolean", "date", "enum"] as type}
@@ -709,7 +710,7 @@ function selectBuiltinField(field: FieldDefinition) {
                               {/each}
                             </select>
                             {#if variant.type === "enum"}
-                              <input bind:value={variant.options} placeholder="Options, comma separated" />
+                              <input bind:value={variant.options} placeholder={$ui("Options, comma separated")} />
                             {/if}
                           {/if}
                           <button
@@ -723,100 +724,99 @@ function selectBuiltinField(field: FieldDefinition) {
                         type="button"
                         class="quiet small"
                         onclick={() => addEditBuiltinMetadataOneOfVariant(metaIdx)}
-                        ><Plus size={12} strokeWidth={1.8} aria-hidden="true" /> Add variant</button>
+                        ><Plus size={12} strokeWidth={1.8} aria-hidden="true" /> {$ui("Add variant")}</button>
                     </div>
                   {/if}
                   {#if isBuiltinKey}
-                    <span class="meta-hint">Builtin attribute — editing overrides the packaged definition.</span>
+                    <span class="meta-hint">{$ui("Builtin attribute — editing overrides the packaged definition.")}</span>
                   {/if}
                 </div>
               {/each}
               <button type="button" class="quiet" onclick={addEditBuiltinMetadata}
-                ><Plus size={12} strokeWidth={1.8} aria-hidden="true" /> Add attribute</button>
+                ><Plus size={12} strokeWidth={1.8} aria-hidden="true" /> {$ui("Add attribute")}</button>
               <span class="meta-hint"
-                >Builtin {builtinOriginalMetadata(field).length} + override {(draft.fieldMetadataOverrides ?? []).find(
+                >{$ui("Builtin {0} + override {1} = effective {2}. Stored as delta.", builtinOriginalMetadata(field).length, (draft.fieldMetadataOverrides ?? []).find(
                   (override) => override.fieldKey === field.key,
-                )?.metadataFields?.length ?? 0} = effective {effectiveBuiltinMetadata(field).length}. Stored as delta.</span>
+                )?.metadataFields?.length ?? 0, effectiveBuiltinMetadata(field).length)}</span>
             </div>
             <div class="edit-actions">
               <button type="button" class="action" onclick={commitBuiltinMetadataEdit}
-                ><Check size={14} strokeWidth={2} aria-hidden="true" /> Save attributes</button>
-              <button type="button" class="quiet" onclick={cancelBuiltinMetadataEdit}>Cancel</button>
+                ><Check size={14} strokeWidth={2} aria-hidden="true" /> {$ui("Save attributes")}</button>
+              <button type="button" class="quiet" onclick={cancelBuiltinMetadataEdit}>{$ui("Cancel")}</button>
             </div>
           </div>
         {:else if editingTimelineFieldKey === field.key}
           <div class="edit-form wide">
-            <div class="type-select" role="group" aria-label={`Timeline for ${field.label}`}>
-              <span class="type-select-label">Timeline</span>
+            <div class="type-select" role="group" aria-label={$ui("Timeline for {0}", $manifestText(pluginId, "field", field.key, field.label))}>
+              <span class="type-select-label">{$ui("Timeline")}</span>
               {#if showAdvanced}
                 <label>
-                  <span>Timeline role</span>
+                  <span>{$ui("Timeline role")}</span>
                   <select bind:value={editTimelineRole}>
-                    <option value="point">Point</option>
-                    <option value="start">Start</option>
-                    <option value="end">End</option>
+                    <option value="point">{$ui("Point")}</option>
+                    <option value="start">{$ui("Start")}</option>
+                    <option value="end">{$ui("End")}</option>
                   </select>
                 </label>
                 {#if editTimelineRole !== "point"}
                   <label>
-                    <span>Timeline group</span>
-                    <input bind:value={editTimelineGroup} placeholder="e.g. life, existence" />
+                    <span>{$ui("Timeline group")}</span>
+                    <input bind:value={editTimelineGroup} placeholder={$ui("e.g. life, existence")} />
                   </label>
                 {/if}
               {/if}
-              <label><span>Label</span><input bind:value={editTimelineLabel} placeholder="Born, Created…" /></label>
+              <label><span>{$ui("Label")}</span><input bind:value={editTimelineLabel} placeholder={$ui("Born, Created…")} /></label>
               {#if showAdvanced}
                 <label>
-                  <span>Timeline layer</span>
+                  <span>{$ui("Timeline layer")}</span>
                   <select bind:value={editTimelineLayer}>
-                    <option value="dates">Project dates</option>
-                    <option value="lifelines">Lifelines</option>
+                    <option value="dates">{$ui("Project dates")}</option>
+                    <option value="lifelines">{$ui("Lifelines")}</option>
                   </select>
                 </label>
               {/if}
               <span class="meta-hint"
-                >Group required for start/end; layer controls Timeline swarm. Shared required — builtin date fields are
-                already shared.</span>
+                >{$ui("Group required for start/end; layer controls Timeline swarm. Shared required — builtin date fields are already shared.")}</span>
             </div>
             <div class="edit-actions">
               <button type="button" class="action" onclick={commitTimelineEdit}
-                ><Check size={14} strokeWidth={2} aria-hidden="true" /> Save</button>
-              <button type="button" class="quiet" onclick={cancelTimelineEdit}>Cancel</button>
+                ><Check size={14} strokeWidth={2} aria-hidden="true" /> {$ui("Save")}</button>
+              <button type="button" class="quiet" onclick={cancelTimelineEdit}>{$ui("Cancel")}</button>
             </div>
           </div>
         {:else}
           <dl class="usage-summary">
             <div>
-              <dt>Kind</dt>
+              <dt>{$ui("Kind")}</dt>
               <dd>{fieldTypeLabel(field.type)}</dd>
             </div>
             <div>
-              <dt>Status</dt>
-              <dd>{isDisabled(draft.disabledFields, field.key) ? "Disabled" : "Enabled"}</dd>
+              <dt>{$ui("Status")}</dt>
+              <dd>{isDisabled(draft.disabledFields, field.key) ? $ui("Disabled") : $ui("Enabled")}</dd>
             </div>
             <div>
-              <dt>Applies to</dt>
+              <dt>{$ui("Applies to")}</dt>
               <dd>{scopeLabel(builtinFieldScope(field))}</dd>
             </div>
             {#if field.type === "relationship"}
               <div>
-                <dt>Attributes</dt>
-                <dd>{builtinMetadataFieldExtras(field) || "None"}</dd>
+                <dt>{$ui("Attributes")}</dt>
+                <dd>{builtinMetadataFieldExtras(field) || $ui("None")}</dd>
               </div>
             {/if}
             {#if field.type === "date"}
               <div>
-                <dt>Timeline</dt>
-                <dd>{isTimelineEnabled(field) ? timelineBadge(field) : "Not shown"}</dd>
+                <dt>{$ui("Timeline")}</dt>
+                <dd>{isTimelineEnabled(field) ? timelineBadge(field) : $ui("Not shown")}</dd>
               </div>
             {/if}
             {#if showAdvanced}
               <div>
-                <dt>Stable key</dt>
+                <dt>{$ui("Stable key")}</dt>
                 <dd><code>{field.key}</code></dd>
               </div>
               <div>
-                <dt>Namespace</dt>
+                <dt>{$ui("Namespace")}</dt>
                 <dd>{flatPackage.fieldNamespace[field.key]}</dd>
               </div>
             {/if}
@@ -830,13 +830,13 @@ function selectBuiltinField(field: FieldDefinition) {
                 editBuiltinMetadataDrafts = [];
                 editingTimelineFieldKey = null;
                 editingBuiltinFieldKey = field.key;
-              }}><Pencil size={14} strokeWidth={1.8} aria-hidden="true" /> Edit scope</button>
+              }}><Pencil size={14} strokeWidth={1.8} aria-hidden="true" /> {$ui("Edit scope")}</button>
             {#if field.type === "relationship"}
               <button
                 type="button"
                 class="quiet"
                 disabled={isDisabled(draft.disabledFields, field.key)}
-                onclick={() => startBuiltinMetadataEdit(field)}>Edit attributes</button>
+                onclick={() => startBuiltinMetadataEdit(field)}>{$ui("Edit attributes")}</button>
             {/if}
             {#if field.type === "date" && (field as unknown as Record<string, unknown>).shared}
               <button
@@ -844,13 +844,13 @@ function selectBuiltinField(field: FieldDefinition) {
                 class="quiet"
                 disabled={isDisabled(draft.disabledFields, field.key)}
                 onclick={() => startTimelineEdit(field)}
-                >{isTimelineEnabled(field) ? "Edit Timeline" : "Enable Timeline"}</button>
+                >{isTimelineEnabled(field) ? $ui("Edit Timeline") : $ui("Enable Timeline")}</button>
               {#if isTimelineEnabled(field)}
                 <button
                   type="button"
                   class="quiet"
                   disabled={isDisabled(draft.disabledFields, field.key)}
-                  onclick={() => disableTimeline(field)}>Disable Timeline</button>
+                  onclick={() => disableTimeline(field)}>{$ui("Disable Timeline")}</button>
               {/if}
             {/if}
           </div>
@@ -862,26 +862,26 @@ function selectBuiltinField(field: FieldDefinition) {
         <div class="block-heading">
           <div class="heading-left">
             <span class="heading-icon accent"><Sparkles size={14} strokeWidth={1.8} aria-hidden="true" /></span>
-            <h4>{field.label}</h4>
+            <h4>{$manifestText(pluginId, "field", field.key, field.label)}</h4>
           </div>
           <span class="type-pill">{fieldTypeLabel(field.type)}</span>
         </div>
         <div class="edit-form">
           <label>
-            <span>Label</span><input bind:value={editFieldLabel} placeholder="Word count" />
+            <span>{$ui("Label")}</span><input bind:value={editFieldLabel} placeholder={$ui("Word count")} />
             {#if editFieldErrors.name}<small class="field-error">{editFieldErrors.name}</small>{/if}
           </label>
           {#if showAdvancedControl(showAdvanced, "field-key")}
             <label>
-              <span>Stable key</span><input value={editingFieldKey ?? ""} readonly aria-readonly="true" />
+              <span>{$ui("Stable key")}</span><input value={editingFieldKey ?? ""} readonly aria-readonly="true" />
               {#if editFieldErrors.key}<small class="field-error">{editFieldErrors.key}</small>{/if}
             </label>
           {/if}
           <label>
-            <span>Kind</span>
+            <span>{$ui("Kind")}</span>
             <select bind:value={editFieldType}>
               {#each Object.values(FIELD_KIND_GROUPS) as group}
-                <optgroup label={group.label}>
+                <optgroup label={$ui(group.label)}>
                   {#each group.types as type}<option value={type}>{fieldTypeLabel(type)}</option>{/each}
                 </optgroup>
               {/each}
@@ -889,19 +889,19 @@ function selectBuiltinField(field: FieldDefinition) {
           </label>
           {#if editFieldType === "enum"}
             <label>
-              <span>Options <em>(comma separated)</em></span>
-              <input bind:value={editFieldOptions} placeholder="idea, drafting, revising, complete" />
+              <span>{$ui("Options")} <em>{$ui("(comma separated)")}</em></span>
+              <input bind:value={editFieldOptions} placeholder={$ui("idea, drafting, revising, complete")} />
               {#if editFieldErrors.choices}<small class="field-error">{editFieldErrors.choices}</small>{/if}
             </label>
             <label class="inline-check">
-              <input type="checkbox" bind:checked={editFieldMultiple} /><span>Allow multiple values</span>
+              <input type="checkbox" bind:checked={editFieldMultiple} /><span>{$ui("Allow multiple values")}</span>
             </label>
           {:else if editFieldType === "oneof"}
-            <div class="type-select" role="group" aria-label="One-of variants">
-              <span class="type-select-label">Choices <em>(at least one)</em></span>
+            <div class="type-select" role="group" aria-label={$ui("One-of variants")}>
+              <span class="type-select-label">{$ui("Choices")} <em>{$ui("(at least one)")}</em></span>
               {#each editFieldOneOfVariants as variant, index}
                 <div class="variant-row">
-                  <input bind:value={variant.label} placeholder="Variant label" />
+                  <input bind:value={variant.label} placeholder={$ui("Variant label")} />
                   {#if showAdvancedControl(showAdvanced, "oneof-variants")}
                     <select bind:value={variant.type}>
                       {#each ["text", "number", "boolean", "date", "enum"] as type}
@@ -909,7 +909,7 @@ function selectBuiltinField(field: FieldDefinition) {
                       {/each}
                     </select>
                     {#if variant.type === "enum"}
-                      <input bind:value={variant.options} placeholder="Options, comma separated" />
+                      <input bind:value={variant.options} placeholder={$ui("Options, comma separated")} />
                     {/if}
                   {/if}
                   <button type="button" class="quiet icon" onclick={() => removeEditFieldOneOfVariant(index)}
@@ -917,21 +917,21 @@ function selectBuiltinField(field: FieldDefinition) {
                 </div>
               {/each}
               <button type="button" class="quiet" onclick={addEditFieldOneOfVariant}
-                ><Plus size={14} strokeWidth={1.8} aria-hidden="true" /> Add variant</button>
+                ><Plus size={14} strokeWidth={1.8} aria-hidden="true" /> {$ui("Add variant")}</button>
               {#if editFieldErrors.oneOf}<small class="field-error">{editFieldErrors.oneOf}</small>{/if}
             </div>
           {:else if editFieldType === "relationship"}
             {#if showAdvancedControl(showAdvanced, "relationship-type")}
               <label>
-                <span>Relationship type ID</span>
-                <input bind:value={editFieldRelationshipType} placeholder="related_to" />
+                <span>{$ui("Relationship type ID")}</span>
+                <input bind:value={editFieldRelationshipType} placeholder={$ui("related_to")} />
                 {#if editFieldErrors.relationshipType}
                   <small class="field-error">{editFieldErrors.relationshipType}</small>
                 {/if}
               </label>
             {/if}
-            <div class="type-select" role="group" aria-label="Target entity types">
-              <span class="type-select-label">Target types <em>(required)</em></span>
+            <div class="type-select" role="group" aria-label={$ui("Target entity types")}>
+              <span class="type-select-label">{$ui("Target types")} <em>{$ui("(required)")}</em></span>
               <div class="chip-row compact">
                 {#each fieldScopeTypes() as type}
                   <button
@@ -946,45 +946,45 @@ function selectBuiltinField(field: FieldDefinition) {
               {#if editFieldErrors.targetTypes}<small class="field-error">{editFieldErrors.targetTypes}</small>{/if}
             </div>
             <label>
-              <span>Cardinality</span>
+              <span>{$ui("Cardinality")}</span>
               <select bind:value={editFieldCardinality}>
-                <option value="many">Many</option><option value="one">One</option>
+                <option value="many">{$ui("Many")}</option><option value="one">{$ui("One")}</option>
               </select>
               {#if editFieldErrors.cardinality}<small class="field-error">{editFieldErrors.cardinality}</small>{/if}
             </label>
-            <div class="type-select" role="group" aria-label="Relationship attributes">
-              <span class="type-select-label">Attributes <em>(custom fields on the relationship)</em></span>
+            <div class="type-select" role="group" aria-label={$ui("Relationship attributes")}>
+              <span class="type-select-label">{$ui("Attributes")} <em>{$ui("(custom fields on the relationship)")}</em></span>
               {#if editFieldMetadata.length === 0}
-                <span class="meta-hint">No attributes yet — e.g., “Since”, “Strength”, “Role”.</span>
+                <span class="meta-hint">{$ui("No attributes yet — e.g., “Since”, “Strength”, “Role”.")}</span>
               {/if}
               {#each editFieldMetadata as meta, metaIdx}
                 <div class="metadata-row">
                   <div class="metadata-main">
                     <input
                       bind:value={meta.label}
-                      placeholder="Attribute label"
+                      placeholder={$ui("Attribute label")}
                       oninput={() => {
                         if (!meta.key || slugifyFieldKey(meta.key) === slugifyFieldKey(meta.label.slice(0, -1))) {
                           meta.key = slugifyFieldKey(meta.label);
                         }
                       }} />
-                    {#if showAdvanced}<input bind:value={meta.key} placeholder="Stable key" />{/if}
+                    {#if showAdvanced}<input bind:value={meta.key} placeholder={$ui("Stable key")} />{/if}
                     <select bind:value={meta.type}>
                       {#each METADATA_FIELD_TYPES as type}<option value={type}>{fieldTypeLabel(type)}</option>{/each}
                     </select>
                     <label class="inline-check small">
-                      <input type="checkbox" bind:checked={meta.required} /><span>Required</span>
+                      <input type="checkbox" bind:checked={meta.required} /><span>{$ui("Required")}</span>
                     </label>
                     <button type="button" class="quiet icon" onclick={() => removeEditFieldMetadata(metaIdx)}
                       ><X size={12} strokeWidth={1.8} aria-hidden="true" /></button>
                   </div>
                   {#if meta.type === "enum"}
-                    <input bind:value={meta.options} placeholder="Options, comma separated e.g. weak, strong" />
+                    <input bind:value={meta.options} placeholder={$ui("Options, comma separated e.g. weak, strong")} />
                   {:else if meta.type === "oneof"}
                     <div class="oneof-variants nested">
                       {#each meta.oneOf as variant, variantIdx}
                         <div class="variant-row small">
-                          <input bind:value={variant.label} placeholder="Variant label" />
+                          <input bind:value={variant.label} placeholder={$ui("Variant label")} />
                           {#if showAdvanced}
                             <select bind:value={variant.type}>
                               {#each ["text", "number", "boolean", "date", "enum"] as type}
@@ -992,7 +992,7 @@ function selectBuiltinField(field: FieldDefinition) {
                               {/each}
                             </select>
                             {#if variant.type === "enum"}
-                              <input bind:value={variant.options} placeholder="Options, comma separated" />
+                              <input bind:value={variant.options} placeholder={$ui("Options, comma separated")} />
                             {/if}
                           {/if}
                           <button
@@ -1006,52 +1006,52 @@ function selectBuiltinField(field: FieldDefinition) {
                         type="button"
                         class="quiet small"
                         onclick={() => addEditFieldMetadataOneOfVariant(metaIdx)}
-                        ><Plus size={12} strokeWidth={1.8} aria-hidden="true" /> Add variant</button>
+                        ><Plus size={12} strokeWidth={1.8} aria-hidden="true" /> {$ui("Add variant")}</button>
                     </div>
                   {/if}
                   {#if meta.label.trim() && !ensureFieldKey(meta.key)}
-                    <span class="field-error">Key must start with a letter.</span>
+                    <span class="field-error">{$ui("Key must start with a letter.")}</span>
                   {/if}
                 </div>
               {/each}
               <button type="button" class="quiet" onclick={addEditFieldMetadata}
-                ><Plus size={12} strokeWidth={1.8} aria-hidden="true" /> Add attribute</button>
+                ><Plus size={12} strokeWidth={1.8} aria-hidden="true" /> {$ui("Add attribute")}</button>
             </div>
           {:else if editFieldType === "date"}
             <label class="inline-check">
               <input type="checkbox" bind:checked={editFieldShared} />
-              <span>Shared — allow Timeline and other modules to read</span>
+              <span>{$ui("Shared — allow Timeline and other modules to read")}</span>
             </label>
             {#if editFieldShared}
               <label class="inline-check">
-                <input type="checkbox" bind:checked={editFieldTimelineEnabled} /><span>Show on Timeline</span>
+                <input type="checkbox" bind:checked={editFieldTimelineEnabled} /><span>{$ui("Show on Timeline")}</span>
               </label>
               {#if editFieldTimelineEnabled}
                 <div class="timeline-config">
                   {#if showAdvancedControl(showAdvanced, "timeline-role")}
                     <label>
-                      <span>Timeline role</span>
+                      <span>{$ui("Timeline role")}</span>
                       <select bind:value={editFieldTimelineRole}>
-                        <option value="point">Point</option><option value="start">Start</option><option value="end"
-                          >End</option>
+                        <option value="point">{$ui("Point")}</option><option value="start">{$ui("Start")}</option><option value="end"
+                          >{$ui("End")}</option>
                       </select>
                     </label>
                     {#if editFieldTimelineRole !== "point"}
                       <label>
-                        <span>Timeline group</span>
-                        <input bind:value={editFieldTimelineGroup} placeholder="e.g. life, existence" />
+                        <span>{$ui("Timeline group")}</span>
+                        <input bind:value={editFieldTimelineGroup} placeholder={$ui("e.g. life, existence")} />
                       </label>
                     {/if}
                   {/if}
                   <label
-                    ><span>Label</span><input
+                    ><span>{$ui("Label")}</span><input
                       bind:value={editFieldTimelineLabel}
-                      placeholder="Born, Created…" /></label>
+                      placeholder={$ui("Born, Created…")} /></label>
                   {#if showAdvancedControl(showAdvanced, "timeline-layer")}
                     <label>
-                      <span>Timeline layer</span>
+                      <span>{$ui("Timeline layer")}</span>
                       <select bind:value={editFieldTimelineLayer}>
-                        <option value="dates">Project dates</option><option value="lifelines">Lifelines</option>
+                        <option value="dates">{$ui("Project dates")}</option><option value="lifelines">{$ui("Lifelines")}</option>
                       </select>
                     </label>
                   {/if}
@@ -1062,8 +1062,8 @@ function selectBuiltinField(field: FieldDefinition) {
               {/if}
             {/if}
           {/if}
-          <div class="type-select" role="group" aria-label="Applies to entity types">
-            <span class="type-select-label">Applies to <em>(optional)</em></span>
+          <div class="type-select" role="group" aria-label={$ui("Applies to entity types")}>
+            <span class="type-select-label">{$ui("Applies to")} <em>{$ui("(optional)")}</em></span>
             <div class="chip-row compact">
               {#each fieldScopeTypes() as type}
                 <button
@@ -1081,15 +1081,15 @@ function selectBuiltinField(field: FieldDefinition) {
               type="button"
               class="action"
               disabled={fieldFormHasErrors(editFieldErrors) || !canSaveFieldEdit()}
-              onclick={commitFieldEdit}><Check size={14} strokeWidth={2} aria-hidden="true" /> Save</button>
-            <button type="button" class="quiet" onclick={cancelFieldEdit}>Cancel</button>
+              onclick={commitFieldEdit}><Check size={14} strokeWidth={2} aria-hidden="true" /> {$ui("Save")}</button>
+            <button type="button" class="quiet" onclick={cancelFieldEdit}>{$ui("Cancel")}</button>
           </div>
         </div>
       </div>
     {:else}
       <div class="block detail-placeholder">
-        <strong>Select a field</strong>
-        <span>Choose a field to view its scope and edit its settings.</span>
+        <strong>{$ui("Select a field")}</strong>
+        <span>{$ui("Choose a field to view its scope and edit its settings.")}</span>
       </div>
     {/if}
   </div>

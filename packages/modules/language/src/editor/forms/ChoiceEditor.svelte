@@ -1,4 +1,5 @@
 <script lang="ts">
+import { pluginText } from "../../i18n.ts";
 import {
   ADJECTIVE_POSITION_OPTIONS,
   ADPOSITION_OPTIONS,
@@ -44,7 +45,7 @@ let { draft, locked = false }: { draft: GrammarSystemRecord; locked?: boolean } 
     {@const influences = config.influences ?? []}
     <ChoiceCards
       name="order"
-      legend="Usual order"
+      legend={$pluginText("Usual order")}
       options={WORD_ORDER_OPTIONS}
       value={config.order}
       {locked}
@@ -52,11 +53,11 @@ let { draft, locked = false }: { draft: GrammarSystemRecord; locked?: boolean } 
         applySystemMutation(draft, applyBasicWordOrder(draft, { order: order as WordOrderPattern }));
       }} />
     {#if config.order === "custom"}
-      <Field label="Custom order">
+      <Field label={$pluginText("Custom order")}>
         <input
           name="customOrder"
           type="text"
-          placeholder="Describe the usual order."
+          placeholder={$pluginText("Describe the usual order.")}
           bind:value={config.customOrder}
           disabled={locked} />
       </Field>
@@ -64,21 +65,21 @@ let { draft, locked = false }: { draft: GrammarSystemRecord; locked?: boolean } 
     {#if config.order}
       <StatusRow
         name="strength"
-        legend="How strong is this ordering?"
+        legend={$pluginText("How strong is this ordering?")}
         options={WORD_ORDER_STRENGTH_OPTIONS}
         value={config.strength}
         {locked}
         onselect={(strength) => {
           applySystemMutation(draft, applyBasicWordOrder(draft, { strength: strength as WordOrderStrength }));
         }} />
-      <Field label="What can cause the order to change?">
+      <Field label={$pluginText("What can cause the order to change?")}>
         <textarea rows="3" name="changeNotes" bind:value={config.changeNotes} disabled={locked}></textarea>
       </Field>
     {/if}
     {#if config.order === "flexible"}
       <CheckRow
         name="influences"
-        legend="What can influence the order?"
+        legend={$pluginText("What can influence the order?")}
         options={WORD_ORDER_INFLUENCE_OPTIONS}
         selected={influences}
         {locked}
@@ -86,7 +87,7 @@ let { draft, locked = false }: { draft: GrammarSystemRecord; locked?: boolean } 
           applySystemMutation(draft, applyBasicWordOrder(draft, { toggleInfluence: influence as WordOrderInfluence }));
         }} />
       {#if influences.includes("custom")}
-        <Field label="Custom influence">
+        <Field label={$pluginText("Custom influence")}>
           <input name="customInfluence" type="text" bind:value={config.customInfluence} disabled={locked} />
         </Field>
       {/if}
@@ -95,7 +96,7 @@ let { draft, locked = false }: { draft: GrammarSystemRecord; locked?: boolean } 
     {@const config = draft.config as PositionConfig}
     <ChoiceCards
       name="position"
-      legend="Usual adjective position"
+      legend={$pluginText("Usual adjective position")}
       options={ADJECTIVE_POSITION_OPTIONS}
       value={config.position}
       {locked}
@@ -103,7 +104,7 @@ let { draft, locked = false }: { draft: GrammarSystemRecord; locked?: boolean } 
         applySystemMutation(draft, applyAdjectivePosition(draft, { position: position as PositionChoice }));
       }} />
     {#if config.position === "custom"}
-      <Field label="Custom position">
+      <Field label={$pluginText("Custom position")}>
         <input name="customPosition" type="text" bind:value={config.customPosition} disabled={locked} />
       </Field>
     {/if}
@@ -111,14 +112,14 @@ let { draft, locked = false }: { draft: GrammarSystemRecord; locked?: boolean } 
       {@const alternates = ADJECTIVE_POSITION_OPTIONS.filter((option) => option.value !== config.position)}
       <CheckRow
         name="alternatePositions"
-        legend="Other positions that also occur (optional)"
+        legend={$pluginText("Other positions that also occur (optional)")}
         options={alternates}
         selected={config.alternatePositions ?? []}
         {locked}
         ontoggle={(value) => {
           applySystemMutation(draft, applyAdjectivePosition(draft, { toggleAlternate: value as PositionChoice }));
         }} />
-      <Field label="Does adjective position change in special situations?">
+      <Field label={$pluginText("Does adjective position change in special situations?")}>
         <textarea rows="3" name="conditions" bind:value={config.conditions} disabled={locked}></textarea>
       </Field>
     {/if}
@@ -126,7 +127,7 @@ let { draft, locked = false }: { draft: GrammarSystemRecord; locked?: boolean } 
     {@const config = draft.config as PossessivePositionConfig}
     <ChoiceCards
       name="position"
-      legend="Usual possessive position"
+      legend={$pluginText("Usual possessive position")}
       options={POSSESSIVE_POSITION_OPTIONS}
       value={config.position}
       {locked}
@@ -134,7 +135,7 @@ let { draft, locked = false }: { draft: GrammarSystemRecord; locked?: boolean } 
         applySystemMutation(draft, applyPossessivePosition(draft, { position: position as PossessivePositionChoice }));
       }} />
     {#if config.position === "custom"}
-      <Field label="Custom position">
+      <Field label={$pluginText("Custom position")}>
         <input name="customPosition" type="text" bind:value={config.customPosition} disabled={locked} />
       </Field>
     {/if}
@@ -142,7 +143,7 @@ let { draft, locked = false }: { draft: GrammarSystemRecord; locked?: boolean } 
       {@const alternates = POSSESSIVE_POSITION_OPTIONS.filter((option) => option.value !== config.position)}
       <CheckRow
         name="alternatePositions"
-        legend="Other positions that also occur (optional)"
+        legend={$pluginText("Other positions that also occur (optional)")}
         options={alternates}
         selected={config.alternatePositions ?? []}
         {locked}
@@ -152,7 +153,7 @@ let { draft, locked = false }: { draft: GrammarSystemRecord; locked?: boolean } 
             applyPossessivePosition(draft, { toggleAlternate: value as PossessivePositionChoice }),
           );
         }} />
-      <Field label="When does this change?">
+      <Field label={$pluginText("When does this change?")}>
         <textarea rows="3" name="conditions" bind:value={config.conditions} disabled={locked}></textarea>
       </Field>
     {/if}
@@ -160,7 +161,7 @@ let { draft, locked = false }: { draft: GrammarSystemRecord; locked?: boolean } 
     {@const config = draft.config as RelativeClausePositionConfig}
     <ChoiceCards
       name="position"
-      legend="Usual relative-clause position"
+      legend={$pluginText("Usual relative-clause position")}
       options={RELATIVE_CLAUSE_POSITION_OPTIONS}
       value={config.position}
       {locked}
@@ -172,9 +173,9 @@ let { draft, locked = false }: { draft: GrammarSystemRecord; locked?: boolean } 
           }),
         );
       }} />
-    <p class="language-empty" role="status">Detailed relative-clause behavior belongs under Clause Types.</p>
+    <p class="language-empty" role="status">{$pluginText("Detailed relative-clause behavior belongs under Clause Types.")}</p>
     {#if config.position === "custom"}
-      <Field label="Custom position">
+      <Field label={$pluginText("Custom position")}>
         <input name="customPosition" type="text" bind:value={config.customPosition} disabled={locked} />
       </Field>
     {/if}
@@ -182,7 +183,7 @@ let { draft, locked = false }: { draft: GrammarSystemRecord; locked?: boolean } 
       {@const alternates = RELATIVE_CLAUSE_POSITION_OPTIONS.filter((option) => option.value !== config.position)}
       <CheckRow
         name="alternatePositions"
-        legend="Other positions that also occur (optional)"
+        legend={$pluginText("Other positions that also occur (optional)")}
         options={alternates}
         selected={config.alternatePositions ?? []}
         {locked}
@@ -194,7 +195,7 @@ let { draft, locked = false }: { draft: GrammarSystemRecord; locked?: boolean } 
             }),
           );
         }} />
-      <Field label="When does this change?">
+      <Field label={$pluginText("When does this change?")}>
         <textarea rows="3" name="conditions" bind:value={config.conditions} disabled={locked}></textarea>
       </Field>
     {/if}
@@ -202,7 +203,7 @@ let { draft, locked = false }: { draft: GrammarSystemRecord; locked?: boolean } 
     {@const config = draft.config as AdpositionsConfig}
     <ChoiceCards
       name="strategy"
-      legend="Adposition strategy"
+      legend={$pluginText("Adposition strategy")}
       options={ADPOSITION_OPTIONS}
       value={config.strategy}
       {locked}
@@ -210,14 +211,14 @@ let { draft, locked = false }: { draft: GrammarSystemRecord; locked?: boolean } 
         applySystemMutation(draft, applyAdpositions(draft, { strategy: strategy as AdpositionStrategy }));
       }} />
     <p class="language-empty" role="status">
-      If this language does not use adpositions, mark the system as not used. Case is configured under Nouns.
+      {$pluginText("If this language does not use adpositions, mark the system as not used. Case is configured under Nouns.")}
     </p>
     {#if config.strategy === "both" || config.strategy === "other"}
-      <Field label={config.strategy === "both" ? "When does each appear?" : "Describe the strategy"}>
+      <Field label={config.strategy === "both" ? $pluginText("When does each appear?") : $pluginText("Describe the strategy")}>
         <textarea
           rows="3"
           name="distributionNotes"
-          placeholder={config.strategy === "both" ? "When does each appear?" : "Describe the strategy."}
+          placeholder={config.strategy === "both" ? $pluginText("When does each appear?") : $pluginText("Describe the strategy.")}
           bind:value={config.distributionNotes}
           disabled={locked}></textarea>
       </Field>

@@ -1,4 +1,7 @@
 <script lang="ts">
+import { nativeErrorText } from "$lib/i18n/native-errors.ts";
+import { displayLanguage } from "$lib/i18n";
+import { ui } from "$lib/i18n/ui";
 import { onMount, tick } from "svelte";
 import { Mountain } from "@lucide/svelte";
 import WorkspaceTopbar from "$lib/layout/WorkspaceTopbar.svelte";
@@ -56,19 +59,19 @@ function nextPhysicalSeed(fallback = 0) {
 function tectonicStyleHint(style: "any" | "mega" | "giant-scraps" | "dual" | "scattered") {
   switch (style) {
     case "mega":
-      return "One dominant landmass with a large interior.";
+      return $ui("One dominant landmass with a large interior.");
     case "giant-scraps":
-      return "One huge continent plus smaller scraps.";
+      return $ui("One huge continent plus smaller scraps.");
     case "dual":
-      return "Two major continents.";
+      return $ui("Two major continents.");
     case "scattered":
-      return "Many smaller lands and islands.";
+      return $ui("Many smaller lands and islands.");
     default:
-      return "Each seed picks a different continent arrangement.";
+      return $ui("Each seed picks a different continent arrangement.");
   }
 }
 
-let name = $state("Physical World");
+let name = $state("");
 let seed = $state(nextPhysicalSeed());
 let evolutionPreset = $state<"young" | "mature" | "old">("mature");
 let tectonicStyle = $state<"any" | "mega" | "giant-scraps" | "dual" | "scattered">("any");
@@ -241,67 +244,67 @@ function climateSummary() {
   const metrics = climate.metrics;
   const freeze =
     metrics.permanentlyFrozenLandPpm > 50_000
-      ? "Permanent freeze is plausible on a large share of land."
+      ? $ui("Permanent freeze is plausible on a large share of land.")
       : metrics.seasonallyFrozenLandPpm > 50_000
-        ? "Seasonal freeze is plausible; summers thaw most of that land."
-        : "Little or no land stays below freezing across the year.";
+        ? $ui("Seasonal freeze is plausible; summers thaw most of that land.")
+        : $ui("Little or no land stays below freezing across the year.");
   const itcz = `${(metrics.itczLatitudeMilliDeg / 1000).toFixed(1)}°`;
   const easterlies = Math.round(metrics.easterlyCellPpm / 10_000);
   const strength =
-    metrics.meanWindSpeedMilli < 400 ? "light" : metrics.meanWindSpeedMilli < 1_200 ? "moderate" : "strong";
-  const rain = `${metrics.meanPrecipitationMmPerYear.toLocaleString("en-US")} mm/year typical rainfall`;
-  const humidity = `${Math.round(metrics.meanHumidityPpm / 10_000)}% of saturation`;
+    metrics.meanWindSpeedMilli < 400 ? $ui("light") : metrics.meanWindSpeedMilli < 1_200 ? $ui("moderate") : $ui("strong");
+  const rain = $ui("{0} mm/year typical rainfall", metrics.meanPrecipitationMmPerYear.toLocaleString($displayLanguage));
+  const humidity = $ui("{0}% of saturation", Math.round(metrics.meanHumidityPpm / 10_000));
   const dryness =
     metrics.meanLandAridityPpm < 200_000
-      ? "humid land"
+      ? $ui("humid land")
       : metrics.meanLandAridityPpm < 500_000
-        ? "sub-humid land"
+        ? $ui("sub-humid land")
         : metrics.meanLandAridityPpm < 800_000
-          ? "semi-arid land"
-          : "arid land";
+          ? $ui("semi-arid land")
+          : $ui("arid land");
   const seasonRain =
     metrics.meanSeasonalPrecipitationRangeMm > 0
-      ? ` Solstice rainfall typically differs by ${metrics.meanSeasonalPrecipitationRangeMm.toLocaleString("en-US")} mm.`
+      ? $ui(" Solstice rainfall typically differs by {0} mm.", metrics.meanSeasonalPrecipitationRangeMm.toLocaleString($displayLanguage))
       : "";
-  const biome = biomeLegendEntry(metrics.dominantLandBiome).name;
+  const biome = $ui(biomeLegendEntry(metrics.dominantLandBiome).name);
   const stormsPerYear = (metrics.expectedStormsPerYearMilli ?? 0) / 1_000;
   const storms =
     metrics.stormProneOceanPpm > 50_000
-      ? ` Tropical-cyclone-like genesis covers about ${Math.round(metrics.stormProneOceanPpm / 10_000)}% of ocean, about ${stormsPerYear.toFixed(1)} storms per year.`
-      : " Tropical-cyclone genesis is limited.";
-  return `Warmest ${formatCentiC(metrics.maximumSeasonalTemperatureCentiC)}, coldest ${formatCentiC(metrics.minimumSeasonalTemperatureCentiC)}, typical annual range ${formatCentiC(metrics.meanSeasonalRangeCentiC)}. High land stays colder than its latitude. Northern-summer solstice is the warmer-orbit season. Prevailing ${strength} winds (not local weather): ITCZ near ${itcz}, easterlies over ${easterlies}% of the globe. ${rain}; humidity ${humidity}; ${dryness}.${seasonRain} Typical land biome is ${biome}.${storms} Rainfall follows winds, mountains, and warmer seas. Humidity is remaining moisture versus local saturation. Aridity is evaporative demand unmet by rain. Biomes are a derived reading of those conditions, not painted decoration. Storm fields are climatology, not a weather forecast. ${freeze}`;
+      ? $ui(" Tropical-cyclone-like genesis covers about {0}% of ocean, about {1} storms per year.", Math.round(metrics.stormProneOceanPpm / 10_000), stormsPerYear.toFixed(1))
+      : $ui(" Tropical-cyclone genesis is limited.");
+  return $ui("Warmest {0}, coldest {1}, typical annual range {2}. High land stays colder than its latitude. Northern-summer solstice is the warmer-orbit season. Prevailing {3} winds (not local weather): ITCZ near {4}, easterlies over {5}% of the globe. {6}; humidity {7}; {8}.{9} Typical land biome is {10}.{11} Rainfall follows winds, mountains, and warmer seas. Humidity is remaining moisture versus local saturation. Aridity is evaporative demand unmet by rain. Biomes are a derived reading of those conditions, not painted decoration. Storm fields are climatology, not a weather forecast. {12}", formatCentiC(metrics.maximumSeasonalTemperatureCentiC), formatCentiC(metrics.minimumSeasonalTemperatureCentiC), formatCentiC(metrics.meanSeasonalRangeCentiC), strength, itcz, easterlies, rain, humidity, dryness, seasonRain, biome, storms, freeze);
 }
 
 function formatAridityLabel(ppm: number) {
-  if (ppm < 200_000) return "humid";
-  if (ppm < 500_000) return "sub-humid";
-  if (ppm < 800_000) return "semi-arid";
-  return "arid";
+  if (ppm < 200_000) return $ui("humid");
+  if (ppm < 500_000) return $ui("sub-humid");
+  if (ppm < 800_000) return $ui("semi-arid");
+  return $ui("arid");
 }
 
 function climateStats(): Array<{ label: string; value: string }> {
   if (!climate) return [];
   const metrics = climate.metrics;
   const strength =
-    metrics.meanWindSpeedMilli < 400 ? "light" : metrics.meanWindSpeedMilli < 1_200 ? "moderate" : "strong";
+    metrics.meanWindSpeedMilli < 400 ? $ui("light") : metrics.meanWindSpeedMilli < 1_200 ? $ui("moderate") : $ui("strong");
   const stormsPerYear = (metrics.expectedStormsPerYearMilli ?? 0) / 1_000;
   return [
-    { label: "Warmest", value: formatCentiC(metrics.maximumSeasonalTemperatureCentiC) },
-    { label: "Coldest", value: formatCentiC(metrics.minimumSeasonalTemperatureCentiC) },
-    { label: "Range", value: formatCentiC(metrics.meanSeasonalRangeCentiC) },
-    { label: "Rainfall", value: `${metrics.meanPrecipitationMmPerYear.toLocaleString("en-US")} mm/yr` },
-    { label: "Humidity", value: `${Math.round(metrics.meanHumidityPpm / 10_000)}% saturation` },
-    { label: "Land", value: formatAridityLabel(metrics.meanLandAridityPpm) },
-    { label: "Winds", value: strength },
-    { label: "Biome", value: biomeLegendEntry(metrics.dominantLandBiome).name },
-    { label: "Storms", value: `${stormsPerYear.toFixed(1)}/yr` },
+    { label: $ui("Warmest"), value: formatCentiC(metrics.maximumSeasonalTemperatureCentiC) },
+    { label: $ui("Coldest"), value: formatCentiC(metrics.minimumSeasonalTemperatureCentiC) },
+    { label: $ui("Range"), value: formatCentiC(metrics.meanSeasonalRangeCentiC) },
+    { label: $ui("Rainfall"), value: $ui("{0} mm/yr", metrics.meanPrecipitationMmPerYear.toLocaleString($displayLanguage)) },
+    { label: $ui("Humidity"), value: $ui("{0}% saturation", Math.round(metrics.meanHumidityPpm / 10_000)) },
+    { label: $ui("Land"), value: formatAridityLabel(metrics.meanLandAridityPpm) },
+    { label: $ui("Winds"), value: strength },
+    { label: $ui("Biome"), value: $ui(biomeLegendEntry(metrics.dominantLandBiome).name) },
+    { label: $ui("Storms"), value: $ui("{0}/yr", stormsPerYear.toFixed(1)) },
     {
-      label: "Growing",
-      value: `${(((metrics.meanLandGrowingSeasonPpm ?? 0) / 1_000_000) * 12).toFixed(1)} mo`,
+      label: $ui("Growing"),
+      value: $ui("{0} mo", (((metrics.meanLandGrowingSeasonPpm ?? 0) / 1_000_000) * 12).toFixed(1)),
     },
     {
-      label: "Dry / wet",
-      value: `${(((metrics.meanLandDrySeasonPpm ?? 0) / 1_000_000) * 12).toFixed(1)} / ${(((metrics.meanLandWetSeasonPpm ?? 0) / 1_000_000) * 12).toFixed(1)} mo`,
+      label: $ui("Dry / wet"),
+      value: $ui("{0} / {1} mo", (((metrics.meanLandDrySeasonPpm ?? 0) / 1_000_000) * 12).toFixed(1), (((metrics.meanLandWetSeasonPpm ?? 0) / 1_000_000) * 12).toFixed(1)),
     },
   ];
 }
@@ -316,12 +319,12 @@ function climateOverlayHint(): string | null {
   const currentsOn = layers.find((layer) => layer.id === "currents")?.defaultVisible ?? false;
   if (windsOn) {
     hints.push(
-      "Blue is easterly, amber is westerly. Arrows are prevailing direction on this coarse grid, not a weather forecast.",
+      $ui("Blue is easterly, amber is westerly. Arrows are prevailing direction on this coarse grid, not a weather forecast."),
     );
   }
   if (currentsOn) {
     hints.push(
-      "Ocean arrows are surface currents. Amber is northward, teal is southward. Major gyres only, not a shipping chart.",
+      $ui("Ocean arrows are surface currents. Amber is northward, teal is southward. Major gyres only, not a shipping chart."),
     );
   }
   if (
@@ -329,22 +332,22 @@ function climateOverlayHint(): string | null {
     climateOverlay === "precipitation-nh-summer" ||
     climateOverlay === "precipitation-nh-winter"
   ) {
-    hints.push("Tan is dry, teal is wet. Rainfall follows winds, mountains, and warmer seas, not a weather forecast.");
+    hints.push($ui("Tan is dry, teal is wet. Rainfall follows winds, mountains, and warmer seas, not a weather forecast."));
   } else if (climateOverlay === "humidity") {
-    hints.push("Humidity is remaining atmospheric moisture versus local saturation. Teal is moister air.");
+    hints.push($ui("Humidity is remaining atmospheric moisture versus local saturation. Teal is moister air."));
   } else if (climateOverlay === "aridity") {
-    hints.push("Aridity is evaporative demand unmet by rainfall. Green is humid, tan is dry.");
+    hints.push($ui("Aridity is evaporative demand unmet by rainfall. Green is humid, tan is dry."));
   } else if (climateOverlay === "biome") {
     hints.push(
-      "Biomes are classified from temperature, rainfall, humidity, aridity, seasonality, and elevation. Permanent ice is climate freeze, not ice-sheet cover. Click a cell to see why.",
+      $ui("Biomes are classified from temperature, rainfall, humidity, aridity, seasonality, and elevation. Permanent ice is climate freeze, not ice-sheet cover. Click a cell to see why."),
     );
   } else if (climateOverlay === "storm") {
     hints.push(
-      "Formation zones only: warm, moist tropical ocean with enough rotation, fetch from land, and surface currents. Seasonal wind-vector shear can suppress genesis. Amber is potential. Climatology, not a forecast.",
+      $ui("Formation zones only: warm, moist tropical ocean with enough rotation, fetch from land, and surface currents. Seasonal wind-vector shear can suppress genesis. Amber is potential. Climatology, not a forecast."),
     );
   } else if (climateOverlay === "storm-track") {
     hints.push(
-      "Track corridors only: winds plus surface currents with a poleward drift, then decay inland. Not a specific storm.",
+      $ui("Track corridors only: winds plus surface currents with a poleward drift, then decay inland. Not a specific storm."),
     );
   }
   return hints.length ? hints.join(" ") : null;
@@ -395,16 +398,16 @@ function inspectClimate(anchor: MapAnchor) {
     ((hydrology?.waterLevelMm[index] ?? hydrology?.seaLevelMm ?? 0) - (hydrology?.seaLevelMm ?? 0)) / 1_000,
   );
   const iceCover = hydrology?.iceCells?.[index] ?? false;
-  const iceNote = iceCover ? " Ice cover is present." : biomeClass === 1 ? " No ice cover on this cell." : "";
+  const iceNote = iceCover ? $ui(" Ice cover is present.") : biomeClass === 1 ? $ui(" No ice cover on this cell.") : "";
   const storm = Math.round((climate.stormSuitabilityPpm[index] ?? 0) / 10_000);
   const track = Math.round((climate.stormTrackPpm[index] ?? 0) / 10_000);
   const intensity = Math.round((climate.stormIntensityPpm[index] ?? 0) / 10_000);
-  climateSample = `${entry.name} because ${entry.reason}. Warmer solstice ${formatCentiC(Math.max(summerT, winterT))}, colder ${formatCentiC(Math.min(summerT, winterT))}, ${heightM} m above sea, ${rain.toLocaleString("en-US")} mm/year, humidity ${humidity}% of saturation, ${aridity}. Storm genesis ${storm}%, track ${track}%, intensity ${intensity}%.${iceNote}`;
+  climateSample = $ui("{0} because {1}. Warmer solstice {2}, colder {3}, {4} m above sea, {5} mm/year, humidity {6}% of saturation, {7}. Storm genesis {8}%, track {9}%, intensity {10}%.{11}", $ui(entry.name), $nativeErrorText(entry.reason), formatCentiC(Math.max(summerT, winterT)), formatCentiC(Math.min(summerT, winterT)), heightM, rain.toLocaleString($displayLanguage), humidity, aridity, storm, track, intensity, iceNote);
 }
 
 function headline() {
-  if (status?.state === "completed") return "Preview ready — accept this world";
-  return "Generate a globe, then accept it";
+  if (status?.state === "completed") return $ui("Preview ready — accept this world");
+  return $ui("Generate a globe, then accept it");
 }
 
 function randomSeed() {
@@ -443,7 +446,7 @@ const localDaysInYear = $derived(
 
 function setYearLengthDays(days: number | null) {
   if (days == null || days <= 0) {
-    yearLengthError = "Year length must be a positive number of Earth days.";
+    yearLengthError = $ui("Year length must be a positive number of Earth days.");
     return;
   }
   const next = withOrbitalPeriodSeconds(planetary, days * 86_400);
@@ -452,7 +455,7 @@ function setYearLengthDays(days: number | null) {
     planetary = next;
     return;
   }
-  yearLengthError = "That year length is outside the supported orbital range for this star mass.";
+  yearLengthError = $ui("That year length is outside the supported orbital range for this star mass.");
 }
 
 function patchPlanetaryNumber(event: Event, map: (value: number) => Partial<PlanetaryConfiguration>) {
@@ -502,7 +505,7 @@ function parseDerivedVectorCollection(text: string): VectorFeatureCollection {
     },
   });
   if (skipped > 0) {
-    notice = `${skipped} preview feature${skipped === 1 ? "" : "s"} skipped because of degenerate geometry.`;
+    notice = $ui("{0} preview feature{1} skipped because of degenerate geometry.", skipped, skipped === 1 ? "" : $ui("s"));
   }
   return collection;
 }
@@ -528,7 +531,7 @@ async function cancelActiveJob(jobId: string) {
   try {
     await project.cancelPhysicalMap(jobId);
   } catch (cause) {
-    notice = `Could not cancel the background generation: ${cause instanceof Error ? cause.message : String(cause)}`;
+    notice = $ui("Could not cancel the background generation: {0}", cause instanceof Error ? cause.message : String(cause));
     publish("error", { detail: notice });
   }
 }
@@ -547,7 +550,7 @@ async function poll(jobId: string) {
       await mountPreview();
       publish("preview-ready", { jobId });
     } else if (status.state !== "cancelled") {
-      notice = status.error ?? "Physical generation failed";
+      notice = status.error ?? $ui("Physical generation failed");
       publish("error", { detail: notice });
     }
   } catch (cause) {
@@ -612,7 +615,7 @@ async function accept() {
   busy = true;
   activeJobId = null;
   try {
-    const accepted = await project.acceptPhysicalMap(status.jobId, name.trim() || "Physical World");
+    const accepted = await project.acceptPhysicalMap(status.jobId, name.trim() || $ui("Physical World"));
     oncreated?.(accepted.entity);
   } catch (cause) {
     busy = false;
@@ -636,82 +639,80 @@ onMount(() => {
 {#if mapId}
   <NativeVectorMapEditor {mapId} {oncancel} {onstate} />
 {:else}
-  <section class="native-vector-editor physical-map-editor" aria-label="Generate physical map">
+  <section class="native-vector-editor physical-map-editor" aria-label={$ui("Generate physical map")}>
     <WorkspaceTopbar
-      title="Physical world"
+      title={$ui("Physical world")}
       subtitle={headline()}
       icon={Mountain}
-      backLabel="Back to map details"
+      backLabel={$ui("Back to map details")}
       onBack={() => void cancel()} />
     <div class="physical-layout">
-      <aside class="physical-sidebar" aria-label="World setup">
+      <aside class="physical-sidebar" aria-label={$ui("World setup")}>
         <section class="physical-section" aria-labelledby="physical-world-heading">
-          <h2 id="physical-world-heading">World</h2>
+          <h2 id="physical-world-heading">{$ui("World")}</h2>
           <label class="physical-field"
-            >Map name<input bind:value={name} disabled={busy} maxlength="120" placeholder="Physical World" /></label>
+            >{$ui("Map name")}<input bind:value={name} disabled={busy} maxlength="120" placeholder={$ui("Physical World")} /></label>
           <div class="physical-seed-row">
             <label class="physical-field physical-seed-field"
-              >Seed<input type="number" bind:value={seed} disabled={busy} min="0" max="4294967295" /></label>
+              >{$ui("Seed")}<input type="number" bind:value={seed} disabled={busy} min="0" max="4294967295" /></label>
             <button
               class="quiet-button physical-seed-reroll"
               type="button"
               onclick={randomSeed}
               disabled={busy}
-              title="Pick a new random seed">Reroll seed</button>
+              title={$ui("Pick a new random seed")}>{$ui("Reroll seed")}</button>
           </div>
           <label class="physical-field"
-            >Terrain age<select bind:value={evolutionPreset} disabled={busy}>
-              <option value="young">Young</option>
-              <option value="mature">Mature</option>
-              <option value="old">Old</option>
+            >{$ui("Terrain age")}<select bind:value={evolutionPreset} disabled={busy}>
+              <option value="young">{$ui("Young")}</option>
+              <option value="mature">{$ui("Mature")}</option>
+              <option value="old">{$ui("Old")}</option>
             </select></label>
           <label class="physical-field"
-            >Continent layout<select bind:value={tectonicStyle} disabled={busy}>
-              <option value="any">Surprise me</option>
-              <option value="mega">One continent</option>
-              <option value="giant-scraps">Continent and islands</option>
-              <option value="dual">Two continents</option>
-              <option value="scattered">Island world</option>
+            >{$ui("Continent layout")}<select bind:value={tectonicStyle} disabled={busy}>
+              <option value="any">{$ui("Surprise me")}</option>
+              <option value="mega">{$ui("One continent")}</option>
+              <option value="giant-scraps">{$ui("Continent and islands")}</option>
+              <option value="dual">{$ui("Two continents")}</option>
+              <option value="scattered">{$ui("Island world")}</option>
             </select></label>
           <p class="physical-hint">{tectonicStyleHint(tectonicStyle)}</p>
-          <p class="physical-hint">
-            Preview is low resolution. Accepting locks coasts, elevation, climate, ice, and rivers.
-          </p>
+          <p class="physical-hint"> {$ui("Preview is low resolution. Accepting locks coasts, elevation, climate, ice, and rivers.")} </p>
         </section>
         <section class="physical-section" aria-labelledby="physical-planet-heading">
-          <h2 id="physical-planet-heading">Planet</h2>
+          <h2 id="physical-planet-heading">{$ui("Planet")}</h2>
           <label class="physical-field"
-            >Planet<select value={planetary.preset} disabled={busy} onchange={onPlanetPresetChange}>
-              <option value="earth-like">Earth-like</option>
-              <option value="low-tilt">Mild seasons</option>
-              <option value="high-tilt">Strong seasons</option>
-              <option value="slow-rotating">Long days</option>
-              <option value="close-orbit">Close orbit</option>
-              <option value="custom">Custom</option>
+            >{$ui("Planet")}<select value={planetary.preset} disabled={busy} onchange={onPlanetPresetChange}>
+              <option value="earth-like">{$ui("Earth-like")}</option>
+              <option value="low-tilt">{$ui("Mild seasons")}</option>
+              <option value="high-tilt">{$ui("Strong seasons")}</option>
+              <option value="slow-rotating">{$ui("Long days")}</option>
+              <option value="close-orbit">{$ui("Close orbit")}</option>
+              <option value="custom">{$ui("Custom")}</option>
             </select></label>
-          <p class="physical-hint">Presets cover most worlds. Use Planet details for custom tilt, days, and orbit.</p>
+          <p class="physical-hint">{$ui("Presets cover most worlds. Use Planet details for custom tilt, days, and orbit.")}</p>
         </section>
         <section class="physical-section" aria-labelledby="physical-climate-heading">
-          <h2 id="physical-climate-heading">Climate view</h2>
+          <h2 id="physical-climate-heading">{$ui("Climate view")}</h2>
           {#if climate}
             <label class="physical-field"
-              >Climate view<select bind:value={climateOverlay} onchange={() => rebuildRaster(hydrology)}>
-                <option value="off">Terrain only</option>
-                <option value="annual">Annual temperature</option>
-                <option value="nh-summer">Northern-summer solstice</option>
-                <option value="nh-winter">Northern-winter solstice</option>
-                <option value="freeze">Freeze</option>
-                <option value="wind">Prevailing wind</option>
-                <option value="wind-nh-summer">Northern-summer wind</option>
-                <option value="wind-nh-winter">Northern-winter wind</option>
-                <option value="precipitation">Annual rainfall</option>
-                <option value="precipitation-nh-summer">Northern-summer rainfall</option>
-                <option value="precipitation-nh-winter">Northern-winter rainfall</option>
-                <option value="humidity">Humidity</option>
-                <option value="aridity">Aridity</option>
-                <option value="biome">Biome</option>
-                <option value="storm">Storm genesis</option>
-                <option value="storm-track">Storm tracks</option>
+              >{$ui("Climate view")}<select bind:value={climateOverlay} onchange={() => rebuildRaster(hydrology)}>
+                <option value="off">{$ui("Terrain only")}</option>
+                <option value="annual">{$ui("Annual temperature")}</option>
+                <option value="nh-summer">{$ui("Northern-summer solstice")}</option>
+                <option value="nh-winter">{$ui("Northern-winter solstice")}</option>
+                <option value="freeze">{$ui("Freeze")}</option>
+                <option value="wind">{$ui("Prevailing wind")}</option>
+                <option value="wind-nh-summer">{$ui("Northern-summer wind")}</option>
+                <option value="wind-nh-winter">{$ui("Northern-winter wind")}</option>
+                <option value="precipitation">{$ui("Annual rainfall")}</option>
+                <option value="precipitation-nh-summer">{$ui("Northern-summer rainfall")}</option>
+                <option value="precipitation-nh-winter">{$ui("Northern-winter rainfall")}</option>
+                <option value="humidity">{$ui("Humidity")}</option>
+                <option value="aridity">{$ui("Aridity")}</option>
+                <option value="biome">{$ui("Biome")}</option>
+                <option value="storm">{$ui("Storm genesis")}</option>
+                <option value="storm-track">{$ui("Storm tracks")}</option>
               </select></label>
             <div class="physical-check-row">
               <label class="physical-check"
@@ -723,8 +724,7 @@ onMount(() => {
                     const next = event.currentTarget.checked;
                     layers = layers.map((layer) => (layer.id === "winds" ? { ...layer, defaultVisible: next } : layer));
                     rebuildRaster(hydrology);
-                  }} />
-                Winds</label>
+                  }} /> {$ui("Winds")}</label>
               <label class="physical-check"
                 ><input
                   type="checkbox"
@@ -736,8 +736,7 @@ onMount(() => {
                       layer.id === "currents" ? { ...layer, defaultVisible: next } : layer,
                     );
                     rebuildRaster(hydrology);
-                  }} />
-                Currents</label>
+                  }} /> {$ui("Currents")}</label>
             </div>
             {#if climateStats().length > 0}
               <dl class="physical-stat-grid">
@@ -759,35 +758,31 @@ onMount(() => {
                     ><span
                       class="physical-biome-swatch"
                       style={`background: rgb(${entry.fill[0]}, ${entry.fill[1]}, ${entry.fill[2]})`}></span
-                    >{entry.name}</span>
+                    >{$ui(entry.name)}</span>
                 {/each}
               </p>
             {/if}
             <details class="physical-details">
-              <summary>Full climate summary</summary>
+              <summary>{$ui("Full climate summary")}</summary>
               <p class="physical-planet-readout">{climateSummary()}</p>
             </details>
           {:else}
-            <p class="physical-hint">Generate a world to unlock temperature, rainfall, biome, and storm views.</p>
+            <p class="physical-hint">{$ui("Generate a world to unlock temperature, rainfall, biome, and storm views.")}</p>
           {/if}
         </section>
         <section class="physical-section" aria-labelledby="physical-planet-details-heading">
-          <h2 id="physical-planet-details-heading">Planet details</h2>
+          <h2 id="physical-planet-details-heading">{$ui("Planet details")}</h2>
           <button
             class="quiet-button physical-details-toggle"
             type="button"
             onclick={() => (advancedPlanet = !advancedPlanet)}
             disabled={busy}
-            aria-expanded={advancedPlanet}>{advancedPlanet ? "Hide planet details" : "Planet details"}</button>
+            aria-expanded={advancedPlanet}>{advancedPlanet ? $ui("Hide planet details") : $ui("Planet details")}</button>
           {#if advancedPlanet}
             <div class="physical-planet-panel">
-              <p class="physical-planet-readout">
-                Stored with the world. These settings now drive temperature, seasons, prevailing winds, and surface
-                currents. Figures are generated world physics, not a precise scientific prediction.
-              </p>
+              <p class="physical-planet-readout"> {$ui("Stored with the world. These settings now drive temperature, seasons, prevailing winds, and surface currents. Figures are generated world physics, not a precise scientific prediction.")} </p>
               <label
-                >Seasons (tilt)
-                <input
+                >{$ui("Seasons (tilt)")} <input
                   type="range"
                   min="0"
                   max="90"
@@ -798,8 +793,7 @@ onMount(() => {
                 <span>{Math.round(planetary.axialTiltMilliDeg / 1000)}°</span>
               </label>
               <label
-                >Hours in a day
-                <input
+                >{$ui("Hours in a day")} <input
                   type="number"
                   min="1"
                   max="2160"
@@ -810,8 +804,7 @@ onMount(() => {
                     patchPlanetaryNumber(event, (value) => ({ rotationPeriodSeconds: Math.max(1, value) * 3600 }))} />
               </label>
               <label
-                >Year length (Earth days)
-                <input
+                >{$ui("Year length (Earth days)")} <input
                   type="number"
                   min="4"
                   max="200000"
@@ -822,24 +815,18 @@ onMount(() => {
               </label>
               <p class="physical-planet-readout">
                 {#if yearLengthError}
-                  {yearLengthError}
+                  {$nativeErrorText(yearLengthError)}
                 {:else if planetError}
-                  {planetError}
-                {:else if yearDays != null && localDaysInYear != null && sunlight != null && gravityG != null}
-                  About {Math.round(yearDays)} Earth days / {Math.round(localDaysInYear)} local days · about {(
+                  {$nativeErrorText(planetError)}
+                {:else if yearDays != null && localDaysInYear != null && sunlight != null && gravityG != null} {$ui("About {0} Earth days / {1} local days · about {2}x sunlight · about {3} g. Year length sets orbital distance from the star's mass.", Math.round(yearDays), Math.round(localDaysInYear), (
                     sunlight / 1_000_000
-                  ).toFixed(1)}x sunlight · about {(gravityG / 1000).toFixed(1)} g. Year length sets orbital distance from
-                  the star's mass.
-                {:else}
-                  Enter supported planetary values to see approximate year, sunlight, and gravity.
-                {/if}
+                  ).toFixed(1), (gravityG / 1000).toFixed(1))} {:else} {$ui("Enter supported planetary values to see approximate year, sunlight, and gravity.")} {/if}
               </p>
               <details class="physical-planet-advanced">
-                <summary>Advanced</summary>
+                <summary>{$ui("Advanced")}</summary>
                 <div class="physical-planet-advanced-grid">
                   <label
-                    >Star brightness
-                    <input
+                    >{$ui("Star brightness")} <input
                       type="number"
                       min="0.01"
                       max="100"
@@ -852,8 +839,7 @@ onMount(() => {
                         }))} />
                   </label>
                   <label
-                    >Distance (AU)
-                    <input
+                    >{$ui("Distance (AU)")} <input
                       type="number"
                       min="0.05"
                       max="50"
@@ -866,8 +852,7 @@ onMount(() => {
                         }))} />
                   </label>
                   <label
-                    >Star mass
-                    <input
+                    >{$ui("Star mass")} <input
                       type="number"
                       min="0.08"
                       max="8"
@@ -878,8 +863,7 @@ onMount(() => {
                         patchPlanetaryNumber(event, (value) => ({ starMassPpm: Math.round(value * 1_000_000) }))} />
                   </label>
                   <label
-                    >Orbit stretch
-                    <input
+                    >{$ui("Orbit stretch")} <input
                       type="number"
                       min="0"
                       max="0.8"
@@ -890,8 +874,7 @@ onMount(() => {
                         patchPlanetaryNumber(event, (value) => ({ eccentricityPpm: Math.round(value * 1_000_000) }))} />
                   </label>
                   <label
-                    >Retained heat (°C)
-                    <input
+                    >{$ui("Retained heat (°C)")} <input
                       type="number"
                       min="-50"
                       max="50"
@@ -902,8 +885,7 @@ onMount(() => {
                         patchPlanetaryNumber(event, (value) => ({ retainedHeatCentiC: Math.round(value * 100) }))} />
                   </label>
                   <label
-                    >Reflectivity
-                    <input
+                    >{$ui("Reflectivity")} <input
                       type="number"
                       min="0.05"
                       max="0.8"
@@ -914,8 +896,7 @@ onMount(() => {
                         patchPlanetaryNumber(event, (value) => ({ bondAlbedoPpm: Math.round(value * 1_000_000) }))} />
                   </label>
                   <label
-                    >Planet size (Earth radii)
-                    <input
+                    >{$ui("Planet size (Earth radii)")} <input
                       type="number"
                       min="0.05"
                       max="10"
@@ -928,8 +909,7 @@ onMount(() => {
                         }))} />
                   </label>
                   <label
-                    >Density (kg/m³)
-                    <input
+                    >{$ui("Density (kg/m³)")} <input
                       type="number"
                       min="1000"
                       max="12000"
@@ -948,17 +928,17 @@ onMount(() => {
         <div class="physical-statusbar" role="status">
           {#if busy}
             <span class="physical-status-progress"
-              >{status?.stage ?? "Starting"}…{#if status && status.total > 0}
+              >{$ui(status?.stage ?? "Starting")}…{#if status && status.total > 0}
                 {status.completed} / {status.total}{/if}</span>
           {:else if status?.state === "completed"}
             <span class="physical-status-progress"
-              >Seed {seed} · {evolutionPreset} terrain · {preview.features.length} features</span>
+              >{$ui("Seed {0} · {1} terrain · {2} features", seed, evolutionPreset, preview.features.length)}</span>
           {:else}
-            <span class="physical-status-progress">Choose a seed and planet, then generate.</span>
+            <span class="physical-status-progress">{$ui("Choose a seed and planet, then generate.")}</span>
           {/if}
           <div class="physical-map-help-anchor">
             {#if helpOpen}
-              <button type="button" class="physical-map-help-backdrop" aria-label="Close help" onclick={closeHelp}
+              <button type="button" class="physical-map-help-backdrop" aria-label={$ui("Close help")} onclick={closeHelp}
               ></button>
             {/if}
             <button
@@ -967,7 +947,7 @@ onMount(() => {
               class:unread={!helpSeen}
               aria-expanded={helpOpen}
               aria-controls="physical-map-help-panel"
-              aria-label="About this preview"
+              aria-label={$ui("About this preview")}
               onclick={toggleHelp}>?</button>
             {#if helpOpen}
               <div
@@ -976,17 +956,10 @@ onMount(() => {
                 role="dialog"
                 aria-labelledby="physical-map-help-title"
                 aria-modal="false">
-                <strong id="physical-map-help-title">About this preview</strong>
-                <p>
-                  This low-resolution view locks the world’s physical shape—coasts, elevation, climate, ice, and rivers.
-                  Pan and zoom to explore before you accept.
-                </p>
-                <p class="physical-map-help-note">
-                  The accepted map is a separate high-resolution render with much more detail. You can’t edit the base
-                  world directly; copy any region into an editable layer to change it. Planet settings drive temperature
-                  and seasons; results are generated world physics, not precise scientific prediction.
-                </p>
-                <button type="button" class="physical-map-help-dismiss" onclick={closeHelp}>Got it</button>
+                <strong id="physical-map-help-title">{$ui("About this preview")}</strong>
+                <p> {$ui("This low-resolution view locks the world’s physical shape—coasts, elevation, climate, ice, and rivers. Pan and zoom to explore before you accept.")} </p>
+                <p class="physical-map-help-note"> {$ui("The accepted map is a separate high-resolution render with much more detail. You can’t edit the base world directly; copy any region into an editable layer to change it. Planet settings drive temperature and seasons; results are generated world physics, not precise scientific prediction.")} </p>
+                <button type="button" class="physical-map-help-dismiss" onclick={closeHelp}>{$ui("Got it")}</button>
               </div>
             {/if}
           </div>
@@ -994,7 +967,7 @@ onMount(() => {
         {#if notice}<p class="map-reconcile-notice" role="alert">{notice}</p>{/if}
         {#if climate}
           <p class="physical-inspector">
-            {climateSample || "Click the map to inspect rainfall, humidity, aridity, biome, and storms at a cell."}
+            {climateSample || $ui("Click the map to inspect rainfall, humidity, aridity, biome, and storms at a cell.")}
           </p>
         {/if}
         <div class="native-vector-map">
@@ -1007,15 +980,13 @@ onMount(() => {
             onMapPick={inspectClimate} />
           {#if busy}
             <div class="physical-map-stage" role="status">
-              <strong>{status?.stage ?? "Starting"}…</strong>
+              <strong>{$ui(status?.stage ?? "Starting")}…</strong>
               {#if status && status.total > 0}<span>{status.completed} / {status.total}</span>{/if}
-              <span class="physical-stage-hint">You can cancel; nothing is saved until you accept.</span>
+              <span class="physical-stage-hint">{$ui("You can cancel; nothing is saved until you accept.")}</span>
             </div>
           {:else if preview.features.length === 0 && !raster}
             <div class="physical-map-empty-hint">
-              <p>
-                No preview yet. Set the seed and planet on the left, then click <strong>Generate world</strong> below.
-              </p>
+              <p> {$ui("No preview yet. Choose a seed and planet, then generate the world.")} </p>
             </div>
           {/if}
         </div>
@@ -1023,8 +994,7 @@ onMount(() => {
     </div>
     <footer class="physical-map-actions">
       <span class="physical-actions-status" role="status">
-        {#if status?.state === "completed"}Preview ready — review, reroll, or accept.{:else if busy}Generating…{:else}Not
-          generated yet.{/if}
+        {#if status?.state === "completed"}{$ui("Preview ready — review, reroll, or accept.")}{:else if busy}{$ui("Generating…")}{:else}{$ui("Not generated yet.")}{/if}
       </span>
       {#if status?.state === "completed"}
         <button
@@ -1032,18 +1002,18 @@ onMount(() => {
           type="button"
           onclick={() => void accept()}
           disabled={busy}
-          title="Save this world as a new map">Accept world</button>
+          title={$ui("Save this world as a new map")}>{$ui("Accept world")}</button>
         <button
           class="quiet-button"
           type="button"
           onclick={() => void generate()}
           disabled={busy}
-          title="Generate another world with the current settings">Reroll</button>
+          title={$ui("Generate another world with the current settings")}>{$ui("Reroll")}</button>
       {:else if busy}
-        <button class="quiet-button" type="button" onclick={() => void cancel()}>Cancel generation</button>
+        <button class="quiet-button" type="button" onclick={() => void cancel()}>{$ui("Cancel generation")}</button>
       {:else}
-        <button class="primary-button" type="button" onclick={() => void generate()}>Generate world</button>
-        <button class="quiet-button" type="button" onclick={() => oncancel?.()}>Back</button>
+        <button class="primary-button" type="button" onclick={() => void generate()}>{$ui("Generate world")}</button>
+        <button class="quiet-button" type="button" onclick={() => oncancel?.()}>{$ui("Back")}</button>
       {/if}
     </footer>
   </section>

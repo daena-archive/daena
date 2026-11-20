@@ -1,4 +1,7 @@
 <script lang="ts">
+import { schemaLabels } from "$lib/i18n/manifest-copy";
+import { nativeErrorText } from "$lib/i18n/native-errors.ts";
+import { ui } from "$lib/i18n/ui";
 import { tick } from "svelte";
 import { X } from "@lucide/svelte";
 import type { Entity } from "$lib/project/client";
@@ -10,7 +13,6 @@ import {
   type AsyncEntitySearchFn,
   type AsyncEntitySearchPage,
 } from "$lib/entity-lifecycle/asyncEntityQuery.ts";
-import { humanizeId } from "$lib/schema-workbench/model.ts";
 
 export let open = false;
 export let search: AsyncEntitySearchFn = async () => emptyAsyncEntityPage();
@@ -204,21 +206,21 @@ $: if (!open && lastFocused) {
       onkeydown={handleKeydown}>
       <header>
         <div>
-          <span>ENTITY REFERENCE</span>
-          <h2 id="entity-reference-title">Link to another entity</h2>
+          <span>{$ui("ENTITY REFERENCE")}</span>
+          <h2 id="entity-reference-title">{$ui("Link to another entity")}</h2>
         </div>
-        <button type="button" aria-label="Close entity reference dialog" onclick={onCancel}
+        <button type="button" aria-label={$ui("Close entity reference dialog")} onclick={onCancel}
           ><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
       </header>
       <label class="entity-reference-search">
-        <span>Search entities</span>
-        <input bind:this={searchInput} bind:value={query} placeholder="Search by name or type…" />
+        <span>{$ui("Search entities")}</span>
+        <input bind:this={searchInput} bind:value={query} placeholder={$ui("Search by name or type…")} />
       </label>
-      <div class="entity-reference-results" role="listbox" aria-label="Entity results">
+      <div class="entity-reference-results" role="listbox" aria-label={$ui("Entity results")}>
         {#if error}
-          <p role="alert">{error}</p>
+          <p role="alert">{$nativeErrorText(error)}</p>
         {:else if busy && page.items.length === 0}
-          <p>Searching…</p>
+          <p>{$ui("Searching…")}</p>
         {:else}
           {#each page.items as entity (entity.id)}
             <button
@@ -229,10 +231,10 @@ $: if (!open && lastFocused) {
               class:selected={selectedId === entity.id}
               onclick={() => select(entity)}>
               <strong>{entity.name}</strong><small
-                >{entity.entityType ? humanizeId(entity.entityType) : "Uncategorized"}</small>
+                >{$schemaLabels.type(entity.entityType)}</small>
             </button>
           {:else}
-            <p>No matching entities.</p>
+            <p>{$ui("No matching entities.")}</p>
           {/each}
           {#if page.total > page.items.length || page.hasMore || page.offset > 0}
             <div class="entity-reference-pager">
@@ -240,12 +242,12 @@ $: if (!open && lastFocused) {
                 type="button"
                 class="quiet"
                 disabled={busy || page.offset === 0}
-                onclick={() => void load(Math.max(0, page.offset - pageSize))}>Previous</button>
+                onclick={() => void load(Math.max(0, page.offset - pageSize))}>{$ui("Previous")}</button>
               <button
                 type="button"
                 class="quiet"
                 disabled={busy || (!page.hasMore && page.offset + page.items.length >= page.total)}
-                onclick={() => void load(page.offset + pageSize)}>Next</button>
+                onclick={() => void load(page.offset + pageSize)}>{$ui("Next")}</button>
             </div>
           {/if}
         {/if}
@@ -259,34 +261,31 @@ $: if (!open && lastFocused) {
               if (!isCustom && selectedEntity) label = selectedEntity.name;
               if (isCustom) void tick().then(() => labelInput?.focus());
             }} />
-          <span>Use custom display text</span>
+          <span>{$ui("Use custom display text")}</span>
         </label>
         <div class="hint-wrapper">
           <button
             type="button"
             class="hint-button"
-            aria-label="About custom display text"
+            aria-label={$ui("About custom display text")}
             aria-describedby="custom-hint-tooltip">?</button>
-          <div id="custom-hint-tooltip" class="hint-tooltip" role="tooltip">
-            When using the entity name, the link updates automatically when the entity is renamed. Custom labels stay as
-            written.
-          </div>
+          <div id="custom-hint-tooltip" class="hint-tooltip" role="tooltip"> {$ui("When using the entity name, the link updates automatically when the entity is renamed. Custom labels stay as written.")} </div>
         </div>
       </div>
       <label class="entity-reference-label">
-        <span>Display text</span>
+        <span>{$ui("Display text")}</span>
         <input
           bind:this={labelInput}
           bind:value={label}
           placeholder={isCustom
-            ? "How this reference appears in the document"
-            : (selectedEntity?.name ?? "Entity name (auto)")}
+            ? $ui("How this reference appears in the document")
+            : (selectedEntity?.name ?? $ui("Entity name (auto)"))}
           disabled={!isCustom} />
       </label>
       <footer>
-        <button type="button" class="quiet" onclick={onCancel}>Cancel</button>
+        <button type="button" class="quiet" onclick={onCancel}>{$ui("Cancel")}</button>
         <button type="button" class="primary" disabled={!selectedEntity || (isCustom && !label.trim())} onclick={submit}
-          >{initialSelectedId && initialIsCustom !== undefined ? "Update reference" : "Insert reference"}</button>
+          >{initialSelectedId && initialIsCustom !== undefined ? $ui("Update reference") : $ui("Insert reference")}</button>
       </footer>
     </div>
   </div>

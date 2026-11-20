@@ -1,3 +1,4 @@
+import { localizeUi } from "../i18n/ui.ts";
 import type { EditorAssetServices, EditorHost } from "./host.ts";
 import { mimeTypeFor } from "./image-attrs.ts";
 import {
@@ -219,13 +220,13 @@ export function createBrokerEditorHost(options: BrokerEditorHostOptions): Editor
   /** GETs a begun read. Throws on transport failure or a non-OK status. */
   async function readUrl(url: string): Promise<Uint8Array> {
     const response = await options.fetch(url);
-    if (!response.ok) throw new Error(`asset read failed with status ${response.status}`);
+    if (!response.ok) throw new Error(localizeUi("asset read failed with status {0}", response.status));
     return new Uint8Array(await response.arrayBuffer());
   }
 
   async function entityRevision(entityId: string): Promise<string> {
     const entity = await rpc.call<{ revision?: unknown } | null>(ENTITY_GET_METHOD, { id: entityId });
-    if (!entity || typeof entity.revision !== "string") throw new Error("The entity could not be found.");
+    if (!entity || typeof entity.revision !== "string") throw new Error(localizeUi("The entity could not be found."));
     return entity.revision;
   }
 
@@ -294,7 +295,7 @@ export function createBrokerEditorHost(options: BrokerEditorHostOptions): Editor
       const file = await openFileChooser(options.document);
       if (!file) return null;
       if (file.size > MAX_UPLOAD_BYTES) {
-        throw new Error(`${file.name} is larger than 64 MiB and cannot be attached.`);
+        throw new Error(localizeUi("{0} is larger than 64 MiB and cannot be attached.", file.name));
       }
       const picked = await queueUpload(input.entityId, () => uploadFile(input, file));
       options.onEntityChanged(input.entityId);
@@ -342,7 +343,7 @@ export function createBrokerEditorHost(options: BrokerEditorHostOptions): Editor
     assets,
     async searchEntities(query) {
       const page = await rpc.call<EntityPageRecord>(ENTITY_QUERY_METHOD, entityQueryPayload(query));
-      if (!page || !Array.isArray(page.items)) throw new Error("The entity search returned an invalid page.");
+      if (!page || !Array.isArray(page.items)) throw new Error(localizeUi("The entity search returned an invalid page."));
       return toAsyncEntityPage(
         {
           items: page.items.map((item) => ({

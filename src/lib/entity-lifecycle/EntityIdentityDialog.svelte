@@ -1,4 +1,5 @@
 <script lang="ts">
+import { ui } from "$lib/i18n/ui";
 import type { Snippet } from "svelte";
 import { X } from "@lucide/svelte";
 import { ENTITY_ACTIONS, MUTATION_STATUS } from "./vocabulary.ts";
@@ -80,32 +81,32 @@ function onKeydown(event: KeyboardEvent) {
         <span class="panel-kicker">{ENTITY_ACTIONS.editIdentity.toUpperCase()}</span>
         <strong id="entity-identity-title">{ENTITY_ACTIONS.editIdentity}: {entityName}</strong>
       </div>
-      <button type="button" class="new-form-close" aria-label="Close edit dialog" onclick={onClose} disabled={busy}
+      <button type="button" class="new-form-close" aria-label={$ui("Close edit dialog")} onclick={onClose} disabled={busy}
         ><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
     </div>
-    <p class="dialog-body-copy">Change the name and type. The stable ID stays the same, so links and assets follow.</p>
+    <p class="dialog-body-copy">{$ui("Change the name and type. The stable ID stays the same, so links and assets follow.")}</p>
     <label class="create-input-field" for="entity-edit-name"
-      ><span>Name</span><input
+      ><span>{$ui("Name")}</span><input
         id="entity-edit-name"
         type="text"
         bind:value={name}
-        placeholder="Entity name"
+        placeholder={$ui("Entity name")}
         disabled={busy} /></label>
     <label class="create-input-field" for="entity-edit-type"
-      ><span>Type</span><select
+      ><span>{$ui("Type")}</span><select
         id="entity-edit-type"
         class="entity-edit-select"
         bind:value={entityType}
         disabled={busy}
-        aria-label="Entity type">
-        {#if allowUncategorized || originalType == null}<option value={null}>Uncategorized — no template</option>{/if}
+        aria-label={$ui("Entity type")}>
+        {#if allowUncategorized || originalType == null}<option value={null}>{$ui("Uncategorized — no template")}</option>{/if}
         {#each typeGroups as group}
           <optgroup label={group.heading.toUpperCase()}>
             {#each group.types as type}<option value={type}>{typeLabel(type)}</option>{/each}
           </optgroup>
         {/each}
       </select>
-      <small class="field-hint">Workspace: {workspaceLabel(entityType)}</small></label>
+      <small class="field-hint">{$ui("Workspace: {0}", workspaceLabel(entityType))}</small></label>
     {#if warning}<p class="plugin-warning entity-edit-warning" role="note">{warning}</p>{/if}
     {#if mutation}
       <div class="identity-mutation">
@@ -113,9 +114,9 @@ function onKeydown(event: KeyboardEvent) {
       </div>
     {/if}
     <div class="new-form-actions">
-      <button type="button" class="quiet-button" onclick={onClose} disabled={busy}>Cancel</button>
+      <button type="button" class="quiet-button" onclick={onClose} disabled={busy}>{$ui("Cancel")}</button>
       <button type="button" class="primary-button" onclick={onSave} disabled={busy || !name.trim() || unchanged}
-        >{busy ? MUTATION_STATUS.saving : "Save"}</button>
+        >{busy ? MUTATION_STATUS.saving : $ui("Save")}</button>
     </div>
   </div>
 </div>

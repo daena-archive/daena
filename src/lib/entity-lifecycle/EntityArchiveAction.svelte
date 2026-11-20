@@ -1,7 +1,7 @@
 <script lang="ts">
+import { messages } from "$lib/i18n";
 import { confirmDialog } from "$lib/dialogs.svelte";
-import { archiveConfirmOptions, archivePendingLabel } from "./archive.ts";
-import { ENTITY_ACTIONS } from "./vocabulary.ts";
+import { archiveConfirmOptions } from "./archive.ts";
 
 let {
   entityName,
@@ -9,7 +9,7 @@ let {
   disabled = false,
   dirtyNote = "",
   dangerClass = "quiet-button",
-  label = ENTITY_ACTIONS.archive,
+  label,
   onArchive,
 }: {
   entityName: string;
@@ -28,7 +28,7 @@ async function onClick() {
   if (disabled || busy || confirming) return;
   confirming = true;
   try {
-    if (!(await confirmDialog(archiveConfirmOptions(entityName, dirtyNote ? { dirtyNote } : undefined)))) return;
+    if (!(await confirmDialog(archiveConfirmOptions(entityName, { dirtyNote, copy: $messages.inspector })))) return;
     await onArchive();
   } finally {
     confirming = false;
@@ -37,7 +37,7 @@ async function onClick() {
 </script>
 
 <button type="button" class={dangerClass} disabled={disabled || busy || confirming} onclick={() => void onClick()}
-  >{busy || confirming ? archivePendingLabel(true) : label}</button>
+  >{busy || confirming ? $messages.inspector.working : (label ?? $messages.inspector.archive)}</button>
 
 <style>
 .quiet-button {

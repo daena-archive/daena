@@ -1,3 +1,5 @@
+import { presetCopy } from "../i18n/profile-copy.ts";
+import { localizeUi } from "../i18n/ui.ts";
 import type { ModuleContext, ProjectModuleRecord, UUID } from "../../../packages/module-api/src/index";
 import {
   cloneProfileData,
@@ -103,7 +105,7 @@ export function profileFromSeed(seed: BundledProfilePresetSeed): ProfileDocument
 
 export function profileFromPreset(id: string): ProfileDocument {
   const seed = BUNDLED_PROFILE_PRESET_SEEDS.find((preset) => preset.id === id || preset.legacyKey === id);
-  if (!seed) throw new Error("Unknown Profile preset");
+  if (!seed) throw new Error(localizeUi("Unknown Profile preset"));
   return profileFromSeed(seed);
 }
 
@@ -123,11 +125,11 @@ export function profileForPresetSelection(
 
 export function profilePresetLabel(id: string | undefined, presets?: readonly LoadedProfilePreset[]): string {
   const loaded = id ? presets?.find((preset) => preset.id === id) : undefined;
-  if (loaded) return loaded.document.name;
-  if (!id || isCustomPresetOrigin(id)) return "Custom";
+  if (loaded) return presetCopy(loaded.id, "name", loaded.document.name);
+  if (!id || isCustomPresetOrigin(id)) return localizeUi("Custom");
   const seed = BUNDLED_PROFILE_PRESET_SEEDS.find((preset) => preset.id === id || preset.legacyKey === id);
-  if (seed) return seed.name;
-  return presets ? "" : "Custom";
+  if (seed) return presetCopy(seed.id, "name", seed.name);
+  return presets ? "" : localizeUi("Custom");
 }
 
 async function listPresetRecords(context: ModuleContext) {
@@ -246,7 +248,7 @@ export function bundledPresetNeedsMigration(stored: ProfilePresetDocument, seed:
 
 export function normalizePresetFields(fields: ProfilePresetFields): ProfilePresetFields {
   const name = fields.name.trim();
-  if (!name) throw new Error("Preset name is required");
+  if (!name) throw new Error(localizeUi("Preset name is required"));
   const description = fields.description?.trim() ?? "";
   const genre = fields.genre?.trim() ?? "";
   const entityTypes = [
@@ -341,15 +343,15 @@ function normalizePresetComponents(
   const ids = new Set<string>();
   return drafts.map((draft) => {
     const name = draft.name?.trim() ?? "";
-    if (!name) throw new Error("Component name is required");
-    if (!PROFILE_COMPONENT_KINDS.includes(draft.kind)) throw new Error("Unknown component kind");
+    if (!name) throw new Error(localizeUi("Component name is required"));
+    if (!PROFILE_COMPONENT_KINDS.includes(draft.kind)) throw new Error(localizeUi("Unknown component kind"));
     const id = draft.id?.trim() || presetComponentId(draft.kind, name);
-    if (ids.has(id)) throw new Error(`Duplicate component id: ${id}`);
+    if (ids.has(id)) throw new Error(localizeUi("Duplicate component id: {0}", id));
     ids.add(id);
     const previous = byId.get(id);
     const scale = draft.scale?.map((item) => item.trim()).filter(Boolean);
     if (draft.min !== undefined && draft.max !== undefined && draft.min > draft.max) {
-      throw new Error(`${name} min cannot exceed max`);
+      throw new Error(localizeUi("{0} min cannot exceed max", name));
     }
     const next: ProfileComponent = { id, kind: draft.kind, name, value: templateComponentValue(draft, previous) };
     if (scale?.length) next.scale = scale;
@@ -476,7 +478,7 @@ export async function setProfilePresetHidden(
 }
 
 export async function deleteProfilePreset(context: ModuleContext, preset: LoadedProfilePreset): Promise<void> {
-  if (preset.document.builtin) throw new Error("Bundled presets cannot be deleted");
+  if (preset.document.builtin) throw new Error(localizeUi("Bundled presets cannot be deleted"));
   await context.projectRecords.delete(PROFILE_PRESET_COLLECTION, preset.id, { expectedRevision: preset.revision });
 }
 
@@ -485,7 +487,7 @@ export async function resetBundledProfilePreset(
   preset: LoadedProfilePreset,
 ): Promise<LoadedProfilePreset> {
   const seed = BUNDLED_PROFILE_PRESET_SEEDS.find((candidate) => candidate.id === preset.id);
-  if (!seed) throw new Error("Only bundled presets can be reset");
+  if (!seed) throw new Error(localizeUi("Only bundled presets can be reset"));
   return updateProfilePreset(context, preset, bundledPresetDocument(seed));
 }
 

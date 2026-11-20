@@ -1,3 +1,4 @@
+import { localizeUi } from "../i18n/ui.ts";
 import type { AiStreamEvent } from "$lib/project/client";
 
 export interface TextGenerationStreamState {
@@ -15,13 +16,13 @@ export function reduceTextGenerationEvent(
   state: TextGenerationStreamState,
   event: AiStreamEvent,
 ): TextGenerationStreamState {
-  if (event.phase === "started") return { ...state, progressMessage: "Preparing model…" };
-  if (event.phase === "reasoning") return { ...state, progressMessage: "Model is thinking…" };
+  if (event.phase === "started") return { ...state, progressMessage: localizeUi("Preparing model…") };
+  if (event.phase === "reasoning") return { ...state, progressMessage: localizeUi("Model is thinking…") };
   if (event.phase === "delta" && event.delta) {
     return {
       ...state,
       streamText: state.streamText + event.delta,
-      progressMessage: "Writing proposal…",
+      progressMessage: localizeUi("Writing proposal…"),
     };
   }
   if (

@@ -76,7 +76,7 @@ for (const needle of [
   "EntityArchiveAction",
   "EntityEmptyState",
   "MutationStatus",
-  "ENTITY_ACTIONS.viewArchive",
+  "inspector.viewArchive",
   "openHouseTree",
   "openNewPerson",
   "openNewHouse",
@@ -106,7 +106,7 @@ assert.match(rowActions, /document\.contains\(triggerEl\)/);
 assert.match(archiveAction, /archiveConfirmOptions/);
 assert.match(archiveAction, /entityName/);
 assert.match(mutationStatus, /conflictReload/);
-assert.match(sidebar, />New</);
+assert.match(sidebar, />\{\$messages\.workspace\.newEntry\}</);
 assert.doesNotMatch(sidebar, />New entry</);
 assert.match(shell, /scheduleClearSavedMutation/);
 assert.match(shell, /entityMutation\.reset\(\)/);

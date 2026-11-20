@@ -1,3 +1,4 @@
+import { listenForPluginLanguage } from "../../plugin-i18n.ts";
 import "./plugin.css";
 import manifestJson from "../manifest.json";
 import { applyPluginAppearance } from "../../../plugin-sdk/src/theme";
@@ -57,6 +58,8 @@ function forwardLoreTabShortcut(client: PluginRpcClient, event: KeyboardEvent) {
 const manifest = manifestJson as unknown as ModuleManifest;
 const root = document.querySelector<HTMLElement>("#lore-graph-root");
 const status = document.querySelector<HTMLElement>("#lore-status");
+
+listenForPluginLanguage("World graph");
 
 async function start() {
   if (!root) throw new Error("World graph root is missing");

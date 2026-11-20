@@ -1,4 +1,6 @@
 <script lang="ts">
+import { nativeErrorText } from "$lib/i18n/native-errors.ts";
+import { ui } from "$lib/i18n/ui";
 import { onMount, tick } from "svelte";
 import { X } from "@lucide/svelte";
 import type { Asset } from "$lib/project/client";
@@ -128,9 +130,9 @@ $effect(() => {
 
 function validateFilename(value: string): string | null {
   const trimmed = value.trim();
-  if (!trimmed) return "Filename is required.";
+  if (!trimmed) return $ui("Filename is required.");
   if (trimmed === "." || trimmed === ".." || trimmed.includes("/") || trimmed.includes("\\")) {
-    return "Filename must be a single file name without path separators.";
+    return $ui("Filename must be a single file name without path separators.");
   }
   return null;
 }
@@ -156,7 +158,7 @@ async function handleSave() {
     await onSave(update as any);
     onClose();
   } catch (cause) {
-    saveError = cause instanceof Error ? cause.message : "Could not save changes.";
+    saveError = cause instanceof Error ? cause.message : $ui("Could not save changes.");
   } finally {
     saving = false;
   }
@@ -169,7 +171,7 @@ async function handleDelete() {
     await onDelete();
     onClose();
   } catch (cause) {
-    deleteError = cause instanceof Error ? cause.message : "Could not delete file.";
+    deleteError = cause instanceof Error ? cause.message : $ui("Could not delete file.");
   } finally {
     deleting = false;
   }
@@ -181,7 +183,7 @@ async function handleReplace() {
   try {
     await onReplace();
   } catch (cause) {
-    replaceError = cause instanceof Error ? cause.message : "Could not replace file.";
+    replaceError = cause instanceof Error ? cause.message : $ui("Could not replace file.");
   } finally {
     replacing = false;
   }
@@ -241,27 +243,27 @@ onMount(() => {
     onkeydown={(event) => event.stopPropagation()}>
     <header class="asset-dialog-header">
       <div>
-        <span class="asset-dialog-kicker">FILE DETAILS</span>
-        <h2 id="asset-dialog-title">Edit file</h2>
-        <p>Manage this attachment. Changes are versioned and synced via the checkpoint.</p>
+        <span class="asset-dialog-kicker">{$ui("FILE DETAILS")}</span>
+        <h2 id="asset-dialog-title">{$ui("Edit file")}</h2>
+        <p>{$ui("Manage this attachment. Changes are versioned and synced via the checkpoint.")}</p>
       </div>
-      <button type="button" class="asset-dialog-close" aria-label="Close file details" onclick={onClose}
+      <button type="button" class="asset-dialog-close" aria-label={$ui("Close file details")} onclick={onClose}
         ><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
     </header>
 
     <div class="asset-dialog-preview">
       {#if previewUrl && isImage(asset.mime_type)}
-        <img class="asset-dialog-preview-image" src={previewUrl} alt={`${asset.filename} preview`} />
+        <img class="asset-dialog-preview-image" src={previewUrl} alt={$ui("{0} preview", asset.filename)} />
       {:else if previewUrl && isVideo(asset.mime_type)}
         <!-- svelte-ignore a11y_media_has_caption -->
         <video class="asset-dialog-preview-image" src={previewUrl} controls preload="metadata"></video>
       {:else if isImage(asset.mime_type) && previewError}
-        <div class="asset-dialog-preview-fallback" role="img" aria-label={`${asset.filename} preview unavailable`}>
-          <span class="asset-dialog-preview-icon">🖼</span><span>Preview unavailable</span>
+        <div class="asset-dialog-preview-fallback" role="img" aria-label={$ui("{0} preview unavailable", asset.filename)}>
+          <span class="asset-dialog-preview-icon">🖼</span><span>{$ui("Preview unavailable")}</span>
         </div>
       {:else if isImage(asset.mime_type)}
         <div class="asset-dialog-preview-fallback">
-          <span class="asset-dialog-preview-icon">🖼</span><span>Loading preview…</span>
+          <span class="asset-dialog-preview-icon">🖼</span><span>{$ui("Loading preview…")}</span>
         </div>
       {:else}
         <div class="asset-dialog-preview-fallback" aria-hidden="true">
@@ -274,8 +276,8 @@ onMount(() => {
 
     <div class="asset-dialog-meta">
       <span><strong>{asset.filename}</strong></span>
-      <small>{Math.max(1, Math.round(asset.size / 1024))} KB · {asset.mime_type}</small>
-      <small>Created {formatCreatedAt(asset.created_at)}</small>
+      <small>{$ui("{0} KB · {1}", Math.max(1, Math.round(asset.size / 1024)), asset.mime_type)}</small>
+      <small>{$ui("Created {0}", formatCreatedAt(asset.created_at))}</small>
     </div>
 
     <form
@@ -285,32 +287,31 @@ onMount(() => {
         void handleSave();
       }}>
       <label class="asset-dialog-field">
-        <span>Filename<b aria-hidden="true"> *</b></span>
+        <span>{$ui("Filename")}<b aria-hidden="true"> *</b></span>
         <div class="asset-filename-row">
           <input
             type="text"
             value={filenameBase}
             disabled={!editable}
             oninput={(e) => (filenameBase = (e.currentTarget as HTMLInputElement).value)}
-            placeholder={readonlyExt ? `name without .${readonlyExt}` : "portrait"} />
+            placeholder={readonlyExt ? $ui("name without .{0}", readonlyExt) : $ui("portrait")} />
           {#if readonlyExt}<span class="asset-filename-ext">.{readonlyExt}</span>{/if}
         </div>
         <small class="asset-dialog-hint"
-          >Extension <strong>.{readonlyExt || "—"}</strong> is preserved and cannot be changed. Renaming keeps the same file
-          content and identity, only the portable path changes.</small>
+          >{$ui("Extension")} <strong>.{readonlyExt || "—"}</strong> {$ui("is preserved and cannot be changed. Renaming keeps the same file content and identity, only the portable path changes.")}</small>
       </label>
 
       <label class="asset-dialog-field">
-        <span>Role</span>
+        <span>{$ui("Role")}</span>
         <select
           value={role}
           disabled={!editable || (!canBeProfile && role !== "profile")}
           onchange={(e) => (role = (e.currentTarget as HTMLSelectElement).value as any)}>
-          <option value="attachment">Attachment</option>
-          <option value="profile" disabled={!canBeProfile}>Main file (profile) — image only</option>
+          <option value="attachment">{$ui("Attachment")}</option>
+          <option value="profile" disabled={!canBeProfile}>{$ui("Main file (profile) — image only")}</option>
         </select>
         {#if !canBeProfile}
-          <small class="asset-dialog-hint">Only PNG, JPEG, GIF, and WebP can be used as main file.</small>
+          <small class="asset-dialog-hint">{$ui("Only PNG, JPEG, GIF, and WebP can be used as main file.")}</small>
         {/if}
       </label>
 
@@ -321,12 +322,12 @@ onMount(() => {
           disabled={!editable}
           onchange={(e) => (referenceScope = (e.currentTarget as HTMLInputElement).checked ? "project" : "entity")} />
         <span
-          >Allow references from other entities/modules <small
-            >When enabled, other modules may offer this file as a reference target.</small
+          >{$ui("Allow references from other entities/modules")} <small
+            >{$ui("When enabled, other modules may offer this file as a reference target.")}</small
           ></span>
       </label>
 
-      {#if saveError}<p class="asset-dialog-error" role="alert">{saveError}</p>{/if}
+      {#if saveError}<p class="asset-dialog-error" role="alert">{$nativeErrorText(saveError)}</p>{/if}
 
       <div class="asset-dialog-actions">
         <div class="asset-dialog-actions-left">
@@ -334,13 +335,13 @@ onMount(() => {
             type="button"
             class="asset-dialog-secondary"
             onclick={onClose}
-            disabled={saving || deleting || replacing}>Cancel</button>
+            disabled={saving || deleting || replacing}>{$ui("Cancel")}</button>
           {#if editable}<button
               type="button"
               class="asset-dialog-danger"
               onclick={handleDelete}
               disabled={saving || deleting || replacing}>
-              {deleting ? "Deleting…" : "Delete file"}
+              {deleting ? $ui("Deleting…") : $ui("Delete file")}
             </button>{/if}
         </div>
         <div class="asset-dialog-actions-right">
@@ -349,18 +350,18 @@ onMount(() => {
               class="asset-dialog-secondary"
               onclick={handleReplace}
               disabled={saving || deleting || replacing}>
-              {replacing ? "Replacing…" : "Replace file"}
+              {replacing ? $ui("Replacing…") : $ui("Replace file")}
             </button>{/if}
           {#if editable}<button
               type="submit"
               class="asset-dialog-primary"
               disabled={saving || deleting || replacing || !hasChanges()}>
-              {saving ? "Saving…" : "Save changes"}
+              {saving ? $ui("Saving…") : $ui("Save changes")}
             </button>{/if}
         </div>
       </div>
-      {#if deleteError}<p class="asset-dialog-error" role="alert">{deleteError}</p>{/if}
-      {#if replaceError}<p class="asset-dialog-error" role="alert">{replaceError}</p>{/if}
+      {#if deleteError}<p class="asset-dialog-error" role="alert">{$nativeErrorText(deleteError)}</p>{/if}
+      {#if replaceError}<p class="asset-dialog-error" role="alert">{$nativeErrorText(replaceError)}</p>{/if}
     </form>
   </div>
 </div>

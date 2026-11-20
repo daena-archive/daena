@@ -1,4 +1,6 @@
 <script lang="ts">
+import { nativeErrorText } from "$lib/i18n/native-errors.ts";
+import { ui } from "$lib/i18n/ui";
 import { onDestroy, onMount } from "svelte";
 import { Check, ChevronDown, Image, RefreshCw, Sparkles, Trash2, WandSparkles, X } from "@lucide/svelte";
 import {
@@ -383,11 +385,11 @@ onDestroy(() => {
     <header>
       <div class="title-icon"><WandSparkles size={19} strokeWidth={1.7} aria-hidden="true" /></div>
       <div>
-        <span>GENERATE ILLUSTRATION</span>
-        <h1 id="image-generation-title">Visualize {entity.name}</h1>
-        <p>Selected world facts can help author the prompt; the generated image never changes canonical entity data.</p>
+        <span>{$ui("GENERATE ILLUSTRATION")}</span>
+        <h1 id="image-generation-title">{$ui("Visualize {0}", entity.name)}</h1>
+        <p>{$ui("Selected world facts can help author the prompt; the generated image never changes canonical entity data.")}</p>
       </div>
-      <button type="button" class="icon-button" aria-label="Close image generation" onclick={() => void closeDialog()}>
+      <button type="button" class="icon-button" aria-label={$ui("Close image generation")} onclick={() => void closeDialog()}>
         <X size={16} strokeWidth={1.8} />
       </button>
     </header>
@@ -396,14 +398,12 @@ onDestroy(() => {
       <section class="context-panel" aria-labelledby="generation-context-heading">
         <div class="section-heading">
           <div>
-            <span>1 · CONTEXT</span>
-            <h2 id="generation-context-heading">Choose world facts</h2>
+            <span>{$ui("1 · CONTEXT")}</span>
+            <h2 id="generation-context-heading">{$ui("Choose world facts")}</h2>
           </div>
-          <small>{selectedChoices.length} selected</small>
+          <small>{$ui("{0} selected", selectedChoices.length)}</small>
         </div>
-        <p class="hint">
-          Only checked facts are sent to the prompt-building LLM. Image generation receives the final prompt.
-        </p>
+        <p class="hint"> {$ui("Only checked facts are sent to the prompt-building LLM. Image generation receives the final prompt.")} </p>
         <div class="context-list">
           {#each contextChoices as choice}
             <label>
@@ -417,107 +417,97 @@ onDestroy(() => {
       <section class="prompt-panel" aria-labelledby="generation-prompt-heading">
         <div class="section-heading">
           <div>
-            <span>2 · PROMPT</span>
-            <h2 id="generation-prompt-heading">Review the final prompt</h2>
+            <span>{$ui("2 · PROMPT")}</span>
+            <h2 id="generation-prompt-heading">{$ui("Review the final prompt")}</h2>
           </div>
-          <small>{textBoundary} text AI</small>
+          <small>{$ui("{0} text AI", textBoundary)}</small>
         </div>
         <div class="prompt-actions">
           <button type="button" disabled={!canUseTextAi || promptBusy} onclick={() => void buildPrompt("entity", true)}>
-            <Sparkles size={12} strokeWidth={1.8} /> From entity
-          </button>
+            <Sparkles size={12} strokeWidth={1.8} /> {$ui("From entity")} </button>
           <button
             type="button"
             disabled={!canUseTextAi || promptBusy || selectedChoices.length === 0}
-            onclick={() => void buildPrompt("selected-context")}>From selected context</button>
+            onclick={() => void buildPrompt("selected-context")}>{$ui("From selected context")}</button>
           <button
             type="button"
             disabled={!canUseTextAi || promptBusy || !prompt.trim()}
-            onclick={() => void buildPrompt("rewrite")}>
-            Rewrite
-          </button>
+            onclick={() => void buildPrompt("rewrite")}> {$ui("Rewrite")} </button>
           <button
             type="button"
             disabled={!canUseTextAi || promptBusy || !prompt.trim()}
-            onclick={() => void buildPrompt("detailed")}>
-            More detail
-          </button>
+            onclick={() => void buildPrompt("detailed")}> {$ui("More detail")} </button>
           <button
             type="button"
             disabled={!canUseTextAi || promptBusy || !prompt.trim()}
-            onclick={() => void buildPrompt("simplified")}>
-            Simplify
-          </button>
+            onclick={() => void buildPrompt("simplified")}> {$ui("Simplify")} </button>
         </div>
-        {#if !canUseTextAi}<p class="hint">
-            Text AI is not configured. You can still write the image prompt manually.
-          </p>{/if}
+        {#if !canUseTextAi}<p class="hint"> {$ui("Text AI is not configured. You can still write the image prompt manually.")} </p>{/if}
         <label class="prompt-field"
-          >Image prompt<textarea
+          >{$ui("Image prompt")}<textarea
             value={prompt}
             rows="6"
             maxlength="16384"
-            placeholder="Describe the illustration you want…"
+            placeholder={$ui("Describe the illustration you want…")}
             oninput={(event) => markPromptEdited((event.currentTarget as HTMLTextAreaElement).value)}></textarea
           ></label>
         <label class="prompt-field"
-          >Negative prompt <small>optional</small><textarea
+          >{$ui("Negative prompt")} <small>{$ui("optional")}</small><textarea
             bind:value={negativePrompt}
             rows="2"
             maxlength="16384"
-            placeholder="Elements to avoid…"></textarea
+            placeholder={$ui("Elements to avoid…")}></textarea
           ></label>
       </section>
 
       <section class="generation-panel" aria-labelledby="generation-settings-heading">
         <div class="section-heading">
           <div>
-            <span>3 · GENERATION</span>
-            <h2 id="generation-settings-heading">Local ComfyUI settings</h2>
+            <span>{$ui("3 · GENERATION")}</span>
+            <h2 id="generation-settings-heading">{$ui("Local ComfyUI settings")}</h2>
           </div>
-          <small class="local">Local · no fallback</small>
+          <small class="local">{$ui("Local · no fallback")}</small>
         </div>
         <dl class="provider-summary">
           <div>
-            <dt>Provider</dt>
+            <dt>{$ui("Provider")}</dt>
             <dd>{imageProvider.name}</dd>
           </div>
           <div>
-            <dt>Model</dt>
-            <dd>{model || "Not selected"}</dd>
+            <dt>{$ui("Model")}</dt>
+            <dd>{model || $ui("Not selected")}</dd>
           </div>
           <div>
-            <dt>Endpoint</dt>
+            <dt>{$ui("Endpoint")}</dt>
             <dd>{imageProvider.endpoint}</dd>
           </div>
         </dl>
         <div class="control-grid">
           <label
-            >Model<select bind:value={model}
+            >{$ui("Model")}<select bind:value={model}
               >{#each discovery?.models ?? [] as value}<option>{value}</option>{/each}</select
             ></label>
-          <label>Width<input type="number" min="64" max="4096" step="8" bind:value={width} /></label>
-          <label>Height<input type="number" min="64" max="4096" step="8" bind:value={height} /></label>
-          <label>Seed<input type="number" min="0" max="9007199254740991" step="1" bind:value={seed} /></label>
+          <label>{$ui("Width")}<input type="number" min="64" max="4096" step="8" bind:value={width} /></label>
+          <label>{$ui("Height")}<input type="number" min="64" max="4096" step="8" bind:value={height} /></label>
+          <label>{$ui("Seed")}<input type="number" min="0" max="9007199254740991" step="1" bind:value={seed} /></label>
           <label
-            >Outputs<select bind:value={outputCount}>
+            >{$ui("Outputs")}<select bind:value={outputCount}>
               <option value={1}>1</option><option value={2}>2</option><option value={3}>3</option><option value={4}
                 >4</option>
             </select></label>
         </div>
         <button type="button" class="advanced-toggle" onclick={() => (advancedOpen = !advancedOpen)}>
-          <ChevronDown size={13} strokeWidth={1.8} class={advancedOpen ? "open" : ""} /> Advanced
-        </button>
+          <ChevronDown size={13} strokeWidth={1.8} class={advancedOpen ? "open" : ""} /> {$ui("Advanced")} </button>
         {#if advancedOpen}
           <div class="control-grid advanced">
-            <label>Steps<input type="number" min="1" max="150" step="1" bind:value={steps} /></label>
-            <label>Guidance<input type="number" min="0" max="30" step="0.5" bind:value={guidanceScale} /></label>
+            <label>{$ui("Steps")}<input type="number" min="1" max="150" step="1" bind:value={steps} /></label>
+            <label>{$ui("Guidance")}<input type="number" min="0" max="30" step="0.5" bind:value={guidanceScale} /></label>
             <label
-              >Sampler<select bind:value={sampler}
+              >{$ui("Sampler")}<select bind:value={sampler}
                 >{#each discovery?.samplers ?? [] as value}<option>{value}</option>{/each}</select
               ></label>
             <label
-              >Scheduler<select bind:value={scheduler}
+              >{$ui("Scheduler")}<select bind:value={scheduler}
                 >{#each discovery?.schedulers ?? [] as value}<option>{value}</option>{/each}</select
               ></label>
           </div>
@@ -529,10 +519,10 @@ onDestroy(() => {
             disabled={busy || generationActive || !prompt.trim() || !discovery || !model}
             onclick={() => void generate(false)}>
             <Image size={14} strokeWidth={1.8} />
-            {busy ? "Preparing…" : "Generate"}
+            {busy ? $ui("Preparing…") : $ui("Generate")}
           </button>
           {#if generationActive}<button type="button" class="quiet" onclick={() => void cancelGeneration()}
-              >Cancel</button
+              >{$ui("Cancel")}</button
             >{/if}
           {#if status}<span role="status"
               >{status.stage}{status.state === "downloading" ? ` · ${status.completed}/${status.total}` : ""}</span
@@ -540,50 +530,46 @@ onDestroy(() => {
         </div>
       </section>
 
-      {#if error}<p class="error" role="alert">{error}</p>{/if}
+      {#if error}<p class="error" role="alert">{$nativeErrorText(error)}</p>{/if}
 
       {#if status?.candidates.length}
         <section class="results" aria-labelledby="generation-results-heading">
           <div class="section-heading">
             <div>
-              <span>4 · REVIEW</span>
-              <h2 id="generation-results-heading">Temporary candidates</h2>
+              <span>{$ui("4 · REVIEW")}</span>
+              <h2 id="generation-results-heading">{$ui("Temporary candidates")}</h2>
             </div>
             <button type="button" class="quiet" disabled={busy || generationActive} onclick={() => void generate(true)}>
-              <RefreshCw size={12} strokeWidth={1.8} /> Another variant
-            </button>
+              <RefreshCw size={12} strokeWidth={1.8} /> {$ui("Another variant")} </button>
           </div>
-          <p class="hint">
-            Accepting attaches a normal project asset with generation provenance. Discarded candidates are not retained.
-          </p>
+          <p class="hint"> {$ui("Accepting attaches a normal project asset with generation provenance. Discarded candidates are not retained.")} </p>
           <div class="candidate-grid">
             {#each status.candidates as candidate, index (candidate.id)}
               <article>
                 {#if candidateUrls[candidate.id]}
-                  <img src={candidateUrls[candidate.id]} alt={`Generated candidate ${index + 1} for ${entity.name}`} />
-                {:else}<div class="image-loading">Loading candidate…</div>{/if}
+                  <img src={candidateUrls[candidate.id]} alt={$ui("Generated candidate {0} for {1}", index + 1, entity.name)} />
+                {:else}<div class="image-loading">{$ui("Loading candidate…")}</div>{/if}
                 <div class="candidate-info">
-                  <span>{candidate.width} × {candidate.height} · seed {candidate.seed}</span>
-                  <small>{Math.max(1, Math.round(candidate.size / 1024))} KB</small>
+                  <span>{$ui("{0} × {1} · seed {2}", candidate.width, candidate.height, candidate.seed)}</span>
+                  <small>{$ui("{0} KB", Math.max(1, Math.round(candidate.size / 1024)))}</small>
                 </div>
                 <div class="candidate-actions">
                   {#if candidate.acceptedAssetId}
-                    <span class="accepted"><Check size={12} strokeWidth={2} /> Attached to {entity.name}</span>
+                    <span class="accepted"><Check size={12} strokeWidth={2} /> {$ui("Attached to {0}", entity.name)}</span>
                   {:else}
                     <button
                       type="button"
                       class="accept"
                       disabled={accepting[candidate.id]}
                       onclick={() => void acceptCandidate(candidate, index)}>
-                      {accepting[candidate.id] ? "Accepting…" : "Accept & attach"}
+                      {accepting[candidate.id] ? $ui("Accepting…") : $ui("Accept & attach")}
                     </button>
                     <button
                       type="button"
                       class="discard"
-                      aria-label={`Discard candidate ${index + 1}`}
+                      aria-label={$ui("Discard candidate {0}", index + 1)}
                       onclick={() => void discardCandidate(candidate)}>
-                      <Trash2 size={13} strokeWidth={1.8} /> Discard
-                    </button>
+                      <Trash2 size={13} strokeWidth={1.8} /> {$ui("Discard")} </button>
                   {/if}
                 </div>
               </article>

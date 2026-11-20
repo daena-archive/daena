@@ -1,4 +1,5 @@
 <script lang="ts">
+import { pluginText } from "./i18n.ts";
 import { onMount, tick } from "svelte";
 import type { EntitySummary, ModuleContext, UUID } from "../../../module-api/src/index";
 import ConfirmModal from "./ConfirmModal.svelte";
@@ -49,7 +50,12 @@ let guideMode: GuideMode = $state("tour");
 let guideIndex = $state(0);
 let tourPaused = $state(false);
 let guideBooted = $state(false);
-const guideSteps = $derived(languageGuideSteps({ hasLanguage: Boolean(selectedLanguage), pane, mode: guideMode }));
+const guideSteps = $derived(languageGuideSteps({ hasLanguage: Boolean(selectedLanguage), pane, mode: guideMode }).map((step) => ({
+  ...step,
+  title: $pluginText(step.title),
+  body: $pluginText(step.body),
+  primaryLabel: step.primaryLabel && $pluginText(step.primaryLabel),
+})));
 
 let paneListEl: HTMLDivElement | undefined = $state();
 
@@ -254,11 +260,11 @@ $effect(() => {
 <section class="language-workspace">
   <div id="language-pane" class="language-panel language-main" role="tabpanel" aria-labelledby={`language-tab-${pane}`}>
     <div class="language-main-header">
-      <nav class="language-breadcrumb" aria-label="Breadcrumb">
+      <nav class="language-breadcrumb" aria-label={$pluginText("Breadcrumb")}>
         <ol>
           <li>
             <button type="button" class="language-breadcrumb-link" onclick={() => switchPane("overview")}
-              >Languages</button>
+              >{$pluginText("Languages")}</button>
           </li>
           {#if selectedLanguage}
             <li>
@@ -270,9 +276,9 @@ $effect(() => {
               <span class="language-breadcrumb-sep" aria-hidden="true">›</span>
               {#if breadcrumbExtra.length > 0}
                 <button type="button" class="language-breadcrumb-link" onclick={() => switchPane(pane)}
-                  >{PANES.find(([id]) => id === pane)?.[1] ?? ""}</button>
+                  >{$pluginText(PANES.find(([id]) => id === pane)?.[1] ?? "Overview")}</button>
               {:else}
-                <span class="language-breadcrumb-current">{PANES.find(([id]) => id === pane)?.[1] ?? ""}</span>
+                <span class="language-breadcrumb-current">{$pluginText(PANES.find(([id]) => id === pane)?.[1] ?? "Overview")}</span>
               {/if}
             </li>
             {#each breadcrumbExtra as item, i (item.label)}
@@ -288,26 +294,25 @@ $effect(() => {
           {/if}
         </ol>
       </nav>
-      <button type="button" class="language-help-button" onclick={openGuide} aria-label="Show language guide">?</button>
+      <button type="button" class="language-help-button" onclick={openGuide} aria-label={$pluginText("Show language guide")}>?</button>
     </div>
     {#if languageLoading && !selectedLanguage}
-      <p class="language-empty language-loading" role="status" aria-live="polite">Loading language…</p>
+      <p class="language-empty language-loading" role="status" aria-live="polite">{$pluginText("Loading language…")}</p>
     {:else if !selectedLanguage}
       <div class="language-empty-screen" role="status">
         <div class="language-empty-mark" aria-hidden="true"></div>
         {#if incompatibleFocus}
-          <h3>The selected item is not a language.</h3>
-          <p>Select a Language entity to work with its words, sounds, writing, and grammar.</p>
+          <h3>{$pluginText("The selected item is not a language.")}</h3>
+          <p>{$pluginText("Select a Language entity to work with its words, sounds, writing, and grammar.")}</p>
         {:else}
-          <h3>Your language workshop is waiting.</h3>
+          <h3>{$pluginText("Your language workshop is waiting.")}</h3>
           <p>
-            Select a language from the list, or create your first language to begin building words, sounds, writing and
-            grammar.
+            {$pluginText("Select a language from the list, or create your first language to begin building words, sounds, writing and grammar.")}
           </p>
         {/if}
       </div>
     {:else}
-      <div bind:this={paneListEl} class="language-tabs" role="tablist" aria-label="Language workspace">
+      <div bind:this={paneListEl} class="language-tabs" role="tablist" aria-label={$pluginText("Language workspace")}>
         {#each PANES as [id, label], index (id)}
           <button
             type="button"
@@ -317,7 +322,7 @@ $effect(() => {
             aria-selected={pane === id}
             tabindex={pane === id ? 0 : -1}
             onclick={() => switchPane(id)}
-            onkeydown={(event) => roveTabs(event, index)}>{label}</button>
+            onkeydown={(event) => roveTabs(event, index)}>{$pluginText(label)}</button>
         {/each}
       </div>
       <div class="language-pane" hidden={pane !== "overview"}>

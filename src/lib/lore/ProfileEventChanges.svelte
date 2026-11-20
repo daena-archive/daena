@@ -1,4 +1,6 @@
 <script lang="ts">
+import { nativeErrorText } from "$lib/i18n/native-errors.ts";
+import { ui } from "$lib/i18n/ui";
 import type { ModuleManifest, UUID } from "../../../packages/module-api/src/index";
 import type { AsyncEntitySearchFn } from "$lib/entity-lifecycle/asyncEntityQuery.ts";
 import { parseCalendarDate } from "$lib/date";
@@ -105,7 +107,7 @@ async function addEntity(entityId: string) {
   error = "";
   try {
     const entity = await project.getEntity(entityId);
-    if (!entity || entity.deleted) throw new Error("That entity is gone.");
+    if (!entity || entity.deleted) throw new Error($ui("That entity is gone."));
     const profile = await loadProfile(lore, entity.id);
     const changes = profile ? await loadProfileChanges(lore, entity.id) : [];
     const eventDates = await eventDatesForChanges(changes, { eventId, date: eventDate });
@@ -169,7 +171,7 @@ async function saveRow(row: Row) {
     const change = changesForEvent(nextChanges, eventId)[0];
     if (change && !row.relationshipId) {
       const source = await project.getEntity(eventId);
-      if (!source?.revision) throw new Error("Reload the event and try again.");
+      if (!source?.revision) throw new Error($ui("Reload the event and try again."));
       await timeline.relationships.create(
         {
           sourceId: eventId as UUID,
@@ -212,32 +214,32 @@ function parseNumber(raw: string): number | null {
 </script>
 
 {#if loading}
-  <p class="copy">Loading Profile changes…</p>
+  <p class="copy">{$ui("Loading Profile changes…")}</p>
 {:else}
-  {#if error}<p class="copy" role="alert">{error}</p>{/if}
+  {#if error}<p class="copy" role="alert">{$nativeErrorText(error)}</p>{/if}
   {#if !dated}
-    <p class="copy">Set Starts on this event to date Profile changes.</p>
+    <p class="copy">{$ui("Set Starts on this event to date Profile changes.")}</p>
   {/if}
   <AsyncEntityPicker
     {search}
     entityTypes={ownerTypes}
     excludeIds={rows.map((row) => row.entityId)}
-    placeholder="Add an entity…"
-    ariaLabel="Add entity Profile changes"
-    resultsSectionLabel="Entities"
+    placeholder={$ui("Add an entity…")}
+    ariaLabel={$ui("Add entity Profile changes")}
+    resultsSectionLabel={$ui("Entities")}
     onSelect={(entity) => void addEntity(entity.id)} />
   {#if rows.length === 0}
-    <p class="copy">No Profile changes on this event.</p>
+    <p class="copy">{$ui("No Profile changes on this event.")}</p>
   {:else}
     <ul>
       {#each rows as row (row.entityId)}
         <li>
           <div class="head">
             <strong>{row.name}</strong>
-            <button type="button" class="quiet" onclick={() => void removeRow(row)}>Remove</button>
+            <button type="button" class="quiet" onclick={() => void removeRow(row)}>{$ui("Remove")}</button>
           </div>
           {#if !row.profile}
-            <p class="copy">This entity has no Profile.</p>
+            <p class="copy">{$ui("This entity has no Profile.")}</p>
           {:else if row.profile.invalid}
             <p class="copy">{row.profile.error}</p>
           {:else if row.draft}
@@ -268,8 +270,8 @@ function parseNumber(raw: string): number | null {
                         });
                       }}>
                       <option value="">—</option>
-                      <option value="yes">Yes</option>
-                      <option value="no">No</option>
+                      <option value="yes">{$ui("Yes")}</option>
+                      <option value="no">{$ui("No")}</option>
                     </select>
                   {:else if component.value.type === "rank" || component.value.type === "enum"}
                     <select
@@ -293,7 +295,7 @@ function parseNumber(raw: string): number | null {
                       <input
                         type="text"
                         inputmode="numeric"
-                        aria-label="{component.name} current"
+                        aria-label={$ui("{0} current", component.name)}
                         value={component.value.current ?? ""}
                         disabled={!dated || saving}
                         onchange={(event) => {
@@ -307,7 +309,7 @@ function parseNumber(raw: string): number | null {
                       <input
                         type="text"
                         inputmode="numeric"
-                        aria-label="{component.name} max"
+                        aria-label={$ui("{0} max", component.name)}
                         value={component.value.max ?? ""}
                         disabled={!dated || saving}
                         onchange={(event) => {
@@ -331,10 +333,10 @@ function parseNumber(raw: string): number | null {
                 </label>
               {/each}
               <label>
-                <span>Reason</span>
+                <span>{$ui("Reason")}</span>
                 <input
                   type="text"
-                  placeholder="Optional"
+                  placeholder={$ui("Optional")}
                   value={row.reason}
                   disabled={!dated || saving}
                   onchange={(event) => {
@@ -343,9 +345,7 @@ function parseNumber(raw: string): number | null {
                   }} />
               </label>
             </div>
-            <button class="primary-button" type="button" disabled={!dated || saving} onclick={() => void saveRow(row)}>
-              Save changes
-            </button>
+            <button class="primary-button" type="button" disabled={!dated || saving} onclick={() => void saveRow(row)}> {$ui("Save changes")} </button>
           {/if}
         </li>
       {/each}

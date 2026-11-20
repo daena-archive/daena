@@ -1,4 +1,6 @@
 <script lang="ts">
+import { ui } from "$lib/i18n/ui";
+import { messages } from "$lib/i18n";
 import type { Snippet } from "svelte";
 import { ArrowLeft, ArrowRight, Search } from "@lucide/svelte";
 
@@ -30,17 +32,17 @@ let {
 <header class:startup-topbar={!ready} class="topbar">
   <div class="topbar-leading">
     {#if ready}
-      <div class="history-actions" aria-label="Navigation history" aria-busy={navigationBusy}>
+      <div class="history-actions" aria-label={$messages.workspace.navigationHistory} aria-busy={navigationBusy}>
         <button
           type="button"
-          aria-label="Go back"
-          title="Go back · Alt+Left"
+          aria-label={$messages.workspace.goBack}
+          title={$ui("{0} · Alt+Left", $messages.workspace.goBack)}
           disabled={navigationBusy || !canGoBack}
           onclick={onBack}><ArrowLeft size={15} strokeWidth={1.8} aria-hidden="true" /></button>
         <button
           type="button"
-          aria-label="Go forward"
-          title="Go forward · Alt+Right"
+          aria-label={$messages.workspace.goForward}
+          title={$ui("{0} · Alt+Right", $messages.workspace.goForward)}
           disabled={navigationBusy || !canGoForward}
           onclick={onForward}><ArrowRight size={15} strokeWidth={1.8} aria-hidden="true" /></button>
       </div>
@@ -52,14 +54,14 @@ let {
       <button
         class="global-search"
         type="button"
-        aria-label="Quick Open"
-        title={`Quick Open · ${quickOpenShortcut}`}
+        aria-label={$messages.workspace.quickOpen}
+        title={`${$messages.workspace.quickOpen} · ${quickOpenShortcut}`}
         aria-haspopup="dialog"
         onclick={onQuickOpen}>
         <Search size={14} strokeWidth={1.8} aria-hidden="true" /><kbd>{quickOpenShortcut}</kbd>
       </button>
-      {#if status}{@render status()}{:else}<span class="sync-badge" title="Your work is stored locally"
-          ><span></span> Local</span
+      {#if status}{@render status()}{:else}<span class="sync-badge" title={$messages.workspace.storedLocally}
+          ><span></span> {$messages.workspace.local}</span
         >{/if}
     {/if}
   </div>

@@ -30,6 +30,71 @@ const SIGNATURE_FILE: &str = "signature.json";
 /// (1.1.0: the `accent-text` theme token); see ADR 0007.
 const HOST_API_VERSION: &str = "1.1.0";
 pub const MAX_PLUGIN_ICON_SVG_BYTES: usize = 32 * 1024;
+/// Package-owned text, indexed by normalized display language and source string.
+pub type PluginCatalogs = BTreeMap<String, BTreeMap<String, String>>;
+const LOCALE_DIR: &str = "locales/";
+const MAX_CATALOG_TEXT_BYTES: usize = 1024 * 1024;
+
+fn catalog_locale(path: &str) -> Option<&str> {
+    let name = path.strip_prefix(LOCALE_DIR)?;
+    if name.contains('/') {
+        return None;
+    }
+    name.strip_suffix(".json")
+}
+
+fn package_catalogs(files: &PackageFiles) -> Result<PluginCatalogs, PackageError> {
+    let mut catalogs = PluginCatalogs::new();
+    let mut total = 0;
+    for (path, bytes) in files {
+        let Some(tag) = catalog_locale(path) else {
+            continue;
+        };
+        let mut parts = tag.split('-');
+        let first = parts.next().unwrap_or_default();
+        let valid_tag = (2..=8).contains(&first.len())
+            && first.bytes().all(|b| b.is_ascii_alphabetic())
+            && parts.all(|part| {
+                (1..=8).contains(&part.len()) && part.bytes().all(|b| b.is_ascii_alphanumeric())
+            });
+        if !valid_tag {
+            return Err(PackageError(format!("invalid translation locale: {path}")));
+        }
+        total += bytes.len();
+        if total > MAX_CATALOG_TEXT_BYTES {
+            return Err(PackageError("plugin translations exceed 1 MiB".into()));
+        }
+        let utf8 = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
+        let messages = serde_json::from_slice::<BTreeMap<String, String>>(utf8)
+            .map_err(|err| PackageError(format!("invalid translation catalog {path}: {err}")))?;
+        catalogs.insert(tag.to_ascii_lowercase(), messages);
+    }
+    Ok(catalogs)
+}
+
+pub(super) fn development_catalogs(root: &Path) -> Result<PluginCatalogs, PackageError> {
+    // install_development_dir has validated the tree, including links and case collisions.
+    let directory = root.join(LOCALE_DIR);
+    if !directory.is_dir() {
+        return Ok(PluginCatalogs::new());
+    }
+    let mut paths = Vec::new();
+    super::collect_files(root, &directory, &mut paths).map_err(|err| PackageError(err.0))?;
+    let mut files = Vec::new();
+    let mut size = 0;
+    for (name, path) in paths {
+        if catalog_locale(&name).is_none() {
+            continue;
+        }
+        size += fs::metadata(&path).map_err(io_error)?.len();
+        if size > MAX_CATALOG_TEXT_BYTES as u64 {
+            return Err(PackageError("plugin translations exceed 1 MiB".into()));
+        }
+        files.push((name, fs::read(path).map_err(io_error)?));
+    }
+    package_catalogs(&files)
+}
+
 type PackageFiles = Vec<(String, Vec<u8>)>;
 type PackageTree = (PackageFiles, BTreeSet<String>);
 
@@ -80,6 +145,7 @@ pub struct PackageSignature {
 
 #[derive(Debug, Clone)]
 pub struct PluginPackage {
+    pub translations: std::sync::Arc<PluginCatalogs>,
     pub manifest: PluginManifest,
     pub root: PathBuf,
     pub digest: String,
@@ -94,6 +160,9 @@ pub struct PackageCatalog {
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct InstalledVersion {
+    // Rebuilt from verified package contents during discovery.
+    #[serde(skip)]
+    pub translations: std::sync::Arc<PluginCatalogs>,
     pub plugin_id: String,
     pub version: String,
     pub digest: String,
@@ -176,6 +245,7 @@ impl PackageCatalog {
         let id = package.manifest.id.clone();
         let version = package.manifest.version.clone();
         let installed = InstalledVersion {
+            translations: package.translations.clone(),
             plugin_id: id.clone(),
             version: version.clone(),
             digest: package.digest.clone(),
@@ -339,6 +409,7 @@ impl PackageCatalog {
 
 #[derive(Debug, Clone)]
 pub struct VerifiedPackage {
+    pub translations: PluginCatalogs,
     pub manifest: PluginManifest,
     pub digest: String,
     pub signature: Option<PackageSignature>,
@@ -450,6 +521,7 @@ pub fn verify_archive_bytes(
         return Err(PackageError("package signature is required".into()));
     }
     Ok(VerifiedPackage {
+        translations: package_catalogs(&files)?,
         manifest,
         digest,
         signature,
@@ -502,6 +574,7 @@ fn verify_and_extract(
     })();
     result?;
     Ok(PluginPackage {
+        translations: verified.translations.into(),
         manifest: verified.manifest,
         root: version_root,
         digest: verified.digest,
@@ -568,6 +641,7 @@ fn verify_installed(
         ));
     }
     Ok(InstalledVersion {
+        translations: package_catalogs(&files)?.into(),
         plugin_id: manifest.id,
         version: manifest.version,
         digest,

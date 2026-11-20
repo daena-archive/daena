@@ -1,4 +1,5 @@
 <script lang="ts">
+import { pluginText } from "../../i18n.ts";
 import {
   ADJECTIVE_BEHAVIOR_OPTIONS,
   COMPARATIVE_OPTIONS,
@@ -75,10 +76,10 @@ function toChecks(options: { value: string; label: string; expansion?: string; e
     {@const config = draft.config as DefinitenessConfig}
     {@const strategyOptions = toChecks(DEFINITENESS_OPTIONS)}
     <p class="language-empty" role="status">
-      If the language has no grammatical definiteness distinction, mark this system as not used.
+      {$pluginText("If the language has no grammatical definiteness distinction, mark this system as not used.")}
     </p>
     <TemplateChecks
-      legend="Strategies"
+      legend={$pluginText("Strategies")}
       options={strategyOptions}
       selected={config.strategies}
       {locked}
@@ -86,7 +87,7 @@ function toChecks(options: { value: string; label: string; expansion?: string; e
         applySystemMutation(draft, toggleDefinitenessStrategy(draft, value as DefinitenessStrategy));
       }} />
     <p class="language-empty" role="status">
-      Article agreement belongs under Agreement. Record article forms here only.
+      {$pluginText("Article agreement belongs under Agreement. Record article forms here only.")}
     </p>
     {#if config.strategies.some((item) => item === "definite-article" || item === "indefinite-article" || item === "both" || item === "affixes")}
       {#if !locked}
@@ -96,12 +97,12 @@ function toChecks(options: { value: string; label: string; expansion?: string; e
           onclick={() => {
             applySystemMutation(draft, addArticle(draft));
           }}>
-          Add article form
+          {$pluginText("Add article form")}
         </button>
       {/if}
       {#each config.articles as item, index (item.id)}
         <InventoryItem
-          title={`Article ${index + 1}`}
+          title={$pluginText("Article {0}", { 0: String(index + 1) })}
           {index}
           total={config.articles.length}
           {locked}
@@ -111,10 +112,10 @@ function toChecks(options: { value: string; label: string; expansion?: string; e
           onremove={() => {
             applySystemMutation(draft, removeArticle(draft, item.id));
           }}>
-          <Field label="Form"><input name="form" type="text" bind:value={item.form} disabled={locked} /></Field>
-          <Field label="Position"
+          <Field label={$pluginText("Form")}><input name="form" type="text" bind:value={item.form} disabled={locked} /></Field>
+          <Field label={$pluginText("Position")}
             ><input name="position" type="text" bind:value={item.position} disabled={locked} /></Field>
-          <Field label="Notes"
+          <Field label={$pluginText("Notes")}
             ><textarea rows="2" name="notes" bind:value={item.notes} disabled={locked}></textarea></Field>
         </InventoryItem>
       {/each}
@@ -123,10 +124,10 @@ function toChecks(options: { value: string; label: string; expansion?: string; e
     {@const config = draft.config as PossessionConfig}
     {@const strategyOptions = toChecks(POSSESSION_OPTIONS)}
     <p class="language-empty" role="status">
-      Ordering of possessor and noun belongs under Syntax → Possessive position.
+      {$pluginText("Ordering of possessor and noun belongs under Syntax → Possessive position.")}
     </p>
     <TemplateChecks
-      legend="Strategies"
+      legend={$pluginText("Strategies")}
       options={strategyOptions}
       selected={config.strategies}
       {locked}
@@ -134,10 +135,10 @@ function toChecks(options: { value: string; label: string; expansion?: string; e
         applySystemMutation(draft, togglePossessionStrategy(draft, value as PossessionStrategy));
       }} />
     <details class="grammar-learn" open={Boolean(config.alienability)}>
-      <summary>Advanced</summary>
+      <summary>{$pluginText("Advanced")}</summary>
       <StatusRow
         name="alienability"
-        legend="Does the language distinguish alienable and inalienable possession?"
+        legend={$pluginText("Does the language distinguish alienable and inalienable possession?")}
         options={[
           { value: "no", label: "No" },
           { value: "yes", label: "Yes" },
@@ -148,7 +149,7 @@ function toChecks(options: { value: string; label: string; expansion?: string; e
           applySystemMutation(draft, setAlienability(draft, value === "yes"));
         }} />
       {#if config.alienability}
-        <Field label="How does the distinction work?">
+        <Field label={$pluginText("How does the distinction work?")}>
           <textarea rows="3" name="alienabilityNotes" bind:value={config.alienabilityNotes} disabled={locked}
           ></textarea>
         </Field>
@@ -158,7 +159,7 @@ function toChecks(options: { value: string; label: string; expansion?: string; e
     {@const config = draft.config as VerbMarkingConfig}
     {@const strategyOptions = toChecks(VERB_MARKING_OPTIONS)}
     <TemplateChecks
-      legend="Strategies"
+      legend={$pluginText("Strategies")}
       options={strategyOptions}
       selected={config.strategies}
       {locked}
@@ -166,7 +167,7 @@ function toChecks(options: { value: string; label: string; expansion?: string; e
         applySystemMutation(draft, toggleVerbMarking(draft, value as VerbMarkingStrategy));
       }} />
     {#if config.strategies.includes("custom")}
-      <Field label="Custom strategy">
+      <Field label={$pluginText("Custom strategy")}>
         <input name="customStrategy" type="text" bind:value={config.customStrategy} disabled={locked} />
       </Field>
     {/if}
@@ -174,10 +175,10 @@ function toChecks(options: { value: string; label: string; expansion?: string; e
     {@const config = draft.config as NegativeVerbConfig}
     {@const strategyOptions = toChecks(NEGATIVE_VERB_OPTIONS)}
     <p class="language-empty" role="status">
-      Clause Types → Negation owns particles and clause behavior. Do not enter the same marker twice.
+      {$pluginText("Clause Types → Negation owns particles and clause behavior. Do not enter the same marker twice.")}
     </p>
     <TemplateChecks
-      legend="Strategies"
+      legend={$pluginText("Strategies")}
       options={strategyOptions}
       selected={config.strategies}
       {locked}
@@ -191,12 +192,12 @@ function toChecks(options: { value: string; label: string; expansion?: string; e
         onclick={() => {
           applySystemMutation(draft, addNegativeForm(draft));
         }}>
-        Add negative form
+        {$pluginText("Add negative form")}
       </button>
     {/if}
     {#each config.forms as item, index (item.id)}
       <InventoryItem
-        title={item.form || `Form ${index + 1}`}
+        title={item.form || $pluginText("Form {0}", { 0: String(index + 1) })}
         {index}
         total={config.forms.length}
         {locked}
@@ -206,20 +207,20 @@ function toChecks(options: { value: string; label: string; expansion?: string; e
         onremove={() => {
           applySystemMutation(draft, removeNegativeForm(draft, item.id));
         }}>
-        <Field label="Marker or form"><input name="form" type="text" bind:value={item.form} disabled={locked} /></Field>
-        <Field label="Changes by tense or mood">
+        <Field label={$pluginText("Marker or form")}><input name="form" type="text" bind:value={item.form} disabled={locked} /></Field>
+        <Field label={$pluginText("Changes by tense or mood")}>
           <textarea rows="2" name="conditions" bind:value={item.conditions} disabled={locked}></textarea>
         </Field>
-        <Field label="Notes"
+        <Field label={$pluginText("Notes")}
           ><textarea rows="2" name="notes" bind:value={item.notes} disabled={locked}></textarea></Field>
       </InventoryItem>
     {/each}
   {:else if draft.systemId === "modifiers.adjective-behavior"}
     {@const config = draft.config as AdjectiveBehaviorConfig}
     {@const strategyOptions = toChecks(ADJECTIVE_BEHAVIOR_OPTIONS)}
-    <p class="language-empty" role="status">Placement is configured under Syntax → Adjective position.</p>
+    <p class="language-empty" role="status">{$pluginText("Placement is configured under Syntax → Adjective position.")}</p>
     <TemplateChecks
-      legend="Strategies"
+      legend={$pluginText("Strategies")}
       options={strategyOptions}
       selected={config.behaviors}
       {locked}
@@ -227,19 +228,19 @@ function toChecks(options: { value: string; label: string; expansion?: string; e
         applySystemMutation(draft, toggleAdjectiveBehavior(draft, value as AdjectiveBehaviorKind));
       }} />
     {#if config.behaviors.includes("custom")}
-      <Field label="Custom behavior">
+      <Field label={$pluginText("Custom behavior")}>
         <input name="customBehavior" type="text" bind:value={config.customBehavior} disabled={locked} />
       </Field>
     {/if}
     {#if config.behaviors.includes("agree-with-noun")}
       <p class="language-empty" role="status">
-        Link the Agreement system that describes adjective agreement. Do not copy those rules here.
+        {$pluginText("Link the Agreement system that describes adjective agreement. Do not copy those rules here.")}
       </p>
       {#if agreements.length === 0}
-        <p class="language-empty" role="status">No agreement systems are configured yet.</p>
+        <p class="language-empty" role="status">{$pluginText("No agreement systems are configured yet.")}</p>
       {:else}
         <TemplateChecks
-          legend="Strategies"
+          legend={$pluginText("Strategies")}
           options={agreements.map((item) => ({ id: item.id, label: item.title }))}
           selected={config.agreementRecordIds}
           {locked}
@@ -254,18 +255,18 @@ function toChecks(options: { value: string; label: string; expansion?: string; e
       draft.systemId === "modifiers.superlative" ? SUPERLATIVE_OPTIONS : COMPARATIVE_OPTIONS,
     )}
     <TemplateChecks
-      legend="Strategies"
+      legend={$pluginText("Strategies")}
       options={strategyOptions}
       selected={config.strategies}
       {locked}
       ontoggle={(value) => {
         applySystemMutation(draft, toggleDegreeStrategy(draft, value));
       }} />
-    <Field label="Marker"><input name="marker" type="text" bind:value={config.marker} disabled={locked} /></Field>
-    <Field label="Construction">
+    <Field label={$pluginText("Marker")}><input name="marker" type="text" bind:value={config.marker} disabled={locked} /></Field>
+    <Field label={$pluginText("Construction")}>
       <textarea rows="3" name="construction" bind:value={config.construction} disabled={locked}></textarea>
     </Field>
-    <p class="language-empty" role="status">Irregular forms can be recorded as examples.</p>
+    <p class="language-empty" role="status">{$pluginText("Irregular forms can be recorded as examples.")}</p>
   {/if}
 </Group>
 

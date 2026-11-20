@@ -1,3 +1,4 @@
+import { localizeUi } from "../i18n/ui.ts";
 import type { EntityRecord, EntitySummary, Relationship } from "../../../packages/module-api/src/index";
 import {
   type BranchDirection,
@@ -74,7 +75,7 @@ export function parseFamilyRelationship(relationship: Relationship): {
         unknown,
       },
       warning: unknown
-        ? { relationshipId: relationship.id, message: "Parent relationship metadata is missing or invalid." }
+        ? { relationshipId: relationship.id, message: localizeUi("Parent relationship metadata is missing or invalid.") }
         : null,
     };
   }
@@ -113,7 +114,7 @@ export function parseFamilyRelationship(relationship: Relationship): {
         unknown,
       },
       warning: unknown
-        ? { relationshipId: relationship.id, message: "Partner relationship metadata is missing or invalid." }
+        ? { relationshipId: relationship.id, message: localizeUi("Partner relationship metadata is missing or invalid.") }
         : null,
     };
   }
@@ -135,7 +136,7 @@ export function parseFamilyRelationship(relationship: Relationship): {
       label: "Unknown",
       unknown: true,
     },
-    warning: { relationshipId: relationship.id, message: `Unsupported relationship type ${relationship.type}.` },
+    warning: { relationshipId: relationship.id, message: localizeUi("Unsupported relationship type {0}.", relationship.type) },
   };
 }
 
@@ -181,7 +182,7 @@ export function normalizeGenealogy(
     if (!source || !target) {
       warnings.push({
         relationshipId: relationship.id,
-        message: "Relationship endpoints are missing, deleted, or not Lore people.",
+        message: localizeUi("Relationship endpoints are missing, deleted, or not Lore people."),
       });
       continue;
     }
@@ -295,7 +296,7 @@ export function summariesToPeople(
   for (const summary of summaries) {
     const person = personFromRecord(summary, fieldsById.get(summary.id) ?? {}, secondaryField);
     if (!person) {
-      warnings.push({ entityId: summary.id, message: "Skipped a non-person or deleted entity." });
+      warnings.push({ entityId: summary.id, message: localizeUi("Skipped a non-person or deleted entity.") });
       continue;
     }
     people.push(person);
@@ -537,8 +538,8 @@ export function parentCyclePath(graph: GenealogyGraph, parentId: string, childId
 }
 
 export function formatParentCycleMessage(path: string[], nameOf: (id: string) => string): string {
-  if (path.length === 0) return "That parent link would create a cycle.";
-  return `That parent link would create a cycle: ${path.map(nameOf).join(" → ")}.`;
+  if (path.length === 0) return localizeUi("That parent link would create a cycle.");
+  return localizeUi("That parent link would create a cycle: {0}.", path.map(nameOf).join(" → "));
 }
 
 export function wouldCreateDuplicate(

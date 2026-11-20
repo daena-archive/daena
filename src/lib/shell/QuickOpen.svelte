@@ -1,4 +1,5 @@
 <script lang="ts">
+import { ui } from "$lib/i18n/ui";
 import { onMount, tick } from "svelte";
 import { Clock3, Command, Compass, FileText, Plus, Search, X } from "@lucide/svelte";
 import { openIntent, type OpenIntent } from "$lib/navigation/open-intent";
@@ -89,7 +90,7 @@ function handleKeydown(event: KeyboardEvent) {
     onkeydown={handleKeydown}>
     <header class="quick-open-search">
       <Search size={18} strokeWidth={1.8} aria-hidden="true" />
-      <label class="sr-only" for="quick-open-query" id="quick-open-title">Quick Open</label>
+      <label class="sr-only" for="quick-open-query" id="quick-open-title">{$ui("Quick Open")}</label>
       <input
         bind:this={searchInput}
         id="quick-open-query"
@@ -100,18 +101,18 @@ function handleKeydown(event: KeyboardEvent) {
         aria-controls="quick-open-results"
         aria-activedescendant={activeIndex >= 0 ? `quick-open-item-${activeIndex}` : undefined}
         autocomplete="off"
-        placeholder="Find entries, destinations, templates, and commands"
+        placeholder={$ui("Find entries, destinations, templates, and commands")}
         oninput={(event) => onQueryChange(event.currentTarget.value)} />
-      {#if query}<button class="clear-query" type="button" aria-label="Clear query" onclick={() => onQueryChange("")}
+      {#if query}<button class="clear-query" type="button" aria-label={$ui("Clear query")} onclick={() => onQueryChange("")}
           ><X size={15} strokeWidth={1.8} aria-hidden="true" /></button
-        >{/if}<kbd>Esc</kbd>
+        >{/if}<kbd>{$ui("Esc")}</kbd>
     </header>
 
-    <div id="quick-open-results" class="quick-open-results" role="listbox" aria-label="Quick Open results">
-      {#if loading}<div class="quick-open-loading" role="status">Searching project…</div>{/if}
+    <div id="quick-open-results" class="quick-open-results" role="listbox" aria-label={$ui("Quick Open results")}>
+      {#if loading}<div class="quick-open-loading" role="status">{$ui("Searching project…")}</div>{/if}
       {#each groups as group}
         <section class="quick-open-group" role="group" aria-labelledby={`quick-open-${group.category.toLowerCase()}`}>
-          <h2 id={`quick-open-${group.category.toLowerCase()}`}>{group.category}</h2>
+          <h2 id={`quick-open-${group.category.toLowerCase()}`}>{$ui(group.category)}</h2>
           {#each group.items as item (item.id)}
             {@const index = orderedItems.indexOf(item)}
             {@const Icon = itemIcon(item)}
@@ -145,13 +146,13 @@ function handleKeydown(event: KeyboardEvent) {
         </section>
       {/each}
       {#if !loading && orderedItems.length === 0}<div class="quick-open-empty" role="status">
-          <strong>No matches</strong><span>Try another name, destination, or command.</span>
+          <strong>{$ui("No matches")}</strong><span>{$ui("Try another name, destination, or command.")}</span>
         </div>{/if}
     </div>
     <footer>
-      <span><kbd>↑</kbd><kbd>↓</kbd> Navigate</span><span><kbd>↵</kbd> Open</span><span
-        >{isMac ? "⌘↵ new tab" : "Ctrl+↵ new tab"}</span
-      ><span><kbd>Esc</kbd> Close</span>
+      <span><kbd>↑</kbd><kbd>↓</kbd> {$ui("Navigate")}</span><span><kbd>↵</kbd> {$ui("Open")}</span><span
+        >{isMac ? $ui("⌘↵ new tab") : $ui("Ctrl+↵ new tab")}</span
+      ><span><kbd>{$ui("Esc")}</kbd> {$ui("Close")}</span>
     </footer>
   </div>
 </div>

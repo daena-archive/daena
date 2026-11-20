@@ -1,4 +1,6 @@
 <script lang="ts">
+import { manifestText } from "$lib/i18n/manifest-copy";
+import { ui } from "$lib/i18n/ui";
 import ModuleSchemaPanel from "$lib/ModuleSchemaPanel.svelte";
 import type { EntityTemplate, EntityTypeDefinition, FieldDefinition, ModuleSchemaOverlay } from "$lib/project/client";
 import { allowLeaveSchemaEditor } from "$lib/schemaEditorGuard";
@@ -46,6 +48,7 @@ let {
   contentRevision = "",
   busy = false,
   message = "",
+  messageIsError = false,
   conflict = false,
   onSelectPlugin,
   onPreview,
@@ -74,6 +77,7 @@ let {
   contentRevision?: string;
   busy?: boolean;
   message?: string;
+  messageIsError?: boolean;
   conflict?: boolean;
   onSelectPlugin: (id: string | null) => void;
   onPreview: (overlay: ModuleSchemaOverlay) => Promise<import("$lib/project/client").SchemaOverlayPreviewResult>;
@@ -118,8 +122,8 @@ function handleDirtyChange(next: boolean) {
         <SlidersHorizontal size={16} strokeWidth={1.8} aria-hidden="true" />
       </div>
       <div class="heading-copy">
-        <span class="kicker">PROJECT STRUCTURE</span>
-        <strong>Fields &amp; Types</strong>
+        <span class="kicker">{$ui("PROJECT STRUCTURE")}</span>
+        <strong>{$ui("Fields & Types")}</strong>
       </div>
     </div>
 
@@ -128,18 +132,18 @@ function handleDirtyChange(next: boolean) {
         <div class="empty-icon">
           <Layers size={20} strokeWidth={1.7} aria-hidden="true" />
         </div>
-        <strong>Open a project to customize Fields &amp; Types</strong>
+        <strong>{$ui("Open a project to customize Fields & Types")}</strong>
       </div>
     {:else if candidates.length === 0 && managedPlugins.length === 0}
       <div class="empty-state">
         <div class="empty-icon">
           <Puzzle size={20} strokeWidth={1.7} aria-hidden="true" />
         </div>
-        <strong>No customizable plugins found</strong>
+        <strong>{$ui("No customizable plugins found")}</strong>
       </div>
     {:else}
       {#if candidates.length > 0}
-        <ul class="schema-plugin-list" aria-label="Customizable extensions">
+        <ul class="schema-plugin-list" aria-label={$ui("Customizable extensions")}>
           {#each candidates as plugin}
             <li>
               <button type="button" class="schema-plugin-card" onclick={() => void selectPlugin(plugin.id)}>
@@ -147,18 +151,16 @@ function handleDirtyChange(next: boolean) {
                   <Puzzle size={18} strokeWidth={1.8} />
                 </span>
                 <span class="card-copy">
-                  <strong>{plugin.name}</strong>
+                  <strong>{$manifestText(plugin.id, "module", plugin.id, plugin.name)}</strong>
                   <span class="card-meta">
                     <span
-                      >{plugin.typeCount ?? 0} Types · {plugin.fieldCount ?? 0} Fields · {plugin.templateCount ?? 0}
-                      Templates</span>
+                      >{$ui("{0} Types · {1} Fields · {2} Templates", plugin.typeCount ?? 0, plugin.fieldCount ?? 0, plugin.templateCount ?? 0)}</span>
                     <span class="card-state" class:is-custom={plugin.customization === "customized"}>
-                      {plugin.customization === "customized" ? "Customized" : "Default"}
+                      {plugin.customization === "customized" ? $ui("Customized") : $ui("Default")}
                     </span>
                     {#if plugin.validationStatus === "error"}
-                      <span class="card-state is-error" title={plugin.validationMessage ?? "Overlay validation failed"}>
-                        <AlertTriangle size={11} strokeWidth={2} aria-hidden="true" /> Error
-                      </span>
+                      <span class="card-state is-error" title={plugin.validationMessage ?? $ui("Overlay validation failed")}>
+                        <AlertTriangle size={11} strokeWidth={2} aria-hidden="true" /> {$ui("Error")} </span>
                     {/if}
                   </span>
                   <span class="card-id">{plugin.id}</span>
@@ -172,24 +174,23 @@ function handleDirtyChange(next: boolean) {
         </ul>
       {/if}
       {#if managedPlugins.length > 0}
-        <ul class="schema-plugin-list managed-list" aria-label="Managed by extension">
+        <ul class="schema-plugin-list managed-list" aria-label={$ui("Managed by extension")}>
           {#each managedPlugins as plugin}
             <li>
               <div
                 class="schema-plugin-card is-managed"
                 role="group"
-                aria-label={`${plugin.name} managed by extension`}>
+                aria-label={$ui("{0} managed by extension", $manifestText(plugin.id, "module", plugin.id, plugin.name))}>
                 <span class="card-icon" aria-hidden="true">
                   <Puzzle size={18} strokeWidth={1.8} />
                 </span>
                 <span class="card-copy">
-                  <strong>{plugin.name}</strong>
+                  <strong>{$manifestText(plugin.id, "module", plugin.id, plugin.name)}</strong>
                   <span class="card-meta">
-                    <span class="card-state is-managed-state">Managed by extension</span>
+                    <span class="card-state is-managed-state">{$ui("Managed by extension")}</span>
                   </span>
                   <span class="card-id"
-                    >{plugin.reason ??
-                      "Schema structure is owned by this extension and is not project-customizable."}</span>
+                    >{$ui(plugin.reason ?? "Schema structure is owned by this extension and is not project-customizable.")}</span>
                 </span>
               </div>
             </li>
@@ -200,20 +201,18 @@ function handleDirtyChange(next: boolean) {
   {:else if packageManifest}
     <div class="schema-plugin-toolbar">
       <button type="button" class="crumb-button" onclick={() => void clearSelection()}>
-        <ChevronLeft size={14} strokeWidth={1.9} aria-hidden="true" />
-        All Fields &amp; Types
-      </button>
+        <ChevronLeft size={14} strokeWidth={1.9} aria-hidden="true" /> {$ui("All Fields & Types")} </button>
       <span class="crumb-divider" aria-hidden="true">/</span>
       <span class="schema-plugin-crumb" title={selectedPluginId ?? ""}>
         <span class="crumb-icon" aria-hidden="true">
           <Puzzle size={13} strokeWidth={1.9} />
         </span>
-        {selectedPluginName || selectedPluginId}
+        {$manifestText(selectedPluginId, "module", selectedPluginId ?? "", selectedPluginName || selectedPluginId || "")}
       </span>
       {#if editorDirty}
-        <span class="schema-dirty-hint"><span class="dirty-dot" aria-hidden="true"></span> Unsaved changes</span>
+        <span class="schema-dirty-hint"><span class="dirty-dot" aria-hidden="true"></span> {$ui("Unsaved changes")}</span>
       {:else}
-        <span class="schema-clean-hint">No unsaved changes</span>
+        <span class="schema-clean-hint">{$ui("No unsaved changes")}</span>
       {/if}
     </div>
 
@@ -226,6 +225,7 @@ function handleDirtyChange(next: boolean) {
         pluginId={selectedPluginId}
         {busy}
         {message}
+        {messageIsError}
         {conflict}
         {contentRevision}
         {projectionLabelsForType}

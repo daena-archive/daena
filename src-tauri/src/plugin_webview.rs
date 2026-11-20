@@ -33,6 +33,9 @@ pub(super) fn open_plugin_webview(
         url.push_str("&view=");
         url.push_str(&percent_encode(view_id));
     }
+    let title = PLUGIN_TITLES.lock().ok()
+        .and_then(|titles| titles.get(plugin_id).filter(|text| text.source == entry.manifest.name).map(|text| text.title.clone()))
+        .unwrap_or_else(|| entry.manifest.name.clone());
     let navigation_policy = policy.clone();
     tauri::WebviewWindowBuilder::new(
         app,
@@ -43,9 +46,14 @@ pub(super) fn open_plugin_webview(
         ),
     )
     .use_https_scheme(true)
-    .initialization_script(plugin_webview_init_script())
+    .initialization_script(plugin_webview_init_script(host.translations_for(&entry.manifest)))
     .on_navigation(move |url| plugin_navigation_allowed(url, &navigation_policy))
-    .title(entry.manifest.name.clone())
+    .on_page_load(|window, payload| {
+        if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
+            let _ = window.eval(&plugin_language_script());
+        }
+    })
+    .title(title)
     .inner_size(980.0, 720.0)
     .visible(true)
     .build()
@@ -76,6 +84,15 @@ pub(super) fn append_host_surface_query(url: &mut String, host_surface: Option<(
     url.push_str(&major.to_string());
 }
 
+fn close_plugin_surface(app: &tauri::AppHandle, label: &str) {
+    // Closing just the webview of a detached window leaves the native window's label occupied.
+    if let Some(window) = app.get_window(label) {
+        let _ = window.close();
+    } else if let Some(webview) = app.get_webview(label) {
+        let _ = webview.close();
+    }
+}
+
 pub(super) fn close_plugin_webview(app: &tauri::AppHandle, plugin_id: &str) {
     // Bare external window, plus every embedded instance label of this plugin.
     // Cancel each origin before its webview goes away. Sessions are not
@@ -97,12 +114,7 @@ pub(super) fn close_plugin_webview(app: &tauri::AppHandle, plugin_id: &str) {
         if let Ok(mut states) = embedded_webview_states().lock() {
             states.remove(label);
         }
-        if let Some(webview) = app.get_webview(label) {
-            let _ = webview.close();
-        }
-        if let Some(window) = app.get_webview_window(label) {
-            let _ = window.close();
-        }
+        close_plugin_surface(app, label);
     }
 }
 
@@ -278,7 +290,7 @@ pub(super) async fn plugin_mount_webview(
     let project_id = current_info(state.inner())?
         .map(|info| info.root)
         .ok_or_else(|| "project is not open".to_string())?;
-    let (policy, url) = {
+    let (policy, url, init_script) = {
         let host = plugins
             .lock()
             .map_err(|_| "plugin host lock poisoned".to_string())?;
@@ -308,7 +320,7 @@ pub(super) async fn plugin_mount_webview(
             module_state.as_deref(),
             bounds,
         )?;
-        (policy, url)
+        (policy, url, plugin_webview_init_script(host.translations_for(&entry.manifest)))
     };
     let label = plugin_instance_label(&plugin_id, &instance_id)?;
 
@@ -349,10 +361,11 @@ pub(super) async fn plugin_mount_webview(
         .ok_or_else(|| "main window is not available".to_string())?;
     let builder = tauri::WebviewBuilder::new(label.clone(), url)
         .use_https_scheme(true)
-        .initialization_script(plugin_webview_init_script())
+        .initialization_script(init_script)
         .on_navigation(move |url| plugin_navigation_allowed(url, &navigation_policy))
         .on_page_load(move |webview, payload| {
             if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
+                let _ = webview.eval(&plugin_language_script());
                 let bounds = embedded_webview_states()
                     .lock()
                     .ok()
@@ -752,11 +765,11 @@ pub(super) fn plugin_close_webview(app: tauri::AppHandle, plugin_id: String) -> 
 }
 
 #[tauri::command]
-pub(super) fn plugin_close_all_webviews(app: tauri::AppHandle) -> Result<(), String> {
+pub(super) fn plugin_close_all_webviews(app: tauri::AppHandle, include_detached: Option<bool>) -> Result<(), String> {
     let labels: Vec<String> = app
         .webviews()
         .into_keys()
-        .filter_map(|label| label.starts_with("plugin:").then_some(label))
+        .filter(|label| label.starts_with("plugin:") && (include_detached.unwrap_or(true) || app.get_window(label).is_none()))
         .collect();
     for label in &labels {
         cancel_plugin_webview_ai(&app, label);
@@ -765,12 +778,7 @@ pub(super) fn plugin_close_all_webviews(app: tauri::AppHandle) -> Result<(), Str
         if let Ok(mut states) = embedded_webview_states().lock() {
             states.remove(&label);
         }
-        if let Some(webview) = app.get_webview(&label) {
-            let _ = webview.close();
-        }
-        if let Some(window) = app.get_webview_window(&label) {
-            let _ = window.close();
-        }
+        close_plugin_surface(&app, &label);
     }
     Ok(())
 }

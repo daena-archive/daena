@@ -1,3 +1,5 @@
+import { nativeErrorMessage } from "../i18n/native-errors.ts";
+import { localizeUi } from "../i18n/ui.ts";
 import type { ModuleContext, Relationship, UUID } from "../../../packages/module-api/src/index";
 import {
   HOUSE_TYPE,
@@ -46,21 +48,21 @@ export function classifyMutationError(error: unknown): MutationFailure {
   const prefixed = message.match(/^(relationship\.(?:cycle|duplicate|self)|revision[^\s:]*)\b/);
   const code = readErrorCode(error) || prefixed?.[1] || "";
   if (code === "relationship.cycle" || /would introduce a cycle/i.test(message)) {
-    return { code: "relationship.cycle", message: message || "That parent link would create a cycle." };
+    return { code: "relationship.cycle", message: nativeErrorMessage(message) || localizeUi("That parent link would create a cycle.") };
   }
   if (code === "relationship.duplicate" || /already exists for these endpoints/i.test(message)) {
-    return { code: "relationship.duplicate", message: message || "That family relationship already exists." };
+    return { code: "relationship.duplicate", message: nativeErrorMessage(message) || localizeUi("That family relationship already exists.") };
   }
   if (code === "relationship.self" || /cannot target the same entity/i.test(message)) {
-    return { code: "relationship.self", message: message || "A person cannot be their own parent or partner." };
+    return { code: "relationship.self", message: nativeErrorMessage(message) || localizeUi("A person cannot be their own parent or partner.") };
   }
   if (code.includes("revision") || /revision conflict/i.test(message)) {
-    return { code: "revision-conflict", message: message || "This record changed in another view." };
+    return { code: "revision-conflict", message: nativeErrorMessage(message) || localizeUi("This record changed in another view.") };
   }
   if (/query returned no rows/i.test(message)) {
-    return { code: "relationship.missing", message: "That relationship is no longer in the project." };
+    return { code: "relationship.missing", message: localizeUi("That relationship is no longer in the project.") };
   }
-  return { code: "unknown", message: message || "The change could not be saved." };
+  return { code: "unknown", message: nativeErrorMessage(message) || localizeUi("The change could not be saved.") };
 }
 
 export function metadataFingerprint(draft: Record<string, unknown>): string {

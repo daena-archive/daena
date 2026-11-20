@@ -1,4 +1,6 @@
 <script lang="ts">
+import { manifestText } from "$lib/i18n/manifest-copy";
+import { ui } from "$lib/i18n/ui";
 import type { EntityTemplate, FieldDefinition, ModuleSchemaOverlay } from "$lib/project/client";
 import { defaultFieldValue, humanizeId } from "$lib/schema-workbench";
 import SchemaFieldInput from "./SchemaFieldInput.svelte";
@@ -17,6 +19,7 @@ import {
 } from "@lucide/svelte";
 
 let {
+  pluginId,
   draft,
   packageTemplates,
   showAdvanced,
@@ -56,6 +59,7 @@ let {
   removeCustomTemplate,
   addCustomTemplate,
 }: {
+  pluginId: string | null;
   draft: ModuleSchemaOverlay;
   packageTemplates: EntityTemplate[];
   showAdvanced: boolean;
@@ -144,10 +148,10 @@ function selectBuiltinTemplate(template: EntityTemplate) {
         onclick={() => (builtinTemplatesCollapsed = !builtinTemplatesCollapsed)}>
         <div class="heading-left">
           <span class="heading-icon"><LayoutTemplate size={14} strokeWidth={1.8} aria-hidden="true" /></span>
-          <h4>Builtin templates</h4>
+          <h4>{$ui("Builtin templates")}</h4>
           <span class="count-badge">{packageTemplates.length}</span>
         </div>
-        <span class="block-hint">Enable templates and choose their included fields</span>
+        <span class="block-hint">{$ui("Enable templates and choose their included fields")}</span>
         <span class="collapse-icon" aria-hidden="true"
           >{#if builtinTemplatesCollapsed}<ChevronRight size={14} strokeWidth={1.8} />{:else}<ChevronDown
               size={14}
@@ -160,15 +164,15 @@ function selectBuiltinTemplate(template: EntityTemplate) {
               <button type="button" class="item-select" onclick={() => selectBuiltinTemplate(template)}>
                 <div class="item-main">
                   <div class="item-title-row">
-                    <strong>{template.name}</strong>
+                    <strong>{$manifestText(pluginId, "template", template.id, template.name)}</strong>
                     <span class="type-pill ghost">{entityTypeLabel(template.entityType)}</span>
                     {#if isDisabled(draft.disabledTemplates, template.id)}<span class="disabled-pill"
-                        ><EyeOff size={10} strokeWidth={1.8} aria-hidden="true" /> Disabled</span
+                        ><EyeOff size={10} strokeWidth={1.8} aria-hidden="true" /> {$ui("Disabled")}</span
                       >{/if}
                   </div>
                   <span class="meta"
-                    >{Object.keys(fieldsForTemplate(template, true)).length} fields <span class="dot">·</span>
-                    {template.description || "Builtin template"}
+                    >{$ui("{0} fields", Object.keys(fieldsForTemplate(template, true)).length)} <span class="dot">·</span>
+                    {template.description ? $manifestText(pluginId, "templateDescription", template.id, template.description) : $ui("Builtin template")}
                     {#if showAdvanced}<span class="dot">·</span> <code>{template.id}</code>{/if}
                   </span>
                 </div>
@@ -179,7 +183,7 @@ function selectBuiltinTemplate(template: EntityTemplate) {
                 class:is-hidden={isDisabled(draft.disabledTemplates, template.id)}
                 aria-pressed={!isDisabled(draft.disabledTemplates, template.id)}
                 onclick={() => toggleDisabled("disabledTemplates", template.id)}>
-                {isDisabled(draft.disabledTemplates, template.id) ? "Enable" : "Enabled"}
+                {isDisabled(draft.disabledTemplates, template.id) ? $ui("Enable") : $ui("Enabled")}
               </button>
             </li>
           {/each}
@@ -191,17 +195,17 @@ function selectBuiltinTemplate(template: EntityTemplate) {
       <div class="block-heading">
         <div class="heading-left">
           <span class="heading-icon accent"><Sparkles size={14} strokeWidth={1.8} aria-hidden="true" /></span>
-          <h4>Custom templates</h4>
+          <h4>{$ui("Custom templates")}</h4>
           <span class="count-badge accent">{(draft.customTemplates ?? []).length}</span>
         </div>
-        <span class="block-hint">Create shortcuts with optional descriptions</span>
+        <span class="block-hint">{$ui("Create shortcuts with optional descriptions")}</span>
       </div>
       {#if (draft.customTemplates ?? []).length === 0}
         <div class="empty-inline">
           <LayoutTemplate size={16} strokeWidth={1.7} aria-hidden="true" />
           <div>
-            <strong>No custom templates yet</strong>
-            <span>Templates bundle fields for quick creation — e.g., “Species profile” for a custom Species type.</span>
+            <strong>{$ui("No custom templates yet")}</strong>
+            <span>{$ui("Templates bundle fields for quick creation — e.g., “Species profile” for a custom Species type.")}</span>
           </div>
         </div>
       {:else}
@@ -211,14 +215,14 @@ function selectBuiltinTemplate(template: EntityTemplate) {
               <button type="button" class="item-select" onclick={() => startTemplateEdit(template)}>
                 <div class="item-main">
                   <div class="item-title-row">
-                    <strong>{template.name}</strong>
+                    <strong>{$manifestText(pluginId, "template", template.id, template.name)}</strong>
                     <span class="type-pill ghost">{entityTypeLabel(template.entityType)}</span>
                   </div>
                   <span class="meta">
                     {entityTypeLabel(template.entityType)}
                     {#if template.description}
                       <span class="dot">·</span>
-                      {template.description}
+                      {$manifestText(pluginId, "templateDescription", template.id, template.description)}
                     {/if}
                     {#if showAdvanced}<span class="dot">·</span> <code>{template.id}</code>{/if}
                   </span>
@@ -228,13 +232,13 @@ function selectBuiltinTemplate(template: EntityTemplate) {
                 <button
                   type="button"
                   class="quiet icon"
-                  aria-label="Edit {template.name}"
+                  aria-label={$ui("Edit {0}", $manifestText(pluginId, "template", template.id, template.name))}
                   onclick={() => startTemplateEdit(template)}
                   ><Pencil size={14} strokeWidth={1.8} aria-hidden="true" /></button>
                 <button
                   type="button"
                   class="danger icon"
-                  aria-label="Remove {template.name}"
+                  aria-label={$ui("Remove {0}", $manifestText(pluginId, "template", template.id, template.name))}
                   onclick={() => removeCustomTemplate(template.id)}
                   ><Trash2 size={14} strokeWidth={1.8} aria-hidden="true" /></button>
               </div>
@@ -245,13 +249,13 @@ function selectBuiltinTemplate(template: EntityTemplate) {
       <div class="add-form stacked">
         <div class="add-row">
           <label>
-            <span>Name</span>
-            <input bind:value={newTemplateName} placeholder="Species profile" />
+            <span>{$ui("Name")}</span>
+            <input bind:value={newTemplateName} placeholder={$ui("Species profile")} />
           </label>
           <label>
-            <span>Entity type</span>
+            <span>{$ui("Entity type")}</span>
             <select bind:value={newTemplateEntityType}>
-              <option value="">Choose type</option>
+              <option value="">{$ui("Choose type")}</option>
               {#each effectiveTypes() as type}
                 <option value={type}>{entityTypeLabel(type)}</option>
               {/each}
@@ -259,8 +263,8 @@ function selectBuiltinTemplate(template: EntityTemplate) {
           </label>
         </div>
         {#if newTemplateEntityType && effectiveTypes().includes(newTemplateEntityType)}
-          <div class="type-select" role="group" aria-label="Included fields">
-            <span class="type-select-label">Included fields</span>
+          <div class="type-select" role="group" aria-label={$ui("Included fields")}>
+            <span class="type-select-label">{$ui("Included fields")}</span>
             <div class="chip-row compact">
               {#each effectiveFieldsForType(newTemplateEntityType) as field}
                 <button
@@ -268,12 +272,12 @@ function selectBuiltinTemplate(template: EntityTemplate) {
                   class="chip select"
                   class:selected={newTemplateFieldKeys.includes(field.key)}
                   aria-pressed={newTemplateFieldKeys.includes(field.key)}
-                  onclick={() => toggleNewField(field)}>{field.label || humanizeId(field.key)}</button>
+                  onclick={() => toggleNewField(field)}>{$manifestText(pluginId, "field", field.key, field.label) || humanizeId(field.key)}</button>
               {/each}
             </div>
           </div>
-          <div class="type-select" role="group" aria-label="Required fields">
-            <span class="type-select-label">Required fields</span>
+          <div class="type-select" role="group" aria-label={$ui("Required fields")}>
+            <span class="type-select-label">{$ui("Required fields")}</span>
             <div class="chip-row compact">
               {#each effectiveFieldsForType(newTemplateEntityType).filter( (f) => newTemplateFieldKeys.includes(f.key) ) as field}
                 <button
@@ -282,41 +286,42 @@ function selectBuiltinTemplate(template: EntityTemplate) {
                   class:selected={newTemplateRequiredFields.includes(field.key)}
                   aria-pressed={newTemplateRequiredFields.includes(field.key)}
                   onclick={() => (newTemplateRequiredFields = toggleInList(newTemplateRequiredFields, field.key))}
-                  >{field.label || humanizeId(field.key)}</button>
+                  >{$manifestText(pluginId, "field", field.key, field.label) || humanizeId(field.key)}</button>
               {/each}
               {#if newTemplateFieldKeys.length === 0}
-                <span class="meta">Select at least one included field to mark as required.</span>
+                <span class="meta">{$ui("Select at least one included field to mark as required.")}</span>
               {/if}
             </div>
           </div>
-          <div class="type-select" aria-label="Template field defaults">
-            <span class="type-select-label">Defaults</span>
+          <div class="type-select" aria-label={$ui("Template field defaults")}>
+            <span class="type-select-label">{$ui("Defaults")}</span>
             {#each effectiveFieldsForType(newTemplateEntityType).filter( (field) => newTemplateFieldKeys.includes(field.key) ) as field}
               <SchemaFieldInput
+                {pluginId}
                 {field}
                 value={newTemplateFieldValues[field.key]}
                 readOnly={false}
                 idPrefix="new-template-default"
                 onChange={(value) => (newTemplateFieldValues = { ...newTemplateFieldValues, [field.key]: value })} />
             {/each}
-            {#if newTemplateFieldKeys.length === 0}<span class="meta">Select included fields to set defaults.</span
+            {#if newTemplateFieldKeys.length === 0}<span class="meta">{$ui("Select included fields to set defaults.")}</span
               >{/if}
           </div>
         {/if}
         <label class="grow">
-          <span>Description <em>(optional)</em></span>
-          <input bind:value={newTemplateDescription} placeholder="A kind of being in this world." />
+          <span>{$ui("Description")} <em>{$ui("(optional)")}</em></span>
+          <input bind:value={newTemplateDescription} placeholder={$ui("A kind of being in this world.")} />
         </label>
         <label class="inline-check">
           <input type="checkbox" bind:checked={newTemplateIncludeDocument} />
-          <span>Include opening note</span>
+          <span>{$ui("Include opening note")}</span>
         </label>
         <button
           type="button"
           class="action primary-action"
           onclick={addCustomTemplate}
           disabled={!newTemplateName.trim() || !newTemplateEntityType.trim()}
-          ><Plus size={14} strokeWidth={2} aria-hidden="true" /> Add template</button>
+          ><Plus size={14} strokeWidth={2} aria-hidden="true" /> {$ui("Add template")}</button>
       </div>
     </div>
   </div>
@@ -328,14 +333,14 @@ function selectBuiltinTemplate(template: EntityTemplate) {
         <div class="block-heading">
           <div class="heading-left">
             <span class="heading-icon"><LayoutTemplate size={14} strokeWidth={1.8} aria-hidden="true" /></span>
-            <h4>{template.name}</h4>
+            <h4>{$manifestText(pluginId, "template", template.id, template.name)}</h4>
           </div>
-          <span class="type-pill">Built in</span>
+          <span class="type-pill">{$ui("Built in")}</span>
         </div>
         {#if editingBuiltinTemplateId === template.id}
           <div class="edit-form wide">
-            <div class="type-select" role="group" aria-label={`Fields for ${template.name}`}>
-              <span class="type-select-label">Included fields</span>
+            <div class="type-select" role="group" aria-label={$ui("Fields for {0}", $manifestText(pluginId, "template", template.id, template.name))}>
+              <span class="type-select-label">{$ui("Included fields")}</span>
               <div class="chip-row compact">
                 {#each effectiveFieldsForType(template.entityType) as field}
                   <button
@@ -343,14 +348,15 @@ function selectBuiltinTemplate(template: EntityTemplate) {
                     class="chip select"
                     class:selected={editingTemplateFieldKeys.includes(field.key)}
                     aria-pressed={editingTemplateFieldKeys.includes(field.key)}
-                    onclick={() => toggleEditField(field)}>{field.label || humanizeId(field.key)}</button>
+                    onclick={() => toggleEditField(field)}>{$manifestText(pluginId, "field", field.key, field.label) || humanizeId(field.key)}</button>
                 {/each}
               </div>
             </div>
-            <div class="type-select" aria-label={`Defaults for ${template.name}`}>
-              <span class="type-select-label">Defaults</span>
+            <div class="type-select" aria-label={$ui("Defaults for {0}", $manifestText(pluginId, "template", template.id, template.name))}>
+              <span class="type-select-label">{$ui("Defaults")}</span>
               {#each effectiveFieldsForType(template.entityType).filter( (field) => editingTemplateFieldKeys.includes(field.key) ) as field}
                 <SchemaFieldInput
+                {pluginId}
                   {field}
                   value={editingTemplateFieldValues[field.key]}
                   readOnly={false}
@@ -359,8 +365,8 @@ function selectBuiltinTemplate(template: EntityTemplate) {
                     (editingTemplateFieldValues = { ...editingTemplateFieldValues, [field.key]: value })} />
               {/each}
             </div>
-            <div class="type-select" role="group" aria-label={`Required fields for ${template.name}`}>
-              <span class="type-select-label">Required fields</span>
+            <div class="type-select" role="group" aria-label={$ui("Required fields for {0}", $manifestText(pluginId, "template", template.id, template.name))}>
+              <span class="type-select-label">{$ui("Required fields")}</span>
               <div class="chip-row compact">
                 {#each effectiveFieldsForType(template.entityType).filter( (field) => editingTemplateFieldKeys.includes(field.key) ) as field}
                   <button
@@ -370,11 +376,12 @@ function selectBuiltinTemplate(template: EntityTemplate) {
                     aria-pressed={editingTemplateRequiredFields.includes(field.key)}
                     onclick={() =>
                       (editingTemplateRequiredFields = toggleInList(editingTemplateRequiredFields, field.key))}
-                    >{field.label || humanizeId(field.key)}</button>
+                    >{$manifestText(pluginId, "field", field.key, field.label) || humanizeId(field.key)}</button>
                 {/each}
               </div>
             </div>
             <SchemaTemplatePreview
+              {pluginId}
               {template}
               fields={editingPreviewFields(template.entityType)}
               values={editingTemplateFieldValues}
@@ -383,13 +390,14 @@ function selectBuiltinTemplate(template: EntityTemplate) {
               idPrefix={`builtin-template-${template.id}`} />
             <div class="edit-actions">
               <button type="button" class="action" onclick={commitBuiltinTemplateEdit}
-                ><Check size={14} strokeWidth={2} aria-hidden="true" /> Save fields</button>
-              <button type="button" class="quiet" onclick={cancelTemplateFieldEdit}>Cancel</button>
+                ><Check size={14} strokeWidth={2} aria-hidden="true" /> {$ui("Save fields")}</button>
+              <button type="button" class="quiet" onclick={cancelTemplateFieldEdit}>{$ui("Cancel")}</button>
             </div>
           </div>
         {:else}
-          <p class="subtle-note">{template.description || "Builtin template"}</p>
+          <p class="subtle-note">{template.description ? $manifestText(pluginId, "templateDescription", template.id, template.description) : $ui("Builtin template")}</p>
           <SchemaTemplatePreview
+              {pluginId}
             {template}
             fields={effectiveFieldsForType(template.entityType)
               .filter((field) => Object.keys(fieldsForTemplate(template, true)).includes(field.key))
@@ -403,7 +411,7 @@ function selectBuiltinTemplate(template: EntityTemplate) {
             idPrefix={`builtin-template-summary-${template.id}`} />
           <div class="edit-actions">
             <button type="button" class="action" onclick={() => beginTemplateFieldEdit(template, true)}
-              ><Pencil size={14} strokeWidth={1.8} aria-hidden="true" /> Customize fields</button>
+              ><Pencil size={14} strokeWidth={1.8} aria-hidden="true" /> {$ui("Customize fields")}</button>
           </div>
         {/if}
       </div>
@@ -413,24 +421,24 @@ function selectBuiltinTemplate(template: EntityTemplate) {
         <div class="block-heading">
           <div class="heading-left">
             <span class="heading-icon accent"><Sparkles size={14} strokeWidth={1.8} aria-hidden="true" /></span>
-            <h4>{template.name}</h4>
+            <h4>{$manifestText(pluginId, "template", template.id, template.name)}</h4>
           </div>
-          <span class="type-pill">Project custom</span>
+          <span class="type-pill">{$ui("Project custom")}</span>
         </div>
         <div class="edit-form">
           <label>
-            <span>Name</span>
-            <input bind:value={editTemplateName} placeholder="Species profile" />
+            <span>{$ui("Name")}</span>
+            <input bind:value={editTemplateName} placeholder={$ui("Species profile")} />
           </label>
           <label>
-            <span>Entity type</span>
+            <span>{$ui("Entity type")}</span>
             <select bind:value={editTemplateEntityType}>
-              <option value="">Choose type</option>
+              <option value="">{$ui("Choose type")}</option>
               {#each effectiveTypes() as type}<option value={type}>{entityTypeLabel(type)}</option>{/each}
             </select>
           </label>
-          <div class="type-select" role="group" aria-label={`Fields for ${editTemplateName || template.name}`}>
-            <span class="type-select-label">Included fields</span>
+          <div class="type-select" role="group" aria-label={$ui("Fields for {0}", editTemplateName || template.name)}>
+            <span class="type-select-label">{$ui("Included fields")}</span>
             <div class="chip-row compact">
               {#each effectiveFieldsForType(editTemplateEntityType) as field}
                 <button
@@ -438,12 +446,12 @@ function selectBuiltinTemplate(template: EntityTemplate) {
                   class="chip select"
                   class:selected={editingTemplateFieldKeys.includes(field.key)}
                   aria-pressed={editingTemplateFieldKeys.includes(field.key)}
-                  onclick={() => toggleEditField(field)}>{field.label || humanizeId(field.key)}</button>
+                  onclick={() => toggleEditField(field)}>{$manifestText(pluginId, "field", field.key, field.label) || humanizeId(field.key)}</button>
               {/each}
             </div>
           </div>
-          <div class="type-select" role="group" aria-label={`Required fields for ${template.name}`}>
-            <span class="type-select-label">Required fields</span>
+          <div class="type-select" role="group" aria-label={$ui("Required fields for {0}", $manifestText(pluginId, "template", template.id, template.name))}>
+            <span class="type-select-label">{$ui("Required fields")}</span>
             <div class="chip-row compact">
               {#each effectiveFieldsForType(editTemplateEntityType).filter( (field) => editingTemplateFieldKeys.includes(field.key) ) as field}
                 <button
@@ -453,14 +461,15 @@ function selectBuiltinTemplate(template: EntityTemplate) {
                   aria-pressed={editingTemplateRequiredFields.includes(field.key)}
                   onclick={() =>
                     (editingTemplateRequiredFields = toggleInList(editingTemplateRequiredFields, field.key))}
-                  >{field.label || humanizeId(field.key)}</button>
+                  >{$manifestText(pluginId, "field", field.key, field.label) || humanizeId(field.key)}</button>
               {/each}
             </div>
           </div>
-          <div class="type-select" aria-label={`Defaults for ${template.name}`}>
-            <span class="type-select-label">Defaults</span>
+          <div class="type-select" aria-label={$ui("Defaults for {0}", $manifestText(pluginId, "template", template.id, template.name))}>
+            <span class="type-select-label">{$ui("Defaults")}</span>
             {#each effectiveFieldsForType(editTemplateEntityType).filter( (field) => editingTemplateFieldKeys.includes(field.key) ) as field}
               <SchemaFieldInput
+                {pluginId}
                 {field}
                 value={editingTemplateFieldValues[field.key]}
                 readOnly={false}
@@ -470,14 +479,15 @@ function selectBuiltinTemplate(template: EntityTemplate) {
             {/each}
           </div>
           <label class="grow">
-            <span>Description <em>(optional)</em></span>
-            <input bind:value={editTemplateDescription} placeholder="A kind of being in this world." />
+            <span>{$ui("Description")} <em>{$ui("(optional)")}</em></span>
+            <input bind:value={editTemplateDescription} placeholder={$ui("A kind of being in this world.")} />
           </label>
           <label class="inline-check">
             <input type="checkbox" bind:checked={editTemplateIncludeDocument} />
-            <span>Include opening note</span>
+            <span>{$ui("Include opening note")}</span>
           </label>
           <SchemaTemplatePreview
+              {pluginId}
             template={{
               ...template,
               name: editTemplateName || template.name,
@@ -491,8 +501,8 @@ function selectBuiltinTemplate(template: EntityTemplate) {
             idPrefix={`custom-template-${template.id}`} />
           <div class="edit-actions">
             <button type="button" class="action" onclick={commitTemplateEdit}
-              ><Check size={14} strokeWidth={2} aria-hidden="true" /> Save</button>
-            <button type="button" class="quiet" onclick={cancelTemplateEdit}>Cancel</button>
+              ><Check size={14} strokeWidth={2} aria-hidden="true" /> {$ui("Save")}</button>
+            <button type="button" class="quiet" onclick={cancelTemplateEdit}>{$ui("Cancel")}</button>
           </div>
         </div>
       </div>
@@ -501,11 +511,12 @@ function selectBuiltinTemplate(template: EntityTemplate) {
         <div class="block-heading">
           <div class="heading-left">
             <span class="heading-icon accent"><Plus size={14} strokeWidth={1.8} aria-hidden="true" /></span>
-            <h4>{newTemplateName || "New template"}</h4>
+            <h4>{newTemplateName || $ui("New template")}</h4>
           </div>
-          <span class="type-pill">Preview</span>
+          <span class="type-pill">{$ui("Preview")}</span>
         </div>
         <SchemaTemplatePreview
+              {pluginId}
           template={{
             id: "new-template",
             name: newTemplateName || "New template",
@@ -525,8 +536,8 @@ function selectBuiltinTemplate(template: EntityTemplate) {
       </div>
     {:else}
       <div class="block detail-placeholder">
-        <strong>Select a template</strong>
-        <span>Choose a template to preview it or customize its fields and defaults.</span>
+        <strong>{$ui("Select a template")}</strong>
+        <span>{$ui("Choose a template to preview it or customize its fields and defaults.")}</span>
       </div>
     {/if}
   </div>

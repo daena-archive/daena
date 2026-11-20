@@ -1,4 +1,5 @@
 <script lang="ts">
+import { pluginText } from "./i18n.ts";
 import IpaInput from "./IpaInput.svelte";
 import type { OrthographySound, PhonemeOption } from "./orthography";
 
@@ -54,48 +55,48 @@ function move(index: number, offset: -1 | 1) {
 <div class="sound-editor">
   <span class="sound-label">{label}</span>
   {#if sounds.length > 0}
-    <ol class="sound-sequence" aria-label="Ordered sound sequence">
+    <ol class="sound-sequence" aria-label={$pluginText("Ordered sound sequence")}>
       {#each sounds as sound, index (`${sound.kind}-${sound.kind === "phoneme" ? sound.phonemeId : sound.value}-${index}`)}
         <li class:missing={sound.kind === "phoneme" && !phonemeById.has(sound.phonemeId)}>
-          <span class="sound-kind">{sound.kind === "phoneme" ? "Sound" : "IPA"}</span>
+          <span class="sound-kind">{sound.kind === "phoneme" ? $pluginText("Sound") : $pluginText("IPA")}</span>
           <strong>/{display(sound)}/</strong>
           {#if sound.kind === "phoneme" && !phonemeById.has(sound.phonemeId)}
-            <small>Sound removed</small>
+            <small>{$pluginText("Sound removed")}</small>
           {/if}
           <span class="sound-actions">
             <button
               type="button"
               onclick={() => move(index, -1)}
               disabled={index === 0}
-              aria-label={`Move ${display(sound)} earlier`}>↑</button>
+              aria-label={$pluginText("Move {0} earlier", { 0: String(display(sound)) })}>↑</button>
             <button
               type="button"
               onclick={() => move(index, 1)}
               disabled={index === sounds.length - 1}
-              aria-label={`Move ${display(sound)} later`}>↓</button>
-            <button type="button" class="remove" onclick={() => remove(index)} aria-label={`Remove ${display(sound)}`}
+              aria-label={$pluginText("Move {0} later", { 0: String(display(sound)) })}>↓</button>
+            <button type="button" class="remove" onclick={() => remove(index)} aria-label={$pluginText("Remove {0}", { 0: String(display(sound)) })}
               >×</button>
           </span>
         </li>
       {/each}
     </ol>
   {:else}
-    <p class="sound-empty">No sounds assigned. This is allowed.</p>
+    <p class="sound-empty">{$pluginText("No sounds assigned. This is allowed.")}</p>
   {/if}
 
   <div class="sound-add">
     <label>
-      <span>Use an existing Sound</span>
+      <span>{$pluginText("Use an existing Sound")}</span>
       <select bind:value={selectedPhonemeId} onchange={addPhoneme}>
-        <option value="">Select a sound…</option>
+        <option value="">{$pluginText("Select a sound…")}</option>
         {#each phonemes as phoneme (phoneme.id)}
           <option value={phoneme.id}>/{phoneme.ipa || phoneme.symbol}/</option>
         {/each}
       </select>
     </label>
     <div class="sound-ipa">
-      <IpaInput label="Or add ad-hoc IPA" bind:value={adHocIpa} placeholder="e.g. ʃ or kʰ" />
-      <button type="button" onclick={addIpa} disabled={!adHocIpa.trim()}>Add IPA value</button>
+      <IpaInput label={$pluginText("Or add ad-hoc IPA")} bind:value={adHocIpa} placeholder={$pluginText("e.g. ʃ or kʰ")} />
+      <button type="button" onclick={addIpa} disabled={!adHocIpa.trim()}>{$pluginText("Add IPA value")}</button>
     </div>
   </div>
 </div>

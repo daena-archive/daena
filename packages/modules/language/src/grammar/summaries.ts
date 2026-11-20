@@ -16,6 +16,9 @@ import type {
   TamConfig,
 } from "./types.ts";
 
+type Translate = (source: string, values?: Record<string, string | number>) => string;
+const english: Translate = (source, values) => source.replace(/\{(\w+)\}/g, (match, key) => String(values?.[key] ?? match));
+
 const STATUS_LABEL: Record<GrammarStatus, string> = {
   unconfigured: "Not configured",
   configured: "Configured",
@@ -37,10 +40,10 @@ function join(parts: (string | undefined)[]) {
   return parts.filter(Boolean).join(" · ");
 }
 
-export function summarizeSystem(systemId: GrammarSystemId, record: GrammarSystemRecord | undefined): string {
-  if (!record || record.status === "unconfigured") return STATUS_LABEL.unconfigured;
+export function summarizeSystem(systemId: GrammarSystemId, record: GrammarSystemRecord | undefined, translate: Translate = english): string {
+  if (!record || record.status === "unconfigured") return translate(STATUS_LABEL.unconfigured);
   if (record.status === "not-used") {
-    return record.notes ? `${STATUS_LABEL["not-used"]} · ${record.notes}` : STATUS_LABEL["not-used"];
+    return record.notes ? `${translate(STATUS_LABEL["not-used"])} · ${record.notes}` : translate(STATUS_LABEL["not-used"]);
   }
   const choice = summarizeChoice(systemId, record.config);
   if (choice) return choice;
@@ -51,18 +54,18 @@ export function summarizeSystem(systemId: GrammarSystemId, record: GrammarSystem
   const paradigm = summarizeParadigm(systemId, record.config);
   if (paradigm) return paradigm;
   const config = record.config;
-  if (!config || Object.keys(config).length === 0) return STATUS_LABEL.configured;
+  if (!config || Object.keys(config).length === 0) return translate(STATUS_LABEL.configured);
   switch (systemId) {
     case "nouns.number": {
       const value = config as NumberConfig;
       return (
-        join([labels(value.categories), value.markingStrategies?.[0]?.replaceAll("-", " ")]) || STATUS_LABEL.configured
+        join([labels(value.categories), value.markingStrategies?.[0]?.replaceAll("-", " ")]) || translate(STATUS_LABEL.configured)
       );
     }
     case "nouns.case": {
       const value = config as CaseConfig;
       const count = value.cases?.length ?? 0;
-      return count ? `${count} case${count === 1 ? "" : "s"}` : STATUS_LABEL.configured;
+      return count ? `${count} case${count === 1 ? "" : "s"}` : translate(STATUS_LABEL.configured);
     }
     case "nouns.classes": {
       const value = config as NounClassesConfig;
@@ -74,9 +77,9 @@ export function summarizeSystem(systemId: GrammarSystemId, record: GrammarSystem
     case "verbs.tense":
     case "verbs.aspect":
     case "verbs.mood":
-      return labels((config as TamConfig).categories) || STATUS_LABEL.configured;
+      return labels((config as TamConfig).categories) || translate(STATUS_LABEL.configured);
     default:
-      return STATUS_LABEL.configured;
+      return translate(STATUS_LABEL.configured);
   }
 }
 
@@ -92,17 +95,18 @@ export type SectionCardSummary = {
 export function sectionCardSummary(
   index: IndexedGrammar,
   sectionId: (typeof GRAMMAR_SECTIONS)[number]["id"],
+  translate: Translate = english,
 ): SectionCardSummary {
   const section = grammarSectionDescriptor(sectionId)!;
   if (sectionId === "agreement") {
     if (index.sectionStates.get("agreement")?.value.recordKind === "section-state") {
-      return { id: sectionId, label: section.label, detail: "Not used", configured: 0, notUsed: 1, total: 0 };
+      return { id: sectionId, label: section.label, detail: translate("Not used"), configured: 0, notUsed: 1, total: 0 };
     }
     const count = index.agreements.length;
     return {
       id: sectionId,
       label: section.label,
-      detail: count === 0 ? "None configured" : `${count} system${count === 1 ? "" : "s"} configured`,
+      detail: count === 0 ? translate("None configured") : translate(count === 1 ? "{count} system configured" : "{count} systems configured", { count }),
       configured: count,
       notUsed: 0,
       total: count,
@@ -113,7 +117,7 @@ export function sectionCardSummary(
     return {
       id: sectionId,
       label: section.label,
-      detail: count === 0 ? "No custom rules" : `${count} custom rule${count === 1 ? "" : "s"}`,
+      detail: count === 0 ? translate("No custom rules") : translate(count === 1 ? "{count} custom rule" : "{count} custom rules", { count }),
       configured: count,
       notUsed: 0,
       total: count,
@@ -132,10 +136,10 @@ export function sectionCardSummary(
     label: section.label,
     detail:
       configured === 0 && notUsed === 0
-        ? "None configured"
+        ? translate("None configured")
         : configured === 0
-          ? `${notUsed} not used`
-          : `${configured} system${configured === 1 ? "" : "s"} configured`,
+          ? translate("{count} not used", { count: notUsed })
+          : translate(configured === 1 ? "{count} system configured" : "{count} systems configured", { count: configured }),
     configured,
     notUsed,
     total: systems.length,
@@ -144,11 +148,11 @@ export function sectionCardSummary(
 
 export type GlanceRow = { label: string; value: string };
 
-export function grammarGlance(index: IndexedGrammar): GlanceRow[] {
+export function grammarGlance(index: IndexedGrammar, translate: Translate = english): GlanceRow[] {
   const row = (systemId: GrammarSystemId, label: string): GlanceRow => {
     const record = index.systems.get(systemId)?.value;
     const value =
-      record?.recordKind === "system" ? summarizeSystem(systemId, record) : grammarStatusLabel("unconfigured");
+      record?.recordKind === "system" ? summarizeSystem(systemId, record, translate) : translate(grammarStatusLabel("unconfigured"));
     return { label, value };
   };
   return [
@@ -166,7 +170,7 @@ function matches(haystack: string, needle: string) {
   return haystack.toLowerCase().includes(needle);
 }
 
-export function searchGrammar(query: string, index: IndexedGrammar): GrammarSearchHit[] {
+export function searchGrammar(query: string, index: IndexedGrammar, translate: Translate = english): GrammarSearchHit[] {
   const needle = query.trim().toLowerCase();
   if (!needle) return [];
   const hits: GrammarSearchHit[] = [];
@@ -174,7 +178,7 @@ export function searchGrammar(query: string, index: IndexedGrammar): GrammarSear
     const record = index.systems.get(system.id)?.value;
     const status = systemStatus(index, system.id);
     const summary = record?.recordKind === "system" ? summarizeSystem(system.id, record) : grammarStatusLabel(status);
-    const blob = [system.label, system.hint, system.searchAliases.join(" "), summary].join("\n");
+    const blob = [system.label, system.hint, translate(system.label), translate(system.hint), system.searchAliases.join(" "), summary].join("\n");
     if (matches(blob, needle)) {
       hits.push({
         kind: "system",

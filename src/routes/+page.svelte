@@ -1,4 +1,9 @@
 <script lang="ts">
+import { nativeErrorText } from "$lib/i18n/native-errors.ts";
+import { manifestText, schemaLabels, setPackageLocalizations } from "$lib/i18n/manifest-copy";
+import { ui } from "$lib/i18n/ui";
+import { displayLanguage, menuCatalogs, messages } from "$lib/i18n";
+import { loreFieldLabel, loreTypeLabel } from "$lib/i18n/lore-labels";
 import { onMount, tick, untrack } from "svelte";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -187,6 +192,7 @@ import {
   aiActionRequest,
   emptyAiProvider,
   instructionFor,
+  promptTemplateCopy,
   mergePromptTemplates,
   overlayFromTemplates,
   type PromptOverlay,
@@ -277,7 +283,7 @@ import EntityEmptyState from "$lib/entity-lifecycle/EntityEmptyState.svelte";
 import EntityIdentityDialog from "$lib/entity-lifecycle/EntityIdentityDialog.svelte";
 import EntityRowActions from "$lib/entity-lifecycle/EntityRowActions.svelte";
 import MutationStatus from "$lib/entity-lifecycle/MutationStatus.svelte";
-import { archiveConfirmOptions, archivedToastMessage } from "$lib/entity-lifecycle/archive.ts";
+import { archiveConfirmOptions } from "$lib/entity-lifecycle/archive.ts";
 import {
   toAsyncEntityPage,
   toShellSortDirection,
@@ -390,7 +396,7 @@ import {
   suggestionConfidenceTone,
 } from "$lib/fields/values";
 import { defaultCreateFieldValue, isCreateDropdownField, isCreateValuePopulated } from "$lib/shell/create-form-values";
-import { friendlyError } from "$lib/shell/errors";
+import { friendlyError, rawErrorMessage } from "$lib/shell/errors";
 import { isMapsProviderField } from "$lib/maps/provider-fields";
 installShellEditorHost();
 setShellEntityOpener((entityId, options) => {
@@ -447,9 +453,10 @@ let ready = $state(false);
 let error = $state("");
 let projectTransitionBusy = $state(false);
 let projectTransitionMessage = $state("");
+let projectTransitionClosing = $state(false);
 let projectHomeOpen = $state(true);
 function homeNewTab(): NewTab {
-  return { id: crypto.randomUUID(), location: { kind: "home" }, title: "Home", icon: { kind: "home" } };
+  return { id: crypto.randomUUID(), location: { kind: "home" }, title: $ui("Home"), icon: { kind: "home" } };
 }
 function freshShellTabs(): ShellTabsState {
   return createTabsState(homeNewTab(), "main", Date.now());
@@ -541,11 +548,18 @@ let lifecycleToast = $state<LifecycleToast | null>(null);
 let lifecycleToastTimer = 0;
 let mapLocations = $state<MapLocation[]>([]);
 let modules = $state<InstalledModule[]>([]);
+let installedLocalizations = $state<InstalledModule[]>([]);
+$effect(() => setPackageLocalizations(modules.length ? modules : installedLocalizations));
 let globalQuery = $state("");
 let quickOpenOpen = $state(false);
 let quickOpenSearchLoading = $state(false);
 let filterOpen = $state(false);
 let expandedGroups = $state<Set<string>>(new Set());
+$effect(() => {
+  document.documentElement.lang = $displayLanguage;
+  void project.pluginLanguageSync($displayLanguage, menuCatalogs[$displayLanguage], Object.fromEntries(modules.map(({ id, name }) => [id, { source: name, title: $manifestText(id, "module", id, name) }]))).catch(() => {});
+});
+
 let railCollapsed = $state(localStorage.getItem("daena:rail-collapsed") === "true");
 
 let collectionQuery = $state<CollectionQuery>(loadCollectionQuery("lore"));
@@ -682,6 +696,7 @@ let moduleSchemaPackage = $state<{
 } | null>(null);
 let moduleSchemaBusy = $state(false);
 let moduleSchemaMessage = $state("");
+let moduleSchemaMessageIsError = $state(false);
 let moduleSchemaRevision = $state(0);
 let moduleSchemaContentRevision = $state("");
 let moduleSchemaConflict = $state(false);
@@ -781,7 +796,7 @@ function schemaReferenceEntityTypes(moduleId: string | null) {
       for (const entityType of schema.entityTypes ?? []) {
         if (seen.has(entityType.id)) continue;
         seen.add(entityType.id);
-        types.push({ id: entityType.id, name: entityType.name });
+        types.push({ id: entityType.id, name: $manifestText(dependency.id, "type", entityType.id, entityType.name) });
       }
     }
   }
@@ -1041,12 +1056,21 @@ function manifestForWorkspaceSection(target: WorkspaceSection): ModuleManifest |
 function sectionEntityTypeDefs(target: WorkspaceSection) {
   return (
     manifestForWorkspaceSection(target)?.schemas.flatMap((schema) =>
-      schema.entityTypes.map((entityType) => ({ id: entityType.id, name: entityType.name })),
+      schema.entityTypes.map((entityType) => ({ id: entityType.id, name: $manifestText(workspaceModuleId(target), "type", entityType.id, entityType.name) })),
     ) ?? []
   );
 }
+function builtinCollectionLabel(id: string, label: string) {
+  if (id === "events") return $ui("Events");
+  if (id === "calendars") return $ui("Calendars");
+  if (id === "manuscripts") return $ui("Manuscripts");
+  if (id === "reference") return $ui("Reference");
+  return label;
+}
 function collectionTabsFor(target: WorkspaceSection) {
-  return workspaceCollectionTabs(target, sectionEntityTypeDefs(target));
+  return workspaceCollectionTabs(target, sectionEntityTypeDefs(target)).map((tab) => ({
+    ...tab, label: builtinCollectionLabel(tab.id, tab.label),
+  }));
 }
 function activeCollectionTab(target: WorkspaceSection = section) {
   const tabs = collectionTabsFor(target);
@@ -1061,7 +1085,19 @@ function applyCollectionTabForEntityType(entityType: string | null) {
   if (owner === "timeline") timelineView = tab.id;
 }
 function workspaceViewNavItems() {
-  return workspaceSectionViewNav(section, sectionEntityTypeDefs(section));
+  const views = workspaceSectionViewNav(section, sectionEntityTypeDefs(section));
+  if (section === "lore") {
+    const { library, wiki, graph } = $messages.workspace;
+    const labels: Record<string, string> = { library, wiki, graph };
+    return views.map((view) => ({ ...view, label: labels[view.id] ?? view.label }));
+  }
+  if (section === "houses") {
+    return views.map((view) => ({
+      ...view,
+      label: view.id === "tree" ? $messages.workspace.tree : $messages.sections.houses,
+    }));
+  }
+  return views.map((view) => ({ ...view, label: view.id === "timeline" ? $ui("Timeline") : builtinCollectionLabel(view.id, view.label) }));
 }
 function enabledWorkspaceSections() {
   return workspaceSectionOrder.filter((target) =>
@@ -1130,7 +1166,7 @@ function workspaceNavigationItems(): WorkspaceNavigationItem[] {
         plugin,
         key: `workspace:${plugin.id}`,
         section: target,
-        title: workspaceSectionLabel(target),
+        title: workspaceSectionLabel(target, $messages.sections),
         beta: target === "maps",
         renderer: target === "maps" && view ? "maps" : "workspace",
         ...(view ? { view } : {}),
@@ -1153,7 +1189,7 @@ function loreProfileEntityTypeOptions() {
     lore?.schemas.flatMap((schema) =>
       schema.entityTypes.map((type) => ({
         id: type.id.includes(":") ? type.id : `daena.lore:${type.id}`,
-        label: type.name,
+        label: $manifestText(lore.id, "type", type.id, type.name),
       })),
     ) ?? []
   );
@@ -1205,12 +1241,12 @@ function groupedEditTypes(): Array<{ heading: string; types: string[] }> {
     const secTypes = manifest.schemas.flatMap(schemaEntityTypeIds).filter((t) => enabled.has(t));
     if (secTypes.length === 0) continue;
     secTypes.sort((a, b) => entityTypeLabel(a).localeCompare(entityTypeLabel(b)));
-    groups.push({ heading: workspaceSectionLabel(sec), types: secTypes });
+    groups.push({ heading: workspaceSectionLabel(sec, $messages.sections), types: secTypes });
     for (const t of secTypes) enabled.delete(t);
   }
   if (enabled.size > 0) {
     const remaining = [...enabled].sort((a, b) => entityTypeLabel(a).localeCompare(entityTypeLabel(b)));
-    groups.push({ heading: "Other", types: remaining });
+    groups.push({ heading: $ui("Other"), types: remaining });
   }
   return groups;
 }
@@ -1230,16 +1266,16 @@ function editTypeWarning(): string | null {
   if (from === to) return null;
   // Maps and physical events have locked provider fields
   if (from === "daena.maps:world-map" || to === "daena.maps:world-map") {
-    return "Maps store provider fields that only apply to maps. Changing away will hide map layers and source, changing into a map cannot restore them.";
+    return $ui("Maps store provider fields that only apply to maps. Changing away will hide map layers and source, changing into a map cannot restore them.");
   }
   if (from === "daena.language:language" || to === "daena.language:language") {
-    return "Languages own lexemes, phonemes and grammar records. Those records require the language type and will become read-only if the type changes.";
+    return $ui("Languages own lexemes, phonemes and grammar records. Those records require the language type and will become read-only if the type changes.");
   }
   // Generic field/relationship hiding
   const hasPopulated = Object.entries(fields).some(([, v]) => !isEmptyFieldValue(v)) || relationships.length > 0;
   if (hasPopulated)
-    return "Fields and relationships that don't apply to the new type will be hidden but preserved. You can revert the type to restore them.";
-  return "The entry will move to the collection for the new type.";
+    return $ui("Fields and relationships that don't apply to the new type will be hidden but preserved. You can revert the type to restore them.");
+  return $ui("The entry will move to the collection for the new type.");
 }
 const definitions = () => {
   const entityType =
@@ -1285,6 +1321,15 @@ function createGroups(): CreateGroup[] {
     groups.set(option.module.id, group);
   }
   return [...groups.values()];
+}
+function templateName(option: CreateOption) {
+  return $manifestText(option.module.id, "template", option.template.id, option.template.name);
+}
+function templateDescription(option: CreateOption) {
+  const text = option.template.description;
+  if (text?.trim()) return $manifestText(option.module.id, "templateDescription", option.template.id, text);
+  const label = entityTypeLabel(option.template.entityType, "");
+  return label ? $ui("Entry type: {0}", label) : $ui("Create an entry from this template.");
 }
 function iconForCreateOption(option: CreateOption): { icon: IconRef; pluginId: string; iconColor: EntityTypeColor } {
   const entityType = option.module.schemas
@@ -1364,10 +1409,11 @@ function chronologyCreateFields(option: CreateOption | null = selectedCreateOpti
   ];
 }
 function createChronologyWarnings() {
+  const moduleId = selectedCreateOption()?.module.id;
   return chronologyWarnings(
     chronologyCreateFields()
       .filter((item) => item.field.type === "date")
-      .map((item) => ({ label: item.field.label, value: createFieldValues[item.field.key] })),
+      .map((item) => ({ label: $manifestText(moduleId, "field", item.field.key, item.field.label), value: createFieldValues[item.field.key] })),
     createEraContexts,
     calendarDefinitions,
   );
@@ -1434,7 +1480,7 @@ function clearCreateDateField(key: string) {
 }
 
 function contextFor(currentSection = section): ModuleContext {
-  if (!projectInfo?.root) throw new Error("No project is open");
+  if (!projectInfo?.root) throw new Error($ui("No project is open"));
   const moduleId =
     currentSection === "lore"
       ? "daena.lore"
@@ -1469,9 +1515,9 @@ function sectionEnabled() {
   return modules.find((module) => module.id === activeModuleId())?.enabled ?? false;
 }
 
-async function closeNativePluginWebviews() {
+async function closeNativePluginWebviews(includeDetached = true) {
   try {
-    await project.closeAllPluginWebviews();
+    await project.closeAllPluginWebviews(includeDetached);
   } catch {
     // The webview cleanup is best effort so browser previews remain usable.
   }
@@ -1483,9 +1529,9 @@ async function resolveDirtyMapSession(): Promise<boolean> {
   if (mapsEditorMode === "physical") return true;
   if (
     await confirmDialog({
-      title: "Save changes to this map before leaving?",
-      message: "Your map has unsaved edits.",
-      confirmLabel: "Save",
+      title: $ui("Save changes to this map before leaving?"),
+      message: $ui("Your map has unsaved edits."),
+      confirmLabel: $ui("Save"),
     })
   ) {
     try {
@@ -1497,16 +1543,17 @@ async function resolveDirtyMapSession(): Promise<boolean> {
     }
   }
   return confirmDialog({
-    title: "Discard unsaved map edits?",
-    message: "Choose Cancel to remain in the editor.",
-    confirmLabel: "Discard",
+    title: $ui("Discard unsaved map edits?"),
+    message: $ui("Choose Cancel to remain in the editor."),
+    confirmLabel: $ui("Discard"),
     danger: true,
   });
 }
 
 /**
  * Leaves whatever plugin surface is open. Native plugin webviews are only closed when a
- * full-surface plugin view (host or sandbox) was open, or when the caller asks for it.
+ * full-surface view was open. Detached windows follow app language changes and stay
+ * open across navigation. Project transitions explicitly close all windows.
  * The Language content pane is not one of those: its SandboxView owns its webview and
  * closes it when it unmounts, so closing every webview here would blank a pane that stays.
  */
@@ -1516,7 +1563,7 @@ async function leavePluginView(options: { closeWebviews?: boolean } = {}): Promi
   editorFullscreen = false;
   hostView = null;
   sandboxView = null;
-  if (fullSurfaceOpen || options.closeWebviews) await closeNativePluginWebviews();
+  if (fullSurfaceOpen || options.closeWebviews) await closeNativePluginWebviews(options.closeWebviews ?? false);
   return true;
 }
 
@@ -1539,13 +1586,13 @@ const PROJECTION_SANDBOXES: Record<
     icon: typeof Network;
     surfaceKey: string;
   }
-> = {
+> = $derived({
   lore: {
     moduleName: "Lore",
     pluginId: "daena.lore",
     viewId: "graph",
-    title: "World graph",
-    subtitle: "Explore entities and their connections",
+    title: $ui("World graph"),
+    subtitle: $ui("Explore entities and their connections"),
     icon: Network,
     surfaceKey: "workspace:lore:graph",
   },
@@ -1553,12 +1600,12 @@ const PROJECTION_SANDBOXES: Record<
     moduleName: "Timeline",
     pluginId: "daena.timeline",
     viewId: "chronology",
-    title: "Chronology",
-    subtitle: "Explore your world across time",
+    title: $ui("Chronology"),
+    subtitle: $ui("Explore your world across time"),
     icon: CalendarRange,
     surfaceKey: "workspace:timeline:timeline",
   },
-};
+});
 
 /** The projection whose sandbox webview is the open full surface, if any. */
 function projectionSandboxKey(): ProjectionSandboxKey | null {
@@ -1905,8 +1952,8 @@ const writingEditable = $derived(
 
 function writingPlaceholder() {
   return selected?.entity_type === "daena.writing:reference-page"
-    ? "Write this reference page…"
-    : "Write your manuscript…";
+    ? $ui("Write this reference page…")
+    : $ui("Write your manuscript…");
 }
 
 /**
@@ -2121,7 +2168,7 @@ async function confirmWritingArchive(entityId: string) {
   const target = selected;
   if (!target || target.id !== entityId || selectedLoading || projectDiagnostics.length > 0 || entityMutation.busy)
     return;
-  if (!(await confirmDialog(archiveConfirmOptions(target.name)))) return;
+  if (!(await confirmDialog(archiveConfirmOptions(target.name, { copy: $messages.inspector })))) return;
   // The confirmation is modal, but archiving acts on whatever is selected, so the entry is checked again.
   if (selected?.id !== entityId) return;
   await archiveSelected();
@@ -2183,8 +2230,10 @@ function handleWritingStateEvent(event: WritingStateEvent) {
   }
 }
 
-function pluginViewLabel(item: PluginNavigationItem) {
-  return item.plugin.name === item.view.title ? item.plugin.name : `${item.plugin.name} · ${item.view.title}`;
+function pluginViewLabel(item: { plugin: { id: string; name: string }; view: { id: string; title: string } }) {
+  const name = $manifestText(item.plugin.id, "module", item.plugin.id, item.plugin.name);
+  const title = $manifestText(item.plugin.id, "view", item.view.id, item.view.title);
+  return item.plugin.name === item.view.title ? name : `${name} · ${title}`;
 }
 
 function workspaceNavigationActive(target: WorkspaceSection) {
@@ -2673,7 +2722,7 @@ async function createMap(provider: "image" | "vector" | "physical" = "physical")
     const departure = currentShellLocation();
     mapProviderMenuOpen = null;
     const mapView = mapsNavigationItem();
-    if (!mapView) throw new Error("The Maps plugin view is not available");
+    if (!mapView) throw new Error($ui("The Maps plugin view is not available"));
     if (!(await dismissSettings())) return;
     if (!(await leavePluginView())) return;
     recordShellDeparture(departure);
@@ -2810,7 +2859,7 @@ async function restoreMapDraft() {
   mapRecoveryBusy = true;
   try {
     const copies = await project.mapsRecoveryList(mapId);
-    if (copies.length === 0) throw new Error("No recovery copy was found for this map.");
+    if (copies.length === 0) throw new Error($ui("No recovery copy was found for this map."));
     await project.mapsRecoveryRestore(mapId, copies[0].fileName);
     mapSaveStates[mapId] = { status: "restoring", detail: null };
     mapReloadCounter += 1;
@@ -3483,35 +3532,26 @@ function dismissTransientMenus(): boolean {
   return dismissed;
 }
 
+function projectSectionLabel(destination: ProjectSection) {
+  if (destination === "data") return $ui("Project · Data & recovery");
+  if (destination === "extensions") return $ui("Project · Extensions");
+  if (destination === "fields") return $ui("Project · Fields & Types");
+  if (destination === "ai") return $ui("Project · AI");
+  if (destination === "snapshots") return $ui("Project · Snapshots");
+  if (destination === "archive") return $ui("Project · Archive");
+  if (destination === "advanced") return $ui("Project · Advanced");
+  return $messages.workspace.project;
+}
+
 function sectionLabel() {
-  if (showSettings) {
-    if (settingsSurface === "application") return "Settings";
-    if (projectSection === "data") return "Project · Data & recovery";
-    if (projectSection === "extensions") return "Project · Extensions";
-    if (projectSection === "fields") return "Project · Fields & Types";
-    if (projectSection === "ai") return "Project · AI";
-    if (projectSection === "snapshots") return "Project · Snapshots";
-    if (projectSection === "archive") return "Project · Archive";
-    if (projectSection === "advanced") return "Project · Advanced";
-    return "Project";
-  }
-  if (projectHomeOpen) return "Home";
-  return section === "lore"
-    ? "Lore library"
-    : section === "timeline"
-      ? "Timeline"
-      : section === "writing"
-        ? "Writing Studio"
-        : section === "language"
-          ? "Languages"
-          : section === "houses"
-            ? "Houses"
-            : "Maps";
+  if (showSettings) return settingsSurface === "application" ? $messages.common.settings : projectSectionLabel(projectSection);
+  if (projectHomeOpen) return $messages.workspace.home;
+  return workspaceSectionLabel(section, $messages.sections);
 }
 
 function currentTabPresentation(): { title: string; tooltip: string; icon: TabIcon } {
   const tab = activeCollectionTab();
-  const tabLabel = tab ? (tab.id === "reference" ? "Reference pages" : tab.label) : null;
+  const tabLabel = tab ? (tab.id === "reference" ? $ui("Reference pages") : tab.label) : null;
   const owner = selected ? sectionForEntityType(selected.entity_type) : null;
   const entityBelongs = Boolean(selected) && (!owner || owner === section);
   const plugin =
@@ -3522,19 +3562,16 @@ function currentTabPresentation(): { title: string; tooltip: string; icon: TabIc
   const entityName = entityBelongs && !projectHomeOpen && !showSettings && !plugin ? (selected?.name ?? null) : null;
   const specs = shellBreadcrumbs({
     home: projectHomeOpen && !showSettings,
+    homeLabel: $messages.workspace.home,
     settingsLabel: showSettings ? sectionLabel() : null,
-    sectionLabel: workspaceSectionLabel(section),
+    sectionLabel: workspaceSectionLabel(section, $messages.sections),
     viewLabel: breadcrumbViewLabel({
       section,
       view: currentWorkspaceLocationView(),
       tabLabel,
     }),
     entityName,
-    pluginLabel: plugin
-      ? plugin.plugin.name === plugin.view.title
-        ? plugin.plugin.name
-        : `${plugin.plugin.name} · ${plugin.view.title}`
-      : null,
+    pluginLabel: plugin ? pluginViewLabel(plugin) : null,
   });
   const { title, tooltip } = tabTitleFromBreadcrumbs(specs);
   const icon: TabIcon =
@@ -3553,6 +3590,13 @@ function currentTabPresentation(): { title: string; tooltip: string; icon: TabIc
 }
 
 function inactiveTabTitle(tab: ShellTab): string {
+  if (tab.location.kind === "home") return $messages.workspace.home;
+  if (tab.location.kind === "project") return projectSectionLabel(tab.location.section);
+  if (tab.location.kind === "settings") return $messages.common.settings;
+  if (tab.icon.kind === "plugin") {
+    const item = pluginNavigationItemByKey(tab.icon.key);
+    if (item) return pluginViewLabel(item);
+  }
   if (tab.icon.kind !== "entity") return tab.title;
   const entityId = tab.location.kind === "workspace" || tab.location.kind === "plugin" ? tab.location.entityId : null;
   if (!entityId) return tab.title;
@@ -3561,89 +3605,101 @@ function inactiveTabTitle(tab: ShellTab): string {
 
 function workspaceHeadingKicker() {
   return section === "lore"
-    ? "WORLD BIBLE"
+    ? $messages.workspace.worldBible
     : section === "timeline"
-      ? "CHRONOLOGY"
+      ? $ui("CHRONOLOGY")
       : section === "maps"
-        ? "MAP ATLAS"
+        ? $ui("MAP ATLAS")
         : section === "houses"
-          ? "HOUSES"
+          ? $ui("HOUSES")
           : section === "language"
-            ? "LANGUAGE WORKSHOP"
-            : "DRAFTING DESK";
+            ? $ui("LANGUAGE WORKSHOP")
+            : $ui("DRAFTING DESK");
 }
 
 function workspaceHeadingDescription() {
-  if (section === "lore") return "A living reference for every person, place, and power.";
-  if (section === "maps") return "Keep every map beside its notes, links, and provider source.";
-  if (section === "houses") return "Manage Houses and explore kinship in the family tree.";
-  if (section === "language") return "Words, sounds, writing, and grammar for every language of your world.";
+  if (section === "lore") return $messages.workspace.loreDescription;
+  if (section === "maps") return $ui("Keep every map beside its notes, links, and provider source.");
+  if (section === "houses") return $ui("Manage Houses and explore kinship in the family tree.");
+  if (section === "language") return $ui("Words, sounds, writing, and grammar for every language of your world.");
   const tab = activeCollectionTab();
   if (section === "timeline") {
-    if (tab?.id === "calendars") return "Optional ways to name years, months, weeks, and seasons.";
-    if (tab?.id === "events" || !tab) return "Events, eras, and the threads that connect them.";
-    return `${tab.label} in the chronology of your world.`;
+    if (tab?.id === "calendars") return $ui("Optional ways to name years, months, weeks, and seasons.");
+    if (tab?.id === "events" || !tab) return $ui("Events, eras, and the threads that connect them.");
+    return $ui("{0} in the chronology of your world.", tab.label);
   }
-  if (tab?.id === "manuscripts") return "Draft stories, essays, and other long-form work.";
-  if (tab?.id === "reference") return "Build the pages, notes, and references behind the story.";
+  if (tab?.id === "manuscripts") return $ui("Draft stories, essays, and other long-form work.");
+  if (tab?.id === "reference") return $ui("Build the pages, notes, and references behind the story.");
   return tab
-    ? `Draft and keep ${tab.label.toLowerCase()} beside the world they draw from.`
-    : "Manuscripts and reference pages beside the world they draw from.";
+    ? $ui("Draft and keep {0} beside the world they draw from.", tab.label.toLowerCase())
+    : $ui("Manuscripts and reference pages beside the world they draw from.");
 }
 
 function collectionLabel() {
-  if (section === "lore") return "entries";
-  if (section === "language") return "languages";
-  if (section === "maps") return "maps";
-  if (section === "houses") return "houses";
+  if (section === "lore") return $messages.workspace.entries;
+  if (section === "language") return $ui("languages");
+  if (section === "maps") return $ui("maps");
+  if (section === "houses") return $ui("houses");
   const tab = activeCollectionTab();
-  if (!tab) return "entries";
-  if (tab.id === "reference") return "reference pages";
+  if (!tab) return $ui("entries");
+  if (tab.id === "reference") return $ui("reference pages");
   return tab.label.toLowerCase();
 }
 
 function collectionKicker() {
-  if (section === "lore") return "LORE LIBRARY";
-  if (section === "maps") return "MAPS";
-  if (section === "houses") return "HOUSES";
-  if (section === "language") return "LANGUAGES";
+  if (section === "lore") return $messages.workspace.loreCollection;
+  if (section === "maps") return $ui("MAPS");
+  if (section === "houses") return $ui("HOUSES");
+  if (section === "language") return $ui("LANGUAGES");
   const tab = activeCollectionTab();
-  if (section === "timeline" && (tab?.id === "events" || !tab)) return "TIMELINE";
-  if (!tab) return "ENTRIES";
-  if (tab.id === "reference") return "REFERENCE PAGES";
+  if (section === "timeline" && (tab?.id === "events" || !tab)) return $ui("TIMELINE");
+  if (!tab) return $ui("ENTRIES");
+  if (tab.id === "reference") return $ui("REFERENCE PAGES");
   return tab.label.toUpperCase();
 }
 
 function createLabel() {
-  if (section === "lore") return "entry";
-  if (section === "language") return "language";
-  if (section === "maps") return "map";
-  if (section === "houses") return "house";
+  if (section === "lore") return $messages.workspace.entry.toLocaleLowerCase($displayLanguage);
+  if (section === "language") return $ui("language");
+  if (section === "maps") return $ui("map");
+  if (section === "houses") return $ui("house");
   const tab = activeCollectionTab();
-  if (!tab) return "entry";
-  if (tab.id === "events") return "event";
-  if (tab.id === "calendars") return "calendar";
-  if (tab.id === "manuscripts") return "manuscript";
-  if (tab.id === "reference") return "reference page";
+  if (!tab) return $ui("entry");
+  if (tab.id === "events") return $ui("event");
+  if (tab.id === "calendars") return $ui("calendar");
+  if (tab.id === "manuscripts") return $ui("manuscript");
+  if (tab.id === "reference") return $ui("reference page");
   return tab.label.toLowerCase();
 }
 
 function emptyEditorKicker() {
-  if (section === "lore") return "LORE ENTRY";
-  if (section === "maps") return "MAP";
-  if (section === "houses") return "HOUSE";
+  if (section === "lore") return $messages.workspace.loreEntry;
+  if (section === "maps") return $ui("MAP");
+  if (section === "houses") return $ui("HOUSE");
   const tab = activeCollectionTab();
-  if (!tab) return "ENTRY";
-  if (tab.id === "events") return "TIMELINE EVENT";
-  if (tab.id === "calendars") return "CALENDAR";
-  if (tab.id === "manuscripts") return "MANUSCRIPT";
-  if (tab.id === "reference") return "REFERENCE PAGE";
+  if (!tab) return $ui("ENTRY");
+  if (tab.id === "events") return $ui("TIMELINE EVENT");
+  if (tab.id === "calendars") return $ui("CALENDAR");
+  if (tab.id === "manuscripts") return $ui("MANUSCRIPT");
+  if (tab.id === "reference") return $ui("REFERENCE PAGE");
   return tab.label.toUpperCase();
 }
 
-function entityTypeLabel(entityType: string | null) {
-  if (!entityType) return "Uncategorized";
-  return entityTypePresentation(entityType)?.definition.name ?? entityType;
+function inspectorFieldLabel(definition: FieldDefinition) {
+  const owner = definition.relationshipType && manifestOwningRelationshipType(definition.relationshipType, modules);
+  const moduleId = owner ? owner.id : activeManifest()?.id;
+  return moduleId === "daena.lore" && namespaceForField(definition) === "lore"
+    ? loreFieldLabel($messages.loreFields, definition.key, definition.label)
+    : $manifestText(moduleId, "field", definition.key, definition.label);
+}
+
+function entityTypeLabel(entityType: string | null, fallback?: string) {
+  if (!entityType) return $messages.workspace.uncategorized;
+  const presentation = entityTypePresentation(entityType);
+  if (!presentation) return $schemaLabels.type(entityType, fallback);
+  return presentation.pluginId === "daena.lore"
+    ? loreTypeLabel($messages.loreTypes, entityType, presentation.definition.name)
+    : $manifestText(presentation.pluginId, "type", entityType, presentation.definition.name);
 }
 
 /** Opens the projection for the current section: Chronology in Timeline, otherwise the Lore World graph. */
@@ -3661,7 +3717,7 @@ async function openProjection() {
   if (!adminPlugins) await refreshAdmin();
   const plugin = adminPlugins?.find((entry) => entry.id === surface.pluginId && entry.enabled) ?? null;
   if (!plugin) {
-    error = `${surface.moduleName} is disabled, so ${surface.title} cannot open.`;
+    error = $ui("{0} is disabled, so {1} cannot open.", surface.moduleName, surface.title);
     return;
   }
   sandboxView = {
@@ -3924,7 +3980,7 @@ async function switchToTab(tabId: string): Promise<boolean> {
     return false;
   if (!shellLocationAvailable(found.tab.location)) {
     shellTabs = closeTab(shellTabs, tabId, Date.now(), homeNewTab());
-    error = "That tab's workspace is no longer available.";
+    error = $ui("That tab's workspace is no longer available.");
     return false;
   }
   const target = found.tab.location;
@@ -4329,10 +4385,10 @@ async function setProjectAiEnabled(enabled: boolean) {
   if (!projectInfo) return;
   if (enabled) {
     const confirmed = await confirmDialog({
-      title: "Enable AI for this project?",
+      title: $ui("Enable AI for this project?"),
       message:
-        "AI features become available in this project. Requests run through the configured provider; remote providers still require per-project consent before any context leaves this machine.",
-      confirmLabel: "Enable AI",
+        $ui("AI features become available in this project. Requests run through the configured provider; remote providers still require per-project consent before any context leaves this machine."),
+      confirmLabel: $ui("Enable AI"),
     });
     if (!confirmed) return;
   }
@@ -4378,7 +4434,7 @@ async function connectAiProvider() {
   if (!root) return;
   const endpoint = aiProvider.endpoint.trim();
   if (!endpoint) {
-    aiModelsMessage = "Enter an endpoint before connecting.";
+    aiModelsMessage = $ui("Enter an endpoint before connecting.");
     return;
   }
   if (aiStatusTimer !== null) window.clearTimeout(aiStatusTimer);
@@ -4389,9 +4445,9 @@ async function connectAiProvider() {
     aiStatus = result.status;
     aiModels = result.models;
     if (aiModels.length === 0) {
-      aiModelsMessage = result.status.error ?? "No models were returned.";
+      aiModelsMessage = result.status.error ?? $ui("No models were returned.");
     } else {
-      aiModelsMessage = `${aiModels.length} model${aiModels.length === 1 ? "" : "s"} available.`;
+      aiModelsMessage = $ui("{0} model{1} available.", aiModels.length, aiModels.length === 1 ? "" : $ui("s"));
       if (!aiProvider.model.trim() && aiModels.length === 1) updateAiSetting("model", aiModels[0]);
     }
   } catch (cause) {
@@ -4435,11 +4491,11 @@ async function refreshAiIndexStatus() {
 }
 async function rebuildAiIndex() {
   if (!projectInfo?.aiEnabled) {
-    showAiIndexMessage("AI is disabled for this project. Enable AI in Project first.");
+    showAiIndexMessage($ui("AI is disabled for this project. Enable AI in Project first."));
     return;
   }
   if (!aiProvider.endpoint.trim() || !aiProvider.model.trim()) {
-    showAiIndexMessage("Configure the active provider endpoint and model before building the semantic index.");
+    showAiIndexMessage($ui("Configure the active provider endpoint and model before building the semantic index."));
     return;
   }
   aiIndexBusy = true;
@@ -4454,7 +4510,7 @@ async function rebuildAiIndex() {
       message: null,
     };
     showAiIndexMessage(
-      `Indexed ${result.chunkCount} chunks (${result.embeddedCount} embedded, ${result.reusedCount} reused).`,
+      $ui("Indexed {0} chunks ({1} embedded, {2} reused).", result.chunkCount, result.embeddedCount, result.reusedCount),
     );
   } catch (cause) {
     showAiIndexMessage(friendlyError(cause));
@@ -4465,7 +4521,7 @@ async function rebuildAiIndex() {
 async function cancelAiIndex() {
   try {
     await project.aiIndexCancel();
-    showAiIndexMessage("Cancellation requested.");
+    showAiIndexMessage($ui("Cancellation requested."));
   } catch (cause) {
     showAiIndexMessage(friendlyError(cause));
   }
@@ -4519,13 +4575,13 @@ function handleAiFieldFillEvent(payload: AiStreamEvent) {
     clearAiFieldListener();
     aiFieldFillBusy = false;
     aiFieldFillRequestId = null;
-    error = payload.error ?? "AI field suggestions failed";
+    error = payload.error ?? $ui("AI field suggestions failed");
   } else if (payload.phase === "cancelled" || payload.phase === "deadline_exceeded") {
     clearAiFieldListener();
     aiFieldFillBusy = false;
     aiFieldFillRequestId = null;
     if (payload.phase === "deadline_exceeded") {
-      error = "AI field generation reached its time limit before returning complete suggestions.";
+      error = $ui("AI field generation reached its time limit before returning complete suggestions.");
     }
   } else if (payload.phase === "completed") {
     clearAiFieldListener();
@@ -4565,11 +4621,11 @@ function handleAiFieldFillEvent(payload: AiStreamEvent) {
       aiFieldSuggestions = suggestions;
       if (Object.keys(suggestions).length === 0) {
         aiFieldFillOpen = false;
-        error = "AI found no supported suggestions for the empty fields.";
+        error = $ui("AI found no supported suggestions for the empty fields.");
       }
     } catch {
       aiFieldFillOpen = false;
-      error = "AI returned invalid field suggestions.";
+      error = $ui("AI returned invalid field suggestions.");
     }
   }
 }
@@ -4581,7 +4637,7 @@ async function fillAiFields() {
   const endpoint = aiProvider.endpoint.trim();
   const model = aiProvider.model.trim();
   if (!endpoint || !model) {
-    error = "Configure the active provider endpoint and model before filling fields.";
+    error = $ui("Configure the active provider endpoint and model before filling fields.");
     return;
   }
   aiFieldFillOpen = true;
@@ -4722,7 +4778,7 @@ function closeAiRewrite() {
   aiSourceEntityId = null;
   aiStreamText = "";
   aiPreviewOutput = "";
-  aiProgressMessage = "Preparing model…";
+  aiProgressMessage = $ui("Preparing model…");
   aiUsage = null;
   aiSourceSelection = "";
   aiSourceSelectionPlain = "";
@@ -4778,15 +4834,15 @@ function handleAiEvent(payload: AiStreamEvent) {
     clearAiStreamListener();
     if (payload.phase === "deadline_exceeded") {
       error = aiPreviewOutput
-        ? "AI generation reached its time limit. The partial proposal is preserved below."
-        : "AI generation reached its time limit before producing a proposal.";
+        ? $ui("AI generation reached its time limit. The partial proposal is preserved below.")
+        : $ui("AI generation reached its time limit before producing a proposal.");
     }
   } else if (payload.phase === "failed") {
     aiBusy = false;
     aiCancelPending = false;
     aiRequestId = null;
     clearAiStreamListener();
-    error = payload.error ?? "The AI provider could not generate a proposal";
+    error = payload.error ?? $ui("The AI provider could not generate a proposal");
   }
 }
 async function startAiRewrite() {
@@ -4801,7 +4857,7 @@ async function startAiRewrite() {
   aiSourceRevision = loadedDocumentRevision;
   aiStreamText = "";
   aiPreviewOutput = "";
-  aiProgressMessage = "Preparing model…";
+  aiProgressMessage = $ui("Preparing model…");
   aiLastSequence = -1;
   aiStartCancelled = false;
   aiBusy = true;
@@ -4847,7 +4903,7 @@ async function acceptAiRewrite() {
     documentBody !== aiSourceBody ||
     loadedDocumentRevision !== aiSourceRevision
   ) {
-    error = "The entity or document changed while the rewrite was being prepared. Discard it and try again.";
+    error = $ui("The entity or document changed while the rewrite was being prepared. Discard it and try again.");
     return;
   }
   const validationError = validateAiProposal(aiPreviewOutput);
@@ -4858,7 +4914,7 @@ async function acceptAiRewrite() {
   if (aiMode === "generate") {
     const nextMarkdown = editorRef?.insertAiTextAtRequest(aiPreviewOutput);
     if (nextMarkdown == null) {
-      error = "The editor position is no longer available. Discard it and try again.";
+      error = $ui("The editor position is no longer available. Discard it and try again.");
       return;
     }
     documentBody = nextMarkdown;
@@ -4868,7 +4924,7 @@ async function acceptAiRewrite() {
   }
   const nextMarkdown = editorRef?.replaceAiTextWithMarkdown(aiPreviewOutput);
   if (nextMarkdown === null || nextMarkdown === undefined) {
-    error = "The selected text is no longer at the original position. Discard it and try again.";
+    error = $ui("The selected text is no longer at the original position. Discard it and try again.");
     return;
   }
   const bodyBefore = documentBody;
@@ -4947,8 +5003,8 @@ function themePackChoices() {
     return {
       pluginId: pack.pluginId,
       themeId: pack.themeId,
-      name: pack.name,
-      pluginName: pack.pluginName,
+      name: $manifestText(pack.pluginId, "theme", pack.themeId, pack.name),
+      pluginName: $manifestText(pack.pluginId, "module", pack.pluginId, pack.pluginName),
       accent: tokens.accent ?? fallback.accent,
       surface: tokens.surface ?? fallback.surface,
       canvas: tokens.canvas ?? fallback.canvas,
@@ -5260,37 +5316,37 @@ function statusCenterItems(): StatusCenterItem[] {
       documentConflict
         ? {
             id: "save",
-            label: "Document conflict",
-            detail: "The open draft and the project copy diverged. Compare or recover before continuing.",
+            label: $ui("Document conflict"),
+            detail: $ui("The open draft and the project copy diverged. Compare or recover before continuing."),
             tone: "danger",
-            actionLabel: "Return to draft",
+            actionLabel: $ui("Return to draft"),
             onAction: () => (statusCenterOpen = false),
           }
         : saveError
           ? {
               id: "save",
-              label: "Save paused",
+              label: $ui("Save paused"),
               detail: saveError,
               tone: "danger",
-              actionLabel: "Retry",
+              actionLabel: $ui("Retry"),
               onAction: () => {
                 statusCenterOpen = false;
                 void saveDocument();
               },
             }
           : saving
-            ? { id: "save", label: "Saving entry", detail: selected.name, tone: "busy" }
+            ? { id: "save", label: $ui("Saving entry"), detail: selected.name, tone: "busy" }
             : hasUnsavedChanges
               ? {
                   id: "save",
-                  label: "Unsaved changes",
-                  detail: `${selected.name} is queued for local save.`,
+                  label: $ui("Unsaved changes"),
+                  detail: $ui("{0} is queued for local save.", selected.name),
                   tone: "warning",
                 }
               : {
                   id: "save",
-                  label: "Entry saved",
-                  detail: savedAt ? `Saved locally at ${savedAt}.` : "The open entry has no pending edits.",
+                  label: $ui("Entry saved"),
+                  detail: savedAt ? $ui("Saved locally at {0}.", savedAt) : $ui("The open entry has no pending edits."),
                   tone: "success",
                 },
     );
@@ -5301,39 +5357,39 @@ function statusCenterItems(): StatusCenterItem[] {
     sync.export_error
       ? {
           id: "checkpoint",
-          label: "Checkpoint failed",
+          label: $ui("Checkpoint failed"),
           detail: sync.export_error,
           tone: "danger",
-          actionLabel: "Review",
+          actionLabel: $ui("Review"),
           onAction: () => openStatusDestination("advanced"),
         }
       : sync.state === "pending"
         ? {
             id: "checkpoint",
-            label: "Checkpoint pending",
-            detail: `${sync.dirty_count} portable change${sync.dirty_count === 1 ? "" : "s"} waiting to be written.`,
+            label: $ui("Checkpoint pending"),
+            detail: $ui("{0} portable change{1} waiting to be written.", sync.dirty_count, sync.dirty_count === 1 ? "" : $ui("s")),
             tone: "busy",
-            actionLabel: "Project data",
+            actionLabel: $ui("Project data"),
             onAction: () => openStatusDestination("data"),
           }
         : {
             id: "checkpoint",
-            label: "Checkpoint current",
-            detail: "Portable project files match the local project state.",
+            label: $ui("Checkpoint current"),
+            detail: $ui("Portable project files match the local project state."),
             tone: "success",
-            actionLabel: "Project data",
+            actionLabel: $ui("Project data"),
             onAction: () => openStatusDestination("data"),
           },
   );
 
   items.push({
     id: "snapshot",
-    label: gitStatus?.repository ? "Snapshots ready" : "Snapshots not configured",
+    label: gitStatus?.repository ? $ui("Snapshots ready") : $ui("Snapshots not configured"),
     detail: gitStatus?.repository
-      ? `${gitStatus.canonical_changes.length} project change${gitStatus.canonical_changes.length === 1 ? "" : "s"} since the last Snapshot.`
-      : "Set up project history when you are ready to preserve milestones.",
+      ? $ui("{0} project change{1} since the last Snapshot.", gitStatus.canonical_changes.length, gitStatus.canonical_changes.length === 1 ? "" : $ui("s"))
+      : $ui("Set up project history when you are ready to preserve milestones."),
     tone: gitStatus?.canonical_changes.length ? "warning" : "neutral",
-    actionLabel: "Open Snapshots",
+    actionLabel: $ui("Open Snapshots"),
     onAction: () => openStatusDestination("snapshots"),
   });
 
@@ -5349,29 +5405,29 @@ function statusCenterItems(): StatusCenterItem[] {
     diagnostic || backgroundFailed
       ? {
           id: "background",
-          label: diagnostic ? "Project conflict" : "Background task needs attention",
-          detail: diagnostic ?? "A map save or recovery task did not complete cleanly.",
+          label: diagnostic ? $ui("Project conflict") : $ui("Background task needs attention"),
+          detail: diagnostic ?? $ui("A map save or recovery task did not complete cleanly."),
           tone: "danger",
-          actionLabel: diagnostic ? "Diagnostics" : undefined,
+          actionLabel: diagnostic ? $ui("Diagnostics") : undefined,
           onAction: diagnostic ? () => openStatusDestination("advanced") : undefined,
         }
       : backgroundBusy
         ? {
             id: "background",
-            label: "Background work in progress",
+            label: $ui("Background work in progress"),
             detail:
               projectTransitionMessage ||
               (aiIndexBusy
-                ? "Building the semantic index…"
+                ? $ui("Building the semantic index…")
                 : moduleSchemaBusy
-                  ? "Saving Fields & Types…"
-                  : "Saving map changes…"),
+                  ? $ui("Saving Fields & Types…")
+                  : $ui("Saving map changes…")),
             tone: "busy",
           }
         : {
             id: "background",
-            label: "No background work",
-            detail: "Daena has no unfinished maintenance task.",
+            label: $ui("No background work"),
+            detail: $ui("Daena has no unfinished maintenance task."),
             tone: "neutral",
           },
   );
@@ -5389,15 +5445,15 @@ function statusCenterTone(): StatusCenterTone {
 
 function statusCenterSummary() {
   const tone = statusCenterTone();
-  if (tone === "danger") return "Needs attention";
-  if (tone === "busy") return "Working…";
-  if (tone === "warning") return "Changes pending";
-  return "Project current";
+  if (tone === "danger") return $ui("Needs attention");
+  if (tone === "busy") return $ui("Working…");
+  if (tone === "warning") return $ui("Changes pending");
+  return $ui("Project current");
 }
 
 async function finishOpening(info?: ProjectInfo) {
   projectInfo = info ?? (await project.info());
-  if (!projectInfo) throw new Error("The project did not return an identity");
+  if (!projectInfo) throw new Error($ui("The project did not return an identity"));
   rememberProjectTheme(projectInfo);
   applyCurrentAppearance();
   await loadAiPromptTemplates();
@@ -5432,10 +5488,11 @@ async function finishOpening(info?: ProjectInfo) {
   }
 }
 
-async function runProjectTransition(message: string, operation: () => Promise<void>) {
+async function runProjectTransition(message: string, operation: () => Promise<void>, { closing = false } = {}) {
   if (projectTransitionBusy) return;
   projectTransitionBusy = true;
   projectTransitionMessage = message;
+  projectTransitionClosing = closing;
   error = "";
   try {
     await operation();
@@ -5444,11 +5501,12 @@ async function runProjectTransition(message: string, operation: () => Promise<vo
   } finally {
     projectTransitionBusy = false;
     projectTransitionMessage = "";
+    projectTransitionClosing = false;
   }
 }
 
 async function openWorkspace() {
-  await runProjectTransition("Opening workspace…", async () => {
+  await runProjectTransition($ui("Opening workspace…"), async () => {
     await project.openDefault();
     await finishOpening();
   });
@@ -5459,20 +5517,23 @@ async function pickAndOpenProject(intent: "create" | "open") {
   showProjectMenu = false;
   try {
     const selection = await project.pickDirectory(
-      intent === "create" ? "Choose an empty folder for a new project" : "Open an existing project folder",
+      intent === "create" ? $messages.projectSwitcher.chooseNewFolder : $messages.projectSwitcher.chooseExistingFolder,
     );
     const path = typeof selection === "string" ? selection : null;
     if (!path) return;
     // Asked before the transition overlay opens, because the overlay hides the Language webview.
     if (!(await canLeaveLanguageSection())) return;
-    await runProjectTransition(intent === "create" ? "Creating project…" : "Opening project…", async () => {
-      if (!(await flushAutoSave())) return;
-      if (!(await leavePluginView({ closeWebviews: true }))) return;
-      persistShellTabs();
-      resetProjectSessionState();
-      await project.close();
-      await finishOpening(intent === "create" ? await project.create(path) : await project.openDirectory(path));
-    });
+    await runProjectTransition(
+      intent === "create" ? $messages.projectSwitcher.creating : $messages.projectSwitcher.opening,
+      async () => {
+        if (!(await flushAutoSave())) return;
+        if (!(await leavePluginView({ closeWebviews: true }))) return;
+        persistShellTabs();
+        resetProjectSessionState();
+        await project.close();
+        await finishOpening(intent === "create" ? await project.create(path) : await project.openDirectory(path));
+      },
+    );
   } catch (cause) {
     error = friendlyError(cause);
   }
@@ -5490,7 +5551,7 @@ async function openRecentProject(path: string) {
   if (projectTransitionBusy) return;
   showProjectMenu = false;
   if (!(await canLeaveLanguageSection())) return;
-  await runProjectTransition("Opening project…", async () => {
+  await runProjectTransition($messages.projectSwitcher.opening, async () => {
     if (!(await flushAutoSave())) return;
     if (!(await leavePluginView({ closeWebviews: true }))) return;
     persistShellTabs();
@@ -5504,13 +5565,17 @@ async function closeProject() {
   if (projectTransitionBusy) return;
   showProjectMenu = false;
   if (!(await canLeaveLanguageSection())) return;
-  await runProjectTransition("Closing project…", async () => {
-    if (!(await flushAutoSave())) return;
-    if (!(await leavePluginView({ closeWebviews: true }))) return;
-    persistShellTabs();
-    resetProjectSessionState();
-    await project.close();
-  });
+  await runProjectTransition(
+    $messages.projectSwitcher.closing,
+    async () => {
+      if (!(await flushAutoSave())) return;
+      if (!(await leavePluginView({ closeWebviews: true }))) return;
+      persistShellTabs();
+      resetProjectSessionState();
+      await project.close();
+    },
+    { closing: true },
+  );
 }
 
 async function flushAutoSave() {
@@ -5642,12 +5707,12 @@ async function refreshSelectedMapLocations(entityId = selected?.id) {
 async function openMapLocation(location: MapLocation) {
   try {
     const mapEntityId = location.mapEntityId;
-    if (!mapEntityId) throw new Error("map-unavailable: this location is missing its map id");
+    if (!mapEntityId) throw new Error($ui("map-unavailable: this location is missing its map id"));
     await project.mapsNavigation("openMap", { mapEntityId, linkId: location.id });
   } catch (cause) {
     const message = friendlyError(cause);
-    if (message.includes("link-unresolved")) {
-      mapReconcileNotice = `This link is unresolved — the map feature it pointed to was removed or renumbered.`;
+    if (rawErrorMessage(cause).includes("link-unresolved")) {
+      mapReconcileNotice = $ui("This link is unresolved — the map feature it pointed to was removed or renumbered.");
       return;
     }
     error = message;
@@ -5657,8 +5722,8 @@ async function openMapLocation(location: MapLocation) {
 async function ensureMapEditorOpen(mapEntityId: string) {
   const departure = currentShellLocation();
   const map = entities.find((entity) => entity.id === mapEntityId) ?? (await project.getEntity(mapEntityId));
-  if (!map) throw new Error("map-unavailable: choose a saved map first");
-  if (!(await flushAutoSave())) throw new Error("Save the current draft before opening the map editor.");
+  if (!map) throw new Error($ui("map-unavailable: choose a saved map first"));
+  if (!(await flushAutoSave())) throw new Error($ui("Save the current draft before opening the map editor."));
   const mapsView = mapsNavigationItem();
   selected = map;
   mapsEditorKey = map.id;
@@ -5670,8 +5735,8 @@ async function beginMapPick(pending: NonNullable<typeof mapPickPending>) {
   mapPickPending = pending;
   mapPickNotice =
     pending.kind === "rebind"
-      ? "Click the map to rebind this location."
-      : "Click for a point, or use Path/Area to draw a route or region.";
+      ? $ui("Click the map to rebind this location.")
+      : $ui("Click for a point, or use Path/Area to draw a route or region.");
   await ensureMapEditorOpen(pending.mapEntityId);
   if (mapsEditorMode === "vector") return;
 }
@@ -5685,7 +5750,7 @@ async function applyMapPick(anchor: unknown) {
     if (pending.kind === "link") {
       const entity =
         entities.find((candidate) => candidate.id === pending.entityId) ?? (await project.getEntity(pending.entityId));
-      if (!entity) throw new Error("Choose an entity to link.");
+      if (!entity) throw new Error($ui("Choose an entity to link."));
       const location: MapLocation = {
         id: crypto.randomUUID(),
         mapEntityId: pending.mapEntityId,
@@ -5734,7 +5799,7 @@ async function applyMapPick(anchor: unknown) {
 async function openMapEntityFromLink(entityId: string) {
   try {
     const entity = await project.getEntity(entityId);
-    if (!entity) throw new Error("Linked entity was not found.");
+    if (!entity) throw new Error($ui("Linked entity was not found."));
     if (!entities.some((candidate) => candidate.id === entity.id)) entities = [...entities, entity];
     const target =
       entity.entity_type === "daena.lore:person" ||
@@ -5764,9 +5829,9 @@ async function unlinkMapLocation(location: MapLocation) {
   if (
     !selected ||
     !(await confirmDialog({
-      title: "Unlink this location?",
-      message: `${location.label || "This location"} will be unlinked from ${selected.name}. The entity and map feature will remain.`,
-      confirmLabel: "Unlink",
+      title: $ui("Unlink this location?"),
+      message: $ui("{0} will be unlinked from {1}. The entity and map feature will remain.", location.label || "This location", selected.name),
+      confirmLabel: $ui("Unlink"),
       danger: true,
     }))
   )
@@ -5782,11 +5847,11 @@ async function unlinkMapLocation(location: MapLocation) {
 async function editMapLocation(location: MapLocation) {
   if (!selected) return;
   const role = await promptDialog({
-    title: "Edit location role",
-    message: "Describe what this location represents for this entity.",
+    title: $ui("Edit location role"),
+    message: $ui("Describe what this location represents for this entity."),
     value: location.role,
-    placeholder: "e.g. Birthplace, Residence",
-    confirmLabel: "Save",
+    placeholder: $ui("e.g. Birthplace, Residence"),
+    confirmLabel: $ui("Save"),
   });
   if (role === null) return;
   const nextRole = role.trim();
@@ -5865,7 +5930,7 @@ async function openSelectedMapEditor() {
   if (!selected || selected.entity_type !== "daena.maps:world-map") return;
   const mapsView = mapsNavigationItem();
   if (!mapsView) {
-    error = "The Maps integration is not available.";
+    error = $ui("The Maps integration is not available.");
     return;
   }
   try {
@@ -5936,7 +6001,7 @@ async function saveConflictRecoveryCopy() {
   if (!selected) return;
   try {
     const path = await project.saveRecoveryCopy(selected.id, documentBody);
-    error = `Draft saved as ${path}`;
+    error = $ui("Draft saved as {0}", path);
   } catch (cause) {
     error = friendlyError(cause);
   }
@@ -5957,6 +6022,7 @@ async function createWithOption(
     const fieldsForCreate: Record<string, unknown> = {};
     const relationshipsForCreate: Record<string, UUID[]> = {};
     for (const { field, required } of createFieldsFor(option)) {
+      const label = $manifestText(option.module.id, "field", field.key, field.label);
       const value = values[field.key];
       const empty =
         value === "" ||
@@ -5965,18 +6031,18 @@ async function createWithOption(
         (typeof value === "string" && value.trim() === "") ||
         (Array.isArray(value) && value.length === 0);
       if (empty) {
-        if (required) throw new Error(`${field.label} is required`);
+        if (required) throw new Error($ui("{0} is required", label));
         continue;
       }
       if (field.type === "relationship") {
-        if (!Array.isArray(value)) throw new Error(`${field.label} must contain one or more entities`);
+        if (!Array.isArray(value)) throw new Error($ui("{0} must contain one or more entities", label));
         relationshipsForCreate[field.key] = value as UUID[];
       } else if (field.type === "number") {
         const numberValue = typeof value === "number" ? value : Number(value);
-        if (!Number.isFinite(numberValue)) throw new Error(`${field.label} must be a number`);
+        if (!Number.isFinite(numberValue)) throw new Error($ui("{0} must be a number", label));
         fieldsForCreate[field.key] = numberValue;
       } else if (field.type === "date") {
-        if (!isCompleteCalendarDate(value)) throw new Error(`${field.label} needs a year, month, and day`);
+        if (!isCompleteCalendarDate(value)) throw new Error($ui("{0} needs a year, month, and day", label));
         fieldsForCreate[field.key] = parseCalendarDate(value) ?? value;
       } else {
         fieldsForCreate[field.key] = value;
@@ -6004,7 +6070,7 @@ async function createWithOption(
           fields: [],
         });
       } catch (cause) {
-        openingNoteError = `${created.name} was created, but its opening note was not saved: ${friendlyError(cause)}`;
+        openingNoteError = $ui("{0} was created, but its opening note was not saved: {1}", created.name, friendlyError(cause));
       }
     }
     recordShellDeparture(departure);
@@ -6115,7 +6181,7 @@ function activateCreateOption(option: CreateOption, initialName = "") {
 function openFocusedCreate(optionKey?: string, initialName = "") {
   const options = createOptions();
   if (options.length === 0) {
-    error = "Enable a module with a creation template to get started.";
+    error = $ui("Enable a module with a creation template to get started.");
     return;
   }
   const option = options.find((candidate) => candidate.key === optionKey) ?? defaultCreateOption(options);
@@ -6130,7 +6196,7 @@ function openNewManuscriptInSelected() {
   if (!selected || !isManuscriptType(selected.entity_type)) return;
   const key = createOptionKeyForEntityType("daena.writing:manuscript") ?? createOptionKeyForEntityType("manuscript");
   if (!key) {
-    error = "Enable Writing Studio with a Manuscript template to create manuscripts.";
+    error = $ui("Enable Writing Studio with a Manuscript template to create manuscripts.");
     return;
   }
   pendingManuscriptParentId = selected.id;
@@ -6148,7 +6214,7 @@ function createOptionKeyForEntityType(entityType: string) {
 function openNewPerson() {
   const key = createOptionKeyForEntityType(PERSON_TYPE);
   if (!key) {
-    error = "Enable Lore with a Person template to create people.";
+    error = $ui("Enable Lore with a Person template to create people.");
     return;
   }
   openFocusedCreate(key);
@@ -6157,7 +6223,7 @@ function openNewPerson() {
 function openNewHouse() {
   const key = createOptionKeyForEntityType(HOUSE_TYPE) ?? createOptionKeyForEntityType("house");
   if (!key) {
-    error = "Enable Houses with a House template to create houses.";
+    error = $ui("Enable Houses with a House template to create houses.");
     return;
   }
   openFocusedCreate(key);
@@ -6166,7 +6232,7 @@ function openNewHouse() {
 function openCreationMenu() {
   const options = createOptions();
   if (options.length === 0) {
-    error = "Enable a module with a creation template to get started.";
+    error = $ui("Enable a module with a creation template to get started.");
     return;
   }
   rememberCreateReturnFocus();
@@ -6182,7 +6248,7 @@ function openContextualCreate() {
   }
   const options = createOptions();
   if (options.length === 0) {
-    error = "Enable a module with a creation template to get started.";
+    error = $ui("Enable a module with a creation template to get started.");
     return;
   }
   const option = defaultCreateOption(options);
@@ -6235,7 +6301,7 @@ function isMac() {
 }
 
 function quickOpenShortcutLabel() {
-  return isMac() ? "⌘K" : "Ctrl K";
+  return isMac() ? $ui("⌘K") : $ui("Ctrl K");
 }
 
 function quickOpenItems(): QuickOpenItem[] {
@@ -6270,8 +6336,8 @@ function quickOpenItems(): QuickOpenItem[] {
     {
       id: "destination:home",
       category: "Destinations",
-      label: "Project Home",
-      description: "Overview, workspaces, and recent activity",
+      label: $ui("Project Home"),
+      description: $ui("Overview, workspaces, and recent activity"),
       keywords: ["home", "overview"],
       action: { kind: "destination", destination: "home" },
     },
@@ -6279,7 +6345,7 @@ function quickOpenItems(): QuickOpenItem[] {
       id: `destination:${item.key}`,
       category: "Destinations",
       label: item.title,
-      description: `${workspaceDescription(item.section)} workspace`,
+      description: $ui("{0} workspace", workspaceDescription(item.section)),
       keywords: [item.section, "workspace"],
       action: { kind: "destination", destination: `navigation:${item.key}` },
     })),
@@ -6287,7 +6353,7 @@ function quickOpenItems(): QuickOpenItem[] {
       id: `destination:${item.key}`,
       category: "Destinations",
       label: pluginViewLabel(item),
-      description: "Plugin tool",
+      description: $ui("Plugin tool"),
       keywords: [item.plugin.name, item.view.title, "tool"],
       action: { kind: "destination", destination: `navigation:${item.key}` },
     })),
@@ -6297,9 +6363,9 @@ function quickOpenItems(): QuickOpenItem[] {
     return {
       id: `create:${option.key}`,
       category: "Create",
-      label: `Create ${option.template.name}`,
-      description: `${option.module.name} · open focused creation`,
-      keywords: [option.module.name, option.template.entityType, option.template.description ?? ""],
+      label: $ui("Create {0}", templateName(option)),
+      description: $ui("{0} · open focused creation", $manifestText(option.module.id, "module", option.module.id, option.module.name)),
+      keywords: [option.module.name, option.template.entityType, templateDescription(option)],
       icon: presentation.icon,
       pluginId: presentation.pluginId,
       iconColor: presentation.iconColor,
@@ -6310,32 +6376,32 @@ function quickOpenItems(): QuickOpenItem[] {
     {
       id: "command:template-gallery",
       category: "Commands",
-      label: "Browse creation templates",
-      description: "Choose from every enabled template",
+      label: $ui("Browse creation templates"),
+      description: $ui("Choose from every enabled template"),
       keywords: ["new", "create", "gallery", "template"],
       action: { kind: "command", command: "template-gallery" },
     },
     {
       id: "command:snapshots",
       category: "Commands",
-      label: "Open Snapshots",
-      description: "Review project history and checkpoint changes",
+      label: $ui("Open Snapshots"),
+      description: $ui("Review project history and checkpoint changes"),
       keywords: ["git", "history", "checkpoint"],
       action: { kind: "command", command: "snapshots" },
     },
     {
       id: "command:plugins",
       category: "Commands",
-      label: "Manage Extensions",
-      description: "Enable, disable, or inspect project extensions",
+      label: $ui("Manage Extensions"),
+      description: $ui("Enable, disable, or inspect project extensions"),
       keywords: ["extensions", "modules", "tools"],
       action: { kind: "command", command: "plugins" },
     },
     {
       id: "command:settings",
       category: "Commands",
-      label: "Open Settings",
-      description: "Application preferences",
+      label: $ui("Open Settings"),
+      description: $ui("Application preferences"),
       keywords: ["preferences", "configuration", "theme", "provider"],
       action: { kind: "command", command: "settings" },
     },
@@ -6424,7 +6490,7 @@ function updateField(definition: FieldDefinition, event: Event) {
   markEntryDirty({ fieldKey: definition.key });
 }
 function isRevisionConflict(cause: unknown) {
-  return friendlyError(cause).toLowerCase().includes("revision conflict");
+  return rawErrorMessage(cause).toLowerCase().includes("revision conflict");
 }
 
 async function persistDocumentSnapshot(): Promise<boolean> {
@@ -6608,7 +6674,7 @@ async function saveEntityEditDialog() {
   if (!entityEditDialog) return;
   const trimmed = entityEditDialog.name.trim();
   if (!trimmed) {
-    error = "Name cannot be empty.";
+    error = $ui("Name cannot be empty.");
     return;
   }
   const current = entityEditDialog.entity;
@@ -6629,7 +6695,7 @@ async function saveEntityEditDialog() {
     } catch {}
     const refreshed = entities.find((e) => e.id === current.id) ?? entityEditDialog.entity;
     if (!refreshed?.revision) {
-      error = "The entity revision is unavailable. Reload the project and try again.";
+      error = $ui("The entity revision is unavailable. Reload the project and try again.");
       return;
     }
     entityEditDialog.entity = refreshed;
@@ -6675,7 +6741,7 @@ async function archiveEntity(target: Entity, options?: { skipConfirm?: boolean; 
   const result = await entityMutation.run(async () => {
     const loaded = await project.getEntity(target.id);
     const current = loaded && !loaded.deleted ? loaded : (entities.find((entity) => entity.id === target.id) ?? target);
-    if (!current.revision) throw new Error("The entity revision is unavailable. Reload the project and try again.");
+    if (!current.revision) throw new Error($ui("The entity revision is unavailable. Reload the project and try again."));
     await owning.entities.delete(current.id as UUID, { expectedRevision: current.revision });
     return current.name;
   }, target.name);
@@ -6692,8 +6758,8 @@ async function archiveEntity(target: Entity, options?: { skipConfirm?: boolean; 
   closeTabsForEntity(target.id);
   await refreshAfterEntityMutation({ entityId: target.id, removed: true });
   showLifecycleToast({
-    message: archivedToastMessage(result.value),
-    actionLabel: ENTITY_ACTIONS.viewArchive,
+    message: $messages.inspector.archived(result.value),
+    actionLabel: $messages.inspector.viewArchive,
     onAction: () => {
       dismissLifecycleToast();
       void openProjectCenterTab("archive");
@@ -6721,7 +6787,7 @@ async function reloadEntityEditFromServer() {
   try {
     const loaded = await project.getEntity(entityEditDialog.entity.id);
     if (!loaded || loaded.deleted) {
-      error = "This entry is no longer available.";
+      error = $ui("This entry is no longer available.");
       closeEntityEditDialog();
       return;
     }
@@ -6814,13 +6880,15 @@ function relationshipLinkCount() {
   );
 }
 function entityFieldsTabs(): EntityFieldsTab[] {
-  const tabs: EntityFieldsTab[] = [{ id: "relationships", label: "Relationships", count: relationshipLinkCount() }];
+  const tabs: EntityFieldsTab[] = [
+    { id: "relationships", label: $messages.inspector.relationships, count: relationshipLinkCount() },
+  ];
   if (selected && (canEditLoreProfile(selected.entity_type) || isTimelineEventEntity(selected.entity_type))) {
-    tabs.push({ id: "profile", label: "Profile" });
+    tabs.push({ id: "profile", label: $messages.inspector.profile });
   }
-  tabs.push({ id: "assets", label: "Assets", count: assets.length });
-  if (mapsEnabled()) tabs.push({ id: "maps", label: "Maps", count: mapLocations.length });
-  tabs.push({ id: "backlinks", label: "Backlinks", count: backlinkRelationships().length });
+  tabs.push({ id: "assets", label: $messages.inspector.assets, count: assets.length });
+  if (mapsEnabled()) tabs.push({ id: "maps", label: $messages.inspector.maps, count: mapLocations.length });
+  tabs.push({ id: "backlinks", label: $messages.inspector.backlinks, count: backlinkRelationships().length });
   return tabs;
 }
 function openFieldsDialog(tab?: EntityFieldsTabId) {
@@ -6919,24 +6987,28 @@ function relationshipMetadataSummary(relationship: Relationship, definition: Fie
       metadata = parsed as Record<string, unknown>;
     }
   } catch {
-    return "Metadata needs repair";
+    return $ui("Metadata needs repair");
   }
   const fieldByKey = new Map((definition?.metadataFields ?? []).map((field) => [field.key, field]));
-  const labels = new Map((definition?.metadataFields ?? []).map((field) => [field.key, field.label]));
+  const owner = manifestOwningRelationshipType(relationship.relationship_type, modules)?.id;
   return Object.entries(metadata)
     .filter(([, value]) => value !== undefined && value !== null && value !== "")
     .slice(0, 3)
     .map(([key, value]) => {
       const field = fieldByKey.get(key);
+      const path = relationship.relationship_type + "/" + key;
+      const label = field ? $manifestText(owner, "metadata", path, field.label) : key;
       if (field?.type === "date") {
         const parsed = parseCalendarDate(value);
         if (parsed) {
           const calendar = calendarDefinitionForId(parsed.calendar);
           const formatted = formatWithCalendar(value, calendar);
-          if (formatted !== "Undated") return `${labels.get(key) ?? key}: ${formatted}`;
+          if (formatted !== "Undated") return `${label}: ${formatted}`;
         }
       }
-      return `${labels.get(key) ?? key}: ${fieldDisplayValue(value)}`;
+      const display = (field?.type === "enum" || field?.type === "oneof") && typeof value === "string"
+        ? $manifestText(owner, "metadataOption", path, value) : fieldDisplayValue(value);
+      return `${label}: ${display}`;
     })
     .join(" · ");
 }
@@ -6951,12 +7023,12 @@ async function saveRelationshipMetadata(relationship: Relationship, metadata: Re
 }
 async function confirmRemoveRelationship(definition: FieldDefinition, relationship: Relationship) {
   const target = relationshipTargetName(relationship, definition);
-  const label = definition.label ?? relationship.relationship_type;
+  const label = inspectorFieldLabel(definition);
   if (
     !(await confirmDialog({
-      title: `Remove ${label}?`,
-      message: `${target} will be unlinked from ${selected?.name ?? "this entry"}. The relationship can be recreated.`,
-      confirmLabel: "Remove",
+      title: $ui("Remove {0}?", label),
+      message: $ui("{0} will be unlinked from {1}. The relationship can be recreated.", target, selected?.name ?? "this entry"),
+      confirmLabel: $ui("Remove"),
       danger: true,
     }))
   )
@@ -7045,7 +7117,7 @@ async function updateRelationshipField(definition: FieldDefinition, targetIds: s
       const endpoints = endpointsForCreate(selected!.id, otherId, definition);
       const source = await project.getEntity(endpoints.sourceId);
       const sourceRevision = source?.revision ?? "";
-      if (!sourceRevision) throw new Error("The entity revision is unavailable. Reload the project and try again.");
+      if (!sourceRevision) throw new Error($ui("The entity revision is unavailable. Reload the project and try again."));
       if (source) upsertEntityInCache(source);
       const createdRelationship = await context.relationships.create(
         {
@@ -7134,9 +7206,9 @@ async function handleAssetDelete() {
   if (!current) return;
   if (
     !(await confirmDialog({
-      title: `Delete ${current.filename}?`,
-      message: "This file will be permanently removed from the project and the checkpoint. This cannot be undone.",
-      confirmLabel: "Delete",
+      title: $ui("Delete {0}?", current.filename),
+      message: $ui("This file will be permanently removed from the project and the checkpoint. This cannot be undone."),
+      confirmLabel: $ui("Delete"),
       danger: true,
     }))
   )
@@ -7161,9 +7233,9 @@ async function handleAssetReplace() {
   const replacementName = source.split(/[\\/]/).pop() ?? "replacement";
   if (
     !(await confirmDialog({
-      title: `Replace ${current.filename}?`,
-      message: `Use ${replacementName} as the new content? The attachment name and metadata will stay unchanged.`,
-      confirmLabel: "Replace",
+      title: $ui("Replace {0}?", current.filename),
+      message: $ui("Use {0} as the new content? The attachment name and metadata will stay unchanged.", replacementName),
+      confirmLabel: $ui("Replace"),
     }))
   )
     return;
@@ -7186,9 +7258,9 @@ async function toggleModule(id: ModuleId) {
   if (!installed) return;
   if (!installed.enabled) {
     askConfirm(
-      "Grant plugin capabilities",
-      `Choose which of ${installed.name}'s requested capabilities to grant. This dialog is owned by Daena; the plugin cannot change its wording.`,
-      "Enable plugin",
+      $ui("Grant plugin capabilities"),
+      $ui("Choose which of {0}'s requested capabilities to grant. This dialog is owned by Daena; the plugin cannot change its wording.", $manifestText(installed.id, "module", installed.id, installed.name)),
+      $ui("Enable plugin"),
       async (granted) => {
         await project.enableModule(id, granted);
         modules = await project.listModuleManifests();
@@ -7217,6 +7289,7 @@ async function toggleModule(id: ModuleId) {
 async function loadThemePacks() {
   try {
     const view = await project.adminView();
+    installedLocalizations = view.plugins.filter((plugin) => plugin.localization);
     themePacks = collectInstalledThemePacks(view.plugins);
     applyCurrentAppearance();
   } catch {
@@ -7229,6 +7302,7 @@ async function refreshAdmin() {
   try {
     const view = await project.adminView();
     adminPlugins = view.plugins;
+    installedLocalizations = view.plugins.filter((plugin) => plugin.localization);
     themePacks = collectInstalledThemePacks(view.plugins);
     applyCurrentAppearance();
     try {
@@ -7362,12 +7436,14 @@ async function refreshModuleSchemaEditor(moduleId: string) {
     moduleSchemaContentRevision = editor.revision;
     schemaOverlayCache = { ...schemaOverlayCache, [moduleId]: editor.overlay };
     moduleSchemaRevision += 1;
+    moduleSchemaMessageIsError = false;
     moduleSchemaMessage = "";
     moduleSchemaConflict = false;
     moduleSchemaSaveRequestId = null;
     void refreshSchemaEntityCounts();
   } catch (cause) {
     if (token !== schemaOverlayLoadToken || schemaPluginId !== moduleId) return;
+    moduleSchemaMessageIsError = true;
     moduleSchemaMessage = friendlyError(cause);
   }
 }
@@ -7415,7 +7491,8 @@ async function reassignSchemaEntities(fromTypeId: string, toTypeId: string) {
   await refreshSchemaEntityCounts();
   bumpCollectionRefresh();
   if (moved > 0) {
-    moduleSchemaMessage = `Reassigned ${moved} ${moved === 1 ? "entity" : "entities"} to the chosen type.`;
+    moduleSchemaMessageIsError = false;
+    moduleSchemaMessage = $ui("Reassigned {0} {1} to the chosen type.", moved, moved === 1 ? "entity" : "entities");
   }
 }
 function selectSchemaPlugin(moduleId: string | null) {
@@ -7423,6 +7500,7 @@ function selectSchemaPlugin(moduleId: string | null) {
     schemaPluginId = null;
     schemaPluginName = "";
     moduleSchemaPackage = null;
+    moduleSchemaMessageIsError = false;
     moduleSchemaMessage = "";
     moduleSchemaConflict = false;
     moduleSchemaContentRevision = "";
@@ -7430,6 +7508,7 @@ function selectSchemaPlugin(moduleId: string | null) {
     return;
   }
   schemaPluginId = moduleId;
+  moduleSchemaMessageIsError = false;
   moduleSchemaMessage = "";
   moduleSchemaConflict = false;
   moduleSchemaSaveRequestId = null;
@@ -7460,7 +7539,7 @@ async function previewModuleSchemaOverlay(overlay: ModuleSchemaOverlay) {
       ok: false,
       changeKind: "additive" as const,
       requiresAcknowledgement: false,
-      errors: [{ kind: "overlay", id: "overlay", message: "No plugin selected." }],
+      errors: [{ kind: "overlay", id: "overlay", message: $ui("No plugin selected.") }],
       warnings: [],
       affectedTypes: [],
       affectedFields: [],
@@ -7478,11 +7557,13 @@ async function previewModuleSchemaOverlay(overlay: ModuleSchemaOverlay) {
 
 async function saveModuleSchemaOverlay(overlay: ModuleSchemaOverlay, options?: { acknowledgeImpact?: boolean }) {
   if (!schemaPluginId) {
-    moduleSchemaMessage = "Could not save: no plugin selected.";
+    moduleSchemaMessageIsError = true;
+    moduleSchemaMessage = $ui("Could not save: no plugin selected.");
     return;
   }
   const moduleId = schemaPluginId;
   moduleSchemaBusy = true;
+  moduleSchemaMessageIsError = false;
   moduleSchemaMessage = "";
   const requestId = moduleSchemaSaveRequestId ?? crypto.randomUUID();
   moduleSchemaSaveRequestId = requestId;
@@ -7501,16 +7582,18 @@ async function saveModuleSchemaOverlay(overlay: ModuleSchemaOverlay, options?: {
     moduleSchemaConflict = false;
     moduleSchemaSaveRequestId = null;
     modules = await project.listModuleManifests();
-    moduleSchemaMessage = "Saved.";
+    moduleSchemaMessageIsError = false;
+    moduleSchemaMessage = $ui("Saved.");
     void refreshSchemaEntityCounts();
   } catch (cause) {
     if (isRevisionConflict(cause)) {
       moduleSchemaConflict = true;
       moduleSchemaMessage =
-        "Compare current vs draft, reload current values, or reapply the draft onto the current revision.";
+        $ui("Compare current vs draft, reload current values, or reapply the draft onto the current revision.");
     } else {
       moduleSchemaConflict = false;
-      moduleSchemaMessage = `Could not save: ${friendlyError(cause)}`;
+      moduleSchemaMessageIsError = true;
+      moduleSchemaMessage = $ui("Could not save: {0}", friendlyError(cause));
       // Keep request id only for revision conflicts so retries stay idempotent.
       moduleSchemaSaveRequestId = null;
     }
@@ -7600,7 +7683,7 @@ async function installPackage(path: string, allowUnsigned = false) {
     modules = await project.listModuleManifests();
   } catch (cause) {
     const message = friendlyError(cause);
-    if (!allowUnsigned && message.toLowerCase().includes("unsigned")) {
+    if (!allowUnsigned && rawErrorMessage(cause).toLowerCase().includes("unsigned")) {
       installConsent = { path, message };
     } else {
       error = message;
@@ -7632,7 +7715,7 @@ async function confirmUpgrade() {
     upgradePreview = null;
     await refreshAdmin();
     modules = await project.listModuleManifests();
-    error = `Upgraded ${preview.entry.name} to ${preview.version}.`;
+    error = $ui("Upgraded {0} to {1}.", $manifestText(preview.entry.id, "module", preview.entry.id, preview.entry.name), preview.version);
   } catch (cause) {
     error = friendlyError(cause);
   } finally {
@@ -7682,27 +7765,27 @@ async function runConfirm() {
 }
 async function confirmRollback(plugin: PluginAdminEntry, version: string) {
   askConfirm(
-    "Roll back plugin",
-    `Restore ${plugin.name} to version ${version}? The pre-upgrade backup will be restored and the previous version reactivated.`,
-    "Roll back",
+    $ui("Roll back plugin"),
+    $ui("Restore {0} to version {1}? The pre-upgrade backup will be restored and the previous version reactivated.", $manifestText(plugin.id, "module", plugin.id, plugin.name), version),
+    $ui("Roll back"),
     async () => {
       await project.rollbackPlugin(plugin.id, version);
       await refreshAdmin();
       modules = await project.listModuleManifests();
-      error = `Rolled ${plugin.name} back to ${version}.`;
+      error = $ui("Rolled {0} back to {1}.", $manifestText(plugin.id, "module", plugin.id, plugin.name), version);
     },
   );
 }
 async function confirmUninstall(plugin: PluginAdminEntry, version: string) {
   askConfirm(
-    "Uninstall code",
-    `Remove ${plugin.name} ${version} from the plugin library? It will still be listed if another version is installed.`,
-    "Uninstall",
+    $ui("Uninstall code"),
+    $ui("Remove {0} {1} from the plugin library? It will still be listed if another version is installed.", $manifestText(plugin.id, "module", plugin.id, plugin.name), version),
+    $ui("Uninstall"),
     async () => {
       await project.uninstallPluginCode(plugin.id, version);
       await refreshAdmin();
       modules = await project.listModuleManifests();
-      error = `Uninstalled ${plugin.name} ${version}.`;
+      error = $ui("Uninstalled {0} {1}.", $manifestText(plugin.id, "module", plugin.id, plugin.name), version);
     },
   );
 }
@@ -7712,7 +7795,7 @@ async function retryPlugin(plugin: PluginAdminEntry) {
     modules = await project.listModuleManifests();
     await reconcileWorkspaceSection();
     await refreshAdmin();
-    error = `Retried ${plugin.name}.`;
+    error = $ui("Retried {0}.", $manifestText(plugin.id, "module", plugin.id, plugin.name));
   } catch (cause) {
     error = friendlyError(cause);
   }
@@ -7740,9 +7823,9 @@ async function confirmDeleteData() {
 async function togglePluginEnabled(plugin: PluginAdminEntry) {
   if (!plugin.enabled) {
     askConfirm(
-      "Grant plugin capabilities",
-      `Choose which of ${plugin.name}'s requested capabilities to grant. This dialog is owned by Daena; the plugin cannot change its wording.`,
-      "Enable plugin",
+      $ui("Grant plugin capabilities"),
+      $ui("Choose which of {0}'s requested capabilities to grant. This dialog is owned by Daena; the plugin cannot change its wording.", $manifestText(plugin.id, "module", plugin.id, plugin.name)),
+      $ui("Enable plugin"),
       async (granted) => {
         pluginActionId = plugin.id;
         try {
@@ -7779,9 +7862,9 @@ async function togglePluginEnabled(plugin: PluginAdminEntry) {
 }
 async function reviewPluginCapabilities(plugin: PluginAdminEntry) {
   askConfirm(
-    "Review plugin capabilities",
-    `Choose which of ${plugin.name}'s requested capabilities to grant. This dialog is owned by Daena; the plugin cannot change its wording.`,
-    "Update capabilities",
+    $ui("Review plugin capabilities"),
+    $ui("Choose which of {0}'s requested capabilities to grant. This dialog is owned by Daena; the plugin cannot change its wording.", $manifestText(plugin.id, "module", plugin.id, plugin.name)),
+    $ui("Update capabilities"),
     async (granted) => {
       pluginActionId = plugin.id;
       try {
@@ -7875,6 +7958,7 @@ function resetProjectSessionState() {
   moduleSchemaPackage = null;
   moduleSchemaOverlay = { version: 1 };
   moduleSchemaContentRevision = "";
+  moduleSchemaMessageIsError = false;
   moduleSchemaMessage = "";
   moduleSchemaConflict = false;
   moduleSchemaSaveRequestId = null;
@@ -7896,7 +7980,7 @@ async function seedExample() {
     await loadEntities();
     await ensureCalendarCache(true);
     modules = await project.listModuleManifests();
-    error = "Example world seeded.";
+    error = $ui("Example world seeded.");
   } catch (cause) {
     throw new Error(friendlyError(cause));
   }
@@ -7918,7 +8002,7 @@ async function rebuildSearchIndex() {
 }
 async function importPortableCheckpoint() {
   if (!(await canLeaveLanguageSection())) return;
-  await runProjectTransition("Importing checkpoint…", async () => {
+  await runProjectTransition($ui("Importing checkpoint…"), async () => {
     if (!(await flushAutoSave())) return;
     if (!(await leavePluginView({ closeWebviews: true }))) return;
     await project.importCheckpoint();
@@ -7929,7 +8013,7 @@ async function importPortableCheckpoint() {
   });
 }
 async function createPortableBackup() {
-  if (!(await flushAutoSave())) throw new Error("Save the current draft before creating a backup.");
+  if (!(await flushAutoSave())) throw new Error($ui("Save the current draft before creating a backup."));
   return project.backup();
 }
 async function exportMarkdownProject() {
@@ -7940,22 +8024,22 @@ async function exportMarkdownProject() {
     const destination = typeof selection === "string" ? selection : null;
     if (!destination) return;
     let output = "";
-    await runProjectTransition("Exporting Markdown…", async () => {
+    await runProjectTransition($ui("Exporting Markdown…"), async () => {
       if (!(await flushAutoSave())) return;
       output = await project.exportMarkdown(destination);
     });
-    if (output) error = `Markdown export written to ${output}`;
+    if (output) error = $ui("Markdown export written to {0}", output);
   } catch (cause) {
     throw new Error(friendlyError(cause));
   }
 }
 async function createRecoveryBackup() {
-  if (!(await flushAutoSave())) throw new Error("Save the current draft before creating a recovery backup.");
+  if (!(await flushAutoSave())) throw new Error($ui("Save the current draft before creating a recovery backup."));
   return project.recoveryBackup();
 }
 async function restoreRecoveryBackup(path: string) {
   if (!(await canLeaveLanguageSection())) return;
-  await runProjectTransition("Restoring recovery backup…", async () => {
+  await runProjectTransition($ui("Restoring recovery backup…"), async () => {
     if (!(await flushAutoSave())) return;
     if (!(await leavePluginView({ closeWebviews: true }))) return;
     await project.restoreRecoveryBackup(path);
@@ -8080,7 +8164,7 @@ onMount(() => {
           return;
         }
         if (!(await flushAutoSave())) {
-          error = "The window stayed open because the current draft could not be saved.";
+          error = $ui("The window stayed open because the current draft could not be saved.");
           await keepWindowOpen();
           return;
         }
@@ -8095,7 +8179,7 @@ onMount(() => {
         persistShellTabs();
         await project.appCloseConfirm();
       } catch (cause) {
-        error = `The window stayed open because closing failed: ${friendlyError(cause)}`;
+        error = $ui("The window stayed open because closing failed: {0}", friendlyError(cause));
         await keepWindowOpen();
       } finally {
         closeDecisionPending = false;
@@ -8132,7 +8216,7 @@ onMount(() => {
         }
       }
       const item = mapsNavigationItem();
-      if (!map || !item) throw new Error("map-unavailable: enable the Maps module to open this location");
+      if (!map || !item) throw new Error($ui("map-unavailable: enable the Maps module to open this location"));
       if (!(await flushAutoSave())) return;
       if (!(await canLeaveLanguageSection())) return;
       const departure = currentShellLocation();
@@ -8185,7 +8269,7 @@ onMount(() => {
       const unresolved = Array.isArray(reconcileDetail?.unresolved) ? reconcileDetail.unresolved.length : 0;
       mapReconcileNotice =
         unresolved > 0
-          ? `${unresolved} link${unresolved === 1 ? "" : "s"} on this map are unresolved — the features they pointed to were removed or renumbered.`
+          ? $ui("{0} link{1} on this map are unresolved — the features they pointed to were removed or renumbered.", unresolved, unresolved === 1 ? "" : $ui("s"))
           : "";
       if (selected && mapLocations.length > 0)
         void project
@@ -8287,18 +8371,18 @@ onMount(() => {
 });
 </script>
 
-<svelte:head><title>Daena Archive</title><link rel="icon" href={logoUrl} /></svelte:head>
+<svelte:head><title>{$ui("Daena Archive")}</title><link rel="icon" href={logoUrl} /></svelte:head>
 
-<main class="studio-shell" class:writing-fullscreen={writingFullscreenShown} aria-label="Daena Archive">
+<main class="studio-shell" class:writing-fullscreen={writingFullscreenShown} aria-label={$ui("Daena Archive")}>
   {#if projectTransitionBusy}
     <div class="project-transition-backdrop" role="status" aria-live="polite" aria-busy="true">
       <div class="project-transition-card">
         <span class="project-transition-spinner" aria-hidden="true"></span>
         <strong>{projectTransitionMessage}</strong>
         <small
-          >{projectTransitionMessage === "Closing project…"
-            ? "Returning to the project launcher."
-            : "Your project will be ready in a moment."}</small>
+          >{projectTransitionClosing
+            ? $messages.projectSwitcher.returningToLauncher
+            : $messages.projectSwitcher.projectWillBeReady}</small>
       </div>
     </div>
   {/if}
@@ -8307,7 +8391,7 @@ onMount(() => {
     isMac={isMac()}
     collapsed={railCollapsed}
     projectMenuOpen={showProjectMenu}
-    projectName={projectInfo?.name ?? "Local project"}
+    projectName={projectInfo?.name ?? $messages.workspace.localProject}
     {recentProjects}
     workspaces={workspaceNavigationItems().map((item) => ({
       key: item.key,
@@ -8319,7 +8403,7 @@ onMount(() => {
     tools={pluginViews().map((item) => ({
       key: item.key,
       title: pluginViewLabel(item),
-      ariaLabel: `Open ${item.plugin.name}: ${item.view.title}`,
+      ariaLabel: $ui("Open {0}", pluginViewLabel(item)),
       active: navigationActive(item),
     }))}
     homeActive={projectHomeOpen && !showSettings}
@@ -8438,29 +8522,29 @@ onMount(() => {
           <form class="create-dialog-form" onsubmit={createEntity}>
             <div class="create-dialog-heading">
               <div>
-                {#if createDialogView === "templates"}<span class="panel-kicker">CREATE</span><strong
-                    id="create-dialog-title">Choose a template</strong>
-                  <p>Start with the kind of entry you want to add to this world.</p>{:else if createOption}<button
+                {#if createDialogView === "templates"}<span class="panel-kicker">{$ui("CREATE")}</span><strong
+                    id="create-dialog-title">{$ui("Choose a template")}</strong>
+                  <p>{$ui("Start with the kind of entry you want to add to this world.")}</p>{:else if createOption}<button
                     type="button"
                     class="create-dialog-back"
                     disabled={createBusy}
-                    onclick={returnToCreationMenu}>All templates</button
-                  ><span class="panel-kicker">{createOption.module.name.toUpperCase()}</span><strong
-                    id="create-dialog-title">Create {createOption.template.name}</strong>
-                  <p>{createOption.template.description ?? `Create a new ${createOption.template.entityType}.`}</p>{/if}
+                    onclick={returnToCreationMenu}>{$ui("All templates")}</button
+                  ><span class="panel-kicker">{$manifestText(createOption.module.id, "module", createOption.module.id, createOption.module.name).toUpperCase()}</span><strong
+                    id="create-dialog-title">{$ui("Create {0}", templateName(createOption))}</strong>
+                  <p>{templateDescription(createOption)}</p>{/if}
               </div>
               <button
                 type="button"
                 class="new-form-close"
-                aria-label="Close create dialog"
+                aria-label={$ui("Close create dialog")}
                 disabled={createBusy}
                 onclick={closeCreateForm}><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
             </div>
             {#if createDialogView === "templates"}<div class="create-template-gallery">
                 {#each createGroups() as group}<section class="create-template-group">
                     <div class="create-template-group-heading">
-                      <span>{group.module.name}</span><small
-                        >{group.options.length} {group.options.length === 1 ? "template" : "templates"}</small>
+                      <span>{$manifestText(group.module.id, "module", group.module.id, group.module.name)}</span><small
+                        >{group.options.length === 1 ? $ui("{0} template", 1) : $ui("{0} templates", group.options.length)}</small>
                     </div>
                     <div class="create-template-tiles">
                       {#each group.options as option}{@const optionIcon = iconForCreateOption(option)}<button
@@ -8474,24 +8558,25 @@ onMount(() => {
                             iconColor={optionIcon.iconColor}
                             pluginId={optionIcon.pluginId}
                             size={19}
-                            box={40} /><span class="create-template-copy"><strong>{option.template.name}</strong></span
+                            box={40} /><span class="create-template-copy"><strong>{templateName(option)}</strong></span
                           ><span class="create-template-arrow">›</span><span class="create-template-detail"
-                            ><small>{option.template.description ?? option.template.entityType}</small></span
+                            ><small>{templateDescription(option)}</small></span
                           ></button
                         >{/each}
                     </div>
                   </section>{/each}
               </div>{:else}<section class="create-form-panel">
                 {#if createOption}<label class="create-input-field" for="new-entity"
-                    ><span>Name <b>*</b></span><input
+                    ><span>{$ui("Name")} <b>*</b></span><input
                       id="new-entity"
                       required
                       bind:value={name}
-                      placeholder={`e.g. ${createOption.template.name}`}
+                      placeholder={$ui("e.g. {0}", templateName(createOption))}
                       autocomplete="off" /></label
                   >{#snippet createFieldControl(item: CreateField)}
                     <SchemaFieldInput
                       field={item.field}
+                      pluginId={createOption?.module.id}
                       required={item.required}
                       idPrefix="create"
                       class="create-input-field"
@@ -8532,12 +8617,11 @@ onMount(() => {
                       aria-controls="create-more-details"
                       onclick={() => (createMoreDetailsOpen = !createMoreDetailsOpen)}
                       ><span
-                        ><strong>More details</strong><small
-                          >{optionalFields.length} optional {optionalFields.length === 1
-                            ? "field"
-                            : "fields"}{createOption.template.document !== undefined
-                            ? `${optionalFields.length > 0 ? " and an " : "An "}opening note`
-                            : ""}</small
+                        ><strong>{$ui("More details")}</strong><small
+                          >{createOption.template.document !== undefined
+                            ? optionalFields.length === 0 ? $ui("Opening note") : optionalFields.length === 1
+                              ? $ui("Optional field and opening note") : $ui("{0} optional fields and an opening note", optionalFields.length)
+                            : optionalFields.length === 1 ? $ui("Optional field") : $ui("{0} optional fields", optionalFields.length)}</small
                         ></span
                       ><ChevronDown
                         size={16}
@@ -8550,34 +8634,34 @@ onMount(() => {
                           )}{/each}{#if createOption.template.document !== undefined}<label
                             class="create-input-field"
                             for="create-document"
-                            ><span>Opening note</span><textarea
+                            ><span>{$ui("Opening note")}</span><textarea
                               id="create-document"
                               rows="5"
                               bind:value={createDocumentBody}
-                              placeholder="Add a first note (optional)"></textarea
+                              placeholder={$ui("Add a first note (optional)")}></textarea
                             ></label
                           >{/if}
-                      </div>{/if}{/if}{:else}<div class="create-form-empty">Choose a template to begin.</div>{/if}
+                      </div>{/if}{/if}{:else}<div class="create-form-empty">{$ui("Choose a template to begin.")}</div>{/if}
               </section>{/if}
             {#if createDialogView === "form"}<div class="create-dialog-actions">
                 <button type="button" class="quiet-button" disabled={createBusy} onclick={closeCreateForm}
-                  >Cancel</button
+                  >{$ui("Cancel")}</button
                 ><button class="primary-button" type="submit" disabled={createBusy || !name.trim() || !createOption}
-                  >{createBusy ? "Creating…" : `Create ${createOption?.template.name ?? "entry"}`}</button>
+                  >{createBusy ? $ui("Creating…") : $ui("Create {0}", createOption ? templateName(createOption) : $messages.workspace.entry)}</button>
               </div>{/if}
           </form>
         </div>
       </div>{/if}
     {#if showDiscardPrompt}<div class="discard-backdrop">
         <div class="discard-dialog" role="alertdialog" aria-modal="true" aria-labelledby="discard-create-title">
-          <span class="panel-kicker">UNSAVED VALUES</span>
-          <h2 id="discard-create-title">Discard this creation?</h2>
-          <p>Your entered values will be cleared. Cancel to return without losing them.</p>
+          <span class="panel-kicker">{$ui("UNSAVED VALUES")}</span>
+          <h2 id="discard-create-title">{$ui("Discard this creation?")}</h2>
+          <p>{$ui("Your entered values will be cleared. Cancel to return without losing them.")}</p>
           <div class="discard-actions">
-            <button type="button" class="quiet-button" onclick={keepCreateEditing}>Cancel</button><button
+            <button type="button" class="quiet-button" onclick={keepCreateEditing}>{$ui("Cancel")}</button><button
               type="button"
               class="primary-button"
-              onclick={discardCreateValues}>Discard</button>
+              onclick={discardCreateValues}>{$ui("Discard")}</button>
           </div>
         </div>
       </div>{/if}
@@ -8587,39 +8671,33 @@ onMount(() => {
         <div class="dialog" role="dialog" aria-modal="true">
           <div class="new-form-heading">
             <div>
-              <span class="panel-kicker">REVIEW PACKAGE</span><strong
-                >Install {review.pluginId} {review.version}?</strong>
+              <span class="panel-kicker">{$ui("REVIEW PACKAGE")}</span><strong
+                >{$ui("Install {0} {1}?", review.pluginId, review.version)}</strong>
             </div>
             <button type="button" class="new-form-close" onclick={() => void cancelInstallReview()}
               ><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
           </div>
-          <p class="dialog-body-copy">
-            Publisher <code>{review.publisher}</code>
-            {#if review.keyId}
-              · key <code>{review.keyId}</code>{/if}
-            · {review.signed ? review.trustStatus : "unsigned"}
-            · digest <code>{shortDigest(review.digest)}</code>
+          <p class="dialog-body-copy"> {$ui("Publisher")} <code>{review.publisher}</code>
+            {#if review.keyId} {$ui("· key")} <code>{review.keyId}</code>{/if} {$ui("· {0} · digest", review.signed ? review.trustStatus : "unsigned")} <code>{shortDigest(review.digest)}</code>
           </p>
           {#each review.disclosures as disclosure}
             <p class="plugin-warning">{disclosure}</p>
           {/each}
           {#if review.capabilities.length > 0}
-            <h4 class="plugin-subhead">Requested capabilities</h4>
+            <h4 class="plugin-subhead">{$ui("Requested capabilities")}</h4>
             <p class="dialog-body-copy">{review.capabilities.join(", ")}</p>
           {:else}
-            <p class="dialog-body-copy capability-empty">No capabilities requested.</p>
+            <p class="dialog-body-copy capability-empty">{$ui("No capabilities requested.")}</p>
           {/if}
-          <p class="dialog-body-copy">
-            Listing or signature never grants capabilities. Enablement is still per project.
-          </p>
+          <p class="dialog-body-copy"> {$ui("Listing or signature never grants capabilities. Enablement is still per project.")} </p>
           <div class="new-form-actions">
-            <button type="button" class="quiet-button" onclick={() => void cancelInstallReview()}>Cancel</button>
+            <button type="button" class="quiet-button" onclick={() => void cancelInstallReview()}>{$ui("Cancel")}</button>
             <button
               type="button"
               class="primary-button"
               onclick={() => void confirmReviewedInstall()}
               disabled={installing}
-              >{installing ? "Installing…" : review.signed ? "Install" : "Install unsigned"}</button>
+              >{installing ? $ui("Installing…") : review.signed ? $ui("Install") : $ui("Install unsigned")}</button>
           </div>
         </div>
       </div>
@@ -8630,24 +8708,20 @@ onMount(() => {
         <div class="dialog upgrade-dialog" role="dialog" aria-modal="true">
           <div class="new-form-heading">
             <div>
-              <span class="panel-kicker">UPDATE PLUGIN</span><strong
-                >Update {preview.entry.name} to v{preview.version}</strong>
+              <span class="panel-kicker">{$ui("UPDATE PLUGIN")}</span><strong
+                >{$ui("Update {0} to v{1}", $manifestText(preview.entry.id, "module", preview.entry.id, preview.entry.name), preview.version)}</strong>
             </div>
             <button type="button" class="new-form-close" onclick={() => (upgradePreview = null)}
               ><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
           </div>
-          <p class="dialog-body-copy">
-            From <code>v{preview.plan.fromVersion ?? preview.entry.version}</code> to
-            <code>v{preview.plan.toVersion}</code>{preview.plan.target.signed ? ", signed by" : ", unsigned — "}{preview
+          <p class="dialog-body-copy"> {$ui("From")} <code>v{preview.plan.fromVersion ?? preview.entry.version}</code> {$ui("to")} <code>v{preview.plan.toVersion}</code>{preview.plan.target.signed ? $ui(", signed by") : $ui(", unsigned — ")}{preview
               .plan.target.publisher}.
           </p>
           {#if preview.plan.consent.requiresRenewal}
-            <p class="plugin-warning">
-              This update requests new capabilities. Your consent is required before they are granted.
-            </p>
+            <p class="plugin-warning"> {$ui("This update requests new capabilities. Your consent is required before they are granted.")} </p>
           {/if}
           {#if preview.plan.consent.added.length > 0}
-            <h4 class="plugin-subhead">New capabilities</h4>
+            <h4 class="plugin-subhead">{$ui("New capabilities")}</h4>
             <ul class="plugin-detail-list">
               {#each preview.plan.consent.added as capability}<li class="provides">
                   {capabilityLabel(capability)}
@@ -8655,33 +8729,31 @@ onMount(() => {
             </ul>
           {/if}
           {#if preview.plan.consent.removed.length > 0}
-            <h4 class="plugin-subhead">Removed capabilities</h4>
+            <h4 class="plugin-subhead">{$ui("Removed capabilities")}</h4>
             <ul class="plugin-detail-list">
               {#each preview.plan.consent.removed as capability}<li class="consumes">
                   {capabilityLabel(capability)}
                 </li>{/each}
             </ul>
           {/if}
-          <h4 class="plugin-subhead">Data migrations</h4>
+          <h4 class="plugin-subhead">{$ui("Data migrations")}</h4>
           {#if preview.plan.migrations.migrationIds.length > 0}
-            <p class="dialog-body-copy">
-              Data will migrate from <code>v{preview.plan.migrations.from}</code> to
-              <code>v{preview.plan.migrations.to}</code>{preview.plan.migrations.requiresBackup
-                ? ". A backup is created before migrating."
+            <p class="dialog-body-copy"> {$ui("Data will migrate from")} <code>v{preview.plan.migrations.from}</code> {$ui("to")} <code>v{preview.plan.migrations.to}</code>{preview.plan.migrations.requiresBackup
+                ? $ui(". A backup is created before migrating.")
                 : "."}
             </p>
             <ul class="plugin-detail-list">
               {#each preview.plan.migrations.migrationIds as id}<li>{id}</li>{/each}
             </ul>
           {:else}
-            <p class="dialog-body-copy">No data migrations required.</p>
+            <p class="dialog-body-copy">{$ui("No data migrations required.")}</p>
           {/if}
           <div class="new-form-actions">
-            <button type="button" class="quiet-button" onclick={() => (upgradePreview = null)}>Cancel</button><button
+            <button type="button" class="quiet-button" onclick={() => (upgradePreview = null)}>{$ui("Cancel")}</button><button
               type="button"
               class="primary-button"
               onclick={confirmUpgrade}
-              disabled={upgradeBusy}>{upgradeBusy ? "Updating…" : "Confirm update"}</button>
+              disabled={upgradeBusy}>{upgradeBusy ? $ui("Updating…") : $ui("Confirm update")}</button>
           </div>
         </div>
       </div>
@@ -8690,14 +8762,14 @@ onMount(() => {
       <div class="modal-backdrop plugin-confirm-modal">
         <div class="dialog" role="alertdialog" aria-modal="true">
           <div class="new-form-heading">
-            <div><span class="panel-kicker">CONFIRM ACTION</span><strong>{confirmAction.title}</strong></div>
+            <div><span class="panel-kicker">{$ui("CONFIRM ACTION")}</span><strong>{confirmAction.title}</strong></div>
             <button type="button" class="new-form-close" onclick={() => (confirmAction = null)}
               ><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
           </div>
           <p class="dialog-body-copy">{confirmAction.message}</p>
           {#if confirmAction.capabilities}
             {#if confirmAction.capabilities.length > 0}
-              <div class="capability-list" role="group" aria-label="Requested capabilities">
+              <div class="capability-list" role="group" aria-label={$ui("Requested capabilities")}>
                 {#each confirmAction.capabilities as capability}
                   <label class="capability-item">
                     <input
@@ -8712,15 +8784,15 @@ onMount(() => {
                 {/each}
               </div>
             {:else}
-              <p class="dialog-body-copy capability-empty">No capabilities requested.</p>
+              <p class="dialog-body-copy capability-empty">{$ui("No capabilities requested.")}</p>
             {/if}
           {/if}
           <div class="new-form-actions">
-            <button type="button" class="quiet-button" onclick={() => (confirmAction = null)}>Cancel</button><button
+            <button type="button" class="quiet-button" onclick={() => (confirmAction = null)}>{$ui("Cancel")}</button><button
               type="button"
               class="primary-button"
               onclick={runConfirm}
-              disabled={confirmBusy}>{confirmBusy ? "Working…" : confirmAction.confirmLabel}</button>
+              disabled={confirmBusy}>{confirmBusy ? $ui("Working…") : confirmAction.confirmLabel}</button>
           </div>
         </div>
       </div>
@@ -8730,24 +8802,21 @@ onMount(() => {
         <div class="dialog" role="alertdialog" aria-modal="true">
           <div class="new-form-heading">
             <div>
-              <span class="panel-kicker">DELETE PROJECT DATA</span><strong>Delete {deleteTarget.name} data?</strong>
+              <span class="panel-kicker">{$ui("DELETE PROJECT DATA")}</span><strong>{$ui("Delete {0} data?", deleteTarget.name)}</strong>
             </div>
             <button type="button" class="new-form-close" onclick={() => (deleteTarget = null)}
               ><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
           </div>
-          <p class="dialog-body-copy">
-            All entities, documents, fields, relationships, and assets owned by <code>{deleteTarget.id}</code> in this project
-            will be deleted. A backup is kept on disk.
-          </p>
-          <p class="dialog-body-copy">Type <code>{deleteTarget.id}</code> to confirm.</p>
-          <input aria-label="Delete confirmation" bind:value={deleteInput} placeholder={deleteTarget.id} />
+          <p class="dialog-body-copy"> {$ui("All entities, documents, fields, relationships, and assets owned by")} <code>{deleteTarget.id}</code> {$ui("in this project will be deleted. A backup is kept on disk.")} </p>
+          <p class="dialog-body-copy">{$ui("Type")} <code>{deleteTarget.id}</code> {$ui("to confirm.")}</p>
+          <input aria-label={$ui("Delete confirmation")} bind:value={deleteInput} placeholder={deleteTarget.id} />
           <div class="new-form-actions">
-            <button type="button" class="quiet-button" onclick={() => (deleteTarget = null)}>Cancel</button><button
+            <button type="button" class="quiet-button" onclick={() => (deleteTarget = null)}>{$ui("Cancel")}</button><button
               type="button"
               class="primary-button danger-button"
               onclick={confirmDeleteData}
               disabled={deleteBusy || deleteInput.trim() !== deleteTarget.id}
-              >{deleteBusy ? "Deleting…" : "Delete project data"}</button>
+              >{deleteBusy ? $ui("Deleting…") : $ui("Delete project data")}</button>
           </div>
         </div>
       </div>
@@ -8756,21 +8825,22 @@ onMount(() => {
       <div class="modal-backdrop">
         <div class="dialog" role="alertdialog" aria-modal="true">
           <div class="new-form-heading">
-            <div><span class="panel-kicker">DATA DELETED</span><strong>Extension data deleted</strong></div>
+            <div><span class="panel-kicker">{$ui("DATA DELETED")}</span><strong>{$ui("Extension data deleted")}</strong></div>
             <button type="button" class="new-form-close" onclick={() => (deleteBackupPath = "")}
               ><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
           </div>
-          <p class="dialog-body-copy">A backup was kept at:</p>
+          <p class="dialog-body-copy">{$ui("A backup was kept at:")}</p>
           <code class="backup-path">{deleteBackupPath}</code>
           <div class="new-form-actions">
-            <button type="button" class="primary-button" onclick={() => (deleteBackupPath = "")}>Done</button>
+            <button type="button" class="primary-button" onclick={() => (deleteBackupPath = "")}
+              >{$messages.inspector.done}</button>
           </div>
         </div>
       </div>
     {/if}
     {#snippet workspaceViewSwitcher()}
       <WorkspaceViewNav
-        label={`${section} views`}
+        label={$messages.workspace.views}
         views={workspaceViewNavItems()}
         activeView={currentWorkspaceLocationView()}
         onSelect={(view) => void openWorkspaceView(view)} />
@@ -8833,20 +8903,15 @@ onMount(() => {
               <Puzzle size={18} strokeWidth={1.8} aria-hidden="true" />
             </div>
             <div class="hero-copy">
-              <span class="kicker">EXTENSIONS</span>
-              <strong>Extensions</strong>
-              <p>
-                Add and manage the tools that power this project. Installs, updates, and rollbacks are verified and
-                reversible.
-              </p>
+              <span class="kicker">{$ui("EXTENSIONS")}</span>
+              <strong>{$ui("Extensions")}</strong>
+              <p> {$ui("Add and manage the tools that power this project. Installs, updates, and rollbacks are verified and reversible.")} </p>
             </div>
             <div class="hero-stats">
               <span class="stat-pill"
-                ><Puzzle size={16} strokeWidth={1.8} aria-hidden="true" />
-                {adminPlugins ? adminPlugins.length : 0} installed</span>
+                ><Puzzle size={16} strokeWidth={1.8} aria-hidden="true" /> {$ui("{0} installed", adminPlugins ? adminPlugins.length : 0)}</span>
               <span class="stat-pill"
-                ><ShieldCheck size={16} strokeWidth={1.8} aria-hidden="true" />
-                {adminPlugins ? adminPlugins.filter((p) => p.enabled).length : 0} enabled</span>
+                ><ShieldCheck size={16} strokeWidth={1.8} aria-hidden="true" /> {$ui("{0} enabled", adminPlugins ? adminPlugins.filter((p) => p.enabled).length : 0)}</span>
             </div>
           </div>
           <div class="plugins-toolbar">
@@ -8854,17 +8919,17 @@ onMount(() => {
               type="button"
               class="primary-button"
               disabled={installing || adminBusy}
-              onclick={() => void installFromPicker()}>{installing ? "Installing…" : "Install extension…"}</button>
+              onclick={() => void installFromPicker()}>{installing ? $ui("Installing…") : $ui("Install extension…")}</button>
             <button
               type="button"
               class="quiet-button"
               disabled={registryBusy || installing}
               onclick={() => void refreshPluginRegistry()}
-              >{registryBusy ? "Refreshing catalog…" : "Refresh catalog"}</button>
-            <span class="muted-note">{adminBusy ? "Refreshing…" : ""}</span>
+              >{registryBusy ? $ui("Refreshing catalog…") : $ui("Refresh catalog")}</button>
+            <span class="muted-note">{adminBusy ? $ui("Refreshing…") : ""}</span>
           </div>
           {#if registryError}
-            <p class="plugin-muted">Catalog unavailable. Local install still works. {registryError}</p>
+            <p class="plugin-muted">{$ui("Catalog unavailable. Local install still works. {0}", $nativeErrorText(registryError))}</p>
           {/if}
           {#if registryCatalog.length > 0}
             <div class="plugins-list">
@@ -8872,78 +8937,71 @@ onMount(() => {
                 <article class="plugin-card">
                   <header class="plugin-card-head">
                     <div class="plugin-card-title">
-                      <strong>{entry.name}</strong><span class="plugin-id">{entry.id}</span>
+                      <strong>{$manifestText(entry.id, "module", entry.id, entry.name)}</strong><span class="plugin-id">{entry.id}</span>
                     </div>
                   </header>
                   <div class="plugin-card-meta">
-                    <span>v{entry.version} · {entry.publisher}</span>
+                    <span>{$ui("v{0} · {1}", entry.version, entry.publisher)}</span>
                   </div>
                   <button
                     type="button"
                     class="quiet-button"
                     disabled={installing}
-                    onclick={() => void installFromCatalog(entry)}>Install from catalog</button>
+                    onclick={() => void installFromCatalog(entry)}>{$ui("Install from catalog")}</button>
                 </article>
               {/each}
             </div>
           {/if}
           {#if installSummary}
-            <div class="plugins-note">
-              Installed {installSummary.id}
-              {installSummary.version}{installSummary.signed ? " (signed)" : " (unsigned)"}{installSummary.digest
+            <div class="plugins-note"> {$ui("Installed {0} {1}{2}{3}.", installSummary.id, installSummary.version, installSummary.signed ? $ui(" (signed)") : $ui(" (unsigned)"), installSummary.digest
                 ? ` · ${shortDigest(installSummary.digest)}`
-                : ""}.
-            </div>
+                : "")} </div>
           {/if}
           <div class="plugins-list">
             {#if adminPlugins === null}
-              <p class="search-state">Loading extensions…</p>
+              <p class="search-state">{$ui("Loading extensions…")}</p>
             {:else if adminPlugins.length === 0}
-              <p class="search-state">No extensions installed. Choose an extension package to get started.</p>
+              <p class="search-state">{$ui("No extensions installed. Choose an extension package to get started.")}</p>
             {:else}
               {#each adminPlugins as plugin (plugin.id)}
                 <article class="plugin-card">
                   <header class="plugin-card-head">
                     <div class="plugin-card-title">
-                      <strong>{plugin.name}</strong><span class="plugin-id">{plugin.id}</span>
+                      <strong>{$manifestText(plugin.id, "module", plugin.id, plugin.name)}</strong><span class="plugin-id">{plugin.id}</span>
                     </div>
                     <div class="plugin-badges">
                       <span class:badge-off={!plugin.enabled} class="plugin-badge"
-                        >{plugin.enabled ? "Enabled" : "Disabled"}</span>
+                        >{plugin.enabled ? $ui("Enabled") : $ui("Disabled")}</span>
                       <span
                         class="plugin-badge"
                         title={plugin.distribution.management === "app"
-                          ? "This extension is included with Daena and managed by the application."
-                          : "This extension was installed separately from the application."}
-                        >{plugin.distribution.origin === "bundled" ? "Included with Daena" : "Installed"}</span>
+                          ? $ui("This extension is included with Daena and managed by the application.")
+                          : $ui("This extension was installed separately from the application.")}
+                        >{plugin.distribution.origin === "bundled" ? $ui("Included with Daena") : $ui("Installed")}</span>
                       {#if plugin.stability === "beta"}<span
                           class="plugin-badge beta"
-                          title="Beta release: this plugin is useful but may be unstable">Beta · unstable</span
+                          title={$ui("Beta release: this plugin is useful but may be unstable")}>{$ui("Beta · unstable")}</span
                         >{:else if plugin.stability === "experimental"}<span
                           class="plugin-badge experimental"
-                          title="Experimental release: behavior may change">Experimental</span
+                          title={$ui("Experimental release: behavior may change")}>{$ui("Experimental")}</span
                         >{/if}
                       {#if plugin.lifecycle.failures > 0}<span
                           class="plugin-badge danger"
-                          title={plugin.lifecycle.lastError ?? ""}
-                          >{plugin.lifecycle.failures} failure{plugin.lifecycle.failures === 1 ? "" : "s"}</span
+                          title={plugin.lifecycle.lastError ? $nativeErrorText(plugin.lifecycle.lastError) : ""}
+                          >{$ui("{0} failure{1}", plugin.lifecycle.failures, plugin.lifecycle.failures === 1 ? "" : $ui("s"))}</span
                         >{/if}
                     </div>
                   </header>
                   <div class="plugin-card-meta">
-                    <span>v{plugin.selectedVersion ?? plugin.version} · {plugin.publisher}</span>
+                    <span>{$ui("v{0} · {1}", plugin.selectedVersion ?? plugin.version, plugin.publisher)}</span>
                   </div>
                   {#if !plugin.dependencyState.resolved}
-                    <p class="plugin-warning">
-                      Dependency problem: {plugin.dependencyState.error ?? "could not resolve dependencies"}
-                    </p>
+                    <p class="plugin-warning"> {$ui("Dependency problem: {0}", plugin.dependencyState.error ?? $ui("could not resolve dependencies"))} </p>
                   {:else if plugin.dependencyState.order.length > 0}
-                    <p class="plugin-muted">Loads after: {plugin.dependencyState.order.join(" → ")}</p>
+                    <p class="plugin-muted">{$ui("Loads after: {0}", plugin.dependencyState.order.join(" → "))}</p>
                   {/if}
                   {#if plugin.lifecycle.lastError}
-                    <p class="plugin-error" title={plugin.lifecycle.lastError}>
-                      Last failure: {plugin.lifecycle.lastError}
-                    </p>
+                    <p class="plugin-error" title={$nativeErrorText(plugin.lifecycle.lastError)}> {$ui("Last failure: {0}", $nativeErrorText(plugin.lifecycle.lastError))} </p>
                   {/if}
                   <div class="plugin-actions">
                     <button
@@ -8952,12 +9010,12 @@ onMount(() => {
                       class="plugin-toggle"
                       onclick={() => void togglePluginEnabled(plugin)}
                       disabled={adminBusy || pluginActionId !== null}
-                      >{pluginActionId === plugin.id ? "Working…" : plugin.enabled ? "Disable" : "Enable"}</button>
+                      >{pluginActionId === plugin.id ? $ui("Working…") : plugin.enabled ? $ui("Disable") : $ui("Enable")}</button>
                     {#if plugin.enabled}<button
                         type="button"
                         class="quiet-button"
                         onclick={() => void reviewPluginCapabilities(plugin)}
-                        disabled={adminBusy || pluginActionId !== null}>Review capabilities</button
+                        disabled={adminBusy || pluginActionId !== null}>{$ui("Review capabilities")}</button
                       >{/if}
                     {#if selectedUninstallableVersion(plugin)}
                       <button
@@ -8965,34 +9023,32 @@ onMount(() => {
                         onclick={() => confirmUninstall(plugin, selectedUninstallableVersion(plugin)!.version)}
                         disabled={adminBusy || plugin.enabled}
                         title={plugin.enabled
-                          ? "Disable the extension before uninstalling its selected code."
-                          : "Remove the selected extension code while preserving project data."}
-                        >{plugin.enabled ? "Disable to uninstall" : "Uninstall code"}</button>
+                          ? $ui("Disable the extension before uninstalling its selected code.")
+                          : $ui("Remove the selected extension code while preserving project data.")}
+                        >{plugin.enabled ? $ui("Disable to uninstall") : $ui("Uninstall code")}</button>
                     {/if}
                     {#if plugin.lifecycle.state === "quarantined"}<button
                         class="quiet-button"
                         onclick={() => retryPlugin(plugin)}
-                        disabled={adminBusy}>Retry</button
+                        disabled={adminBusy}>{$messages.inspector.retry}</button
                       >{/if}
                     <button class="quiet-button" onclick={() => openDeleteData(plugin)} disabled={adminBusy}
-                      >Delete project data…</button>
+                      >{$ui("Delete project data…")}</button>
                   </div>
                   {#if plugin.installedVersions.length > 0}
                     <div class="version-list">
                       {#each plugin.installedVersions as version (version.version)}
                         <div class="version-row">
                           <div class="version-copy">
-                            <span class="version-name">
-                              v{version.version}
-                              {#if version.isActiveCandidate}<span class="version-tag latest">Latest</span>{/if}
-                              {#if version.isSelected}<span class="version-tag selected">Selected</span>{/if}
-                              {#if version.bundled}<span class="version-tag bundled">Bundled</span>{/if}
-                              {#if version.signed}<span class="version-tag signed">Signed</span
-                                >{:else if !version.bundled}<span class="version-tag unsigned">Unsigned</span>{/if}
+                            <span class="version-name"> {$ui("v{0}", version.version)} {#if version.isActiveCandidate}<span class="version-tag latest">{$ui("Latest")}</span>{/if}
+                              {#if version.isSelected}<span class="version-tag selected">{$ui("Selected")}</span>{/if}
+                              {#if version.bundled}<span class="version-tag bundled">{$ui("Bundled")}</span>{/if}
+                              {#if version.signed}<span class="version-tag signed">{$ui("Signed")}</span
+                                >{:else if !version.bundled}<span class="version-tag unsigned">{$ui("Unsigned")}</span>{/if}
                             </span>
                             <span class="version-detail"
                               >{version.publisher}{version.installedAt
-                                ? ` · installed ${installedAtLabel(version.installedAt)}`
+                                ? $ui(" · installed {0}", installedAtLabel(version.installedAt))
                                 : ""}{version.digest ? ` · ${shortDigest(version.digest)}` : ""}</span>
                           </div>
                           <div class="version-actions">
@@ -9000,19 +9056,19 @@ onMount(() => {
                               <button
                                 class="quiet-button"
                                 onclick={() => previewUpgrade(plugin, version.version)}
-                                disabled={adminBusy}>Update to v{version.version}</button>
+                                disabled={adminBusy}>{$ui("Update to v{0}", version.version)}</button>
                             {/if}
                             {#if version.rollbackAvailable}
                               <button
                                 class="quiet-button"
                                 onclick={() => confirmRollback(plugin, version.version)}
-                                disabled={adminBusy}>Rollback</button>
+                                disabled={adminBusy}>{$ui("Rollback")}</button>
                             {/if}
                             {#if !version.isSelected && plugin.distribution.canUninstall}
                               <button
                                 class="quiet-button"
                                 onclick={() => confirmUninstall(plugin, version.version)}
-                                disabled={adminBusy}>Uninstall code</button>
+                                disabled={adminBusy}>{$ui("Uninstall code")}</button>
                             {/if}
                           </div>
                         </div>
@@ -9020,13 +9076,13 @@ onMount(() => {
                     </div>
                   {/if}
                   <details class="plugin-details">
-                    <summary>Capabilities, namespaces, services &amp; migrations</summary>
-                    <p class="plugin-muted">Kind: {plugin.kind}</p>
-                    <p class="plugin-muted">Compatibility: Host API {plugin.hostApi}</p>
-                    <p class="plugin-muted">Data format {plugin.dataVersion}</p>
+                    <summary>{$ui("Capabilities, namespaces, services & migrations")}</summary>
+                    <p class="plugin-muted">{$ui("Kind: {0}", plugin.kind)}</p>
+                    <p class="plugin-muted">{$ui("Compatibility: Host API {0}", plugin.hostApi)}</p>
+                    <p class="plugin-muted">{$ui("Data format {0}", plugin.dataVersion)}</p>
                     <div class="plugin-details-grid">
                       <section class="plugin-detail-section">
-                        <h4>Capabilities</h4>
+                        <h4>{$ui("Capabilities")}</h4>
                         <ul class="plugin-detail-list">
                           {#each plugin.capabilities as capability}
                             {@const granted = plugin.grantedCapabilities.includes(capability)}
@@ -9038,50 +9094,42 @@ onMount(() => {
                         </ul>
                       </section>
                       <section class="plugin-detail-section">
-                        <h4>Namespaces</h4>
+                        <h4>{$ui("Namespaces")}</h4>
                         <ul class="plugin-detail-list">
                           {#each plugin.namespaces as namespace}<li>{namespace}</li>{/each}
                         </ul>
                       </section>
                       <section class="plugin-detail-section">
-                        <h4>Services</h4>
+                        <h4>{$ui("Services")}</h4>
                         <ul class="plugin-detail-list">
-                          {#each plugin.services.provides as service}<li class="provides">
-                              provides <code>{service.name}@{service.major}</code>
+                          {#each plugin.services.provides as service}<li class="provides"> {$ui("provides")} <code>{service.name}@{service.major}</code>
                             </li>{/each}
-                          {#each plugin.services.consumes as service}<li class="consumes">
-                              consumes <code>{service.name}@{service.major}</code>
+                          {#each plugin.services.consumes as service}<li class="consumes"> {$ui("consumes")} <code>{service.name}@{service.major}</code>
                             </li>{/each}
                           {#if plugin.services.provides.length === 0 && plugin.services.consumes.length === 0}<li
-                              class="muted-item">
-                              none
-                            </li>{/if}
+                              class="muted-item"> {$ui("none")} </li>{/if}
                         </ul>
                       </section>
                       <section class="plugin-detail-section">
-                        <h4>Events</h4>
+                        <h4>{$ui("Events")}</h4>
                         <ul class="plugin-detail-list">
-                          {#each plugin.events.publishes as event}<li class="provides">
-                              publishes <code>{event.name}@{event.version}</code>
+                          {#each plugin.events.publishes as event}<li class="provides"> {$ui("publishes")} <code>{event.name}@{event.version}</code>
                             </li>{/each}
-                          {#each plugin.events.subscribes as event}<li class="consumes">
-                              subscribes <code>{event.name}@{event.version}</code>
+                          {#each plugin.events.subscribes as event}<li class="consumes"> {$ui("subscribes")} <code>{event.name}@{event.version}</code>
                             </li>{/each}
                           {#if plugin.events.publishes.length === 0 && plugin.events.subscribes.length === 0}<li
-                              class="muted-item">
-                              none
-                            </li>{/if}
+                              class="muted-item"> {$ui("none")} </li>{/if}
                         </ul>
                       </section>
                       <section class="plugin-detail-section">
-                        <h4>Migrations</h4>
+                        <h4>{$ui("Migrations")}</h4>
                         <ul class="plugin-detail-list">
                           {#each plugin.migrations as migration}<li class="migration">
                               <code>{migration.from} → {migration.to}</code>{migration.recovery === "backup"
-                                ? " · backs up"
+                                ? $ui(" · backs up")
                                 : ""}
                             </li>{/each}
-                          {#if plugin.migrations.length === 0}<li class="muted-item">no data migrations</li>{/if}
+                          {#if plugin.migrations.length === 0}<li class="muted-item">{$ui("no data migrations")}</li>{/if}
                         </ul>
                       </section>
                     </div>
@@ -9105,6 +9153,7 @@ onMount(() => {
             contentRevision={moduleSchemaContentRevision}
             busy={moduleSchemaBusy}
             message={moduleSchemaMessage}
+            messageIsError={moduleSchemaMessageIsError}
             conflict={moduleSchemaConflict}
             entityCountForType={schemaEntityCountForType}
             onReassignEntities={reassignSchemaEntities}
@@ -9123,6 +9172,7 @@ onMount(() => {
             onAdoptCurrentRevision={(revision) => {
               moduleSchemaContentRevision = revision;
               moduleSchemaConflict = false;
+              moduleSchemaMessageIsError = false;
               moduleSchemaMessage = "Draft kept on the current revision. Save to reapply.";
             }}
             onDirtyChange={setSchemaEditorDirty} />
@@ -9171,9 +9221,9 @@ onMount(() => {
     {:else if !ready}
       <section class="welcome">
         <div class="welcome-copy">
-          <span class="overline">A private place for impossible worlds</span>
-          <h1>Build the world<br /><em>behind the story.</em></h1>
-          <p>Shape characters, places, factions, and history in one calm, local-first studio.</p>
+          <span class="overline">{$messages.welcome.overline}</span>
+          <h1>{$messages.welcome.heading}<br /><em>{$messages.welcome.emphasis}</em></h1>
+          <p>{$messages.welcome.description}</p>
         </div>
         <div class="welcome-map" aria-hidden="true">
           <span class="map-marker marker-atlas"><MapIcon size={21} strokeWidth={1.65} /></span>
@@ -9182,18 +9232,18 @@ onMount(() => {
           <span class="map-marker marker-tree"><TreePine size={21} strokeWidth={1.65} /></span>
         </div>
         <div class="art-card">
-          <span>ELDERMERE</span><strong>The sea remembers<br />what kingdoms forget.</strong><small
-            >Fragments · 12</small>
+          <span>{$ui("ELDERMERE")}</span><strong>{$messages.welcome.artLine1}<br />{$messages.welcome.artLine2}</strong><small
+            >{$messages.welcome.fragments}</small>
         </div>
       </section>
     {:else if projectHomeOpen}
       <ProjectHome
-        projectName={projectInfo?.name ?? "Your world"}
+        projectName={projectInfo?.name ?? $messages.workspace.project}
         activeEntityCount={entities.filter((entity) => !entity.deleted).length}
         snapshotChangeCount={gitStatus?.canonical_changes.length ?? 0}
         workspaces={enabledWorkspaceSections().map((target) => ({
           section: target,
-          title: workspaceSectionLabel(target),
+          title: workspaceSectionLabel(target, $messages.sections),
           description: workspaceDescription(target),
           count: workspaceEntityCount(target),
         }))}
@@ -9221,7 +9271,7 @@ onMount(() => {
         bind:element={specializedSurfaceElement}
         onScroll={rememberSpecializedSurfaceScroll}>
         <div class="host-view-shell">
-          <button class="quiet-button host-view-back" onclick={() => void closePluginView()}>Back to workspace</button
+          <button class="quiet-button host-view-back" onclick={() => void closePluginView()}>{$ui("Back to workspace")}</button
           ><HostView plugin={hostView.plugin} view={hostView.view} />
         </div>
       </SpecializedSurface>
@@ -9383,7 +9433,7 @@ onMount(() => {
               instanceId={shownWebviewInstance}
               holdMount={shellNavigationBusy}
               viewId={sandboxView.view?.id}
-              title={sandboxView.plugin.name} />
+              title={$manifestText(sandboxView.plugin.id, "module", sandboxView.plugin.id, sandboxView.plugin.name)} />
           {/key}
         {/key}
       </SpecializedSurface>
@@ -9393,16 +9443,17 @@ onMount(() => {
       {/if}
       <section class="empty-workspace-state">
         <div class="disabled-icon">◌</div>
-        <span class="overline">WORKSPACE READY</span>
-        <h1>Choose a workspace to begin.</h1>
-        <p>No workspace modules are enabled in this project. Enable one from Project → Extensions to start working.</p>
-        <button class="primary-button" onclick={() => void openProjectCenterTab("extensions")}>Open Extensions</button>
+        <span class="overline">{$ui("WORKSPACE READY")}</span>
+        <h1>{$ui("Choose a workspace to begin.")}</h1>
+        <p>{$ui("No workspace modules are enabled in this project. Enable one from Project → Extensions to start working.")}</p>
+        <button class="primary-button" onclick={() => void openProjectCenterTab("extensions")}
+          >{$messages.workspace.openExtensions}</button>
       </section>
     {:else}
       {#if projectDiagnostics.length && !writingWebviewShown}<div class="project-diagnostics" role="alert">
           <span>{projectDiagnostics[0]}</span><button
             class="quiet-button"
-            onclick={() => void importPortableCheckpoint()}>Import checkpoint</button>
+            onclick={() => void importPortableCheckpoint()}>{$ui("Import checkpoint")}</button>
         </div>{/if}
       {#if !mapSurfaceOpen}
         {#snippet workspaceHeaderActions()}
@@ -9413,50 +9464,49 @@ onMount(() => {
                 aria-haspopup="menu"
                 aria-expanded={mapProviderMenuOpen === "header"}
                 onclick={() => (mapProviderMenuOpen = mapProviderMenuOpen === "header" ? null : "header")}
-                >Create map</button>
+                >{$ui("Create map")}</button>
               {#if mapProviderMenuOpen === "header"}<div class="map-provider-menu" role="menu">
                   <div class="map-provider-row">
                     <button type="button" role="menuitem" onclick={() => void createMap("physical")}
-                      >Generate physical world</button
+                      >{$ui("Generate physical world")}</button
                     ><span class="map-help-wrapper"
-                      ><button type="button" class="map-help" aria-label="Help for Generate physical world">?</button
+                      ><button type="button" class="map-help" aria-label={$ui("Help for Generate physical world")}>?</button
                       ><span class="map-help-tooltip" role="tooltip"
-                        >Create a whole world from scratch — continents, oceans, climate and hazards are generated. The
-                        base world can't be edited directly; copy any part you want to change into an editable layer.</span
+                        >{$ui("Create a whole world from scratch — continents, oceans, climate and hazards are generated. The base world can't be edited directly; copy any part you want to change into an editable layer.")}</span
                       ></span>
                   </div>
                   <div class="map-provider-row">
                     <button type="button" role="menuitem" onclick={() => void createMap("vector")}
-                      >Import vector map</button
+                      >{$ui("Import vector map")}</button
                     ><span class="map-help-wrapper"
-                      ><button type="button" class="map-help" aria-label="Help for Import vector map">?</button><span
+                      ><button type="button" class="map-help" aria-label={$ui("Help for Import vector map")}>?</button><span
                         class="map-help-tooltip"
                         role="tooltip"
-                        >Import a GeoJSON file. Draw places, borders and routes as shapes you can edit.</span
+                        >{$ui("Import a GeoJSON file. Draw places, borders and routes as shapes you can edit.")}</span
                       ></span>
                   </div>
                   <div class="map-provider-row">
                     <button type="button" role="menuitem" onclick={() => void createMap("image")}
-                      >Import image map</button
+                      >{$ui("Import image map")}</button
                     ><span class="map-help-wrapper"
-                      ><button type="button" class="map-help" aria-label="Help for Import image map">?</button><span
+                      ><button type="button" class="map-help" aria-label={$ui("Help for Import image map")}>?</button><span
                         class="map-help-tooltip"
                         role="tooltip"
-                        >Use any picture (PNG, JPG, SVG) as a background and draw your map on top of it.</span
+                        >{$ui("Use any picture (PNG, JPG, SVG) as a background and draw your map on top of it.")}</span
                       ></span>
                   </div>
                 </div>{/if}
             </div>
           {:else if section === "writing" && writingView === "manuscripts"}
-            <div class="heading-create-group" role="group" aria-label="Create">
+            <div class="heading-create-group" role="group" aria-label={$ui("Create")}>
               <button
                 class="primary-button"
                 type="button"
-                aria-label={`${ENTITY_ACTIONS.new} ${createLabel()}`}
+                aria-label={$messages.workspace.newNamed(createLabel())}
                 onclick={openContextualCreate}
                 ><span style="display:inline-flex;vertical-align:middle" aria-hidden="true"
                   ><Plus size={14} strokeWidth={1.8} /></span>
-                {ENTITY_ACTIONS.new}</button>
+                {$messages.workspace.newEntry}</button>
               {#if selected && isManuscriptType(selected.entity_type)}
                 <button
                   class="quiet-button"
@@ -9466,7 +9516,7 @@ onMount(() => {
               {/if}
             </div>
           {:else if section === "houses"}
-            <div class="heading-create-group" role="group" aria-label="Create">
+            <div class="heading-create-group" role="group" aria-label={$ui("Create")}>
               <button class="primary-button" type="button" aria-label={ENTITY_ACTIONS.newHouse} onclick={openNewHouse}
                 >{ENTITY_ACTIONS.newHouse}</button>
             </div>
@@ -9475,35 +9525,35 @@ onMount(() => {
               class="primary-button"
               type="button"
               data-guide="workspace-new"
-              aria-label={`${ENTITY_ACTIONS.new} ${createLabel()}`}
+              aria-label={$messages.workspace.newNamed(createLabel())}
               onclick={openContextualCreate}
               ><span style="display:inline-flex;vertical-align:middle" aria-hidden="true"
                 ><Plus size={14} strokeWidth={1.8} /></span>
-              {ENTITY_ACTIONS.new}</button>
+              {$messages.workspace.newEntry}</button>
           {/if}
         {/snippet}
         {#snippet workbenchPaneToggles()}
-          <div class="workbench-pane-toggles" role="group" aria-label="Workbench panes">
+          <div class="workbench-pane-toggles" role="group" aria-label={$messages.workspace.panes}>
             <button
               type="button"
               aria-pressed={workbenchPaneVisibility.collection}
-              aria-label="Show collection pane"
-              title="Show collection pane"
+              aria-label={$messages.workspace.showCollection}
+              title={$messages.workspace.showCollection}
               onclick={() => void toggleWorkbenchPane("collection")}
               ><PanelLeft size={15} strokeWidth={1.8} aria-hidden="true" /></button>
             <button
               type="button"
               aria-pressed={workbenchPaneVisibility.content}
-              aria-label="Show content pane"
-              title="Show content pane"
+              aria-label={$messages.workspace.showContent}
+              title={$messages.workspace.showContent}
               onclick={() => void toggleWorkbenchPane("content")}
               ><Square size={15} strokeWidth={1.8} aria-hidden="true" /></button>
             {#if workbenchSupportsInspector()}
               <button
                 type="button"
                 aria-pressed={workbenchPaneVisibility.inspector}
-                aria-label="Show inspector pane"
-                title="Show inspector pane"
+                aria-label={$messages.workspace.showInspector}
+                title={$messages.workspace.showInspector}
                 onclick={() => void toggleWorkbenchPane("inspector")}
                 ><PanelRight size={15} strokeWidth={1.8} aria-hidden="true" /></button>
             {/if}
@@ -9522,10 +9572,10 @@ onMount(() => {
               ? () => (timelineGuideHint += 1)
               : undefined}
           guideLabel={section === "lore"
-            ? "Show lore guide"
+            ? $messages.workspace.guide
             : section === "timeline"
-              ? "Show timeline guide"
-              : "Show guide"} />
+              ? $ui("Show timeline guide")
+              : $ui("Show guide")} />
       {/if}
       <section
         class:maps-workspace={section === "maps" && sandboxView?.renderer === "maps"}
@@ -9538,16 +9588,19 @@ onMount(() => {
         {#snippet collectionControls()}
           <div class="collection-search">
             <span><Search size={16} strokeWidth={1.8} aria-hidden="true" /></span><input
-              aria-label={`Search ${collectionLabel()}`}
+              aria-label={$messages.workspace.search(collectionLabel())}
               bind:value={collectionQuery.textSearch}
-              placeholder={`Search ${collectionLabel()}`} /><button
+              placeholder={$messages.workspace.search(collectionLabel())} /><button
               class="filter-toggle"
               class:active={filterOpen}
-              aria-label="Filters"
+              aria-label={$messages.workspace.filters}
               onclick={() => (filterOpen = !filterOpen)}>⫶</button>
-            {#if filterOpen}<div class="filter-popover" role="dialog" aria-label="Collection filters">
+            {#if filterOpen}<div
+                class="filter-popover"
+                role="dialog"
+                aria-label={$messages.workspace.collectionFilters}>
                 <fieldset class="filter-section">
-                  <legend>Sort by</legend>
+                  <legend>{$messages.workspace.sortBy}</legend>
                   <div class="filter-row">
                     <label
                       ><input
@@ -9555,30 +9608,35 @@ onMount(() => {
                         name="sortField"
                         value="name"
                         checked={collectionQuery.sortField === "name"}
-                        onchange={() => (collectionQuery.sortField = "name")} /> Name</label
+                        onchange={() => (collectionQuery.sortField = "name")} />
+                      {$messages.workspace.name}</label
                     ><label
                       ><input
                         type="radio"
                         name="sortField"
                         value="created_at"
                         checked={collectionQuery.sortField === "created_at"}
-                        onchange={() => (collectionQuery.sortField = "created_at")} /> Created</label
+                        onchange={() => (collectionQuery.sortField = "created_at")} />
+                      {$messages.workspace.created}</label
                     ><label
                       ><input
                         type="radio"
                         name="sortField"
                         value="updated_at"
                         checked={collectionQuery.sortField === "updated_at"}
-                        onchange={() => (collectionQuery.sortField = "updated_at")} /> Updated</label
+                        onchange={() => (collectionQuery.sortField = "updated_at")} />
+                      {$messages.workspace.updated}</label
                     ><button
                       class="sort-dir-toggle"
-                      aria-label={collectionQuery.sortDir === "asc" ? "Ascending" : "Descending"}
+                      aria-label={collectionQuery.sortDir === "asc"
+                        ? $messages.workspace.ascending
+                        : $messages.workspace.descending}
                       onclick={() => (collectionQuery.sortDir = collectionQuery.sortDir === "asc" ? "desc" : "asc")}
                       >{collectionQuery.sortDir === "asc" ? "↑" : "↓"}</button>
                   </div>
                 </fieldset>
                 <fieldset class="filter-section">
-                  <legend>Per page</legend>
+                  <legend>{$messages.workspace.perPage}</legend>
                   <div class="filter-row">
                     {#each [25, 50, 100] as size}<label
                         ><input
@@ -9595,7 +9653,7 @@ onMount(() => {
                   </div>
                 </fieldset>
                 <fieldset class="filter-section">
-                  <legend>Entity types</legend>
+                  <legend>{$messages.workspace.entityTypes}</legend>
                   <div class="filter-type-list">
                     {#each sectionEntityTypes() as type}<label
                         ><input
@@ -9610,24 +9668,24 @@ onMount(() => {
           </div>
         {/snippet}
         {#snippet collectionItems()}
-          {#if collectionError}<p class="collection-error" role="alert">{collectionError}</p>{/if}
+          {#if collectionError}<p class="collection-error" role="alert">{$nativeErrorText(collectionError)}</p>{/if}
           {#if collectionLoading && collectionPage.items.length === 0 && !manuscriptStructureMode()}<div
               class="collection-loading"
               role="status">
-              Loading {collectionLabel()}…
+              {$messages.workspace.loading(collectionLabel())}
             </div>{:else if manuscriptStructureMode() && manuscriptOutlineLoading && manuscriptOutline.length === 0}<div
               class="collection-loading"
               role="status">
-              Loading {collectionLabel()}…
+              {$messages.workspace.loading(collectionLabel())}
             </div>{:else if collectionIsEmpty()}
             {#if section === "maps"}
               <EntityEmptyState
                 title={collectionQuery.textSearch
-                  ? `No ${collectionLabel()} match that search.`
-                  : `No ${collectionLabel()} yet.`}
+                  ? $messages.workspace.noMatches(collectionLabel())
+                  : $messages.workspace.empty(collectionLabel())}
                 message={collectionQuery.textSearch
-                  ? "Try another search or create something new."
-                  : "Create a map through an installed map integration."}
+                  ? $messages.workspace.searchHint
+                  : $ui("Create a map through an installed map integration.")}
                 maps>
                 {#snippet actions()}
                   <div class="empty-create-actions">
@@ -9638,38 +9696,36 @@ onMount(() => {
                       aria-expanded={mapProviderMenuOpen === "empty"}
                       onclick={() => (mapProviderMenuOpen = mapProviderMenuOpen === "empty" ? null : "empty")}
                       ><span style="display:inline-flex;vertical-align:middle" aria-hidden="true"
-                        ><Plus size={16} strokeWidth={1.8} aria-hidden="true" /></span> Create map</button>
+                        ><Plus size={16} strokeWidth={1.8} aria-hidden="true" /></span> {$ui("Create map")}</button>
                     {#if mapProviderMenuOpen === "empty"}<div
                         class="map-provider-menu empty-map-provider-menu"
                         role="menu">
                         <div class="map-provider-row">
                           <button type="button" role="menuitem" onclick={() => void createMap("physical")}
-                            >Generate physical world</button
+                            >{$ui("Generate physical world")}</button
                           ><span class="map-help-wrapper"
-                            ><button type="button" class="map-help" aria-label="Help for Generate physical world"
+                            ><button type="button" class="map-help" aria-label={$ui("Help for Generate physical world")}
                               >?</button
                             ><span class="map-help-tooltip" role="tooltip"
-                              >Create a whole world from scratch — continents, oceans, climate and hazards are
-                              generated. The base world can't be edited directly; copy any part you want to change into
-                              an editable layer.</span
+                              >{$ui("Create a whole world from scratch — continents, oceans, climate and hazards are generated. The base world can't be edited directly; copy any part you want to change into an editable layer.")}</span
                             ></span>
                         </div>
                         <div class="map-provider-row">
                           <button type="button" role="menuitem" onclick={() => void createMap("vector")}
-                            >Import vector map</button
+                            >{$ui("Import vector map")}</button
                           ><span class="map-help-wrapper"
-                            ><button type="button" class="map-help" aria-label="Help for Import vector map">?</button
+                            ><button type="button" class="map-help" aria-label={$ui("Help for Import vector map")}>?</button
                             ><span class="map-help-tooltip" role="tooltip"
-                              >Import a GeoJSON file. Draw places, borders and routes as shapes you can edit.</span
+                              >{$ui("Import a GeoJSON file. Draw places, borders and routes as shapes you can edit.")}</span
                             ></span>
                         </div>
                         <div class="map-provider-row">
                           <button type="button" role="menuitem" onclick={() => void createMap("image")}
-                            >Import image map</button
+                            >{$ui("Import image map")}</button
                           ><span class="map-help-wrapper"
-                            ><button type="button" class="map-help" aria-label="Help for Import image map">?</button
+                            ><button type="button" class="map-help" aria-label={$ui("Help for Import image map")}>?</button
                             ><span class="map-help-tooltip" role="tooltip"
-                              >Use any picture (PNG, JPG, SVG) as a background and draw your map on top of it.</span
+                              >{$ui("Use any picture (PNG, JPG, SVG) as a background and draw your map on top of it.")}</span
                             ></span>
                         </div>
                       </div>{/if}
@@ -9679,17 +9735,15 @@ onMount(() => {
             {:else}
               <EntityEmptyState
                 title={collectionQuery.textSearch
-                  ? `No ${collectionLabel()} match that search.`
-                  : `No ${collectionLabel()} yet.`}
+                  ? $messages.workspace.noMatches(collectionLabel())
+                  : $messages.workspace.empty(collectionLabel())}
                 message={collectionQuery.textSearch
-                  ? "Try another search or create something new."
-                  : `Create your first ${createLabel()} to begin building this collection.`}
+                  ? $messages.workspace.searchHint
+                  : $messages.workspace.startCollection(createLabel())}
                 createLabel={createLabel()}
                 onCreate={openContextualCreate} />
             {/if}{:else if manuscriptStructureMode()}
-            {#if manuscriptOutlineTruncated}<p class="collection-loading" role="status">
-                Outline includes the first {MANUSCRIPT_OUTLINE_CAP} manuscripts.
-              </p>{/if}
+            {#if manuscriptOutlineTruncated}<p class="collection-loading" role="status"> {$ui("Outline includes the first {0} manuscripts.", MANUSCRIPT_OUTLINE_CAP)} </p>{/if}
             {#snippet manuscriptCollectionRow(node: OutlineNode, depth: number, hasParent: boolean)}
               {@const entity = entityFromOutlineNode(node)}
               {@const rowIcon = iconForEntityType(entity.entity_type)}
@@ -9702,7 +9756,7 @@ onMount(() => {
                     type="button"
                     class="outline-toggle"
                     aria-expanded={expanded}
-                    aria-label={expanded ? `Collapse ${entity.name}` : `Expand ${entity.name}`}
+                    aria-label={expanded ? $ui("Collapse {0}", entity.name) : $ui("Expand {0}", entity.name)}
                     onclick={() => toggleManuscriptOutlineNode(node.id)}
                     >{#if expanded}<ChevronDown size={16} strokeWidth={1.8} aria-hidden="true" />{:else}<ChevronRight
                         size={16}
@@ -9725,7 +9779,7 @@ onMount(() => {
                     pluginId={rowIcon.pluginId}
                     size={16}
                     box={40} /><span class="item-copy"
-                    ><strong>{entity.name}</strong><small>{outlineRoleLabel(node, hasParent)}</small></span>
+                    ><strong>{entity.name}</strong><small>{$ui(outlineRoleLabel(node, hasParent))}</small></span>
                 </button>
                 <EntityRowActions
                   entityName={entity.name}
@@ -9830,36 +9884,39 @@ onMount(() => {
         {#snippet collectionFooter()}
           {#if manuscriptStructureMode() && manuscriptOutlinePage().total > 0}<nav
               class="collection-pagination"
-              aria-label="Collection pages">
+              aria-label={$messages.workspace.collectionPages}>
               <button
                 type="button"
                 disabled={collectionQuery.page === 0 || manuscriptOutlineLoading}
-                onclick={() => (collectionQuery.page = Math.max(0, collectionQuery.page - 1))}>Previous</button
+                onclick={() => (collectionQuery.page = Math.max(0, collectionQuery.page - 1))}
+                >{$messages.workspace.previous}</button
               ><span
-                >{manuscriptOutlinePage().offset + 1}–{Math.min(
+                >{$ui("{0}–{1} of {2}", manuscriptOutlinePage().offset + 1, Math.min(
                   manuscriptOutlinePage().offset + manuscriptOutlinePage().items.length,
                   manuscriptOutlinePage().total,
-                )} of {manuscriptOutlinePage().total}</span
+                ), manuscriptOutlinePage().total)}</span
               ><button
                 type="button"
                 disabled={!manuscriptOutlinePage().hasMore || manuscriptOutlineLoading}
-                onclick={() => (collectionQuery.page += 1)}>Next</button>
+                onclick={() => (collectionQuery.page += 1)}>{$messages.workspace.next}</button>
             </nav>{:else if collectionResult().total > 0}<nav
               class="collection-pagination"
-              aria-label="Collection pages">
+              aria-label={$messages.workspace.collectionPages}>
               <button
                 type="button"
                 disabled={collectionQuery.page === 0 || collectionLoading}
-                onclick={() => (collectionQuery.page = Math.max(0, collectionQuery.page - 1))}>Previous</button
+                onclick={() => (collectionQuery.page = Math.max(0, collectionQuery.page - 1))}
+                >{$messages.workspace.previous}</button
               ><span
-                >{collectionPage.offset + 1}–{Math.min(
-                  collectionPage.offset + collectionPage.items.length,
+                >{$messages.workspace.onPage(
+                  collectionPage.offset + 1,
+                  Math.min(collectionPage.offset + collectionPage.items.length, collectionPage.total),
                   collectionPage.total,
-                )} of {collectionPage.total}</span
+                )}</span
               ><button
                 type="button"
                 disabled={!collectionPage.has_more || collectionLoading}
-                onclick={() => (collectionQuery.page += 1)}>Next</button>
+                onclick={() => (collectionQuery.page += 1)}>{$messages.workspace.next}</button>
             </nav>{/if}
         {/snippet}
         {#if workbenchPaneVisibility.collection}<CollectionPane
@@ -9868,8 +9925,8 @@ onMount(() => {
             label={collectionLabel()}
             viewMode={collectionQuery.viewMode}
             groupedAriaLabel={section === "writing" && writingView === "manuscripts"
-              ? "Grouped by structure"
-              : "Grouped by type"}
+              ? $messages.workspace.groupedByStructure
+              : $messages.workspace.groupedByType}
             allowOverflow={collectionIsEmpty()}
             controls={collectionControls}
             children={collectionItems}
@@ -9880,7 +9937,7 @@ onMount(() => {
             onViewModeChange={(mode) => (collectionQuery.viewMode = mode)}
             onScroll={rememberCollectionScroll} />{/if}
         {#if !mapSurfaceOpen && workbenchPaneVisibility.collection && workbenchPaneVisibility.content}<PaneResizeHandle
-            label="Resize collection pane"
+            label={$messages.workspace.resizeCollection}
             value={activePaneDimensions().collectionWidth}
             min={collectionPaneMin}
             max={collectionPaneMax}
@@ -9896,7 +9953,7 @@ onMount(() => {
                   instanceId={shownWebviewInstance}
                   holdMount={shellNavigationBusy}
                   viewId="language-workspace"
-                  title="Language"
+                  title={$ui("Language")}
                   entityId={selected?.id}
                   moduleState={{ pane: languagePane }} />
               </div>
@@ -9910,10 +9967,10 @@ onMount(() => {
                 {#if projectDiagnostics.length > 0}<div class="project-diagnostics" role="alert">
                     <span>{projectDiagnostics[0]}</span><button
                       class="quiet-button"
-                      onclick={() => void importPortableCheckpoint()}>Import checkpoint</button>
+                      onclick={() => void importPortableCheckpoint()}>{$ui("Import checkpoint")}</button>
                   </div>{/if}
                 {#if error}<div class="writing-notice" role="alert" aria-live="assertive">
-                    <span>{error}</span><button aria-label="Dismiss" onclick={() => (error = "")}
+                    <span>{$nativeErrorText(error)}</span><button aria-label={$ui("Dismiss")} onclick={() => (error = "")}
                       ><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
                   </div>{/if}
               </div>
@@ -9925,7 +9982,7 @@ onMount(() => {
                   instanceId={shownWebviewInstance}
                   holdMount={shellNavigationBusy}
                   viewId="writing-workspace"
-                  title="Writing" />
+                  title={$ui("Writing")} />
               </div>
             {/key}
           </div>
@@ -9946,15 +10003,15 @@ onMount(() => {
                 {#if mapState?.status === "conflict"}
                   <div class="map-conflict-banner" role="alert">
                     <div class="map-conflict-copy">
-                      <strong>This map changed on disk while you were editing</strong>
-                      <p>Your draft was not saved over it. A recovery copy was exported so nothing is lost.</p>
+                      <strong>{$ui("This map changed on disk while you were editing")}</strong>
+                      <p>{$ui("Your draft was not saved over it. A recovery copy was exported so nothing is lost.")}</p>
                       {#if mapDetail.path}<code>{mapDetail.path}</code>{/if}
                     </div>
                     <div class="map-conflict-actions">
                       <button class="primary-button" type="button" disabled={mapRecoveryBusy} onclick={restoreMapDraft}
-                        >{mapRecoveryBusy ? "Restoring…" : "Restore draft"}</button
-                      ><button class="quiet-button" type="button" onclick={reloadMapOriginal}>Reload original</button
-                      ><button class="quiet-button" type="button" onclick={dismissMapConflict}>Keep editing</button>
+                        >{mapRecoveryBusy ? $ui("Restoring…") : $ui("Restore draft")}</button
+                      ><button class="quiet-button" type="button" onclick={reloadMapOriginal}>{$ui("Reload original")}</button
+                      ><button class="quiet-button" type="button" onclick={dismissMapConflict}>{$ui("Keep editing")}</button>
                     </div>
                   </div>
                 {/if}
@@ -10030,17 +10087,17 @@ onMount(() => {
                       ondblclick={() => {
                         if (selected) void openEntityEditDialog();
                       }}
-                      title={selected ? "Double-click to edit" : undefined}
+                      title={selected ? $messages.workspace.doubleClickToEdit : undefined}
                       style={selected ? "cursor:text" : undefined}>
-                      {selected?.name ?? (section === "maps" ? "Choose a map" : "Choose an entry")}
+                      {selected?.name ?? (section === "maps" ? $ui("Choose a map") : $messages.workspace.chooseEntry)}
                     </h2>
                     {#if selected}
                       <div class="editor-title-actions">
                         <button
                           class="quiet-button editor-title-icon"
                           type="button"
-                          aria-label={`${ENTITY_ACTIONS.editIdentity} for ${selected.name}`}
-                          title={ENTITY_ACTIONS.editIdentity}
+                          aria-label={$messages.workspace.editNamed(selected.name)}
+                          title={$messages.workspace.editIdentity}
                           onclick={() => void openEntityEditDialog()}
                           ><Pencil size={15} strokeWidth={1.8} aria-hidden="true" /></button>
                         {#if section === "houses" && selected.entity_type === HOUSE_TYPE}
@@ -10048,7 +10105,7 @@ onMount(() => {
                           <button
                             class="quiet-button editor-title-icon"
                             type="button"
-                            aria-label={`${ENTITY_ACTIONS.openTree} for ${houseEntity.name}`}
+                            aria-label={$ui("{0} for {1}", ENTITY_ACTIONS.openTree, houseEntity.name)}
                             title={ENTITY_ACTIONS.openTree}
                             onclick={() => void openHouseTree(houseEntity)}
                             ><TreePine size={15} strokeWidth={1.8} aria-hidden="true" /></button>
@@ -10061,23 +10118,23 @@ onMount(() => {
                   {#if section === "maps"}<button
                       class="quiet-button"
                       type="button"
-                      onclick={() => void openSelectedMapEditor()}>Open map editor</button
+                      onclick={() => void openSelectedMapEditor()}>{$ui("Open map editor")}</button
                     >{/if}
                 {/snippet}
                 <div class="editor-header-controls">
-                  {#if selected}<div class="document-mode-toggle" aria-label="Document mode">
+                  {#if selected}<div class="document-mode-toggle" aria-label={$messages.workspace.documentMode}>
                       <button
                         type="button"
                         class:active={documentMode === "read"}
                         aria-pressed={documentMode === "read"}
                         disabled={selectedLoading || Boolean(selectedLoadError)}
-                        onclick={() => void setDocumentMode("read")}>Article</button
+                        onclick={() => void setDocumentMode("read")}>{$messages.workspace.article}</button
                       ><button
                         type="button"
                         class:active={documentMode === "edit"}
                         aria-pressed={documentMode === "edit"}
                         disabled={selectedLoading || Boolean(selectedLoadError)}
-                        onclick={() => void setDocumentMode("edit")}>Edit</button>
+                        onclick={() => void setDocumentMode("edit")}>{$messages.workspace.edit}</button>
                     </div>{/if}
                   <StatusSummary
                     visible={Boolean(selected)}
@@ -10096,47 +10153,47 @@ onMount(() => {
                 {#if selectedLoading}
                   <WorkbenchState
                     kind="loading"
-                    title="Loading entry"
-                    message="Reading the document, details, relationships, and assets." />
+                    title={$ui("Loading entry")}
+                    message={$ui("Reading the document, details, relationships, and assets.")} />
                 {:else if selectedLoadError}
                   {#snippet retrySelectedLoad()}<button
                       class="quiet-button"
                       type="button"
-                      onclick={() => void reloadSelectedFromDisk()}>Retry</button
+                      onclick={() => void reloadSelectedFromDisk()}>{$messages.inspector.retry}</button
                     >{/snippet}
                   <WorkbenchState
                     kind="error"
-                    title="Entry unavailable"
-                    message={selectedLoadError}
+                    title={$ui("Entry unavailable")}
+                    message={$nativeErrorText(selectedLoadError)}
                     actions={retrySelectedLoad} />
                 {:else}
                   {@const activeConflict = documentConflict}
                   {#if activeConflict}
                     {#snippet conflictResolutionActions()}<div class="conflict-workbench-actions">
                         {#if !activeConflict.diagnostics.length}<details class="conflict-compare">
-                            <summary>Compare with the currently saved document</summary>
+                            <summary>{$ui("Compare with the currently saved document")}</summary>
                             <pre>{conflictDiskBody}</pre>
                           </details>{/if}
                         <div class="conflict-actions">
-                          <button class="quiet-button" type="button" onclick={reloadConflict}>Reload disk</button
+                          <button class="quiet-button" type="button" onclick={reloadConflict}>{$ui("Reload disk")}</button
                           ><button
                             class="quiet-button"
                             type="button"
                             onclick={overwriteConflict}
-                            disabled={activeConflict.diagnostics.length > 0}>Overwrite as new revision</button
+                            disabled={activeConflict.diagnostics.length > 0}>{$ui("Overwrite as new revision")}</button
                           ><button class="quiet-button" type="button" onclick={saveConflictRecoveryCopy}
-                            >Save recovery copy</button>
+                            >{$ui("Save recovery copy")}</button>
                         </div>
                       </div>{/snippet}
                     <WorkbenchState
                       kind="conflict"
                       compact
                       title={activeConflict.diagnostics.length
-                        ? "Canonical source needs attention"
-                        : "This entry changed elsewhere"}
+                        ? $ui("Canonical source needs attention")
+                        : $ui("This entry changed elsewhere")}
                       message={activeConflict.diagnostics.length
                         ? activeConflict.diagnostics[0]
-                        : "Your unsaved document and details are preserved. Choose how to reconcile them before saving."}
+                        : $ui("Your unsaved document and details are preserved. Choose how to reconcile them before saving.")}
                       actions={conflictResolutionActions} />
                   {/if}
                   {#if aiRewriteOpen}
@@ -10152,29 +10209,29 @@ onMount(() => {
                         }}>
                         <div class="ai-rewrite-heading">
                           <div>
-                            <span class="panel-kicker">{aiProvider.name || "AI provider"}</span><strong
+                            <span class="panel-kicker">{aiProvider.name || $ui("AI provider")}</span><strong
                               id="ai-rewrite-title"
                               >{aiCancelPending
-                                ? "Cancelling request…"
+                                ? $ui("Cancelling request…")
                                 : aiBusy
                                   ? aiMode === "generate"
-                                    ? "Generating text…"
-                                    : "Rewriting selection…"
+                                    ? $ui("Generating text…")
+                                    : $ui("Rewriting selection…")
                                   : aiPreviewOutput
                                     ? aiMode === "generate"
-                                      ? "Review generated text"
-                                      : "Review rewrite"
+                                      ? $ui("Review generated text")
+                                      : $ui("Review rewrite")
                                     : aiMode === "generate"
-                                      ? "Generate text"
-                                      : "Rewrite selection"}</strong>
+                                      ? $ui("Generate text")
+                                      : $ui("Rewrite selection")}</strong>
                           </div>
                         </div>
                         {#if !aiBusy}<label class="ai-instruction"
-                            >Instruction<textarea
+                            >{$ui("Instruction")}<textarea
                               rows="2"
                               bind:value={aiInstruction}
                               disabled={aiBusy}
-                              placeholder={`Tell ${aiProvider.name || "the AI provider"} ${aiMode === "generate" ? "what to write at the cursor" : "how to rewrite the selection"}`}
+                              placeholder={$ui("Tell {0} {1}", aiProvider.name || $ui("the AI provider"), aiMode === "generate" ? $ui("what to write at the cursor") : $ui("how to rewrite the selection"))}
                             ></textarea
                             ></label
                           >{/if}
@@ -10188,18 +10245,16 @@ onMount(() => {
                           onCancel={() => void cancelAiRewrite()}
                           onDiscard={closeAiRewrite}
                           onAccept={() => void acceptAiRewrite()} />
-                        {#if aiUsage}<p class="muted-note">
-                            Provider usage: {aiUsage.inputTokens} input + {aiUsage.outputTokens} output tokens.
-                          </p>{/if}
+                        {#if aiUsage}<p class="muted-note"> {$ui("Provider usage: {0} input + {1} output tokens.", aiUsage.inputTokens, aiUsage.outputTokens)} </p>{/if}
                         {#if !aiBusy && aiPreviewOutput}<div class="ai-rewrite-actions">
                             <button class="primary-button" type="button" onclick={() => void acceptAiRewrite()}
-                              >Accept proposal</button>
+                              >{$ui("Accept proposal")}</button>
                             <button
                               class="quiet-button ai-retry-button"
                               type="button"
-                              onclick={() => void startAiRewrite()}>Retry</button>
+                              onclick={() => void startAiRewrite()}>{$messages.inspector.retry}</button>
                             <button class="quiet-button ai-discard-button" type="button" onclick={closeAiRewrite}
-                              >Discard</button>
+                              >{$ui("Discard")}</button>
                           </div>
                         {:else if !aiBusy}<div class="ai-rewrite-actions">
                             <button
@@ -10207,8 +10262,8 @@ onMount(() => {
                               type="button"
                               disabled={(aiMode === "rewrite" && !aiSourceSelection.trim()) || !aiInstruction.trim()}
                               onclick={() => void startAiRewrite()}
-                              >{aiMode === "generate" ? "Generate text" : "Generate rewrite"}</button>
-                            <button class="quiet-button" type="button" onclick={closeAiRewrite}>Cancel</button>
+                              >{aiMode === "generate" ? $ui("Generate text") : $ui("Generate rewrite")}</button>
+                            <button class="quiet-button" type="button" onclick={closeAiRewrite}>{$ui("Cancel")}</button>
                           </div>{/if}
                       </div>
                     </div>
@@ -10240,17 +10295,17 @@ onMount(() => {
                           !aiRewriteOpen}
                         fullscreen={editorFullscreen}
                         aiEnabled={projectInfo?.aiEnabled ?? false}
-                        aiTemplates={aiPromptTemplates.filter((template) => template.kind === "editor")}
+                        aiTemplates={aiPromptTemplates.filter((template) => template.kind === "editor").map((template) => ({ ...template, label: promptTemplateCopy($ui, template, "label") }))}
                         onChange={updateDocumentBody}
                         onSelectionChange={setAiSelection}
                         onAiRequest={openAiAction}
                         onSaveRequest={() => void flushAutoSave()}
                         onFullscreenChange={setEditorFullscreen}
                         placeholder={section === "writing"
-                          ? `Write this ${createLabel()}…`
+                          ? $ui("Write this {0}…", createLabel())
                           : section === "maps"
-                            ? "Describe this map and the world it contains…"
-                            : "Write the canonical story of this entry…"} />
+                            ? $ui("Describe this map and the world it contains…")
+                            : $messages.workspace.writeEntry} />
                     {/key}
                   {/if}
                   <div class="editor-footer">
@@ -10278,17 +10333,17 @@ onMount(() => {
                 <WorkbenchState
                   kind="empty"
                   title={section === "maps"
-                    ? "Your map notes are waiting."
+                    ? $ui("Your map notes are waiting.")
                     : section === "writing"
                       ? writingView === "manuscripts"
-                        ? "Your draft is waiting."
+                        ? $ui("Your draft is waiting.")
                         : writingView === "reference"
-                          ? "Your reference desk is waiting."
-                          : "Your canvas is waiting."
-                      : "Your canvas is waiting."}
+                          ? $ui("Your reference desk is waiting.")
+                          : $messages.workspace.canvasWaiting
+                      : $messages.workspace.canvasWaiting}
                   message={section === "maps"
-                    ? "Select a map from the atlas, or create one with a map integration."
-                    : "Select an entry from the collection, or create something new to begin writing."} />
+                    ? $ui("Select a map from the atlas, or create one with a map integration.")
+                    : $messages.workspace.selectOrCreate} />
               {/if}
             {/if}
           {/snippet}
@@ -10300,7 +10355,7 @@ onMount(() => {
         {/if}
 
         {#if !mapSurfaceOpen && workbenchPaneVisibility.content && workbenchPaneVisibility.inspector && workbenchSupportsInspector()}<PaneResizeHandle
-            label="Resize inspector pane"
+            label={$messages.workspace.resizeInspector}
             value={activePaneDimensions().inspectorWidth}
             min={inspectorPaneMin}
             max={inspectorPaneMax}
@@ -10325,23 +10380,19 @@ onMount(() => {
           {#snippet fieldsNotice()}
             {#if aiFieldFillOpen}<section class="inspector-ai-fill">
                 <div class="inspector-ai-fill-heading">
-                  <strong>{aiFieldFillBusy ? "Finding field suggestions…" : "Review field suggestions"}</strong><button
+                  <strong>{aiFieldFillBusy ? $ui("Finding field suggestions…") : $ui("Review field suggestions")}</strong><button
                     class="quiet-button"
                     type="button"
-                    onclick={closeAiFieldFill}>{aiFieldFillBusy ? "Cancel" : "Close"}</button>
+                    onclick={closeAiFieldFill}>{aiFieldFillBusy ? $ui("Cancel") : $ui("Close")}</button>
                 </div>
-                {#if aiFieldFillBusy}<p>
-                    Using this entry and related project context.
-                  </p>{:else if Object.keys(aiFieldSuggestions).length === 0}<p>
-                    No suggestions are available.
-                  </p>{:else}{#each Object.entries(aiFieldSuggestions) as [key, suggestion]}{@const definition =
+                {#if aiFieldFillBusy}<p> {$ui("Using this entry and related project context.")} </p>{:else if Object.keys(aiFieldSuggestions).length === 0}<p> {$ui("No suggestions are available.")} </p>{:else}{#each Object.entries(aiFieldSuggestions) as [key, suggestion]}{@const definition =
                       definitions().find((candidate) => candidate.key === key)}
                     <div class="inspector-ai-suggestion">
                       <div class="inspector-ai-suggestion-heading">
                         <strong>{definition?.label ?? key}</strong><button
                           type="button"
                           class={`inspector-ai-confidence confidence-${suggestionConfidenceTone(suggestion.confidence)}`}
-                          aria-label={`${suggestionConfidenceLabel(suggestion.confidence)} confidence${suggestion.rationale ? ". Show reasoning" : ""}`}
+                          aria-label={$ui("{0} confidence{1}", suggestionConfidenceLabel(suggestion.confidence), suggestion.rationale ? $ui(". Show reasoning") : "")}
                           >{suggestionConfidenceLabel(suggestion.confidence)}{#if suggestion.rationale}<span
                               class="inspector-ai-reasoning"
                               role="tooltip">{suggestion.rationale}</span
@@ -10350,39 +10401,41 @@ onMount(() => {
                       <span>{suggestionDisplayValue(key, suggestion)}</span>
                       <div>
                         <button class="quiet-button" type="button" onclick={() => acceptAiFieldSuggestion(key)}
-                          >Accept</button
+                          >{$ui("Accept")}</button
                         ><button class="quiet-button" type="button" onclick={() => discardAiFieldSuggestion(key)}
-                          >Discard</button>
+                          >{$ui("Discard")}</button>
                       </div>
                     </div>{/each}{/if}
                 {#if !aiFieldFillBusy}<div class="inspector-ai-fill-actions">
                     {#if Object.keys(aiFieldSuggestions).length > 0}<button
                         class="primary-button"
                         type="button"
-                        onclick={() => void acceptAllAiFieldSuggestions()}>Accept all</button
-                      >{/if}<button class="quiet-button" type="button" onclick={() => void fillAiFields()}>Retry</button
-                    ><button class="quiet-button" type="button" onclick={closeAiFieldFill}>Close</button>
+                        onclick={() => void acceptAllAiFieldSuggestions()}>{$ui("Accept all")}</button
+                      >{/if}<button class="quiet-button" type="button" onclick={() => void fillAiFields()}
+                      >{$messages.inspector.retry}</button
+                    ><button class="quiet-button" type="button" onclick={closeAiFieldFill}>{$ui("Close")}</button>
                   </div>{/if}
               </section>{/if}
           {/snippet}
           {#snippet inspectorDetails()}
             {#if hasDetailsSection()}
               <InspectorSection
-                title="Details"
+                title={$messages.inspector.details}
                 count={propertyDefinitions().length + chronologyDateDefinitions().length}>
                 {#if hasChronologySection()}
                   <section class="inspector-section inspector-section-plain">
-                    <h3>Chronology</h3>
+                    <h3>{$ui("Chronology")}</h3>
                     {#if eraRelationshipDefinition()}
                       {@const eraField = eraRelationshipDefinition()!}
                       <div class="property-field">
-                        <span>{eraField.label}</span>
+                        <span>{inspectorFieldLabel(eraField)}</span>
                         <RelationshipPicker
                           field={eraField}
+                          label={inspectorFieldLabel(eraField)}
                           search={searchEntitiesPaged(eraField)}
                           resolveSelected={resolveSelectedEntities}
                           selectedIds={selectedRelationshipIds(eraField)}
-                          placeholder="Search eras…"
+                          placeholder={$ui("Search eras…")}
                           onChange={(ids) => void updateRelationshipField(eraField, ids)} />
                       </div>
                     {/if}
@@ -10391,7 +10444,7 @@ onMount(() => {
                     {/each}
                     {#each chronologyDateDefinitions() as definition}
                       <InspectorDateField
-                        label={definition.label}
+                        label={inspectorFieldLabel(definition)}
                         fieldKey={definition.key}
                         value={fields[definition.key]}
                         editorOpen={Boolean(dateEditorOpen[definition.key])}
@@ -10409,9 +10462,11 @@ onMount(() => {
                 {/if}
                 {#if propertyDefinitions().length > 0}
                   <section class="inspector-section inspector-section-plain">
-                    <h3>Properties</h3>
-                    {#each propertyDefinitions() as definition}{#if definition.type === "date"}<InspectorDateField
-                          label={definition.label}
+                    <h3>{$messages.inspector.properties}</h3>
+                    {#each propertyDefinitions() as definition}
+                      {@const label = inspectorFieldLabel(definition)}
+                      {#if definition.type === "date"}<InspectorDateField
+                          {label}
                           fieldKey={definition.key}
                           value={fields[definition.key]}
                           editorOpen={Boolean(dateEditorOpen[definition.key])}
@@ -10425,23 +10480,23 @@ onMount(() => {
                           onSelectCalendar={(id) => setDateCalendar(definition.key, id)}
                           onOpen={() => openDateEditor(definition.key)} />{:else}<div class="property-field">
                           <span
-                            >{definition.label}{#if definition.required}<b>*</b>{/if}</span
+                            >{label}{#if definition.required}<b>*</b>{/if}</span
                           >{#if definition.type === "boolean"}<input
                               type="checkbox"
-                              aria-label={definition.label}
+                              aria-label={label}
                               checked={fieldInputValue(definition, fields[definition.key]) === true}
                               onchange={(event) =>
                                 updateField(definition, event)} />{:else if definition.type === "number"}<input
                               type="number"
-                              aria-label={definition.label}
+                              aria-label={label}
                               value={fieldInputValue(definition, fields[definition.key])}
-                              placeholder="Add {definition.label.toLowerCase()}"
+                              placeholder={$messages.inspector.addField(label)}
                               onchange={(event) =>
                                 updateField(
                                   definition,
                                   event,
                                 )} />{:else if definition.type === "enum" && definition.options?.length}<select
-                              aria-label={definition.label}
+                              aria-label={label}
                               multiple={definition.multiple ?? false}
                               value={definition.multiple
                                 ? Array.isArray(fields[definition.key])
@@ -10449,22 +10504,23 @@ onMount(() => {
                                   : []
                                 : String(fields[definition.key] ?? "")}
                               onchange={(event) => updateField(definition, event)}
-                              >{#each definition.options ?? [] as option}<option value={option}>{option}</option
+                              >{#each definition.options ?? [] as option}<option value={option}>{$manifestText(activeManifest()?.id, "option", definition.key + "/" + option, option)}</option
                                 >{/each}</select
                             >{:else if (definition as any).type === "oneof"}<select
-                              aria-label={definition.label}
+                              aria-label={label}
                               value={String(fields[definition.key] ?? "")}
                               onchange={(event) => updateField(definition, event)}
-                              ><option value="">Choose {definition.label.toLowerCase()}</option
-                              >{#each definition.options ?? [] as option}<option value={option}>{option}</option>{/each}
+                              ><option value="">{$messages.inspector.chooseField(label)}</option
+                              >{#each definition.options ?? [] as option}<option value={option}>{$manifestText(activeManifest()?.id, "option", definition.key + "/" + option, option)}</option>{/each}
                               {#each (definition as any).oneOf ?? [] as variant}
-                                {#each variant.options ?? [] as opt}<option value={opt}>{variant.label}: {opt}</option
+                                {#each variant.options ?? [] as opt}<option value={opt}>{$manifestText(activeManifest()?.id, "variant", definition.key, variant.label)}: {$manifestText(activeManifest()?.id, "option", definition.key + "/" + opt, opt)}</option
                                   >{/each}
                               {/each}</select
                             >{:else}<input
                               type="text"
+                              aria-label={label}
                               value={fieldInputValue(definition, fields[definition.key])}
-                              placeholder="Add {definition.label.toLowerCase()}"
+                              placeholder={$messages.inspector.addField(label)}
                               oninput={(event) => updateField(definition, event)} />{/if}
                         </div>{/if}{/each}
                   </section>
@@ -10505,15 +10561,16 @@ onMount(() => {
           {#snippet fieldsRelationships()}
             <div class="fields-tab">
               {#if otherRelationshipDefinitions().length === 0}<p class="inspector-group-empty">
-                  No relationship fields are available for this entry.
+                  {$messages.inspector.noRelationships}
                 </p>{:else}{#snippet inspectorRelationshipField(definition: FieldDefinition)}<section
                     class="inspector-section inspector-section-plain relationship-field-section">
                     <div class="section-title">
-                      <h3>{definition.label}</h3>
+                      <h3>{inspectorFieldLabel(definition)}</h3>
                       <span>{selectedRelationshipIds(definition).length}</span>
                     </div>
                     <RelationshipPicker
-                      field={definition}
+                      field={{ ...definition, label: inspectorFieldLabel(definition) }}
+                      placeholder={$messages.inspector.searchEntities}
                       search={searchEntitiesPaged(definition)}
                       resolveSelected={resolveSelectedEntities}
                       selectedIds={selectedRelationshipIds(definition)}
@@ -10524,7 +10581,7 @@ onMount(() => {
                         : undefined} />
                     {#if relationshipsForDefinition(definition).length > 0}<div
                         class="relationship-detail-list"
-                        aria-label={`${definition.label} details`}>
+                        aria-label={$ui("{0} details", definition.label)}>
                         {#each relationshipsForDefinition(definition) as relationship (relationship.id)}
                           {@const relDefinition = definitionForRelationship(relationship) ?? definition}
                           {@const summary = relationshipMetadataSummary(relationship, relDefinition)}
@@ -10533,7 +10590,7 @@ onMount(() => {
                               type="button"
                               class="relationship-detail-copy related-item-trigger"
                               data-entity-id={relationshipOtherId(definition, relationship)}
-                              aria-label={`Preview ${relationshipTargetName(relationship, definition)}`}>
+                              aria-label={$ui("Preview {0}", relationshipTargetName(relationship, definition))}>
                               <strong>{relationshipRowTitle(relationship, definition)}</strong>
                               <small
                                 >{entityTypeLabel(
@@ -10547,14 +10604,14 @@ onMount(() => {
                                 <button
                                   class="quiet-button relationship-details-button"
                                   type="button"
-                                  aria-label={`Edit details for ${relationship.relationship_type} to ${relationshipTargetName(relationship, definition)}`}
+                                  aria-label={$ui("Edit details for {0} to {1}", inspectorFieldLabel(definition), relationshipTargetName(relationship, definition))}
                                   onclick={() => openRelationshipMetadata(relationship)}
                                   ><Pencil size={16} strokeWidth={1.8} aria-hidden="true" /></button>
                               {/if}
                               <button
                                 class="quiet-button relationship-remove-button"
                                 type="button"
-                                aria-label={`Remove ${relationshipTargetName(relationship, definition)} from ${definition.label}`}
+                                aria-label={$ui("Remove {0} from {1}", relationshipTargetName(relationship, definition), definition.label)}
                                 onclick={() => void confirmRemoveRelationship(definition, relationship)}
                                 ><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
                             </div>
@@ -10564,7 +10621,7 @@ onMount(() => {
                   </section>{/snippet}
                 {#each groupedInspectorRelationships() as group (`${inspectedEntity?.id ?? ""}:${group.moduleId}`)}
                   {@const groupCount = relationshipGroupLinkCount(group.fields)}
-                  <InspectorSection title={group.moduleName} count={groupCount} open={groupCount > 0} sticky>
+                  <InspectorSection title={$manifestText(group.moduleId, "module", group.moduleId, group.moduleName)} count={groupCount} open={groupCount > 0} sticky>
                     {#each group.fields as definition (definition.key)}{@render inspectorRelationshipField(
                         definition,
                       )}{/each}
@@ -10585,7 +10642,7 @@ onMount(() => {
               {/if}
               {#if selected && isTimelineEventEntity(selected.entity_type) && projectInfo?.root}
                 <section class="inspector-section inspector-section-plain">
-                  <h3>Profile Changes</h3>
+                  <h3>{$ui("Profile Changes")}</h3>
                   <ProfileEventChanges
                     projectId={projectInfo.root}
                     eventId={selected.id}
@@ -10600,28 +10657,29 @@ onMount(() => {
             <div class="fields-tab">
               <section class="inspector-section inspector-section-plain">
                 <div class="section-title">
-                  <h3>Attached files</h3>
+                  <h3>{$messages.inspector.attachedFiles}</h3>
                   <span>{assets.length}</span>
                 </div>
                 <button class="drop-zone" type="button" onclick={attachAsset}
-                  ><span><Plus size={16} strokeWidth={1.8} aria-hidden="true" /></span><strong>Attach a file</strong
-                  ><small>Copied into this project</small></button
+                  ><span><Plus size={16} strokeWidth={1.8} aria-hidden="true" /></span><strong
+                    >{$messages.inspector.attachFile}</strong
+                  ><small>{$messages.inspector.copiedToProject}</small></button
                 >{#each assets as asset (asset.id)}<button
                     type="button"
                     class:asset-main={asset.role === "profile"}
                     class="asset-row asset-row-button"
                     onclick={() => openAssetDialog(asset)}
                     disabled={assetBusyId === asset.id}
-                    aria-label={`Edit ${asset.filename}`}>
+                    aria-label={$ui("Edit {0}", asset.filename)}>
                     <span class="asset-icon" aria-hidden="true">{asset.role === "profile" ? "◆" : "□"}</span>
                     <div class="asset-details">
                       <strong>{asset.filename}</strong><small
-                        >{Math.max(1, Math.round(asset.size / 1024))} KB · {asset.reference_scope === "project"
-                          ? "Project references allowed"
-                          : "Entity only"} · {asset.mime_type}</small
-                      >{#if asset.role === "profile"}<span class="asset-role">Main file</span>{/if}
+                        >{$ui("{0} KB · {1} · {2}", Math.max(1, Math.round(asset.size / 1024)), asset.reference_scope === "project"
+                          ? $ui("Project references allowed")
+                          : $ui("Entity only"), asset.mime_type)}</small
+                      >{#if asset.role === "profile"}<span class="asset-role">{$messages.inspector.mainFile}</span>{/if}
                     </div>
-                    <span class="asset-row-edit-hint" aria-hidden="true">Edit →</span>
+                    <span class="asset-row-edit-hint" aria-hidden="true">{$ui("Edit →")}</span>
                   </button>{/each}
               </section>
             </div>
@@ -10629,18 +10687,20 @@ onMount(() => {
           {#snippet fieldsBacklinks()}
             <div class="fields-tab">
               {#if backlinkRelationships().length === 0}<p class="inspector-group-empty">
-                  Nothing links to this entry yet.
-                </p>{:else}<div class="relationship-detail-list backlink-list" aria-label="Backlinks">
+                  {$messages.inspector.noBacklinks}
+                </p>{:else}<div
+                  class="relationship-detail-list backlink-list"
+                  aria-label={$messages.inspector.backlinks}>
                   {#each backlinkRelationships() as relationship (relationship.id)}<div class="relationship-detail-row">
                       <button
                         type="button"
                         class="relationship-detail-copy related-item-trigger"
                         data-entity-id={relationship.source_id}
-                        aria-label={`Preview ${relationshipSourceName(relationship)}`}>
+                        aria-label={$ui("Preview {0}", relationshipSourceName(relationship))}>
                         <strong>{relationshipSourceName(relationship)}</strong><small
                           >{entityTypeLabel(
                             entities.find((entity) => entity.id === relationship.source_id)?.entity_type ?? null,
-                          )} · {relationship.relationship_type}</small>
+                          )} · {$schemaLabels.relationship(relationship.relationship_type)}</small>
                       </button>
                     </div>{/each}
                 </div>{/if}
@@ -10650,12 +10710,12 @@ onMount(() => {
             <div class="fields-tab">
               <section
                 class="inspector-section inspector-section-plain map-contribution"
-                aria-label="Maps contribution">
+                aria-label={$ui("Maps contribution")}>
                 <div class="section-title">
-                  <h3>Maps</h3>
+                  <h3>{$messages.inspector.maps}</h3>
                   <span>{mapLocations.length}</span>
                 </div>
-                {#if mapLocations.length === 0}<small>No map links yet.</small
+                {#if mapLocations.length === 0}<small>{$ui("No map links yet.")}</small
                   >{:else}{#each mapLocations as location (location.id)}<div class="map-location-row">
                       <div>
                         <strong>{location.label || location.role}</strong><small
@@ -10663,25 +10723,25 @@ onMount(() => {
                             0,
                             8,
                           )}{#if location.resolution === "unresolved"}
-                            · <span class="map-unresolved-badge">Unresolved</span>{/if}</small>
+                            · <span class="map-unresolved-badge">{$ui("Unresolved")}</span>{/if}</small>
                       </div>
                       <div>
                         {#if location.resolution === "unresolved"}<span
                             class="map-unresolved-note"
-                            title="The map feature this link pointed to was removed or renumbered."
-                            >Feature missing</span
+                            title={$ui("The map feature this link pointed to was removed or renumbered.")}
+                            >{$ui("Feature missing")}</span
                           >{:else}<button
                             class="quiet-button"
                             type="button"
-                            onclick={() => void openMapLocation(location)}>Show on map</button
+                            onclick={() => void openMapLocation(location)}>{$ui("Show on map")}</button
                           >{/if}<button
                           class="quiet-button"
                           type="button"
-                          onclick={() => void editMapLocation(location)}>Edit</button
+                          onclick={() => void editMapLocation(location)}>{$messages.workspace.edit}</button
                         ><button class="quiet-button" type="button" onclick={() => void rebindMapLocation(location)}
-                          >Rebind</button
+                          >{$ui("Rebind")}</button
                         ><button class="quiet-button" type="button" onclick={() => void unlinkMapLocation(location)}
-                          >Unlink</button>
+                          >{$ui("Unlink")}</button>
                       </div>
                     </div>{/each}{/if}
               </section>
@@ -10716,7 +10776,7 @@ onMount(() => {
         class:toast-left={embeddedPluginWebviewIds.length > 0}
         role="alert"
         aria-live="assertive">
-        {error}<button aria-label="Dismiss" onclick={() => (error = "")}
+        {$nativeErrorText(error)}<button aria-label={$ui("Dismiss")} onclick={() => (error = "")}
           ><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
       </div>{/if}
     {#if lifecycleToast}<div
@@ -10729,7 +10789,7 @@ onMount(() => {
           <button type="button" class="toast-action" onclick={() => lifecycleToast?.onAction?.()}
             >{lifecycleToast.actionLabel}</button>
         {/if}
-        <button aria-label="Dismiss" onclick={dismissLifecycleToast}
+        <button aria-label={$ui("Dismiss")} onclick={dismissLifecycleToast}
           ><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
       </div>{/if}
   </div>
@@ -10739,7 +10799,7 @@ onMount(() => {
       onOpen={(entity, intent) => void openEntityWithIntent(entity, intent)} />
     <button
       class="mobile-create-button"
-      aria-label={`${ENTITY_ACTIONS.new} ${createLabel()}`}
+      aria-label={$messages.workspace.newNamed(createLabel())}
       aria-expanded={showCreateForm}
       onclick={openContextualCreate}><Plus size={18} strokeWidth={1.8} aria-hidden="true" /></button
     >{/if}
@@ -10749,6 +10809,7 @@ onMount(() => {
   <RelationshipMetadataDialog
     relationship={dialog.relationship}
     definition={dialog.definition}
+    pluginId={manifestOwningRelationshipType(dialog.relationship.relationship_type, modules)?.id}
     {entities}
     {calendarDefinitions}
     onSave={(metadata) => saveRelationshipMetadata(dialog.relationship, metadata)}
@@ -10784,7 +10845,7 @@ onMount(() => {
     typeLabel={entityTypeLabel}
     workspaceLabel={(type) => {
       const owner = sectionForEntityType(type);
-      if (owner) return workspaceSectionLabel(owner);
+      if (owner) return workspaceSectionLabel(owner, $messages.sections);
       return type ? "Other" : "Uncategorized";
     }}
     warning={editTypeWarning()}

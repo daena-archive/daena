@@ -1,3 +1,4 @@
+import { localizeUi } from "../i18n/ui.ts";
 import type { Entity, EntityPage } from "$lib/project/client";
 
 export type WritingView = string;
@@ -14,12 +15,12 @@ export const WORKSPACE_MODULE_IDS = {
 } as const satisfies Record<WorkspaceSection, string>;
 
 export function workspaceSectionDescription(section: WorkspaceSection): string {
-  if (section === "lore") return "People, places, factions, cultures, and the ideas that connect them.";
-  if (section === "timeline") return "Events, eras, calendars, and the chronology of your world.";
-  if (section === "writing") return "Manuscripts and reference pages beside the world they draw from.";
-  if (section === "language") return "Sounds, writing systems, vocabulary, and grammar.";
-  if (section === "houses") return "Houses, lineages, and the kinship that binds people together.";
-  return "Maps, world surfaces, locations, and geographic links.";
+  if (section === "lore") return localizeUi("People, places, factions, cultures, and the ideas that connect them.");
+  if (section === "timeline") return localizeUi("Events, eras, calendars, and the chronology of your world.");
+  if (section === "writing") return localizeUi("Manuscripts and reference pages beside the world they draw from.");
+  if (section === "language") return localizeUi("Sounds, writing systems, vocabulary, and grammar.");
+  if (section === "houses") return localizeUi("Houses, lineages, and the kinship that binds people together.");
+  return localizeUi("Maps, world surfaces, locations, and geographic links.");
 }
 
 export function workspaceModuleId(section: WorkspaceSection): string {

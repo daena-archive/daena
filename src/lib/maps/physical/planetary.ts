@@ -1,3 +1,4 @@
+import { localizeUi } from "../../i18n/ui.ts";
 export type PlanetaryPreset = "earth-like" | "low-tilt" | "high-tilt" | "slow-rotating" | "close-orbit" | "custom";
 
 export interface PlanetaryConfiguration {
@@ -66,14 +67,14 @@ export function markPlanetaryCustom(configuration: PlanetaryConfiguration): Plan
 }
 
 export function validatePlanetary(configuration: PlanetaryConfiguration): string | null {
-  if (configuration.version !== 1) return "Unsupported planetary configuration version.";
+  if (configuration.version !== 1) return localizeUi("Unsupported planetary configuration version.");
   for (const [key, [min, max]] of Object.entries(PLANETARY_LIMITS) as [
     keyof typeof PLANETARY_LIMITS,
     readonly [number, number],
   ][]) {
     const value = configuration[key];
     if (!Number.isFinite(value) || value < min || value > max) {
-      return "Planetary configuration is outside the supported range.";
+      return localizeUi("Planetary configuration is outside the supported range.");
     }
   }
   return null;

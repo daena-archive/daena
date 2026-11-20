@@ -1,17 +1,19 @@
 <script lang="ts">
+import { displayLanguage } from "$lib/i18n";
+import { ui } from "$lib/i18n/ui";
 import { ChevronRight } from "@lucide/svelte";
 import type { FindPlaceCandidate, FindPlaceQuery, FindPlaceResult } from "$lib/project/types";
 
 const FALLBACK_BIOMES = [
-  { id: 1, name: "permanent ice" },
-  { id: 2, name: "tundra" },
-  { id: 3, name: "alpine" },
-  { id: 4, name: "cold grassland" },
-  { id: 5, name: "temperate grassland" },
-  { id: 6, name: "desert" },
-  { id: 7, name: "shrubland" },
-  { id: 8, name: "temperate forest" },
-  { id: 9, name: "tropical forest" },
+  { id: 1, get name() { return $ui("permanent ice"); } },
+  { id: 2, get name() { return $ui("tundra"); } },
+  { id: 3, get name() { return $ui("alpine"); } },
+  { id: 4, get name() { return $ui("cold grassland"); } },
+  { id: 5, get name() { return $ui("temperate grassland"); } },
+  { id: 6, get name() { return $ui("desert"); } },
+  { id: 7, get name() { return $ui("shrubland"); } },
+  { id: 8, get name() { return $ui("temperate forest"); } },
+  { id: 9, get name() { return $ui("tropical forest"); } },
 ];
 
 type Preset = {
@@ -22,10 +24,10 @@ type Preset = {
   soft: string[];
 };
 
-const PRESETS: Preset[] = [
+const PRESETS = $derived<Preset[]>([
   {
     id: "warm-wet-lowland",
-    label: "Warm wet lowland",
+    label: $ui("Warm wet lowland"),
     landOnly: true,
     values: {
       altitudeMin: "0",
@@ -40,7 +42,7 @@ const PRESETS: Preset[] = [
   },
   {
     id: "cold-valley",
-    label: "Cold mountain valley",
+    label: $ui("Cold mountain valley"),
     landOnly: true,
     values: {
       altitudeMin: "800",
@@ -55,26 +57,26 @@ const PRESETS: Preset[] = [
   },
   {
     id: "dry-plateau",
-    label: "Dry inland plateau",
+    label: $ui("Dry inland plateau"),
     landOnly: true,
     values: { altitudeMin: "400", altitudeMax: "1800", rainMax: "400", aridityMin: "50", coastMin: "500" },
     soft: [],
   },
   {
     id: "safe-coast",
-    label: "Low-hazard coast",
+    label: $ui("Low-hazard coast"),
     landOnly: true,
     values: { coastMax: "30", quakeMax: "20", volcanoMax: "20", stormMax: "25" },
     soft: ["storm"],
   },
   {
     id: "storm-coast",
-    label: "Tropical storm coast",
+    label: $ui("Tropical storm coast"),
     landOnly: true,
     values: { coastMax: "40", tempMin: "20", stormMin: "20", biomeClass: "9" },
     soft: ["biome"],
   },
-];
+]);
 
 let {
   variant = "editor",
@@ -170,7 +172,7 @@ function parseOptional(value: string, label: string): number | undefined {
   const trimmed = value.trim();
   if (!trimmed) return undefined;
   const parsed = Number(trimmed);
-  if (!Number.isFinite(parsed)) throw new Error(`${label} must be a number`);
+  if (!Number.isFinite(parsed)) throw new Error($ui("{0} must be a number", label));
   return parsed;
 }
 
@@ -491,35 +493,35 @@ function statLine(candidate: FindPlaceCandidate) {
   return `${candidate.means.altitudeM} m · ${(candidate.means.temperatureCentiC / 100).toFixed(1)} °C · ${candidate.means.precipitationMm} mm`;
 }
 
-const ELEVATION_CHIPS = [
-  { id: "", label: "Any" },
-  { id: "lowland", label: "Lowland" },
-  { id: "upland", label: "Upland" },
-  { id: "highland", label: "Highland" },
-];
-const TEMP_CHIPS = [
-  { id: "", label: "Any" },
-  { id: "hot", label: "Hot" },
-  { id: "mild", label: "Mild" },
-  { id: "cold", label: "Cold" },
-];
-const RAIN_CHIPS = [
-  { id: "", label: "Any" },
-  { id: "wet", label: "Wet" },
-  { id: "moderate", label: "Moderate" },
-  { id: "dry", label: "Dry" },
-];
-const WATER_CHIPS = [
-  { id: "", label: "Any" },
-  { id: "coastal", label: "Coastal" },
-  { id: "inland", label: "Inland" },
-  { id: "freshwater", label: "Fresh water" },
-];
-const HAZARD_CHIPS = [
-  { id: "", label: "Any" },
-  { id: "low", label: "Low hazard" },
-  { id: "stormy", label: "Stormy" },
-];
+const ELEVATION_CHIPS = $derived([
+  { id: "", label: $ui("Any") },
+  { id: "lowland", label: $ui("Lowland") },
+  { id: "upland", label: $ui("Upland") },
+  { id: "highland", label: $ui("Highland") },
+]);
+const TEMP_CHIPS = $derived([
+  { id: "", label: $ui("Any") },
+  { id: "hot", label: $ui("Hot") },
+  { id: "mild", label: $ui("Mild") },
+  { id: "cold", label: $ui("Cold") },
+]);
+const RAIN_CHIPS = $derived([
+  { id: "", label: $ui("Any") },
+  { id: "wet", label: $ui("Wet") },
+  { id: "moderate", label: $ui("Moderate") },
+  { id: "dry", label: $ui("Dry") },
+]);
+const WATER_CHIPS = $derived([
+  { id: "", label: $ui("Any") },
+  { id: "coastal", label: $ui("Coastal") },
+  { id: "inland", label: $ui("Inland") },
+  { id: "freshwater", label: $ui("Fresh water") },
+]);
+const HAZARD_CHIPS = $derived([
+  { id: "", label: $ui("Any") },
+  { id: "low", label: $ui("Low hazard") },
+  { id: "stormy", label: $ui("Stormy") },
+]);
 </script>
 
 {#snippet chips(
@@ -538,104 +540,104 @@ const HAZARD_CHIPS = [
         </button>
       {/each}
       {#if value === "custom"}
-        <button type="button" class="active" disabled>Custom</button>
+        <button type="button" class="active" disabled>{$ui("Custom")}</button>
       {/if}
     </div>
   </div>
 {/snippet}
 
 {#snippet query()}
-  <p class="section-note">Presets fill filters. Chips and numbers stay editable.</p>
-  <div class="find-presets" role="group" aria-label="Starting searches">
+  <p class="section-note">{$ui("Presets fill filters. Chips and numbers stay editable.")}</p>
+  <div class="find-presets" role="group" aria-label={$ui("Starting searches")}>
     {#each PRESETS as preset (preset.id)}
       <button type="button" class="chip" {disabled} onclick={() => applyPreset(preset)}>{preset.label}</button>
     {/each}
   </div>
-  <label class="find-check"><input type="checkbox" bind:checked={landOnly} {disabled} /> Land only</label>
+  <label class="find-check"><input type="checkbox" bind:checked={landOnly} {disabled} /> {$ui("Land only")}</label>
   {#if !climateAvailable}
-    <p class="section-note">Climate filters are unavailable until climate has been derived.</p>
+    <p class="section-note">{$ui("Climate filters are unavailable until climate has been derived.")}</p>
   {/if}
   {#if !hazardsAvailable}
-    <p class="section-note">Earthquake and volcanic filters need hazard layers.</p>
+    <p class="section-note">{$ui("Earthquake and volcanic filters need hazard layers.")}</p>
   {/if}
-  {@render chips("Elevation", simpleElevation, ELEVATION_CHIPS, applyElevation, disabled)}
-  {@render chips("Temperature", simpleTemperature, TEMP_CHIPS, applyTemperature, climateOff)}
-  {@render chips("Rainfall", simpleRain, RAIN_CHIPS, applyRain, climateOff)}
-  {@render chips("Water", simpleWater, WATER_CHIPS, applyWater, disabled)}
+  {@render chips($ui("Elevation"), simpleElevation, ELEVATION_CHIPS, applyElevation, disabled)}
+  {@render chips($ui("Temperature"), simpleTemperature, TEMP_CHIPS, applyTemperature, climateOff)}
+  {@render chips($ui("Rainfall"), simpleRain, RAIN_CHIPS, applyRain, climateOff)}
+  {@render chips($ui("Water"), simpleWater, WATER_CHIPS, applyWater, disabled)}
   {@render chips(
-    "Hazard",
+    $ui("Hazard"),
     simpleHazard,
     HAZARD_CHIPS,
     applyHazard,
     disabled || (!climateAvailable && !hazardsAvailable),
   )}
   <label class="biome-field"
-    ><span>Biome</span>
+    ><span>{$ui("Biome")}</span>
     <select bind:value={biomeClass} disabled={climateOff}>
-      <option value="">Any</option>
+      <option value="">{$ui("Any")}</option>
       {#each biomes.filter((entry) => entry.id !== 0) as entry (entry.id)}
         <option value={String(entry.id)}>{entry.name}</option>
       {/each}
     </select>
   </label>
   <details class="advanced" oninput={syncSimpleFromNumbers}>
-    <summary>Exact numbers</summary>
-    <p class="section-note">Blank means any. Prefer ranks a match instead of excluding it.</p>
+    <summary>{$ui("Exact numbers")}</summary>
+    <p class="section-note">{$ui("Blank means any. Prefer ranks a match instead of excluding it.")}</p>
     <div class="detail-grid">
-      <label><span>Altitude min m</span><input type="number" bind:value={altitudeMin} {disabled} /></label>
-      <label><span>Altitude max m</span><input type="number" bind:value={altitudeMax} {disabled} /></label>
-      <label><span>Temp min °C</span><input type="number" bind:value={tempMin} disabled={climateOff} /></label>
-      <label><span>Temp max °C</span><input type="number" bind:value={tempMax} disabled={climateOff} /></label>
-      <label><span>Rain min mm</span><input type="number" min="0" bind:value={rainMin} disabled={climateOff} /></label>
-      <label><span>Rain max mm</span><input type="number" min="0" bind:value={rainMax} disabled={climateOff} /></label>
+      <label><span>{$ui("Altitude min m")}</span><input type="number" bind:value={altitudeMin} {disabled} /></label>
+      <label><span>{$ui("Altitude max m")}</span><input type="number" bind:value={altitudeMax} {disabled} /></label>
+      <label><span>{$ui("Temp min °C")}</span><input type="number" bind:value={tempMin} disabled={climateOff} /></label>
+      <label><span>{$ui("Temp max °C")}</span><input type="number" bind:value={tempMax} disabled={climateOff} /></label>
+      <label><span>{$ui("Rain min mm")}</span><input type="number" min="0" bind:value={rainMin} disabled={climateOff} /></label>
+      <label><span>{$ui("Rain max mm")}</span><input type="number" min="0" bind:value={rainMax} disabled={climateOff} /></label>
       <label
-        ><span>Biome</span>
+        ><span>{$ui("Biome")}</span>
         <select bind:value={biomeClass} disabled={climateOff}>
-          <option value="">Any</option>
+          <option value="">{$ui("Any")}</option>
           {#each biomes.filter((entry) => entry.id !== 0) as entry (entry.id)}
             <option value={String(entry.id)}>{entry.name}</option>
           {/each}
         </select>
       </label>
       <label
-        ><span>Ice</span>
+        ><span>{$ui("Ice")}</span>
         <select bind:value={ice} {disabled}>
-          <option value="">Any</option>
-          <option value="no">No ice</option>
-          <option value="yes">Ice cover</option>
+          <option value="">{$ui("Any")}</option>
+          <option value="no">{$ui("No ice")}</option>
+          <option value="yes">{$ui("Ice cover")}</option>
         </select>
       </label>
-      <label><span>Coast min km</span><input type="number" min="0" bind:value={coastMin} {disabled} /></label>
-      <label><span>Coast max km</span><input type="number" min="0" bind:value={coastMax} {disabled} /></label>
-      <label><span>Fresh water min km</span><input type="number" min="0" bind:value={freshMin} {disabled} /></label>
-      <label><span>Fresh water max km</span><input type="number" min="0" bind:value={freshMax} {disabled} /></label>
-      <label><span>Latitude min °</span><input type="number" bind:value={latitudeMin} {disabled} /></label>
-      <label><span>Latitude max °</span><input type="number" bind:value={latitudeMax} {disabled} /></label>
-      <label><span>Slope min %</span><input type="number" min="0" step="0.1" bind:value={slopeMin} {disabled} /></label>
-      <label><span>Slope max %</span><input type="number" min="0" step="0.1" bind:value={slopeMax} {disabled} /></label>
+      <label><span>{$ui("Coast min km")}</span><input type="number" min="0" bind:value={coastMin} {disabled} /></label>
+      <label><span>{$ui("Coast max km")}</span><input type="number" min="0" bind:value={coastMax} {disabled} /></label>
+      <label><span>{$ui("Fresh water min km")}</span><input type="number" min="0" bind:value={freshMin} {disabled} /></label>
+      <label><span>{$ui("Fresh water max km")}</span><input type="number" min="0" bind:value={freshMax} {disabled} /></label>
+      <label><span>{$ui("Latitude min °")}</span><input type="number" bind:value={latitudeMin} {disabled} /></label>
+      <label><span>{$ui("Latitude max °")}</span><input type="number" bind:value={latitudeMax} {disabled} /></label>
+      <label><span>{$ui("Slope min %")}</span><input type="number" min="0" step="0.1" bind:value={slopeMin} {disabled} /></label>
+      <label><span>{$ui("Slope max %")}</span><input type="number" min="0" step="0.1" bind:value={slopeMax} {disabled} /></label>
       <label
-        ><span>Humidity min %</span><input
+        ><span>{$ui("Humidity min %")}</span><input
           type="number"
           min="0"
           max="100"
           bind:value={humidityMin}
           disabled={climateOff} /></label>
       <label
-        ><span>Humidity max %</span><input
+        ><span>{$ui("Humidity max %")}</span><input
           type="number"
           min="0"
           max="100"
           bind:value={humidityMax}
           disabled={climateOff} /></label>
       <label
-        ><span>Aridity min %</span><input
+        ><span>{$ui("Aridity min %")}</span><input
           type="number"
           min="0"
           max="100"
           bind:value={aridityMin}
           disabled={climateOff} /></label>
       <label
-        ><span>Aridity max %</span><input
+        ><span>{$ui("Aridity max %")}</span><input
           type="number"
           min="0"
           max="100"
@@ -643,89 +645,87 @@ const HAZARD_CHIPS = [
           disabled={climateOff} /></label>
       {#if islandOptions.length > 0}
         <label
-          ><span>Landmass</span>
+          ><span>{$ui("Landmass")}</span>
           <select bind:value={islandId} {disabled}>
-            <option value="">Any</option>
+            <option value="">{$ui("Any")}</option>
             {#each islandOptions as island (island.id)}
-              <option value={String(island.id)}>#{island.id} · {island.cells.toLocaleString("en-US")} cells</option>
+              <option value={String(island.id)}>{$ui("#{0} · {1} cells", island.id, island.cells.toLocaleString($displayLanguage))}</option>
             {/each}
           </select>
         </label>
       {/if}
       <label
-        ><span>Quake min %</span><input
+        ><span>{$ui("Quake min %")}</span><input
           type="number"
           min="0"
           max="100"
           bind:value={quakeMin}
           disabled={hazardsOff} /></label>
       <label
-        ><span>Quake max %</span><input
+        ><span>{$ui("Quake max %")}</span><input
           type="number"
           min="0"
           max="100"
           bind:value={quakeMax}
           disabled={hazardsOff} /></label>
       <label
-        ><span>Volcano min %</span><input
+        ><span>{$ui("Volcano min %")}</span><input
           type="number"
           min="0"
           max="100"
           bind:value={volcanoMin}
           disabled={hazardsOff} /></label>
       <label
-        ><span>Volcano max %</span><input
+        ><span>{$ui("Volcano max %")}</span><input
           type="number"
           min="0"
           max="100"
           bind:value={volcanoMax}
           disabled={hazardsOff} /></label>
       <label
-        ><span>Storm min %</span><input
+        ><span>{$ui("Storm min %")}</span><input
           type="number"
           min="0"
           max="100"
           bind:value={stormMin}
           disabled={climateOff} /></label>
       <label
-        ><span>Storm max %</span><input
+        ><span>{$ui("Storm max %")}</span><input
           type="number"
           min="0"
           max="100"
           bind:value={stormMax}
           disabled={climateOff} /></label>
       <label
-        ><span>Max regions</span><input type="number" min="1" max="12" bind:value={maxCandidates} {disabled} /></label>
-      <label><span>Min cells</span><input type="number" min="1" bind:value={minCells} {disabled} /></label>
+        ><span>{$ui("Max regions")}</span><input type="number" min="1" max="12" bind:value={maxCandidates} {disabled} /></label>
+      <label><span>{$ui("Min cells")}</span><input type="number" min="1" bind:value={minCells} {disabled} /></label>
     </div>
     <div class="find-prefer">
-      <label><input type="checkbox" bind:checked={altitudeSoft} {disabled} /> Altitude</label>
-      <label><input type="checkbox" bind:checked={tempSoft} disabled={climateOff} /> Temperature</label>
-      <label><input type="checkbox" bind:checked={rainSoft} disabled={climateOff} /> Rain</label>
-      <label><input type="checkbox" bind:checked={biomeSoft} disabled={climateOff} /> Biome</label>
-      <label><input type="checkbox" bind:checked={iceSoft} {disabled} /> Ice</label>
-      <label><input type="checkbox" bind:checked={coastSoft} {disabled} /> Coast</label>
-      <label><input type="checkbox" bind:checked={freshSoft} {disabled} /> Fresh water</label>
-      <label><input type="checkbox" bind:checked={latitudeSoft} {disabled} /> Latitude</label>
-      <label><input type="checkbox" bind:checked={slopeSoft} {disabled} /> Slope</label>
-      <label><input type="checkbox" bind:checked={humiditySoft} disabled={climateOff} /> Humidity</label>
-      <label><input type="checkbox" bind:checked={ariditySoft} disabled={climateOff} /> Aridity</label>
+      <label><input type="checkbox" bind:checked={altitudeSoft} {disabled} /> {$ui("Altitude")}</label>
+      <label><input type="checkbox" bind:checked={tempSoft} disabled={climateOff} /> {$ui("Temperature")}</label>
+      <label><input type="checkbox" bind:checked={rainSoft} disabled={climateOff} /> {$ui("Rain")}</label>
+      <label><input type="checkbox" bind:checked={biomeSoft} disabled={climateOff} /> {$ui("Biome")}</label>
+      <label><input type="checkbox" bind:checked={iceSoft} {disabled} /> {$ui("Ice")}</label>
+      <label><input type="checkbox" bind:checked={coastSoft} {disabled} /> {$ui("Coast")}</label>
+      <label><input type="checkbox" bind:checked={freshSoft} {disabled} /> {$ui("Fresh water")}</label>
+      <label><input type="checkbox" bind:checked={latitudeSoft} {disabled} /> {$ui("Latitude")}</label>
+      <label><input type="checkbox" bind:checked={slopeSoft} {disabled} /> {$ui("Slope")}</label>
+      <label><input type="checkbox" bind:checked={humiditySoft} disabled={climateOff} /> {$ui("Humidity")}</label>
+      <label><input type="checkbox" bind:checked={ariditySoft} disabled={climateOff} /> {$ui("Aridity")}</label>
       {#if islandOptions.length > 0}
-        <label><input type="checkbox" bind:checked={islandSoft} {disabled} /> Landmass</label>
+        <label><input type="checkbox" bind:checked={islandSoft} {disabled} /> {$ui("Landmass")}</label>
       {/if}
-      <label><input type="checkbox" bind:checked={quakeSoft} disabled={hazardsOff} /> Earthquake</label>
-      <label><input type="checkbox" bind:checked={volcanoSoft} disabled={hazardsOff} /> Volcano</label>
-      <label><input type="checkbox" bind:checked={stormSoft} disabled={climateOff} /> Storm</label>
+      <label><input type="checkbox" bind:checked={quakeSoft} disabled={hazardsOff} /> {$ui("Earthquake")}</label>
+      <label><input type="checkbox" bind:checked={volcanoSoft} disabled={hazardsOff} /> {$ui("Volcano")}</label>
+      <label><input type="checkbox" bind:checked={stormSoft} disabled={climateOff} /> {$ui("Storm")}</label>
     </div>
   </details>
   <div class="actions">
     <button type="button" class="primary" disabled={disabled || searching} onclick={submit}>
-      {searching ? "Searching…" : "Search"}
+      {searching ? $ui("Searching…") : $ui("Search")}
     </button>
-    <button type="button" {disabled} onclick={resetFilters}>Reset</button>
-    <button type="button" disabled={disabled || (!result && !error && !formError)} onclick={clearResults}>
-      Clear
-    </button>
+    <button type="button" {disabled} onclick={resetFilters}>{$ui("Reset")}</button>
+    <button type="button" disabled={disabled || (!result && !error && !formError)} onclick={clearResults}> {$ui("Clear")} </button>
   </div>
   {#if formError || error}
     <p class="section-note find-error">{formError || error}</p>
@@ -734,11 +734,9 @@ const HAZARD_CHIPS = [
 
 {#snippet matches()}
   {#if result}
-    <p class="section-note">
-      {result.candidateCount} region{result.candidateCount === 1 ? "" : "s"} · {result.matchedCells.toLocaleString(
+    <p class="section-note"> {$ui("{0} region{1} · {2} matching cells", result.candidateCount, result.candidateCount === 1 ? "" : $ui("s"), result.matchedCells.toLocaleString(
         "en-US",
-      )} matching cells
-    </p>
+      ))} </p>
     {#if compared.length === 2}
       <div class="find-compare">
         {#each compared as candidate (candidate.id)}
@@ -751,14 +749,14 @@ const HAZARD_CHIPS = [
       </div>
     {/if}
     {#if result.candidates.length === 0}
-      <p class="empty-note">No region matches those criteria. Loosen a chip or open Exact numbers.</p>
+      <p class="empty-note">{$ui("No region matches those criteria. Loosen a chip or open Exact numbers.")}</p>
     {:else}
       <ul class="find-results">
         {#each result.candidates as candidate (candidate.id)}
           <li class:active={selectedId === candidate.id} class:compare={compareId === candidate.id}>
             <button type="button" class="find-candidate" onclick={() => onselect(candidate)}>
               <strong>{biomeName(candidate.means.biomeClass)}</strong>
-              <span>{candidate.areaKm2.toLocaleString("en-US")} km² · {candidate.reasons[0]}</span>
+              <span>{$ui("{0} km² · {1}", candidate.areaKm2.toLocaleString($displayLanguage), candidate.reasons[0])}</span>
               <span>{statLine(candidate)}</span>
               {#if candidate.risks.length}
                 <span class="find-risks">{candidate.risks.join(" · ")}</span>
@@ -771,15 +769,13 @@ const HAZARD_CHIPS = [
             </button>
             <div class="actions">
               <button type="button" onclick={() => toggleExpanded(candidate.id)}>
-                {expandedId === candidate.id ? "Less" : "Why"}
+                {expandedId === candidate.id ? $ui("Less") : $ui("Why")}
               </button>
               <button
                 type="button"
                 class:active={compareId === candidate.id}
-                onclick={() => toggleCompare(candidate.id)}>
-                Compare
-              </button>
-              <button type="button" onclick={() => onpin(candidate)}>Pin</button>
+                onclick={() => toggleCompare(candidate.id)}> {$ui("Compare")} </button>
+              <button type="button" onclick={() => onpin(candidate)}>{$ui("Pin")}</button>
             </div>
           </li>
         {/each}
@@ -789,14 +785,14 @@ const HAZARD_CHIPS = [
 {/snippet}
 
 {#if variant === "studio"}
-  <section class="find-place studio" aria-label="Find place">
+  <section class="find-place studio" aria-label={$ui("Find place")}>
     <div class="block">
-      <span class="kicker">Query</span>
+      <span class="kicker">{$ui("Query")}</span>
       {@render query()}
     </div>
     {#if result}
       <div class="block">
-        <span class="kicker">Matches</span>
+        <span class="kicker">{$ui("Matches")}</span>
         {@render matches()}
       </div>
     {/if}
@@ -805,7 +801,7 @@ const HAZARD_CHIPS = [
   <details class="find-place map-section-group">
     <summary>
       <ChevronRight size={14} strokeWidth={1.8} aria-hidden="true" />
-      <strong>Find Place</strong>
+      <strong>{$ui("Find Place")}</strong>
       {#if result}
         <span class="section-count">{result.candidateCount}</span>
       {/if}

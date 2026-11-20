@@ -1,4 +1,5 @@
 <script lang="ts">
+import { pluginText } from "./i18n.ts";
 import { tick } from "svelte";
 import IpaPicker from "./IpaPicker.svelte";
 import { insertIpaAtSelection } from "./ipa";
@@ -89,7 +90,7 @@ async function closePicker() {
       class="ipa-trigger"
       onclick={openPicker}
       {disabled}
-      aria-label={`Open IPA picker for ${label}`}>IPA</button>
+      aria-label={$pluginText("Open IPA picker for {0}", { 0: String(label) })}>{$pluginText("IPA")}</button>
   </span>
 </div>
 

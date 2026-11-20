@@ -1,6 +1,9 @@
 <script lang="ts">
-import { X, Settings2, FolderOpen, ChevronLeft, Sun, Moon, Monitor, Download } from "@lucide/svelte";
-import { checkAppUpdate, formatUpdateMessage, openDownloadPage, type UpdateChannelPreference } from "$lib/appUpdate";
+import { nativeErrorText } from "$lib/i18n/native-errors.ts";
+import { ui } from "$lib/i18n/ui";
+import { X, Settings2, FolderOpen, ChevronDown, ChevronLeft, Languages, Sun, Moon, Monitor, Download } from "@lucide/svelte";
+import { checkAppUpdate, formatUpdateMessage, openDownloadPage, type AppUpdateCheck, type UpdateChannelPreference } from "$lib/appUpdate";
+import { displayLanguage, languageOptions, messages, setDisplayLanguage } from "$lib/i18n";
 import type { ThemePreference } from "$lib/theme";
 
 type ThemePackRef = { pluginId: string; themeId: string };
@@ -51,7 +54,9 @@ let {
 } = $props();
 
 let updateBusy = $state(false);
-let updateMessage = $state("");
+let updateResult = $state<AppUpdateCheck | null>(null);
+let updateError = $state("");
+let updateMessage = $derived(updateResult ? formatUpdateMessage(updateResult, $messages.settings) : $nativeErrorText(updateError));
 
 function packIsSelected(pluginId: string, themeId: string) {
   return themePack?.pluginId === pluginId && themePack?.themeId === themeId;
@@ -64,12 +69,13 @@ function selectedPackExists() {
 async function checkForUpdate() {
   if (updateBusy) return;
   updateBusy = true;
-  updateMessage = "";
+  updateResult = null;
+  updateError = "";
   try {
-    const result = await checkAppUpdate(updateChannelPreference);
-    updateMessage = formatUpdateMessage(result);
+    updateResult = await checkAppUpdate(updateChannelPreference);
   } catch (cause) {
-    updateMessage = cause instanceof Error ? cause.message : String(cause);
+    updateResult = null;
+    updateError = cause instanceof Error ? cause.message : String(cause);
   } finally {
     updateBusy = false;
   }
@@ -79,7 +85,8 @@ async function openUpdatesPage() {
   try {
     await openDownloadPage();
   } catch (cause) {
-    updateMessage = cause instanceof Error ? cause.message : String(cause);
+    updateResult = null;
+    updateError = cause instanceof Error ? cause.message : String(cause);
   }
 }
 
@@ -95,30 +102,30 @@ async function handleClose() {
 }
 </script>
 
-<section class="settings-view" aria-label="Settings">
+<section class="settings-view" aria-label={$messages.common.settings}>
   <header class="settings-header">
     <div class="header-left">
       <div class="header-icon">
         <Settings2 size={18} strokeWidth={1.8} aria-hidden="true" />
       </div>
       <div>
-        <span class="panel-kicker">APPLICATION</span>
-        <h1>Settings</h1>
-        <p>Appearance and recent projects that follow you across projects.</p>
+        <span class="panel-kicker">{$messages.settings.application}</span>
+        <h1>{$messages.common.settings}</h1>
+        <p>{$messages.settings.description}</p>
       </div>
     </div>
     <button type="button" class="quiet-button header-back" onclick={() => void handleClose()}
-      ><ChevronLeft size={14} strokeWidth={1.9} aria-hidden="true" /> Back</button>
+      ><ChevronLeft size={14} strokeWidth={1.9} aria-hidden="true" /> {$messages.common.back}</button>
   </header>
 
   <div class="settings-layout">
-    <nav class="settings-nav" aria-label="Settings sections">
+    <nav class="settings-nav" aria-label={$messages.settings.sections}>
       <button
         type="button"
         class:active={section === "general"}
         class="settings-nav-button"
         onclick={() => void goToSection("general")}
-        ><FolderOpen size={14} strokeWidth={1.8} aria-hidden="true" /> General</button>
+        ><FolderOpen size={14} strokeWidth={1.8} aria-hidden="true" /> {$messages.settings.general}</button>
     </nav>
 
     <div class="settings-panel">
@@ -128,13 +135,13 @@ async function handleClose() {
             <FolderOpen size={18} strokeWidth={1.8} aria-hidden="true" />
           </div>
           <div class="hero-copy">
-            <span class="kicker">APPLICATION</span>
-            <strong>General</strong>
-            <p>Appearance and recent projects. These preferences follow you across projects.</p>
+            <span class="kicker">{$messages.settings.application}</span>
+            <strong>{$messages.settings.general}</strong>
+            <p>{$messages.settings.generalDescription}</p>
           </div>
           <div class="hero-stats">
             <span class="stat-pill"
-              ><FolderOpen size={12} strokeWidth={1.8} aria-hidden="true" /> {recentProjects.length} recent</span>
+              ><FolderOpen size={12} strokeWidth={1.8} aria-hidden="true" /> {$messages.settings.recentCount(recentProjects.length)}</span>
           </div>
         </div>
 
@@ -142,18 +149,32 @@ async function handleClose() {
           <div class="block-heading">
             <div class="heading-left">
               <span class="heading-icon accent"><Sun size={14} strokeWidth={1.8} aria-hidden="true" /></span>
-              <h4>Appearance</h4>
+              <h4>{$messages.settings.appearance}</h4>
             </div>
-            <span class="block-hint">Follows your preference across projects</span>
+            <span class="block-hint">{$messages.settings.appearanceHint}</span>
           </div>
-          <div class="theme-options" role="group" aria-label="Color theme">
+          <label class="display-language">
+            <span class="language-label">
+              <Languages size={16} strokeWidth={1.8} aria-hidden="true" />
+              {$messages.settings.displayLanguage}
+            </span>
+            <span class="language-picker">
+              <select value={$displayLanguage} onchange={(event) => setDisplayLanguage(event.currentTarget.value)}>
+                {#each languageOptions as language (language.value)}
+                  <option value={language.value} lang={language.value}>{language.status === "alpha" ? $ui("{0} (Alpha)", language.label) : language.label}</option>
+                {/each}
+              </select>
+              <ChevronDown size={14} strokeWidth={1.8} aria-hidden="true" />
+            </span>
+          </label>
+          <div class="theme-options" role="group" aria-label={$messages.settings.colorTheme}>
             <button
               type="button"
               class:active={themePreference === "light"}
               aria-pressed={themePreference === "light"}
               onclick={() => onThemeChange("light")}>
               <Sun size={16} strokeWidth={1.8} aria-hidden="true" />
-              <span><strong>Light</strong><small>Warm paper</small></span>
+              <span><strong>{$messages.settings.light}</strong><small>{$messages.settings.lightHint}</small></span>
             </button>
             <button
               type="button"
@@ -161,7 +182,7 @@ async function handleClose() {
               aria-pressed={themePreference === "dark"}
               onclick={() => onThemeChange("dark")}>
               <Moon size={16} strokeWidth={1.8} aria-hidden="true" />
-              <span><strong>Dark</strong><small>Forest night</small></span>
+              <span><strong>{$messages.settings.dark}</strong><small>{$messages.settings.darkHint}</small></span>
             </button>
             <button
               type="button"
@@ -169,10 +190,10 @@ async function handleClose() {
               aria-pressed={themePreference === "system"}
               onclick={() => onThemeChange("system")}>
               <Monitor size={16} strokeWidth={1.8} aria-hidden="true" />
-              <span><strong>System</strong><small>Match this computer</small></span>
+              <span><strong>{$messages.settings.system}</strong><small>{$messages.settings.systemHint}</small></span>
             </button>
           </div>
-          <div class="theme-pack-options" role="group" aria-label="Theme pack">
+          <div class="theme-pack-options" role="group" aria-label={$messages.settings.themePack}>
             <button
               type="button"
               class:active={!themePack}
@@ -183,7 +204,7 @@ async function handleClose() {
                 <i style="background: {defaultSwatch.surface}"></i>
                 <i style="background: {defaultSwatch.canvas}"></i>
               </span>
-              <span><strong>Default</strong><small>Warm paper / Forest night</small></span>
+              <span><strong>{$messages.settings.defaultPack}</strong><small>{$messages.settings.defaultPackHint}</small></span>
             </button>
             {#if themePack && !selectedPackExists()}
               <button type="button" class="active" aria-pressed="true" disabled>
@@ -192,7 +213,7 @@ async function handleClose() {
                   <i style="background: {defaultSwatch.surface}"></i>
                   <i style="background: {defaultSwatch.canvas}"></i>
                 </span>
-                <span><strong>{themePack.themeId}</strong><small>Unavailable — using Default</small></span>
+                <span><strong>{themePack.themeId}</strong><small>{$messages.settings.packUnavailable}</small></span>
               </button>
             {/if}
             {#each themePacks as pack (pack.pluginId + "/" + pack.themeId)}
@@ -216,18 +237,18 @@ async function handleClose() {
           <div class="block-heading">
             <div class="heading-left">
               <span class="heading-icon"><Download size={14} strokeWidth={1.8} aria-hidden="true" /></span>
-              <h4>About</h4>
+              <h4>{$messages.settings.about}</h4>
             </div>
-            <span class="block-hint">v{version}</span>
+            <span class="block-hint">{$ui("v{0}", version)}</span>
           </div>
-          <div class="theme-options update-channel-options" role="group" aria-label="Update channel">
+          <div class="theme-options update-channel-options" role="group" aria-label={$messages.settings.updateChannel}>
             <button
               type="button"
               class:active={updateChannelPreference === "auto"}
               aria-pressed={updateChannelPreference === "auto"}
               onclick={() => onUpdateChannelChange("auto")}>
               <Monitor size={16} strokeWidth={1.8} aria-hidden="true" />
-              <span><strong>Auto</strong><small>Match this build</small></span>
+              <span><strong>{$messages.settings.auto}</strong><small>{$messages.settings.autoHint}</small></span>
             </button>
             <button
               type="button"
@@ -235,7 +256,7 @@ async function handleClose() {
               aria-pressed={updateChannelPreference === "stable"}
               onclick={() => onUpdateChannelChange("stable")}>
               <Download size={16} strokeWidth={1.8} aria-hidden="true" />
-              <span><strong>Stable</strong><small>Production releases</small></span>
+              <span><strong>{$messages.settings.stable}</strong><small>{$messages.settings.stableHint}</small></span>
             </button>
             <button
               type="button"
@@ -243,7 +264,7 @@ async function handleClose() {
               aria-pressed={updateChannelPreference === "beta"}
               onclick={() => onUpdateChannelChange("beta")}>
               <Download size={16} strokeWidth={1.8} aria-hidden="true" />
-              <span><strong>Beta</strong><small>Beta and stable</small></span>
+              <span><strong>{$messages.settings.beta}</strong><small>{$messages.settings.betaHint}</small></span>
             </button>
             <button
               type="button"
@@ -251,13 +272,13 @@ async function handleClose() {
               aria-pressed={updateChannelPreference === "alpha"}
               onclick={() => onUpdateChannelChange("alpha")}>
               <Download size={16} strokeWidth={1.8} aria-hidden="true" />
-              <span><strong>Alpha</strong><small>Earliest previews</small></span>
+              <span><strong>{$messages.settings.alpha}</strong><small>{$messages.settings.alphaHint}</small></span>
             </button>
           </div>
           <div class="update-actions">
             <button type="button" class="primary" onclick={() => void checkForUpdate()} disabled={updateBusy}
-              >{updateBusy ? "Checking…" : "Check for update"}</button>
-            <button type="button" class="quiet" onclick={() => void openUpdatesPage()}>Open download page</button>
+              >{updateBusy ? $messages.settings.checking : $messages.settings.checkForUpdate}</button>
+            <button type="button" class="quiet" onclick={() => void openUpdatesPage()}>{$messages.settings.downloadPage}</button>
             {#if updateMessage}<span class="update-status">{updateMessage}</span>{/if}
           </div>
         </div>
@@ -266,17 +287,17 @@ async function handleClose() {
           <div class="block-heading">
             <div class="heading-left">
               <span class="heading-icon"><FolderOpen size={14} strokeWidth={1.8} aria-hidden="true" /></span>
-              <h4>Recent projects</h4>
+              <h4>{$messages.common.recentProjects}</h4>
               <span class="count-badge">{recentProjects.length}</span>
             </div>
-            <span class="block-hint">Stored in your application profile</span>
+            <span class="block-hint">{$messages.settings.recentHint}</span>
           </div>
           {#if recentProjects.length === 0}
             <div class="empty-inline">
               <FolderOpen size={16} strokeWidth={1.7} aria-hidden="true" />
               <div>
-                <strong>No recent projects yet</strong>
-                <span>Open a project to begin. Recent projects appear here for quick access.</span>
+                <strong>{$messages.settings.noRecent}</strong>
+                <span>{$messages.settings.noRecentHint}</span>
               </div>
             </div>
           {:else}
@@ -290,7 +311,7 @@ async function handleClose() {
                   <button
                     type="button"
                     class="quiet icon"
-                    aria-label="Remove {recent.name}"
+                    aria-label={$messages.settings.removeRecent(recent.name)}
                     onclick={() => onRemoveRecent(recent.root)}
                     ><X size={14} strokeWidth={1.8} aria-hidden="true" /></button>
                 </li>
@@ -506,6 +527,60 @@ async function handleClose() {
     0 1px 0 rgba(48, 44, 38, 0.03),
     0 8px 24px rgba(48, 44, 38, 0.04);
 }
+.display-language {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  color: var(--ink-soft);
+  font-size: 12px;
+  font-weight: 600;
+}
+.language-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+.language-picker {
+  display: grid;
+  align-items: center;
+  min-width: min(10rem, 100%);
+  max-width: 100%;
+  color: var(--ink-muted);
+}
+.language-picker select,
+.language-picker :global(svg) {
+  grid-area: 1 / 1;
+}
+.language-picker select {
+  appearance: none;
+  -webkit-appearance: none;
+  box-sizing: border-box;
+  min-width: 0;
+  min-height: 36px;
+  padding: 0 36px 0 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: var(--surface-subtle);
+  color: var(--ink);
+  font: inherit;
+  cursor: pointer;
+}
+.language-picker select:hover {
+  border-color: var(--accent-soft);
+  background: var(--surface-warm);
+}
+.language-picker select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.language-picker :global(svg) {
+  justify-self: end;
+  margin-inline-end: 12px;
+  pointer-events: none;
+}
+
 .block-heading {
   display: flex;
   flex-wrap: wrap;

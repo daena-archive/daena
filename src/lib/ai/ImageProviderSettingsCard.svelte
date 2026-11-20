@@ -1,4 +1,6 @@
 <script lang="ts">
+import { nativeErrorText } from "$lib/i18n/native-errors.ts";
+import { ui } from "$lib/i18n/ui";
 import { RefreshCw, ServerCog } from "@lucide/svelte";
 import {
   project,
@@ -43,8 +45,8 @@ async function discover() {
     discovery = await project.imageProviderDiscover();
     showMessage(
       discovery.models.length === 0
-        ? "ComfyUI is available, but no checkpoint models were found."
-        : `${discovery.models.length} checkpoint model${discovery.models.length === 1 ? "" : "s"} available.`,
+        ? $ui("ComfyUI is available, but no checkpoint models were found.")
+        : $ui("{0} checkpoint model{1} available.", discovery.models.length, discovery.models.length === 1 ? "" : $ui("s")),
     );
     if (!settings.model && discovery.models.length === 1) onChange("model", discovery.models[0]);
   } catch (cause) {
@@ -64,9 +66,9 @@ async function check() {
     showMessage(
       status.available
         ? status.modelAvailable
-          ? "ComfyUI and the selected model are ready."
-          : "ComfyUI is available; select a discovered checkpoint model."
-        : (status.error ?? "ComfyUI is unavailable."),
+          ? $ui("ComfyUI and the selected model are ready.")
+          : $ui("ComfyUI is available; select a discovered checkpoint model.")
+        : (status.error ?? $ui("ComfyUI is unavailable.")),
     );
   } catch (cause) {
     status = null;
@@ -80,10 +82,10 @@ async function check() {
 <section class="operation-card" aria-labelledby="image-provider-heading">
   <div class="split-heading">
     <div>
-      <strong id="image-provider-heading">ComfyUI</strong>
-      <p>Generated candidates stay temporary until you explicitly accept them as project assets.</p>
+      <strong id="image-provider-heading">{$ui("ComfyUI")}</strong>
+      <p>{$ui("Generated candidates stay temporary until you explicitly accept them as project assets.")}</p>
     </div>
-    <span class="state-pill ok">Local</span>
+    <span class="state-pill ok">{$ui("Local")}</span>
   </div>
 
   <label class="enable-row">
@@ -91,29 +93,29 @@ async function check() {
       type="checkbox"
       checked={settings.enabled}
       onchange={(event) => onChange("enabled", (event.currentTarget as HTMLInputElement).checked)} />
-    <span><strong>Enable AI image generation</strong><small>No hosted fallback is used.</small></span>
+    <span><strong>{$ui("Enable AI image generation")}</strong><small>{$ui("No hosted fallback is used.")}</small></span>
   </label>
 
   {#if settings.enabled}
     <div class="fields">
       <label class="wide"
-        >Local ComfyUI address<input
+        >{$ui("Local ComfyUI address")}<input
           value={settings.endpoint}
-          placeholder="http://127.0.0.1:8188"
+          placeholder={$ui("http://127.0.0.1:8188")}
           spellcheck="false"
           oninput={(event) => {
             discovery = null;
             status = null;
             onChange("endpoint", (event.currentTarget as HTMLInputElement).value);
           }} />
-        <small>Only loopback HTTP addresses are accepted in V1.</small></label>
+        <small>{$ui("Only loopback HTTP addresses are accepted in V1.")}</small></label>
       <label
-        >Checkpoint model<select
+        >{$ui("Checkpoint model")}<select
           value={settings.model}
           onchange={(event) => onChange("model", (event.currentTarget as HTMLSelectElement).value)}>
-          <option value="">Choose a discovered model</option>
+          <option value="">{$ui("Choose a discovered model")}</option>
           {#if settings.model && !discovery?.models.includes(settings.model)}
-            <option value={settings.model}>{settings.model} (not discovered)</option>
+            <option value={settings.model}>{$ui("{0} (not discovered)", settings.model)}</option>
           {/if}
           {#each discovery?.models ?? [] as model}<option value={model}>{model}</option>{/each}
         </select></label>
@@ -121,18 +123,17 @@ async function check() {
     <div class="actions">
       <button type="button" class="primary-button" disabled={busy} onclick={() => void discover()}>
         <RefreshCw size={13} strokeWidth={1.8} aria-hidden="true" />
-        {busy ? "Checking…" : "Discover models"}
+        {busy ? $ui("Checking…") : $ui("Discover models")}
       </button>
       <button type="button" class="quiet-button" disabled={busy} onclick={() => void check()}>
-        <ServerCog size={13} strokeWidth={1.8} aria-hidden="true" /> Test connection
-      </button>
+        <ServerCog size={13} strokeWidth={1.8} aria-hidden="true" /> {$ui("Test connection")} </button>
       {#if message}<span class="status-badge" class:ok={status?.available && status?.modelAvailable} role="status"
-          >{message}</span
+          >{$nativeErrorText(message)}</span
         >{/if}
     </div>
     {#if discovery}
       <div class="capabilities">
-        <strong>Available controls</strong>
+        <strong>{$ui("Available controls")}</strong>
         <p>{discovery.capabilities.join(" · ")}</p>
       </div>
     {/if}

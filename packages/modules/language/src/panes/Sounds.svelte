@@ -1,4 +1,5 @@
 <script lang="ts">
+import { pluginText, translatePluginText as formatText } from "../i18n.ts";
 import { untrack } from "svelte";
 import type { EntitySummary, ModuleContext, ModuleRecord } from "../../../../module-api/src/index";
 import IpaInput from "../IpaInput.svelte";
@@ -101,7 +102,7 @@ function soundsHasDraft() {
 async function tryLeaveSounds(confirmLeave: (message: string) => Promise<boolean> | boolean) {
   if (!soundsHasDraft()) return true;
   if (phonemeSaving || phonologySaving) return false;
-  const allowed = await confirmLeave("You have unsaved sound or phonology changes. Discard them?");
+  const allowed = await confirmLeave($pluginText("You have unsaved sound or phonology changes. Discard them?"));
   if (allowed) {
     closePhonemeEditor();
     phonologyNotesOpen = false;
@@ -188,7 +189,7 @@ async function savePhoneme(): Promise<"ok" | "symbol" | "error" | "none"> {
   const ownerLanguageId = selectedLanguage.id;
   phonemeDraft = normalizePhoneme(phonemeDraft);
   if (!phonemeDraft.symbol) {
-    error = "Symbol is required. IPA is optional.";
+    error = $pluginText("Symbol is required. IPA is optional.");
     return "symbol";
   }
   error = "";
@@ -237,7 +238,7 @@ async function deletePhoneme() {
       error = `This Sound is used by ${references} Writing ${references === 1 ? "mapping" : "mappings"}. Remove those references before deleting it.`;
       return;
     }
-    if (!(await confirm("Delete sound", `Delete “${editing.value.symbol}”?`))) return;
+    if (!(await confirm($pluginText("Delete sound"), formatText("Delete “{name}”?", { name: editing.value.symbol })))) return;
     setMutationActive(true);
     await context.records.delete("phonemes", editing.id, ownerLanguageId, {
       expectedRevision: editing.revision,
@@ -300,7 +301,7 @@ function handleNotesSubmit(event: SubmitEvent) {
 
 <div class="language-toolbar">
   <div class="language-toolbar-title">
-    <h2>Sounds</h2>
+    <h2>{$pluginText("Sounds")}</h2>
   </div>
   <div class="language-toolbar-actions">
     {#if !phonemeEditorOpen}
@@ -308,27 +309,27 @@ function handleNotesSubmit(event: SubmitEvent) {
         type="button"
         class="language-mode-toggle"
         aria-pressed={beginnerMode}
-        onclick={() => (beginnerMode = !beginnerMode)}>Beginner mode</button>
+        onclick={() => (beginnerMode = !beginnerMode)}>{$pluginText("Beginner mode")}</button>
       <button
         type="button"
         class="language-button secondary"
         disabled={!selectedLanguage || phonemes.length === 0}
-        onclick={() => (chartsOpen = true)}>View charts</button>
+        onclick={() => (chartsOpen = true)}>{$pluginText("View charts")}</button>
       <button
         type="button"
         class="language-button"
         data-guide="language-add-sound"
         disabled={!selectedLanguage}
-        onclick={addPhoneme}>Add sound</button>
+        onclick={addPhoneme}>{$pluginText("Add sound")}</button>
     {/if}
   </div>
 </div>
 {#if !selectedLanguage}
   <div class="language-empty-card">
-    <p class="language-empty" role="status">Select a language to document its sounds.</p>
+    <p class="language-empty" role="status">{$pluginText("Select a language to document its sounds.")}</p>
   </div>
 {:else if paneLoading}
-  <p class="language-empty language-loading" role="status">Loading sound inventory…</p>
+  <p class="language-empty language-loading" role="status">{$pluginText("Loading sound inventory…")}</p>
 {:else if phonemeEditorOpen}
   <form class="language-editor" onsubmit={handleSubmit}>
     <datalist id="language-place">
@@ -362,22 +363,22 @@ function handleNotesSubmit(event: SubmitEvent) {
       {/each}
     </datalist>
     <div class="language-form-section">
-      <h3>Basic information</h3>
+      <h3>{$pluginText("Basic information")}</h3>
       <div class="language-section-grid">
         <label class="language-field">
-          <span>Symbol</span>
-          <input name="symbol" bind:this={symbolInput} bind:value={phonemeDraft.symbol} placeholder="e.g. p, t, k" />
+          <span>{$pluginText("Symbol")}</span>
+          <input name="symbol" bind:this={symbolInput} bind:value={phonemeDraft.symbol} placeholder={$pluginText("e.g. p, t, k")} />
         </label>
         <IpaInput
           name="ipa"
-          label="IPA (optional)"
+          label={$pluginText("IPA (optional)")}
           bind:value={phonemeDraft.ipa}
-          placeholder="International Phonetic Alphabet" />
+          placeholder={$pluginText("International Phonetic Alphabet")} />
         <label class="language-field">
-          <span>Kind</span>
-          <select name="kind" aria-label="Sound kind" bind:value={phonemeDraft.kind}>
+          <span>{$pluginText("Kind")}</span>
+          <select name="kind" aria-label={$pluginText("Sound kind")} bind:value={phonemeDraft.kind}>
             {#each PHONEME_KINDS as kind (kind)}
-              <option value={kind}>{kind}</option>
+              <option value={kind}>{$pluginText(kind)}</option>
             {/each}
           </select>
         </label>
@@ -386,75 +387,75 @@ function handleNotesSubmit(event: SubmitEvent) {
 
     {#if !beginnerMode}
       <div class="language-form-section">
-        <h3>Consonant features (optional)</h3>
+        <h3>{$pluginText("Consonant features (optional)")}</h3>
         <div class="language-section-grid">
           <label class="language-field">
-            <span>Place</span>
+            <span>{$pluginText("Place")}</span>
             <input
               name="place"
               list="language-place"
               bind:value={phonemeDraft.place}
-              placeholder="e.g. bilabial, alveolar" />
+              placeholder={$pluginText("e.g. bilabial, alveolar")} />
           </label>
           <label class="language-field">
-            <span>Manner</span>
+            <span>{$pluginText("Manner")}</span>
             <input
               name="manner"
               list="language-manner"
               bind:value={phonemeDraft.manner}
-              placeholder="e.g. plosive, fricative" />
+              placeholder={$pluginText("e.g. plosive, fricative")} />
           </label>
           <label class="language-field">
-            <span>Voicing</span>
+            <span>{$pluginText("Voicing")}</span>
             <input
               name="voicing"
               list="language-voice"
               bind:value={phonemeDraft.voicing}
-              placeholder="e.g. voiced, voiceless" />
+              placeholder={$pluginText("e.g. voiced, voiceless")} />
           </label>
         </div>
       </div>
 
       <div class="language-form-section">
-        <h3>Vowel features (optional)</h3>
+        <h3>{$pluginText("Vowel features (optional)")}</h3>
         <div class="language-section-grid">
           <label class="language-field">
-            <span>Height</span>
+            <span>{$pluginText("Height")}</span>
             <input
               name="height"
               list="language-height"
               bind:value={phonemeDraft.height}
-              placeholder="e.g. high, mid, low" />
+              placeholder={$pluginText("e.g. high, mid, low")} />
           </label>
           <label class="language-field">
-            <span>Backness</span>
+            <span>{$pluginText("Backness")}</span>
             <input
               name="backness"
               list="language-backness"
               bind:value={phonemeDraft.backness}
-              placeholder="e.g. front, central, back" />
+              placeholder={$pluginText("e.g. front, central, back")} />
           </label>
           <label class="language-field">
-            <span>Rounding</span>
+            <span>{$pluginText("Rounding")}</span>
             <input
               name="rounding"
               list="language-rounding"
               bind:value={phonemeDraft.rounding}
-              placeholder="e.g. rounded, unrounded" />
+              placeholder={$pluginText("e.g. rounded, unrounded")} />
           </label>
         </div>
       </div>
     {/if}
 
     <div class="language-form-section">
-      <h3>Additional details (optional)</h3>
+      <h3>{$pluginText("Additional details (optional)")}</h3>
       <label class="language-field">
-        <span>Example word</span>
-        <input name="example" bind:value={phonemeDraft.example} placeholder="A word using this sound" />
+        <span>{$pluginText("Example word")}</span>
+        <input name="example" bind:value={phonemeDraft.example} placeholder={$pluginText("A word using this sound")} />
       </label>
       <label class="language-field">
-        <span>Notes</span>
-        <textarea name="notes" bind:value={phonemeDraft.notes} placeholder="Any additional notes about this sound"
+        <span>{$pluginText("Notes")}</span>
+        <textarea name="notes" bind:value={phonemeDraft.notes} placeholder={$pluginText("Any additional notes about this sound")}
         ></textarea>
       </label>
     </div>
@@ -468,14 +469,14 @@ function handleNotesSubmit(event: SubmitEvent) {
             type="button"
             class="language-button secondary language-danger"
             onclick={deletePhoneme}
-            disabled={phonemeSaving}>Delete</button>
+            disabled={phonemeSaving}>{$pluginText("Delete")}</button>
         {/if}
       </span>
       <span>
         <button type="button" class="language-button secondary" onclick={closePhonemeEditor} disabled={phonemeSaving}
-          >Cancel</button>
+          >{$pluginText("Cancel")}</button>
         <button type="submit" class="language-button" disabled={phonemeSaving}
-          >{phonemeSaving ? "Saving…" : "Save sound"}</button>
+          >{phonemeSaving ? $pluginText("Saving…") : $pluginText("Save sound")}</button>
       </span>
     </div>
   </form>
@@ -486,42 +487,42 @@ function handleNotesSubmit(event: SubmitEvent) {
     ontoggle={(event) => (phonologyNotesOpen = event.currentTarget.open)}>
     <summary>
       <span class="language-sounds-notes-title">
-        <strong>Phonology notes</strong>
-        <span>Optional sound-pattern notes</span>
+        <strong>{$pluginText("Phonology notes")}</strong>
+        <span>{$pluginText("Optional sound-pattern notes")}</span>
       </span>
-      <span class="language-sounds-notes-meta">{phonologyRecord ? "Saved" : "Optional"}</span>
+      <span class="language-sounds-notes-meta">{phonologyRecord ? $pluginText("Saved") : $pluginText("Optional")}</span>
     </summary>
     <div class="language-sounds-notes-body">
-      <p>Capture the sound patterns that sit behind the inventory and charts.</p>
+      <p>{$pluginText("Capture the sound patterns that sit behind the inventory and charts.")}</p>
       <form class="language-editor language-pane-form language-sounds-notes-content" onsubmit={handleNotesSubmit}>
         <label class="language-field">
-          <span>Syllable structure (optional)</span>
+          <span>{$pluginText("Syllable structure (optional)")}</span>
           <textarea name="syllableStructure" rows={2} bind:value={phonologyDraft.syllableStructure}></textarea>
         </label>
         <label class="language-field">
-          <span>Stress (optional)</span>
+          <span>{$pluginText("Stress (optional)")}</span>
           <textarea name="stress" rows={2} bind:value={phonologyDraft.stress}></textarea>
         </label>
         <label class="language-field">
-          <span>Tone (optional)</span>
+          <span>{$pluginText("Tone (optional)")}</span>
           <textarea name="tone" rows={2} bind:value={phonologyDraft.tone}></textarea>
         </label>
         <label class="language-field">
-          <span>Phonotactics (optional)</span>
+          <span>{$pluginText("Phonotactics (optional)")}</span>
           <textarea name="phonotactics" rows={2} bind:value={phonologyDraft.phonotactics}></textarea>
         </label>
         <label class="language-field">
-          <span>Notes (optional)</span>
+          <span>{$pluginText("Notes (optional)")}</span>
           <textarea name="notes" rows={2} bind:value={phonologyDraft.notes}></textarea>
         </label>
         <button type="submit" class="language-button" disabled={phonologySaving}
-          >{phonologySaving ? "Saving…" : "Save sound notes"}</button>
+          >{phonologySaving ? $pluginText("Saving…") : $pluginText("Save sound notes")}</button>
       </form>
     </div>
   </details>
   {#if otherSounds.length > 0}
     <p class="language-empty" role="status">
-      Other sounds: {otherSounds.map((record) => record.value.symbol).join(", ")}
+      {$pluginText("Other sounds:")} {otherSounds.map((record) => record.value.symbol).join(", ")}
     </p>
   {/if}
   {#if error}
@@ -529,33 +530,32 @@ function handleNotesSubmit(event: SubmitEvent) {
   {:else if phonemes.length === 0}
     <div class="language-empty-card">
       <p class="language-empty" role="status">
-        No sounds yet. Add consonants and vowels; charts stay empty until place, manner, height, or backness is filled
-        in.
+        {$pluginText("No sounds yet. Add consonants and vowels; charts stay empty until place, manner, height, or backness is filled in.")}
       </p>
       <div class="language-inline">
-        <button type="button" class="language-button" onclick={addPhoneme}>Add first sound</button>
+        <button type="button" class="language-button" onclick={addPhoneme}>{$pluginText("Add first sound")}</button>
       </div>
     </div>
   {:else}
     <section class="language-pane-section">
-      <h3>Sound inventory</h3>
-      <p>{phonemes.length} sound{phonemes.length === 1 ? "" : "s"} · select one to edit its features.</p>
+      <h3>{$pluginText("Sound inventory")}</h3>
+      <p>{$pluginText(phonemes.length === 1 ? "{count} sound" : "{count} sounds", { count: phonemes.length })} {$pluginText("· select one to edit its features.")}</p>
       <ul class="lexeme-list">
         {#each phonemes as record (record.id)}
           <li>
             <button
               type="button"
               class="language-item"
-              aria-label={`Edit sound ${record.value.symbol}`}
+              aria-label={$pluginText("Edit sound {0}", { 0: String(record.value.symbol) })}
               onclick={() => openPhonemeEditor(record)}>
               <strong>{record.value.symbol}</strong>
-              <small>{record.value.kind}</small>
+              <small>{$pluginText(record.value.kind)}</small>
               <span
                 >{record.value.ipa ||
                   [record.value.place, record.value.manner, record.value.height, record.value.backness]
                     .filter(Boolean)
                     .join(" · ") ||
-                  "No features yet"}</span>
+                  $pluginText("No features yet")}</span>
             </button>
           </li>
         {/each}
@@ -571,19 +571,19 @@ function handleNotesSubmit(event: SubmitEvent) {
       class="language-charts-modal"
       role="dialog"
       aria-modal="true"
-      aria-label="Sound charts"
+      aria-label={$pluginText("Sound charts")}
       tabindex="-1"
       onclick={(e) => e.stopPropagation()}>
       <div class="language-charts-modal-header">
-        <h3>Sound charts</h3>
-        <button type="button" class="language-button secondary" onclick={() => (chartsOpen = false)}>Close</button>
+        <h3>{$pluginText("Sound charts")}</h3>
+        <button type="button" class="language-button secondary" onclick={() => (chartsOpen = false)}>{$pluginText("Close")}</button>
       </div>
       <section class="language-group language-sounds-chart">
         <div class="language-sounds-chart-heading">
-          <h3>Consonants</h3>
+          <h3>{$pluginText("Consonants")}</h3>
         </div>
         {#if consonants.columns.length === 0}
-          <p class="language-empty" role="status">Add place and manner to position consonants here.</p>
+          <p class="language-empty" role="status">{$pluginText("Add place and manner to position consonants here.")}</p>
         {:else}
           <div class="language-chart-wrap">
             <table class="language-chart">
@@ -622,15 +622,15 @@ function handleNotesSubmit(event: SubmitEvent) {
           </div>
         {/if}
         {#if consonants.unplaced.length}
-          <p class="language-empty">Unplaced: {consonants.unplaced.map((item) => item.symbol).join(", ")}</p>
+          <p class="language-empty">{$pluginText("Unplaced:")} {consonants.unplaced.map((item) => item.symbol).join(", ")}</p>
         {/if}
       </section>
       <section class="language-group language-sounds-chart">
         <div class="language-sounds-chart-heading">
-          <h3>Vowels</h3>
+          <h3>{$pluginText("Vowels")}</h3>
         </div>
         {#if vowels.columns.length === 0}
-          <p class="language-empty" role="status">Add height and backness to position vowels here.</p>
+          <p class="language-empty" role="status">{$pluginText("Add height and backness to position vowels here.")}</p>
         {:else}
           <div class="language-chart-wrap">
             <table class="language-chart">
@@ -669,7 +669,7 @@ function handleNotesSubmit(event: SubmitEvent) {
           </div>
         {/if}
         {#if vowels.unplaced.length}
-          <p class="language-empty">Unplaced: {vowels.unplaced.map((item) => item.symbol).join(", ")}</p>
+          <p class="language-empty">{$pluginText("Unplaced:")} {vowels.unplaced.map((item) => item.symbol).join(", ")}</p>
         {/if}
       </section>
     </div>

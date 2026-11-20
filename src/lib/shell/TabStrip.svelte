@@ -1,4 +1,5 @@
 <script lang="ts">
+import { ui } from "$lib/i18n/ui";
 import type { Snippet } from "svelte";
 import { onDestroy, tick } from "svelte";
 import { ChevronDown, Plus, X } from "@lucide/svelte";
@@ -606,7 +607,7 @@ onDestroy(() => silenceDrag());
 <div class="tab-strip">
   <div
     role="tablist"
-    aria-label="Open tabs"
+    aria-label={$ui("Open tabs")}
     class="tab-list"
     tabindex="-1"
     bind:this={tabListEl}
@@ -642,24 +643,24 @@ onDestroy(() => silenceDrag());
             type="button"
             class="tab-close"
             tabindex="-1"
-            aria-label={`Close ${tab.title}`}
-            title="Close tab"
+            aria-label={$ui("Close {0}", tab.title)}
+            title={$ui("Close tab")}
             onclick={() => closeTab(tab.id)}><X size={12} strokeWidth={1.8} aria-hidden="true" /></button
           >{/if}
       </div>
     {/each}
   </div>
-  <button type="button" class="tab-new" aria-label="New tab" title="New tab" onclick={newTab}>
+  <button type="button" class="tab-new" aria-label={$ui("New tab")} title={$ui("New tab")} onclick={newTab}>
     <Plus size={14} strokeWidth={1.8} aria-hidden="true" />
   </button>
   {#if overflows}<button
       bind:this={allTabsButton}
       type="button"
       class="tab-new tab-all"
-      aria-label="All tabs"
+      aria-label={$ui("All tabs")}
       aria-haspopup="menu"
       aria-expanded={popoverKind === "list"}
-      title="All tabs"
+      title={$ui("All tabs")}
       onclick={() => toggleTabList(allTabsButton)}
       ><ChevronDown size={14} strokeWidth={1.8} aria-hidden="true" /></button
     >{/if}
@@ -667,7 +668,7 @@ onDestroy(() => silenceDrag());
       bind:this={narrowButton}
       type="button"
       class="tab-narrow"
-      aria-label={`Tabs: ${activeTabModel.title}`}
+      aria-label={$ui("Tabs: {0}", activeTabModel.title)}
       aria-haspopup="menu"
       aria-expanded={popoverKind === "list"}
       onclick={() => toggleTabList(narrowButton)}>
@@ -684,20 +685,20 @@ onDestroy(() => silenceDrag());
     class="tab-popover"
     role="menu"
     tabindex="-1"
-    aria-label="Tab actions"
+    aria-label={$ui("Tab actions")}
     data-shell-popover="tab-menu"
     style={menuStyle}
     oncontextmenu={(event) => event.preventDefault()}>
-    {@render actionItem(menuTab.pinned ? "Unpin tab" : "Pin tab", false, () => onPin(menuTab.id, !menuTab.pinned))}
-    {@render actionItem("Move left", moveDisabled(-1), () => onMove(menuTab.id, menuIndex - 1))}
-    {@render actionItem("Move right", moveDisabled(1), () => onMove(menuTab.id, menuIndex + 1))}
+    {@render actionItem(menuTab.pinned ? $ui("Unpin tab") : $ui("Pin tab"), false, () => onPin(menuTab.id, !menuTab.pinned))}
+    {@render actionItem($ui("Move left"), moveDisabled(-1), () => onMove(menuTab.id, menuIndex - 1))}
+    {@render actionItem($ui("Move right"), moveDisabled(1), () => onMove(menuTab.id, menuIndex + 1))}
     <div role="separator"></div>
-    {@render actionItem("Close tab", false, () => onClose(menuTab.id))}
-    {@render actionItem("Close other tabs", closeOthersDisabled(), () => onCloseOthers(menuTab.id))}
-    {@render actionItem("Close tabs to the right", closeRightDisabled(), () => onCloseToRight(menuTab.id))}
-    {@render actionItem("Close all tabs", closeAllDisabled(), () => onCloseAll(menuTab.id))}
+    {@render actionItem($ui("Close tab"), false, () => onClose(menuTab.id))}
+    {@render actionItem($ui("Close other tabs"), closeOthersDisabled(), () => onCloseOthers(menuTab.id))}
+    {@render actionItem($ui("Close tabs to the right"), closeRightDisabled(), () => onCloseToRight(menuTab.id))}
+    {@render actionItem($ui("Close all tabs"), closeAllDisabled(), () => onCloseAll(menuTab.id))}
     <div role="separator"></div>
-    {@render actionItem("Reopen closed tab", !canReopen, () => onReopen())}
+    {@render actionItem($ui("Reopen closed tab"), !canReopen, () => onReopen())}
   </div>
 {:else if popoverKind === "list"}
   <div
@@ -706,12 +707,12 @@ onDestroy(() => silenceDrag());
     class="tab-popover tab-popover-list"
     role="menu"
     tabindex="-1"
-    aria-label="All tabs"
+    aria-label={$ui("All tabs")}
     data-shell-popover="tab-list"
     style={menuStyle}
     oncontextmenu={(event) => event.preventDefault()}>
     {#if narrow}
-      {@render actionItem("New tab", false, onNew)}
+      {@render actionItem($ui("New tab"), false, onNew)}
       <div role="separator"></div>
     {/if}
     {#each tabs as tab (tab.id)}
@@ -726,7 +727,7 @@ onDestroy(() => silenceDrag());
       </button>
     {/each}
     <div role="separator"></div>
-    {@render actionItem("Reopen closed tab", !canReopen, () => onReopen())}
+    {@render actionItem($ui("Reopen closed tab"), !canReopen, () => onReopen())}
   </div>
 {/if}
 

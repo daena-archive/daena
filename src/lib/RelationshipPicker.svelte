@@ -1,4 +1,5 @@
 <script lang="ts">
+import { ui } from "$lib/i18n/ui";
 import { X } from "@lucide/svelte";
 import type { FieldDefinition } from "../../packages/module-api/src/index";
 import AsyncEntityPicker from "./entity-lifecycle/AsyncEntityPicker.svelte";
@@ -11,16 +12,18 @@ import {
 
 let {
   field,
+  label = field.label,
   selectedIds,
   onChange,
   search,
   resolveSelected,
-  placeholder = "Search and select entities…",
+  placeholder = $ui("Search and select entities…"),
   hideChips = false,
   onCreate,
   pageSize = 20,
 }: {
   field: FieldDefinition;
+  label?: string;
   selectedIds: string[];
   onChange: (ids: string[]) => void;
   /** Backend-paged search. Must not rely on a full in-memory entity list. */
@@ -122,7 +125,7 @@ $effect(() => {
 
 <div class="relationship-picker">
   {#if selectedIds.length > 0 && !hideChips}
-    <div class="relationship-selection" aria-label={`Selected ${field.label}`}>
+    <div class="relationship-selection" aria-label={$ui("Selected {0}", label)}>
       {#each selectedIds as id}
         {@const entity = entityFor(id)}
         <button
@@ -130,7 +133,7 @@ $effect(() => {
           class="relationship-chip"
           data-entity-id={id}
           onclick={() => remove(id)}
-          title={`Remove ${entity?.name ?? id}`}>
+          title={$ui("Remove {0}", entity?.name ?? id)}>
           <span>{entity?.name ?? id}</span><b aria-hidden="true"><X size={12} strokeWidth={1.8} /></b>
         </button>
       {/each}
@@ -142,12 +145,12 @@ $effect(() => {
     {selectedIds}
     {pageSize}
     {placeholder}
-    ariaLabel={field.label}
-    emptyMessage="No matching entities."
+    ariaLabel={label}
+    emptyMessage={$ui("No matching entities.")}
     onToggle={(entity, selected) => toggle(entity, selected)} />
   {#if canCreate}
     <button type="button" class="relationship-create" onclick={() => void createNamed()}
-      >{creating ? "Creating…" : `Create “${createQuery.trim()}”`}</button>
+      >{creating ? $ui("Creating…") : $ui("Create “{0}”", createQuery.trim())}</button>
   {/if}
 </div>
 

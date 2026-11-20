@@ -1,4 +1,6 @@
 <script lang="ts">
+import { manifestText } from "$lib/i18n/manifest-copy";
+import { ui } from "$lib/i18n/ui";
 import type { EntityTemplate, FieldDefinition } from "$lib/project/client";
 import SchemaFieldInput from "./SchemaFieldInput.svelte";
 import { defaultFieldValue } from "./model";
@@ -10,6 +12,7 @@ export type PreviewField = {
 };
 
 let {
+  pluginId = null,
   template,
   fields = [],
   values = $bindable({}),
@@ -19,6 +22,7 @@ let {
   readOnly = true,
   idPrefix = "template-preview",
 }: {
+  pluginId?: string | null;
   template: EntityTemplate;
   fields?: PreviewField[];
   values?: Record<string, unknown>;
@@ -50,34 +54,34 @@ $effect(() => {
 });
 </script>
 
-<section class="schema-template-preview is-preview" aria-label="Preview create form" data-template-id={template.id}>
+<section class="schema-template-preview is-preview" aria-label={$ui("Preview create form")} data-template-id={template.id}>
   <header class="preview-heading">
     <span class="preview-kicker"
-      ><Eye size={12} strokeWidth={1.8} aria-hidden="true" /> Preview — Create form
-      <span class="preview-badge">Read-only</span></span>
-    <strong>{template.name}</strong>
+      ><Eye size={12} strokeWidth={1.8} aria-hidden="true" /> {$ui("Preview — Create form")} <span class="preview-badge">{$ui("Read-only")}</span></span>
+    <strong>{$manifestText(pluginId, "template", template.id, template.name)}</strong>
     {#if template.description}
-      <p>{template.description}</p>
+      <p>{$manifestText(pluginId, "templateDescription", template.id, template.description)}</p>
     {:else}
-      <p>Read-only preview of the create dialog for this template.</p>
+      <p>{$ui("Read-only preview of the create dialog for this template.")}</p>
     {/if}
   </header>
 
   <div class="preview-form" aria-disabled={readOnly}>
     <label class="preview-name" for={`${idPrefix}-name`}>
       <span
-        >Name {#if true}<b>*</b>{/if}</span>
+        >{$ui("Name")} {#if true}<b>*</b>{/if}</span>
       <input
         id={`${idPrefix}-name`}
         type="text"
         readonly={readOnly}
         disabled={readOnly}
         bind:value={name}
-        placeholder={`e.g. ${template.name}`} />
+        placeholder={$ui("e.g. {0}", $manifestText(pluginId, "template", template.id, template.name))} />
     </label>
 
     {#each requiredFields as item}
       <SchemaFieldInput
+        {pluginId}
         field={item.field}
         required={true}
         {readOnly}
@@ -92,17 +96,16 @@ $effect(() => {
     {#if optionalFields.length > 0 || showDocument}
       <details class="preview-more" open>
         <summary>
-          <strong>More details</strong>
-          <small>
-            {optionalFields.length} optional {optionalFields.length === 1 ? "field" : "fields"}
-            {#if showDocument}
-              {optionalFields.length > 0 ? " and an opening note" : "Opening note"}
+          <strong>{$ui("More details")}</strong>
+          <small> {$ui("{0} optional {1}", optionalFields.length, optionalFields.length === 1 ? $ui("field") : $ui("fields"))} {#if showDocument}
+              {optionalFields.length > 0 ? $ui(" and an opening note") : $ui("Opening note")}
             {/if}
           </small>
         </summary>
         <div class="preview-more-body">
           {#each optionalFields as item}
             <SchemaFieldInput
+        {pluginId}
               field={item.field}
               required={false}
               {readOnly}
@@ -115,14 +118,14 @@ $effect(() => {
           {/each}
           {#if showDocument}
             <label class="preview-name" for={`${idPrefix}-document`}>
-              <span>Opening note</span>
+              <span>{$ui("Opening note")}</span>
               <textarea
                 id={`${idPrefix}-document`}
                 rows="4"
                 readonly={readOnly}
                 disabled={readOnly}
                 bind:value={documentBody}
-                placeholder="Add a first note (optional)"></textarea>
+                placeholder={$ui("Add a first note (optional)")}></textarea>
             </label>
           {/if}
         </div>
@@ -130,7 +133,7 @@ $effect(() => {
     {/if}
 
     {#if fields.length === 0 && !showDocument}
-      <p class="preview-empty">No fields included yet. Choose fields above to see them here.</p>
+      <p class="preview-empty">{$ui("No fields included yet. Choose fields above to see them here.")}</p>
     {/if}
   </div>
 </section>

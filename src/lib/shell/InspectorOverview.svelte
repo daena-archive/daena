@@ -1,4 +1,5 @@
 <script lang="ts">
+import { messages } from "$lib/i18n";
 import type { Snippet } from "svelte";
 import type { EntityFieldsTab, EntityFieldsTabId } from "./entityFields";
 
@@ -27,14 +28,16 @@ let {
 
 <div class="inspector-heading">
   <div>
-    <span class="panel-kicker">INSPECTOR</span>
+    <span class="panel-kicker">{$messages.inspector.kicker}</span>
     <strong>{typeLabel}</strong>
     <p class="entity-name">{entityName}</p>
   </div>
   {#if aiEnabled && onFillAi}
     <div class="heading-actions">
       <button class="ai-action" type="button" onclick={onFillAi} disabled={aiBusy}
-        ><span aria-hidden="true">✦</span>{aiBusy ? "Finding…" : "Fill with AI"}</button>
+        ><span aria-hidden="true">✦</span>{aiBusy
+          ? $messages.inspector.finding
+          : $messages.inspector.fillWithAi}</button>
     </div>
   {/if}
 </div>
@@ -49,7 +52,7 @@ let {
 
 <div class="overview-more">
   {#if chips.length}
-    <div class="chips" role="group" aria-label="More fields">
+    <div class="chips" role="group" aria-label={$messages.inspector.moreFields}>
       {#each chips as chip (chip.id)}
         <button type="button" class="chip" onclick={() => onOpenTab(chip.id)}>
           <span>{chip.label}</span>
@@ -59,7 +62,7 @@ let {
     </div>
   {/if}
 
-  <button class="edit-fields" type="button" onclick={() => onOpenTab()}>Edit fields</button>
+  <button class="edit-fields" type="button" onclick={() => onOpenTab()}>{$messages.inspector.editFields}</button>
 </div>
 
 <style>

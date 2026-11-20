@@ -1,4 +1,5 @@
 <script lang="ts">
+import { pluginText } from "../../i18n.ts";
 import type { PartOption } from "./option";
 
 let {
@@ -30,7 +31,7 @@ let {
           checked={option.value === value}
           disabled={locked}
           onchange={() => onselect(option.value)} />
-        <span>{option.label}</span>
+        <span>{$pluginText(option.label)}</span>
       </label>
     {/each}
   </div>

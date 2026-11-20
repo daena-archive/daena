@@ -1,3 +1,4 @@
+import { localizeUi } from "../i18n/ui.ts";
 import type { Entity, GitChange } from "$lib/project/client";
 
 export type ChangeGroup = {
@@ -8,6 +9,7 @@ export type ChangeGroup = {
   paths: string[];
 };
 export type SnapshotChangeGroup = {
+  id: string;
   label: string;
   changes: GitChange[];
   kind: "added" | "modified" | "deleted" | "other";
@@ -42,9 +44,9 @@ export function entityFileRole(path: string): string | null {
   return null;
 }
 
-export function summarizeRoles(paths: string[]): string {
+export function summarizeRoles(paths: string[], translate = localizeUi): string {
   const roles = [...new Set(paths.map(entityFileRole).filter((role): role is string => Boolean(role)))];
-  return roles.length > 0 ? roles.join(" · ") : `${paths.length} file${paths.length === 1 ? "" : "s"}`;
+  return roles.length > 0 ? roles.map((role) => translate(role)).join(" · ") : translate(paths.length === 1 ? "{0} file" : "{0} files", paths.length);
 }
 
 export function changeStatus(status: string) {
@@ -56,33 +58,27 @@ export function changeKind(status: string): "added" | "modified" | "deleted" {
   return code === "A" ? "added" : code === "D" ? "deleted" : "modified";
 }
 
-export function groupSnapshotChanges(changes: GitChange[], entityList: Entity[]): SnapshotChangeGroup[] {
+export function groupSnapshotChanges(changes: GitChange[], entityList: Entity[], translate = localizeUi): SnapshotChangeGroup[] {
   const groups = new Map<string, GitChange[]>();
   const entityNames = new Map(entityList.map((entity) => [entity.id, entity.name]));
   for (const change of changes) {
     const entityId = change.path.startsWith("entities/") ? change.path.split("/")[1] : null;
-    const label = entityId
-      ? (entityNames.get(entityId) ?? `Deleted entity (${entityId.slice(0, 8)})`)
-      : change.path.startsWith("plugins/")
-        ? "Plugins"
-        : change.path.startsWith("assets/")
-          ? "Assets"
-          : "Project";
-    groups.set(label, [...(groups.get(label) ?? []), change]);
+    const id = entityId ? `entity:${entityId}` : change.path.startsWith("plugins/") ? "Plugins" : change.path.startsWith("assets/") ? "Assets" : "Project";
+    const bucket = groups.get(id) ?? [];
+    bucket.push(change);
+    groups.set(id, bucket);
   }
-  return [...groups.entries()].map(([label, groupedChanges]) => ({
-    label,
-    changes: groupedChanges,
-    kind: label.startsWith("Deleted entity")
-      ? "deleted"
-      : groupedChanges.some((change) => change.path.endsWith("/entity.json") && changeStatus(change.status) === "A")
-        ? "added"
-        : groupedChanges.some((change) => change.path.endsWith("/entity.json") && changeStatus(change.status) === "D")
-          ? "deleted"
-          : label === "Project" || label === "Plugins" || label === "Assets"
-            ? "other"
-            : "modified",
-  }));
+  return [...groups.entries()].map(([id, changes]) => {
+    const entityId = id.startsWith("entity:") ? id.slice("entity:".length) : null;
+    const name = entityId ? entityNames.get(entityId) : undefined;
+    const identity = changes.find((change) => change.path.endsWith("/entity.json"));
+    return {
+      id,
+      label: entityId ? (name ?? translate("Deleted entity ({0})", shortId(entityId))) : translate(id),
+      changes,
+      kind: !entityId ? "other" : name === undefined ? "deleted" : identity ? changeKind(identity.status) : "modified",
+    };
+  });
 }
 
 export function snapshotChangeLabel(path: string) {
@@ -91,15 +87,15 @@ export function snapshotChangeLabel(path: string) {
   const relative = parts.join("/");
   const fileLabel =
     relative === "document.md"
-      ? "Document"
+      ? localizeUi("Document")
       : relative === "relationships.json"
-        ? "Relationships"
+        ? localizeUi("Relationships")
         : relative === "assets.json"
-          ? "Asset links"
+          ? localizeUi("Asset links")
           : relative === "entity.json"
-            ? "Identity"
+            ? localizeUi("Identity")
             : relative.startsWith("fields/")
-              ? `Field · ${relative.slice("fields/".length)}`
+              ? localizeUi("Field · {0}", relative.slice("fields/".length))
               : relative;
   return fileLabel;
 }
@@ -137,10 +133,10 @@ export function shortId(id: string) {
   return id.length > 8 ? id.slice(0, 8) : id;
 }
 
-export function snapshotDateLabel(value: string) {
+export function snapshotDateLabel(value: string, locale: string) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString([], {
+  return date.toLocaleString(locale, {
     year: "numeric",
     month: "short",
     day: "numeric",
@@ -150,7 +146,7 @@ export function snapshotDateLabel(value: string) {
   });
 }
 
-export function buildChangeGroups(paths: string[], entityList: Entity[]): ChangeGroup[] {
+export function buildChangeGroups(paths: string[], entityList: Entity[], translate = localizeUi): ChangeGroup[] {
   const byId = new Map(entityList.map((entity) => [entity.id, entity]));
   const entityBuckets = new Map<string, string[]>();
   const pluginBuckets = new Map<string, string[]>();
@@ -186,9 +182,9 @@ export function buildChangeGroups(paths: string[], entityList: Entity[]): Change
     groups.push({
       id: "project",
       kind: "project",
-      title: "Project settings",
+      title: translate("Project settings"),
       subtitle: projectPaths
-        .map((path) => (path === "project.json" ? "Project manifest" : path === ".gitignore" ? "Ignore rules" : path))
+        .map((path) => (path === "project.json" ? translate("Project manifest") : path === ".gitignore" ? translate("Ignore rules") : path))
         .join(" · "),
       paths: projectPaths,
     });
@@ -199,10 +195,10 @@ export function buildChangeGroups(paths: string[], entityList: Entity[]): Change
     groups.push({
       id: `entity:${entityId}`,
       kind: "entity",
-      title: entity?.name ?? `Deleted entity (${shortId(entityId)})`,
+      title: entity?.name ?? translate("Deleted entity ({0})", shortId(entityId)),
       subtitle: [
-        entity?.entity_type ?? (entity ? "Uncategorized" : "Unknown entity"),
-        summarizeRoles(entityPaths),
+        entity?.entity_type ?? translate(entity ? "Uncategorized" : "Unknown entity"),
+        summarizeRoles(entityPaths, translate),
       ].join(" · "),
       paths: entityPaths,
     });
@@ -213,7 +209,7 @@ export function buildChangeGroups(paths: string[], entityList: Entity[]): Change
       id: `plugin:${pluginId}`,
       kind: "plugin",
       title: pluginId,
-      subtitle: "Plugin config",
+      subtitle: translate("Plugin config"),
       paths: pluginPaths,
     });
   }
@@ -226,7 +222,7 @@ export function buildChangeGroups(paths: string[], entityList: Entity[]): Change
       id: `asset:${assetPath}`,
       kind: "asset",
       title: filename,
-      subtitle: `Asset · ${folder}`,
+      subtitle: translate("Asset · {0}", folder),
       paths: assetPaths,
     });
   }

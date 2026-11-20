@@ -1,4 +1,5 @@
 <script lang="ts">
+import { ui } from "$lib/i18n/ui";
 import { tick } from "svelte";
 import { X } from "@lucide/svelte";
 
@@ -100,16 +101,16 @@ function trapFocus(event: KeyboardEvent) {
       onkeydown={handleKeydown}>
       <header>
         <div>
-          <span class="panel-kicker">TABLE</span>
-          <h2 id="table-dialog-title">Insert table</h2>
+          <span class="panel-kicker">{$ui("TABLE")}</span>
+          <h2 id="table-dialog-title">{$ui("Insert table")}</h2>
         </div>
-        <button type="button" aria-label="Close table dialog" onclick={onCancel}
+        <button type="button" aria-label={$ui("Close table dialog")} onclick={onCancel}
           ><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
       </header>
 
       <div class="table-size-grid">
         <label class="table-field">
-          <span>Rows</span>
+          <span>{$ui("Rows")}</span>
           <input
             bind:this={rowsInput}
             type="number"
@@ -119,15 +120,15 @@ function trapFocus(event: KeyboardEvent) {
             onchange={() => (rows = clamp(rows))} />
         </label>
         <label class="table-field">
-          <span>Columns</span>
+          <span>{$ui("Columns")}</span>
           <input type="number" min={MIN} max={MAX} bind:value={cols} onchange={() => (cols = clamp(cols))} />
         </label>
       </div>
-      <p class="table-hint">Tables always include a header row so they stay portable as Markdown.</p>
+      <p class="table-hint">{$ui("Tables always include a header row so they stay portable as Markdown.")}</p>
 
       <footer>
-        <button type="button" class="quiet" onclick={onCancel}>Cancel</button>
-        <button type="button" class="primary" onclick={submit}>Insert table</button>
+        <button type="button" class="quiet" onclick={onCancel}>{$ui("Cancel")}</button>
+        <button type="button" class="primary" onclick={submit}>{$ui("Insert table")}</button>
       </footer>
     </div>
   </div>

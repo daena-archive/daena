@@ -661,3 +661,32 @@ machine-readable or architectural contract it summarizes:
 - [`adr/0002-rust-owned-public-contracts.md`](../adr/0002-rust-owned-public-contracts.md)
   — the decision that Rust owns the contract and schemas/TS are generated
   artifacts.
+
+### Localizing a plugin
+
+Ship a UTF-8 file at `locales/<language>.json` in the package root for each display language you support. No manifest change or capability grant is required. The host reads these files from the installed package version selected for the project. Each file is a flat JSON object mapping source strings to translations. For example, `locales/ja.json` for Date Lens contains:
+
+```json
+{
+  "Date Lens": "日付レンズ",
+  "Date": "日付",
+  "Resolve through Timeline": "年表で日付を確認"
+}
+```
+
+In a manifest, keep names, view titles, declarative component labels, entity types, field labels, options and template names in their source language. Daena translates their display text using the package's dictionary. IDs, enum values, project overrides and saved content retain their original values. Packages may reuse the same source string with different translations. A regional locale tries its parent locale and then the original string. Missing or whitespace-only translations follow the same fallback. Catalogs together may contain up to 1 MiB of JSON per package.
+
+For a sandboxed UI, use the SDK to render your own text. A subscription runs immediately and again when the user changes the app language, including in detached windows. It can update labels without recreating inputs or losing edits:
+
+```js
+import { createPluginI18n } from "@daena-archive/plugin-sdk";
+
+const i18n = createPluginI18n();
+const unsubscribe = i18n.subscribe(() => {
+  document.title = i18n.t("Date Lens");
+  submitButton.textContent = i18n.t("Resolve through Timeline");
+});
+// Call unsubscribe() when unmounting the view.
+```
+
+The current tag is available as `i18n.language`. For a message such as `"Open {name}"`, pass `{ name: entry.name }` as the second argument to `t`. Insert translated strings as text. Leave project data out of the dictionary. See the timeline-consumer and declarative example packages for both rendering styles.

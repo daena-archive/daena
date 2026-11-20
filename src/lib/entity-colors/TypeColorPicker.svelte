@@ -1,4 +1,5 @@
 <script lang="ts">
+import { ui } from "$lib/i18n/ui";
 import { tick } from "svelte";
 import type { EntityTypeColor } from "../../../packages/plugin-sdk/src/generated";
 import {
@@ -14,7 +15,7 @@ const DEFAULT_CUSTOM_DARK = "#8eb0c4";
 
 let {
   value = DEFAULT_TYPE_COLOR,
-  label = "Color",
+  label,
   onChange,
 }: {
   value?: EntityTypeColor;
@@ -31,9 +32,9 @@ let popover = $state<HTMLDivElement>();
 let pickerRoot = $state<HTMLDivElement>();
 let popoverStyle = $state("");
 
-const selectedLabel = $derived(value.kind === "preset" ? (TYPE_COLOR_PRESETS[value.id]?.label ?? value.id) : "Custom");
+const selectedLabel = $derived(value.kind === "preset" ? $ui(TYPE_COLOR_PRESETS[value.id]?.label ?? value.id) : $ui("Custom"));
 
-const draftLabel = $derived(draft.kind === "preset" ? (TYPE_COLOR_PRESETS[draft.id]?.label ?? draft.id) : "Custom");
+const draftLabel = $derived(draft.kind === "preset" ? $ui(TYPE_COLOR_PRESETS[draft.id]?.label ?? draft.id) : $ui("Custom"));
 
 const triggerStyle = $derived.by(() => {
   if (value.kind === "preset") {
@@ -154,14 +155,14 @@ $effect(() => {
 </script>
 
 <div class="color-picker" bind:this={pickerRoot}>
-  <span class="picker-label">{label}</span>
+  <span class="picker-label">{label ?? $ui("Color")}</span>
   <button
     type="button"
     bind:this={trigger}
     class="picker-trigger"
     style={triggerStyle}
     aria-expanded={open}
-    aria-label={`Choose color: ${selectedLabel}`}
+    aria-label={$ui("Choose color: {0}", selectedLabel)}
     title={selectedLabel}
     onclick={togglePicker}>
     <span class="trigger-dot" aria-hidden="true"></span>
@@ -169,17 +170,17 @@ $effect(() => {
   {#if open}
     <div class="picker-popover" bind:this={popover} style={popoverStyle}>
       <div class="popover-heading">
-        <strong>Presets</strong>
+        <strong>{$ui("Presets")}</strong>
         <span>{draftLabel}</span>
       </div>
-      <div class="preset-grid" role="group" aria-label="Type color presets">
+      <div class="preset-grid" role="group" aria-label={$ui("Type color presets")}>
         {#each TYPE_COLOR_PRESET_OPTIONS as preset}
           <button
             type="button"
             class="preset-dot"
             class:selected={draft.kind === "preset" && draft.id === preset.id}
-            title={preset.label}
-            aria-label={preset.label}
+            title={$ui(preset.label)}
+            aria-label={$ui(preset.label)}
             aria-pressed={draft.kind === "preset" && draft.id === preset.id}
             onclick={() => selectPreset(preset.id)}>
             <span class="dot" style={`--dot-fg:${preset.light.fg};--dot-bg:${preset.light.bg};`}></span>
@@ -187,25 +188,25 @@ $effect(() => {
         {/each}
       </div>
       <div class="custom-section">
-        <span class="custom-label">Custom</span>
+        <span class="custom-label">{$ui("Custom")}</span>
         <div class="custom-colors">
           <label>
-            <span>Light</span>
+            <span>{$ui("Light")}</span>
             <input
               type="color"
               bind:value={draftCustomLight}
-              aria-label="Light theme color"
+              aria-label={$ui("Light theme color")}
               oninput={syncDraftCustom} />
           </label>
           <label>
-            <span>Dark</span>
-            <input type="color" bind:value={draftCustomDark} aria-label="Dark theme color" oninput={syncDraftCustom} />
+            <span>{$ui("Dark")}</span>
+            <input type="color" bind:value={draftCustomDark} aria-label={$ui("Dark theme color")} oninput={syncDraftCustom} />
           </label>
         </div>
       </div>
       <div class="popover-actions">
-        <button type="button" class="action quiet" onclick={cancelDraft}>Cancel</button>
-        <button type="button" class="action primary" onclick={saveDraft}>Save</button>
+        <button type="button" class="action quiet" onclick={cancelDraft}>{$ui("Cancel")}</button>
+        <button type="button" class="action primary" onclick={saveDraft}>{$ui("Save")}</button>
       </div>
     </div>
   {/if}

@@ -1,4 +1,5 @@
 <script lang="ts">
+import { ui } from "$lib/i18n/ui";
 import type { ModuleContext } from "../../../packages/module-api/src/index";
 import { Archive, ExternalLink, Pencil, Plus, Search, UserPlus, X } from "@lucide/svelte";
 import { ENTITY_ACTIONS, ENTITY_ACTION_CONFIRM } from "$lib/entity-lifecycle/vocabulary.ts";
@@ -80,15 +81,15 @@ async function archiveHouse() {
 }
 </script>
 
-<aside class="panel" aria-label={houseName || "House"}>
+<aside class="panel" aria-label={houseName || $ui("House")}>
   <header class="panel-head">
     <div class="head-copy">
-      <span class="kicker">HOUSE</span>
+      <span class="kicker">{$ui("HOUSE")}</span>
       {#if editingName && onRename}
         <input
           class="name-input"
           bind:value={nameDraft}
-          aria-label="House name"
+          aria-label={$ui("House name")}
           onkeydown={(event) => {
             if (event.key === "Enter") void commitRename();
             if (event.key === "Escape") {
@@ -98,18 +99,17 @@ async function archiveHouse() {
           }}
           onblur={() => void commitRename()} />
       {:else}
-        <strong class="house-name">{houseName || "House"}</strong>
+        <strong class="house-name">{houseName || $ui("House")}</strong>
       {/if}
-      <span class="meta">{members.length} {members.length === 1 ? "member" : "members"}</span>
+      <span class="meta">{members.length === 1 ? $ui("{0} member", 1) : $ui("{0} members", members.length)}</span>
     </div>
-    <button type="button" class="icon-button" onclick={onClose} aria-label="Close house details"
+    <button type="button" class="icon-button" onclick={onClose} aria-label={$ui("Close house details")}
       ><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
   </header>
 
-  <div class="panel-actions" role="group" aria-label="House actions">
+  <div class="panel-actions" role="group" aria-label={$ui("House actions")}>
     <button type="button" class="quiet-button pill" onclick={() => onOpenEntry(houseId)}>
-      <ExternalLink size={13} strokeWidth={1.8} aria-hidden="true" /> Open full entry
-    </button>
+      <ExternalLink size={13} strokeWidth={1.8} aria-hidden="true" /> {$ui("Open full entry")} </button>
     {#if onRename}
       <button type="button" class="quiet-button pill" onclick={() => (editingName = true)}>
         <Pencil size={13} strokeWidth={1.8} aria-hidden="true" />
@@ -125,33 +125,31 @@ async function archiveHouse() {
   <div class="member-toolbar">
     <label class="search-field">
       <span class="input-icon" aria-hidden="true"><Search size={13} strokeWidth={1.8} /></span>
-      <input type="search" bind:value={memberQuery} placeholder="Search members" aria-label="Search members" />
+      <input type="search" bind:value={memberQuery} placeholder={$ui("Search members")} aria-label={$ui("Search members")} />
     </label>
     <label class="filter-field">
-      <span class="sr-only">Filter by role</span>
-      <select bind:value={roleFilter} aria-label="Filter by role">
+      <span class="sr-only">{$ui("Filter by role")}</span>
+      <select bind:value={roleFilter} aria-label={$ui("Filter by role")}>
         {#each roleOptions as role}
-          <option value={role}>{role === "all" ? "All roles" : formatMembershipRole(role)}</option>
+          <option value={role}>{role === "all" ? $ui("All roles") : formatMembershipRole(role)}</option>
         {/each}
       </select>
     </label>
   </div>
 
-  <div class="member-actions" role="group" aria-label="Membership actions">
+  <div class="member-actions" role="group" aria-label={$ui("Membership actions")}>
     <button type="button" class="quiet-button" disabled={busy} onclick={() => (membershipDialog = "add")}>
-      <Plus size={13} strokeWidth={1.8} aria-hidden="true" /> Add existing
-    </button>
+      <Plus size={13} strokeWidth={1.8} aria-hidden="true" /> {$ui("Add existing")} </button>
     <button type="button" class="quiet-button" disabled={busy} onclick={() => (membershipDialog = "create")}>
-      <UserPlus size={13} strokeWidth={1.8} aria-hidden="true" /> Create person
-    </button>
+      <UserPlus size={13} strokeWidth={1.8} aria-hidden="true" /> {$ui("Create person")} </button>
   </div>
 
   {#if busy && members.length === 0}
-    <p class="hint">Loading members…</p>
+    <p class="hint">{$ui("Loading members…")}</p>
   {:else if members.length === 0}
-    <p class="hint">No members yet. Add an existing person or create one to start this house tree.</p>
+    <p class="hint">{$ui("No members yet. Add an existing person or create one to start this house tree.")}</p>
   {:else if visibleMembers.length === 0}
-    <p class="hint">No members match this filter.</p>
+    <p class="hint">{$ui("No members match this filter.")}</p>
   {:else}
     <ul class="member-list">
       {#each visibleMembers as member (member.id)}
@@ -165,7 +163,7 @@ async function archiveHouse() {
             type="button"
             class="icon-button"
             onclick={() => (membershipDialog = member)}
-            aria-label={`Edit membership for ${member.personName}`}
+            aria-label={$ui("Edit membership for {0}", member.personName)}
             ><Pencil size={14} strokeWidth={1.8} aria-hidden="true" /></button>
         </li>
       {/each}

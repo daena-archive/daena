@@ -43,6 +43,7 @@ assert.equal(resolveEntityTypeLabel("event", labels), "Chronicle");
 assert.equal(resolveEntityTypeLabel("daena.timeline:war", labels), "War");
 assert.equal(resolveEntityTypeLabel("daena.lore:person", labels), "Person");
 assert.equal(resolveEntityTypeLabel("daena.lore:faction", labels), "Faction");
+assert.equal(resolveEntityTypeLabel("another.plugin:event", labels), "Event", "never borrow the label of another plugin");
 assert.equal(resolveEntityTypeLabel(null, labels), "Unknown type");
 
 const typeLabel = createEntityTypeLabelResolver([timeline]);

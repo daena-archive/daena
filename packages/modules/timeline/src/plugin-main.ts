@@ -1,3 +1,4 @@
+import { listenForPluginLanguage } from "../../plugin-i18n.ts";
 import "vis-timeline/styles/vis-timeline-graph2d.min.css";
 import "./plugin.css";
 import manifestJson from "../manifest.json";
@@ -58,6 +59,8 @@ function forwardTimelineTabShortcut(client: PluginRpcClient, event: KeyboardEven
 const manifest = manifestJson as unknown as ModuleManifest;
 const root = document.querySelector<HTMLElement>("#chronology");
 const status = document.querySelector<HTMLElement>("#chronology-status");
+
+listenForPluginLanguage("Chronology");
 
 async function start() {
   if (!root) throw new Error("Chronology root is missing");

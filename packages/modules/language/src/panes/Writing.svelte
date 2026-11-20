@@ -1,4 +1,5 @@
 <script lang="ts">
+import { pluginText, translatePluginText as formatText } from "../i18n.ts";
 import { untrack } from "svelte";
 import type { EntitySummary, ModuleContext, ModuleRecord } from "../../../../module-api/src/index";
 import IpaInput from "../IpaInput.svelte";
@@ -102,7 +103,7 @@ function writingHasDraft() {
 async function tryLeaveWriting(confirmLeave: (message: string) => Promise<boolean> | boolean) {
   if (!writingHasDraft()) return true;
   if (orthographySaving) return false;
-  const allowed = await confirmLeave("You have unsaved changes to a writing system. Discard them?");
+  const allowed = await confirmLeave($pluginText("You have unsaved changes to a writing system. Discard them?"));
   if (allowed) closeOrthographyEditor();
   return allowed;
 }
@@ -213,7 +214,7 @@ async function saveOrthography(): Promise<"ok" | "name" | "error" | "none"> {
 async function deleteOrthography() {
   if (!selectedLanguage || !orthographyEditing) return;
   if (
-    !(await confirm("Delete writing system", `Delete “${orthographyEditing.value.name}” and its mappings and samples?`))
+    !(await confirm("Delete writing system", formatText("Delete “{name}” and its mappings and samples?", { name: orthographyEditing.value.name })))
   )
     return;
   const ownerLanguageId = selectedLanguage.id;
@@ -315,31 +316,31 @@ function soundLabel(phoneme: PhonemeOption) {
 
 <div class="language-toolbar">
   <div class="language-toolbar-title">
-    <h2>Writing</h2>
+    <h2>{$pluginText("Writing")}</h2>
   </div>
   <div class="language-toolbar-actions">
     {#if !orthographyEditorOpen}
       <button type="button" class="language-button" disabled={!selectedLanguage} onclick={addOrthography}
-        >Add writing system</button>
+        >{$pluginText("Add writing system")}</button>
     {/if}
   </div>
 </div>
 
 {#if paneLoading}
-  <p class="language-empty language-loading" role="status">Loading writing systems…</p>
+  <p class="language-empty language-loading" role="status">{$pluginText("Loading writing systems…")}</p>
 {:else if orthographyEditorOpen}
   <form class="language-editor" onsubmit={handleSubmit}>
-    <nav class="writing-tabs" aria-label="Writing system sections">
+    <nav class="writing-tabs" aria-label={$pluginText("Writing system sections")}>
       <button type="button" class:active={editorSection === "basics"} onclick={() => (editorSection = "basics")}
-        >Basics</button>
+        >{$pluginText("Basics")}</button>
       <button
         type="button"
         class:active={editorSection === "characters"}
         onclick={() => (editorSection = "characters")}>
-        Characters <span>{orthographyDraft.mappings.length}</span>
+        {$pluginText("Characters")} <span>{orthographyDraft.mappings.length}</span>
       </button>
       <button type="button" class:active={editorSection === "samples"} onclick={() => (editorSection = "samples")}>
-        Samples <span>{orthographyDraft.samples.length}</span>
+        {$pluginText("Samples")} <span>{orthographyDraft.samples.length}</span>
       </button>
     </nav>
 
@@ -347,74 +348,74 @@ function soundLabel(phoneme: PhonemeOption) {
       <section class="writing-section">
         <div class="writing-section-head">
           <div>
-            <h3>Basics</h3>
-            <p>Name the writing system and record its direction and purpose.</p>
+            <h3>{$pluginText("Basics")}</h3>
+            <p>{$pluginText("Name the writing system and record its direction and purpose.")}</p>
           </div>
         </div>
         <div class="writing-basics-grid">
           <label class="language-field">
-            <span>Name</span>
+            <span>{$pluginText("Name")}</span>
             <input
               name="name"
               bind:this={nameInput}
               bind:value={orthographyDraft.name}
               required
-              placeholder="e.g. Common Script" />
+              placeholder={$pluginText("e.g. Common Script")} />
           </label>
           <label class="language-field">
-            <span>Writing direction (optional)</span>
+            <span>{$pluginText("Writing direction (optional)")}</span>
             <select name="direction" bind:value={orthographyDraft.direction}>
-              <option value="ltr">Left to right</option>
-              <option value="rtl">Right to left</option>
-              <option value="vertical">Vertical</option>
-              <option value="unspecified">Other / unspecified</option>
+              <option value="ltr">{$pluginText("Left to right")}</option>
+              <option value="rtl">{$pluginText("Right to left")}</option>
+              <option value="vertical">{$pluginText("Vertical")}</option>
+              <option value="unspecified">{$pluginText("Other / unspecified")}</option>
             </select>
           </label>
         </div>
         <label class="language-field">
-          <span>Description / notes (optional)</span>
+          <span>{$pluginText("Description / notes (optional)")}</span>
           <textarea
             name="description"
             rows={5}
             bind:value={orthographyDraft.description}
-            placeholder="How and where is this writing system used?"></textarea>
+            placeholder={$pluginText("How and where is this writing system used?")}></textarea>
         </label>
       </section>
     {:else if editorSection === "characters"}
       <section class="writing-section">
         <div class="writing-section-head">
           <div>
-            <h3>Characters</h3>
-            <p>Map Unicode written forms to existing Sounds or explicit ad-hoc IPA values.</p>
+            <h3>{$pluginText("Characters")}</h3>
+            <p>{$pluginText("Map Unicode written forms to existing Sounds or explicit ad-hoc IPA values.")}</p>
           </div>
           <div class="writing-section-actions">
-            <button type="button" class="language-button secondary" onclick={() => addMapping()}>Add character</button>
+            <button type="button" class="language-button secondary" onclick={() => addMapping()}>{$pluginText("Add character")}</button>
             <button
               type="button"
               class="language-button"
               onclick={openAddFromSounds}
               disabled={phonemeOptions.length === 0}
               title={phonemeOptions.length === 0
-                ? "Define Sounds first, or add characters manually."
-                : "Create blank mappings from the sound inventory"}>
-              Add from Sounds
+                ? $pluginText("Define Sounds first, or add characters manually.")
+                : $pluginText("Create blank mappings from the sound inventory")}>
+              {$pluginText("Add from Sounds")}
             </button>
           </div>
         </div>
 
         {#if phonemeOptions.length === 0}
           <div class="writing-notice">
-            <strong>No sounds have been defined for this language yet.</strong>
-            <span>You can still add characters manually and use ad-hoc IPA values.</span>
+            <strong>{$pluginText("No sounds have been defined for this language yet.")}</strong>
+            <span>{$pluginText("You can still add characters manually and use ad-hoc IPA values.")}</span>
           </div>
         {:else}
-          <div class="coverage" aria-label={`${coverage.represented} of ${coverage.total} sounds represented`}>
+          <div class="coverage" aria-label={$pluginText("{0} of {1} sounds represented", { 0: String(coverage.represented), 1: String(coverage.total) })}>
             <div>
-              <strong>{coverage.represented} of {coverage.total} sounds represented</strong>
+              <strong>{$pluginText("{covered} of {total} sounds represented", { covered: coverage.represented, total: coverage.total })}</strong>
               <span
                 >{coverage.unmapped.length === 0
-                  ? "All defined sounds are represented."
-                  : `${coverage.unmapped.length} sounds are not represented yet.`}</span>
+                  ? $pluginText("All defined sounds are represented.")
+                  : $pluginText("{0} sounds are not represented yet.", { 0: String(coverage.unmapped.length) })}</span>
             </div>
             <div class="coverage-bar" aria-hidden="true">
               <span style={`width: ${coverage.total ? (coverage.represented / coverage.total) * 100 : 0}%`}></span>
@@ -422,12 +423,12 @@ function soundLabel(phoneme: PhonemeOption) {
           </div>
           {#if unmappedPhonemes.length > 0}
             <div class="unmapped">
-              <span>Unmapped sounds</span>
+              <span>{$pluginText("Unmapped sounds")}</span>
               <div>
                 {#each unmappedPhonemes as phoneme (phoneme.id)}
                   <button
                     type="button"
-                    title={`Create a mapping for ${soundLabel(phoneme)}`}
+                    title={$pluginText("Create a mapping for {0}", { 0: String(soundLabel(phoneme)) })}
                     onclick={() => addMappingForPhoneme(phoneme)}>
                     /{soundLabel(phoneme)}/ <small>+</small>
                   </button>
@@ -439,92 +440,92 @@ function soundLabel(phoneme: PhonemeOption) {
 
         {#if orthographyDraft.mappings.length === 0}
           <div class="writing-empty-card">
-            <p>No characters yet.</p>
-            <span>Add them manually or start from the sounds already defined for this language.</span>
+            <p>{$pluginText("No characters yet.")}</p>
+            <span>{$pluginText("Add them manually or start from the sounds already defined for this language.")}</span>
             <div>
               <button type="button" class="language-button secondary" onclick={() => addMapping()}
-                >Add character</button>
+                >{$pluginText("Add character")}</button>
               {#if phonemeOptions.length > 0}
-                <button type="button" class="language-button" onclick={openAddFromSounds}>Add from Sounds</button>
+                <button type="button" class="language-button" onclick={openAddFromSounds}>{$pluginText("Add from Sounds")}</button>
               {/if}
             </div>
           </div>
         {:else}
           <div class="character-table-wrap">
-            <div class="character-table" role="list" aria-label="Character-to-sound mappings">
+            <div class="character-table" role="list" aria-label={$pluginText("Character-to-sound mappings")}>
               {#each orthographyDraft.mappings as mapping, index (mapping.id)}
                 <article class="character-card" role="listitem">
                   <header class="character-card-head">
                     <div class="character-card-title">
                       <span class="character-index" aria-hidden="true">{index + 1}</span>
                       <div>
-                        <strong>{mapping.writtenForm || `Character ${index + 1}`}</strong>
-                        <span>{mapping.group === "ungrouped" ? "Ungrouped" : mapping.group}</span>
+                        <strong>{mapping.writtenForm || $pluginText("Character {0}", { 0: String(index + 1) })}</strong>
+                        <span>{mapping.group === "ungrouped" ? $pluginText("Ungrouped") : mapping.group}</span>
                       </div>
                     </div>
                     <div
                       class="row-action-buttons"
-                      aria-label={`Actions for ${mapping.writtenForm || `character ${index + 1}`}`}>
+                      aria-label={$pluginText("Actions for {0}", { 0: String(mapping.writtenForm || `character ${index + 1}`) })}>
                       <button
                         type="button"
-                        title="Move earlier"
+                        title={$pluginText("Move earlier")}
                         onclick={() => moveMapping(index, -1)}
                         disabled={index === 0}
-                        aria-label={`Move ${mapping.writtenForm || "mapping"} earlier`}>↑</button>
+                        aria-label={$pluginText("Move {0} earlier", { 0: String(mapping.writtenForm || "mapping") })}>↑</button>
                       <button
                         type="button"
-                        title="Move later"
+                        title={$pluginText("Move later")}
                         onclick={() => moveMapping(index, 1)}
                         disabled={index === orthographyDraft.mappings.length - 1}
-                        aria-label={`Move ${mapping.writtenForm || "mapping"} later`}>↓</button>
+                        aria-label={$pluginText("Move {0} later", { 0: String(mapping.writtenForm || "mapping") })}>↓</button>
                       <button
                         type="button"
                         class="remove"
                         onclick={() => removeMapping(index)}
-                        aria-label={`Remove ${mapping.writtenForm || "mapping"}`}>Remove</button>
+                        aria-label={$pluginText("Remove {0}", { 0: String(mapping.writtenForm || "mapping") })}>{$pluginText("Remove")}</button>
                     </div>
                   </header>
                   <div class="character-card-grid">
-                    <section class="character-identity" aria-label="Character identity">
+                    <section class="character-identity" aria-label={$pluginText("Character identity")}>
                       <label class="language-field">
-                        <span>Written form</span>
+                        <span>{$pluginText("Written form")}</span>
                         <input
                           id={`written-form-${mapping.id}`}
                           bind:value={mapping.writtenForm}
                           required
-                          placeholder="e.g. sh" />
+                          placeholder={$pluginText("e.g. sh")} />
                       </label>
                       <label class="mapping-group">
-                        <span>Group</span>
+                        <span>{$pluginText("Group")}</span>
                         <select bind:value={mapping.group}>
-                          <option value="ungrouped">Ungrouped</option>
-                          <option value="vowels">Vowels</option>
-                          <option value="consonants">Consonants</option>
-                          <option value="other">Other</option>
+                          <option value="ungrouped">{$pluginText("Ungrouped")}</option>
+                          <option value="vowels">{$pluginText("Vowels")}</option>
+                          <option value="consonants">{$pluginText("Consonants")}</option>
+                          <option value="other">{$pluginText("Other")}</option>
                         </select>
                       </label>
                     </section>
-                    <section class="character-sounds" aria-label="Mapped sounds">
+                    <section class="character-sounds" aria-label={$pluginText("Mapped sounds")}>
                       <SoundSequenceEditor
                         bind:sounds={mapping.sounds}
                         phonemes={phonemeOptions}
-                        label="Mapped sound sequence" />
+                        label={$pluginText("Mapped sound sequence")} />
                     </section>
-                    <section class="character-details" aria-label="Character details">
+                    <section class="character-details" aria-label={$pluginText("Character details")}>
                       <label class="language-field">
-                        <span>Romanization (optional)</span>
+                        <span>{$pluginText("Romanization (optional)")}</span>
                         <input
                           id={`romanization-${mapping.id}`}
                           bind:value={mapping.romanization}
-                          placeholder="e.g. sh" />
+                          placeholder={$pluginText("e.g. sh")} />
                       </label>
                       <label class="language-field">
-                        <span>Notes (optional)</span>
+                        <span>{$pluginText("Notes (optional)")}</span>
                         <textarea
                           id={`mapping-notes-${mapping.id}`}
                           rows={3}
                           bind:value={mapping.notes}
-                          placeholder="Usage, variants, or contextual notes"></textarea>
+                          placeholder={$pluginText("Usage, variants, or contextual notes")}></textarea>
                       </label>
                     </section>
                   </div>
@@ -538,55 +539,55 @@ function soundLabel(phoneme: PhonemeOption) {
       <section class="writing-section">
         <div class="writing-section-head">
           <div>
-            <h3>Samples</h3>
-            <p>Save examples that belong specifically to this writing system.</p>
+            <h3>{$pluginText("Samples")}</h3>
+            <p>{$pluginText("Save examples that belong specifically to this writing system.")}</p>
           </div>
-          <button type="button" class="language-button" onclick={addSample}>Add sample</button>
+          <button type="button" class="language-button" onclick={addSample}>{$pluginText("Add sample")}</button>
         </div>
         {#if orthographyDraft.samples.length === 0}
           <div class="writing-empty-card">
-            <p>No samples yet.</p>
-            <span>Add a word, phrase, or sentence to show the writing system in use.</span>
-            <button type="button" class="language-button secondary" onclick={addSample}>Add sample</button>
+            <p>{$pluginText("No samples yet.")}</p>
+            <span>{$pluginText("Add a word, phrase, or sentence to show the writing system in use.")}</span>
+            <button type="button" class="language-button secondary" onclick={addSample}>{$pluginText("Add sample")}</button>
           </div>
         {:else}
           <div class="sample-list">
             {#each orthographyDraft.samples as sample, index (sample.id)}
               <article class="sample-card">
                 <div class="sample-head">
-                  <strong>Sample {index + 1}</strong>
+                  <strong>{$pluginText("Sample")} {index + 1}</strong>
                   <div>
                     <button
                       type="button"
                       onclick={() => moveSample(index, -1)}
                       disabled={index === 0}
-                      aria-label={`Move sample ${index + 1} earlier`}>↑</button>
+                      aria-label={$pluginText("Move sample {0} earlier", { 0: String(index + 1) })}>↑</button>
                     <button
                       type="button"
                       onclick={() => moveSample(index, 1)}
                       disabled={index === orthographyDraft.samples.length - 1}
-                      aria-label={`Move sample ${index + 1} later`}>↓</button>
-                    <button type="button" class="remove" onclick={() => removeSample(index)}>Remove</button>
+                      aria-label={$pluginText("Move sample {0} later", { 0: String(index + 1) })}>↓</button>
+                    <button type="button" class="remove" onclick={() => removeSample(index)}>{$pluginText("Remove")}</button>
                   </div>
                 </div>
                 <label class="language-field">
-                  <span>Written text</span>
-                  <textarea rows={3} bind:value={sample.writtenText} required placeholder="Text in this writing system"
+                  <span>{$pluginText("Written text")}</span>
+                  <textarea rows={3} bind:value={sample.writtenText} required placeholder={$pluginText("Text in this writing system")}
                   ></textarea>
                 </label>
                 <IpaInput
-                  label="Pronunciation (optional)"
+                  label={$pluginText("Pronunciation (optional)")}
                   bind:value={sample.pronunciation}
                   multiline
                   rows={2}
-                  placeholder="e.g. ʃara ven tal" />
+                  placeholder={$pluginText("e.g. ʃara ven tal")} />
                 <div class="sample-grid">
                   <label class="language-field">
-                    <span>Translation (optional)</span>
+                    <span>{$pluginText("Translation (optional)")}</span>
                     <textarea rows={2} bind:value={sample.translation}></textarea>
                   </label>
                   <label class="language-field">
-                    <span>Notes (optional)</span>
+                    <span>{$pluginText("Notes (optional)")}</span>
                     <textarea rows={2} bind:value={sample.notes}></textarea>
                   </label>
                 </div>
@@ -607,7 +608,7 @@ function soundLabel(phoneme: PhonemeOption) {
             type="button"
             class="language-button secondary language-danger"
             onclick={deleteOrthography}
-            disabled={orthographySaving}>Delete writing system</button>
+            disabled={orthographySaving}>{$pluginText("Delete writing system")}</button>
         {/if}
       </span>
       <span>
@@ -615,9 +616,9 @@ function soundLabel(phoneme: PhonemeOption) {
           type="button"
           class="language-button secondary"
           onclick={closeOrthographyEditor}
-          disabled={orthographySaving}>Cancel</button>
+          disabled={orthographySaving}>{$pluginText("Cancel")}</button>
         <button type="submit" class="language-button" disabled={orthographySaving}
-          >{orthographySaving ? "Saving…" : "Save writing system"}</button>
+          >{orthographySaving ? $pluginText("Saving…") : $pluginText("Save writing system")}</button>
       </span>
     </div>
   </form>
@@ -625,19 +626,19 @@ function soundLabel(phoneme: PhonemeOption) {
   <p class="language-status error" role="alert">{error}</p>
 {:else if !selectedLanguage}
   <div class="language-empty-card">
-    <p class="language-empty" role="status">Select a language to document its writing systems.</p>
+    <p class="language-empty" role="status">{$pluginText("Select a language to document its writing systems.")}</p>
   </div>
 {:else if orthographies.length === 0}
   <div class="language-empty-card">
-    <p class="language-empty" role="status">No writing systems yet.</p>
-    <span>Create a writing system to describe how this language is written.</span>
-    <button type="button" class="language-button" onclick={addOrthography}>Create writing system</button>
+    <p class="language-empty" role="status">{$pluginText("No writing systems yet.")}</p>
+    <span>{$pluginText("Create a writing system to describe how this language is written.")}</span>
+    <button type="button" class="language-button" onclick={addOrthography}>{$pluginText("Create writing system")}</button>
   </div>
 {:else}
   <section class="language-pane-section">
-    <h3>Writing systems</h3>
+    <h3>{$pluginText("Writing systems")}</h3>
     <p>
-      {orthographies.length} system{orthographies.length === 1 ? "" : "s"} · each has its own character mappings and samples.
+      {$pluginText(orthographies.length === 1 ? "{count} system" : "{count} systems", { count: orthographies.length })} {$pluginText("· each has its own character mappings and samples.")}
     </p>
     <ul class="writing-system-list">
       {#each orthographies as record (record.id)}
@@ -649,22 +650,19 @@ function soundLabel(phoneme: PhonemeOption) {
           <button
             type="button"
             class="language-item"
-            aria-label={`Edit writing system ${record.value.name}`}
+            aria-label={$pluginText("Edit writing system {0}", { 0: String(record.value.name) })}
             onclick={() => openOrthographyEditor(record)}>
             <strong>{record.value.name}</strong>
             <small
               >{record.value.direction === "ltr"
-                ? "Left to right"
+                ? $pluginText("Left to right")
                 : record.value.direction === "rtl"
-                  ? "Right to left"
+                  ? $pluginText("Right to left")
                   : record.value.direction === "vertical"
-                    ? "Vertical"
-                    : "Direction unspecified"}</small>
+                    ? $pluginText("Vertical")
+                    : $pluginText("Direction unspecified")}</small>
             <span
-              >{record.value.mappings.length} character{record.value.mappings.length === 1 ? "" : "s"} · {systemCoverage.represented}
-              of {systemCoverage.total} sounds · {record.value.samples.length} sample{record.value.samples.length === 1
-                ? ""
-                : "s"}</span>
+              >{$pluginText(record.value.mappings.length === 1 ? "{count} character" : "{count} characters", { count: record.value.mappings.length })} · {$pluginText("{covered} of {total} sounds represented", { covered: systemCoverage.represented, total: systemCoverage.total })} · {$pluginText(record.value.samples.length === 1 ? "{count} sample" : "{count} samples", { count: record.value.samples.length })}</span>
           </button>
         </li>
       {/each}
@@ -684,14 +682,13 @@ function soundLabel(phoneme: PhonemeOption) {
       onclick={(event) => event.stopPropagation()}>
       <header>
         <div>
-          <h3 id="bulk-title">Add from Sounds</h3>
+          <h3 id="bulk-title">{$pluginText("Add from Sounds")}</h3>
           <p>
-            Unmapped sounds are selected by default. Selecting an already represented sound intentionally creates
-            another blank spelling.
+            {$pluginText("Unmapped sounds are selected by default. Selecting an already represented sound intentionally creates another blank spelling.")}
           </p>
         </div>
         <button type="button" class="language-button secondary" onclick={() => (addFromSoundsOpen = false)}
-          >Close</button>
+          >{$pluginText("Close")}</button>
       </header>
       <div class="bulk-list">
         {#each phonemeOptions as phoneme (phoneme.id)}
@@ -701,18 +698,18 @@ function soundLabel(phoneme: PhonemeOption) {
               checked={selectedBulkIds.includes(phoneme.id)}
               onchange={(event) => toggleBulkSound(phoneme.id, event.currentTarget.checked)} />
             <strong>/{soundLabel(phoneme)}/</strong>
-            <span>{phoneme.kind}</span>
-            <small>{representedIds.has(phoneme.id) ? "Already represented" : "Unmapped"}</small>
+            <span>{$pluginText(phoneme.kind)}</span>
+            <small>{representedIds.has(phoneme.id) ? $pluginText("Already represented") : $pluginText("Unmapped")}</small>
           </label>
         {/each}
       </div>
       <footer>
-        <span>{selectedBulkIds.length} selected</span>
+        <span>{selectedBulkIds.length} {$pluginText("selected")}</span>
         <button
           type="button"
           class="language-button"
           onclick={addSelectedSounds}
-          disabled={selectedBulkIds.length === 0}>Add selected</button>
+          disabled={selectedBulkIds.length === 0}>{$pluginText("Add selected")}</button>
       </footer>
     </div>
   </div>

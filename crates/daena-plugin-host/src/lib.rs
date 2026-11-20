@@ -99,6 +99,7 @@ pub struct CatalogEntry {
 
 #[derive(Debug, Default, Clone)]
 pub struct PluginCatalog {
+    development_translations: BTreeMap<String, package::PluginCatalogs>,
     entries: BTreeMap<String, CatalogEntry>,
 }
 
@@ -123,6 +124,8 @@ impl PluginCatalog {
         if self.entries.contains_key(&id) {
             return Err(HostError("plugin ID is already installed".into()));
         }
+        let translations = package::development_catalogs(&root).map_err(|error| HostError(error.to_string()))?;
+        self.development_translations.insert(id.clone(), translations);
         self.entries.insert(
             id.clone(),
             CatalogEntry {
@@ -192,6 +195,7 @@ impl PluginCatalog {
         self.entries.get(id)
     }
     fn remove(&mut self, id: &str) {
+        self.development_translations.remove(id);
         self.entries.remove(id);
     }
     pub fn list(&self) -> impl Iterator<Item = &CatalogEntry> {
@@ -2177,6 +2181,7 @@ impl PluginHost {
         )
         .map_err(|e| HostError(e.to_string()))?;
         let active_installed = InstalledVersion {
+            translations: Default::default(),
             plugin_id: active.manifest.id.clone(),
             version: active.manifest.version.clone(),
             digest: active.digest.clone(),
@@ -2312,6 +2317,13 @@ impl PluginHost {
                     .get(plugin_id)
                     .map(|entry| entry.manifest.version.clone())
             })
+    }
+
+    pub fn translations_for(&self, manifest: &PluginManifest) -> Option<&package::PluginCatalogs> {
+        self.packages.get(&manifest.id, &manifest.version)
+            .map(|package| package.translations.as_ref())
+            .or_else(|| self.catalog.development_translations.get(&manifest.id))
+            .filter(|catalogs| !catalogs.is_empty())
     }
 
     pub fn runtime_entry(&self, project_id: &str, plugin_id: &str) -> Option<CatalogEntry> {

@@ -1,4 +1,5 @@
 <script lang="ts">
+import { ui } from "$lib/i18n/ui";
 import { Archive, Crown, ExternalLink, GitBranch, Heart, Pencil, UserPlus, X } from "@lucide/svelte";
 import { ENTITY_ACTIONS } from "$lib/entity-lifecycle/vocabulary.ts";
 import { archiveConfirmOptions } from "$lib/entity-lifecycle/archive.ts";
@@ -65,17 +66,17 @@ async function archivePerson() {
 <aside class="panel" aria-label={person.name} bind:this={panelEl}>
   <header class="panel-head">
     <div class="head-copy">
-      <span class="kicker">{isRoot ? "ROOT PERSON" : "PERSON"}</span>
+      <span class="kicker">{isRoot ? $ui("ROOT PERSON") : $ui("PERSON")}</span>
       <strong class="person-name">{person.name}</strong>
       {#if lifeSpan(person)}<span class="meta">{lifeSpan(person)}</span>{/if}
       {#if person.secondaryLabel}<span class="meta secondary">{person.secondaryLabel}</span>{/if}
       {#if houses.length}<span class="houses">{houses.join(" · ")}</span>{/if}
     </div>
-    <button type="button" class="icon-button" data-dock-focus onclick={onClose} aria-label="Close details"
+    <button type="button" class="icon-button" data-dock-focus onclick={onClose} aria-label={$ui("Close details")}
       ><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
   </header>
 
-  <div class="panel-actions" role="group" aria-label="Primary actions">
+  <div class="panel-actions" role="group" aria-label={$ui("Primary actions")}>
     <button type="button" class="quiet-button pill" onclick={() => onOpen(person.id)}>
       <ExternalLink size={13} strokeWidth={1.8} aria-hidden="true" />
       {ENTITY_ACTIONS.openInLore}
@@ -94,23 +95,20 @@ async function archivePerson() {
     {/if}
   </div>
 
-  <div class="panel-actions" role="group" aria-label="Add relatives">
+  <div class="panel-actions" role="group" aria-label={$ui("Add relatives")}>
     <button type="button" class="quiet-button" onclick={() => onAddRelative(person.id, "parent")}>
-      <UserPlus size={13} strokeWidth={1.8} aria-hidden="true" /> Add parent
-    </button>
+      <UserPlus size={13} strokeWidth={1.8} aria-hidden="true" /> {$ui("Add parent")} </button>
     {#if !hideAddChild}
       <button type="button" class="quiet-button" onclick={() => onAddRelative(person.id, "child")}>
-        <GitBranch size={13} strokeWidth={1.8} aria-hidden="true" /> Add child
-      </button>
+        <GitBranch size={13} strokeWidth={1.8} aria-hidden="true" /> {$ui("Add child")} </button>
     {/if}
     <button type="button" class="quiet-button" onclick={() => onAddRelative(person.id, "partner")}>
-      <Heart size={13} strokeWidth={1.8} aria-hidden="true" /> Add partner
-    </button>
+      <Heart size={13} strokeWidth={1.8} aria-hidden="true" /> {$ui("Add partner")} </button>
   </div>
 
   {#if connections.length > 0}
-    <section class="connections" aria-label="Visible connections">
-      <h3>On this tree</h3>
+    <section class="connections" aria-label={$ui("Visible connections")}>
+      <h3>{$ui("On this tree")}</h3>
       <ul>
         {#each connections as connection (connection.id)}
           <li>
@@ -121,7 +119,7 @@ async function archivePerson() {
               type="button"
               class="icon-button"
               onclick={() => onSelectRelationship(connection.relationshipId)}
-              aria-label="Edit relationship"><Pencil size={14} strokeWidth={1.8} aria-hidden="true" /></button>
+              aria-label={$ui("Edit relationship")}><Pencil size={14} strokeWidth={1.8} aria-hidden="true" /></button>
           </li>
         {/each}
       </ul>
@@ -129,7 +127,7 @@ async function archivePerson() {
   {/if}
 
   {#if onArchive}
-    <div class="destructive" role="group" aria-label="Destructive actions">
+    <div class="destructive" role="group" aria-label={$ui("Destructive actions")}>
       <button type="button" class="quiet-button danger" onclick={() => void archivePerson()}>
         <Archive size={13} strokeWidth={1.8} aria-hidden="true" />
         {ENTITY_ACTIONS.archive}

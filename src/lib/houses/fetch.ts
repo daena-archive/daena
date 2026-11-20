@@ -1,3 +1,4 @@
+import { localizeUi } from "../i18n/ui.ts";
 import type {
   FieldDefinition,
   ModuleContext,
@@ -305,7 +306,7 @@ export async function hydratePeople(
             fields: {},
             warning: {
               entityId: entity.id,
-              message: "Shared Lore fields could not be read.",
+              message: localizeUi("Shared Lore fields could not be read."),
             } satisfies GenealogyWarning,
           };
         }
@@ -320,7 +321,7 @@ export async function hydratePeople(
   for (const entity of entities) {
     const person = personFromRecord(entity, fieldsById.get(entity.id) ?? {}, secondaryField);
     if (!person) {
-      warnings.push({ entityId: entity.id, message: "Skipped a non-person or deleted entity." });
+      warnings.push({ entityId: entity.id, message: localizeUi("Skipped a non-person or deleted entity.") });
       continue;
     }
     people.push(person);
@@ -508,11 +509,11 @@ export function formatHouseMemberSummary(
   summary: HouseMemberSummary | undefined | null,
   options?: { pending?: boolean },
 ): string {
-  if (!summary) return options?.pending ? "Loading…" : "0 members";
+  if (!summary) return options?.pending ? localizeUi("Loading…") : localizeUi("0 members");
   const count = summary.memberCount;
-  const parts = [`${count} ${count === 1 ? "member" : "members"}`];
-  if (summary.headName) parts.push(`Head ${summary.headName}`);
-  if (summary.heirName) parts.push(`Heir ${summary.heirName}`);
+  const parts = [localizeUi(count === 1 ? "{0} member" : "{0} members", count)];
+  if (summary.headName) parts.push(localizeUi("Head {0}", summary.headName));
+  if (summary.heirName) parts.push(localizeUi("Heir {0}", summary.heirName));
   return parts.join(" · ");
 }
 
@@ -643,7 +644,7 @@ export async function loadHouseNeighborhood(
   if (truncated) warnings.push(truncationWarning(truncationLowerBound));
   if (scopeTruncated) {
     warnings.push({
-      message: `Immediate-family view hit the visible-people cap (${visiblePersonLimit}). Some relatives outside the house were omitted.`,
+      message: localizeUi("Immediate-family view hit the visible-people cap ({0}). Some relatives outside the house were omitted.", visiblePersonLimit),
     });
   }
   return {

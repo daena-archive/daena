@@ -1,4 +1,5 @@
 <script lang="ts">
+import { ui } from "$lib/i18n/ui";
 import { Handle, Position } from "@xyflow/svelte";
 import { formatCalendarDate } from "$lib/date";
 import { BRANCH_DIRECTIONS, type BranchDirection, type FamilyPerson, type HiddenCounts } from "./model.ts";
@@ -56,11 +57,11 @@ function toggle(event: MouseEvent, direction: BranchDirection) {
   host.onToggleBranch(person.id, direction);
 }
 
-const BRANCH_COPY: Record<BranchDirection, { unit: string; units: string }> = {
-  parents: { unit: "parent", units: "parents" },
-  children: { unit: "child", units: "children" },
-  siblings: { unit: "sibling", units: "siblings" },
-  partners: { unit: "partner", units: "partners" },
+const BRANCH_COPY: Record<BranchDirection, { singular: string; plural: string; units: string }> = {
+  parents: { singular: "{0} parent", plural: "{0} parents", units: "parents" },
+  children: { singular: "{0} child", plural: "{0} children", units: "children" },
+  siblings: { singular: "{0} sibling", plural: "{0} siblings", units: "siblings" },
+  partners: { singular: "{0} partner", plural: "{0} partners", units: "partners" },
 };
 
 function chipCount(direction: BranchDirection) {
@@ -76,17 +77,15 @@ function chipVisible(direction: BranchDirection) {
 }
 
 function chipText(direction: BranchDirection) {
-  const { unit, units } = BRANCH_COPY[direction];
-  if (chipHiding(direction)) return `Hide ${units}`;
+  const { singular, plural, units } = BRANCH_COPY[direction];
+  if (chipHiding(direction)) return $ui("Hide {0}", $ui(units));
   const count = chipCount(direction);
   const n = countLabel(count, Boolean(data.hidden?.truncated), data.hidden?.lowerBound ?? 0);
-  const word = count === 1 && n === "1" ? unit : units;
-  return `${n} ${word}`;
+  return $ui(count === 1 && n === "1" ? singular : plural, n);
 }
 
 function chipAria(direction: BranchDirection) {
-  const { units } = BRANCH_COPY[direction];
-  return chipHiding(direction) ? `Hide ${units}` : `Show ${chipText(direction)}`;
+  return chipHiding(direction) ? chipText(direction) : $ui("Show {0}", chipText(direction));
 }
 
 const branchTabIndex = $derived(cardTabIndex === 0 ? 0 : -1);
@@ -103,7 +102,7 @@ const cardAriaLabel = $derived.by(() => {
       Boolean(data.expanded?.children) ||
       Boolean(data.expanded?.siblings) ||
       Boolean(data.expanded?.partners));
-  return hasBranches ? `${person.name}. Tab for branch controls` : person.name;
+  return hasBranches ? $ui("{0}. Tab for branch controls", person.name) : person.name;
 });
 </script>
 
@@ -135,10 +134,10 @@ const cardAriaLabel = $derived.by(() => {
         <span class="house">{data.houses[0]}{data.houses.length > 1 ? ` +${data.houses.length - 1}` : ""}</span>
       {/if}
       {#if data.roleBadge}<em class="role-badge">{data.roleBadge}</em>{/if}
-      {#if data.isRoot}<em class="root-badge">Root</em>{/if}
+      {#if data.isRoot}<em class="root-badge">{$ui("Root")}</em>{/if}
     </div>
     {#if hasBranchChips}
-      <div class="branches" role="group" aria-label="Hidden relatives" aria-roledescription="branch controls">
+      <div class="branches" role="group" aria-label={$ui("Hidden relatives")} aria-roledescription={$ui("Branch controls")}>
         {#each BRANCH_DIRECTIONS as direction (direction)}
           {#if chipVisible(direction)}
             <button

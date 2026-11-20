@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { en } from "./i18n/en.ts";
 
 export const DOWNLOAD_PAGE = "https://github.com/daena-archive/daena/releases";
 export const UPDATE_CHANNEL_STORAGE_KEY = "daena-update-channel";
@@ -38,15 +39,16 @@ export function cacheUpdateChannelPreference(
   }
 }
 
-export function formatUpdateMessage(result: AppUpdateCheck): string {
+export function formatUpdateMessage(
+  result: AppUpdateCheck,
+  copy: Pick<typeof en.settings, "updateAvailable" | "upToDate" | "beta" | "alpha" | "stable"> = en.settings,
+): string {
   const preferenceLabel =
     result.updateChannelPreference === "auto" ? result.releaseChannel : result.updateChannelPreference;
-  const channelSuffix = preferenceLabel === "stable" ? "" : `, ${preferenceLabel} channel`;
   if (result.newer) {
-    const latestLabel = result.latestPrerelease ? `${result.latest} (${result.releaseChannel})` : result.latest;
-    return `Update available: ${latestLabel}`;
+    return copy.updateAvailable(result.latest, result.latestPrerelease ? copy[result.releaseChannel] : null);
   }
-  return `You're up to date (${result.current}${channelSuffix})`;
+  return copy.upToDate(result.current, preferenceLabel === "stable" ? null : copy[preferenceLabel]);
 }
 
 export async function openDownloadPage(): Promise<void> {

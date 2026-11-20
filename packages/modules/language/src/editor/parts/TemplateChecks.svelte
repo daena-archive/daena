@@ -1,4 +1,5 @@
 <script lang="ts">
+import { pluginText } from "../../i18n.ts";
 let {
   legend,
   options,
@@ -30,9 +31,9 @@ function isSelected(id: string) {
           disabled={locked}
           onchange={() => ontoggle(option.id)} />
         <span>
-          <strong>{option.label}</strong>
-          {#if option.meaning}<small>{option.meaning}</small>{/if}
-          {#if option.example}<em>{option.example}</em>{/if}
+          <strong>{$pluginText(option.label)}</strong>
+          {#if option.meaning}<small>{$pluginText(option.meaning)}</small>{/if}
+          {#if option.example}<em>{$pluginText(option.example)}</em>{/if}
         </span>
       </label>
     {/each}

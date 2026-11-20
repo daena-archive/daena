@@ -1,3 +1,4 @@
+import { localizeUi } from "../../i18n/ui.ts";
 import {
   DEFAULT_VECTOR_LAYER_STYLE,
   type MapLayerDefinition,
@@ -133,7 +134,7 @@ export function overlayFamilyFromName(name: string): OverlayFamily {
 }
 
 export function uniqueOverlayLayerName(layers: readonly { name: string }[], desired: string): string {
-  const base = desired.trim() || "Overlay";
+  const base = desired.trim() || localizeUi("Overlay");
   const used = new Set(layers.map((layer) => layer.name));
   if (!used.has(base)) return base;
   let index = 2;

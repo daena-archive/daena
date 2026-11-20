@@ -1,4 +1,5 @@
 <script lang="ts">
+import { pluginText } from "../../plugin-i18n.ts";
 import { tick, untrack } from "svelte";
 import type { EntityRecord, ModuleContext, UUID } from "../../../module-api/src/index";
 import {
@@ -54,7 +55,7 @@ let helpHideTimer: ReturnType<typeof setTimeout> | undefined;
 let eras = $state<{ id: UUID; name: string }[]>([]);
 let creatingEra = $state(false);
 
-const issues = $derived(validateCalendarDefinition(draft));
+const issues = $derived(validateCalendarDefinition(draft, $pluginText));
 const errors = $derived(issues.filter((issue) => issue.level === "error"));
 const yearLength = $derived(computedYearLength(draft));
 const activePreset = $derived(matchYearPreset(draft));
@@ -295,19 +296,19 @@ $effect(() => {
 });
 </script>
 
-<section class="calendar-summary" aria-label="Calendar structure">
+<section class="calendar-summary" aria-label={$pluginText("Calendar structure")}>
   <div class="calendar-summary-head">
-    <h3>Calendar</h3>
-    <button type="button" onclick={openModal}>Configure calendar</button>
+    <h3>{$pluginText("Calendar")}</h3>
+    <button type="button" onclick={openModal}>{$pluginText("Configure calendar")}</button>
   </div>
-  <p>{calendarSummary(saved)}</p>
-  <p>{epochSummary(saved)}</p>
+  <p>{calendarSummary(saved, $pluginText)}</p>
+  <p>{epochSummary(saved, $pluginText)}</p>
   <div class="calendar-era-list">
     <div class="calendar-group-head">
-      <h4>Historical eras</h4>
-      <button type="button" disabled={creatingEra} onclick={() => void addEra()}>Add era</button>
+      <h4>{$pluginText("Historical eras")}</h4>
+      <button type="button" disabled={creatingEra} onclick={() => void addEra()}>{$pluginText("Add era")}</button>
     </div>
-    {#if eras.length === 0}<p class="calendar-note">No eras use this calendar yet.</p>
+    {#if eras.length === 0}<p class="calendar-note">{$pluginText("No eras use this calendar yet.")}</p>
     {:else}
       <ul>
         {#each eras as era}
@@ -338,11 +339,11 @@ $effect(() => {
       }}>
       <div class="calendar-modal-heading">
         <div>
-          <span>TIMELINE</span>
-          <strong id="calendar-modal-title">Configure calendar</strong>
-          <p>Pick a year shape, then edit months, epoch, and how dates should read.</p>
+          <span>{$pluginText("TIMELINE")}</span>
+          <strong id="calendar-modal-title">{$pluginText("Configure calendar")}</strong>
+          <p>{$pluginText("Pick a year shape, then edit months, epoch, and how dates should read.")}</p>
         </div>
-        <button type="button" class="calendar-close" aria-label="Close calendar configuration" onclick={closeModal}
+        <button type="button" class="calendar-close" aria-label={$pluginText("Close calendar configuration")} onclick={closeModal}
           >×</button>
       </div>
       <div class="calendar-modal-body">
@@ -353,8 +354,8 @@ $effect(() => {
 
         <section>
           <div class="calendar-group-head">
-            <h4>Year</h4>
-            <small>{yearLength ? `${yearLength} days` : "Add months to compute the year length"}</small>
+            <h4>{$pluginText("Year")}</h4>
+            <small>{yearLength ? $pluginText("{count} days", { count: yearLength }) : $pluginText("Add months to compute the year length")}</small>
           </div>
           <div class="calendar-presets">
             {#each YEAR_PRESETS as preset}
@@ -362,23 +363,23 @@ $effect(() => {
                 type="button"
                 class:selected={activePreset === preset.id}
                 onclick={() => setDraft(applyYearPreset(preset.id as YearPresetId, draft))}>
-                <strong>{preset.name}</strong>
-                <small>{preset.description}</small>
+                <strong>{$pluginText(preset.name)}</strong>
+                <small>{$pluginText(preset.description)}</small>
               </button>
             {/each}
           </div>
           <div class="calendar-group-head">
-            <h4>Months</h4>
-            <button type="button" onclick={addMonth}>Add month</button>
+            <h4>{$pluginText("Months")}</h4>
+            <button type="button" onclick={addMonth}>{$pluginText("Add month")}</button>
           </div>
           {#if draft.months.length === 0}
-            <p class="calendar-note">No months yet. Choose a preset or add months to define the year.</p>
+            <p class="calendar-note">{$pluginText("No months yet. Choose a preset or add months to define the year.")}</p>
           {:else}
             <ol>
               {#each draft.months as month, index (month.id)}
                 <li>
                   <input
-                    aria-label={`Month ${index + 1} name`}
+                    aria-label={$pluginText("Month {0} name", { 0: String(index + 1) })}
                     value={month.name}
                     oninput={(event) => {
                       const months = draft.months.map((item, itemIndex) =>
@@ -387,7 +388,7 @@ $effect(() => {
                       setDraft({ ...draft, months });
                     }} />
                   <input
-                    aria-label={`${month.name} days`}
+                    aria-label={$pluginText("{0} days", { 0: String(month.name) })}
                     type="number"
                     min="1"
                     value={month.days}
@@ -398,20 +399,20 @@ $effect(() => {
                       );
                       setDraft({ ...draft, months });
                     }} />
-                  <span>days</span>
+                  <span>{$pluginText("days")}</span>
                   <button
                     type="button"
                     disabled={index === 0}
-                    onclick={() => setDraft({ ...draft, months: move(draft.months, index, -1) })}>Up</button>
+                    onclick={() => setDraft({ ...draft, months: move(draft.months, index, -1) })}>{$pluginText("Up")}</button>
                   <button
                     type="button"
                     disabled={index === draft.months.length - 1}
-                    onclick={() => setDraft({ ...draft, months: move(draft.months, index, 1) })}>Down</button>
+                    onclick={() => setDraft({ ...draft, months: move(draft.months, index, 1) })}>{$pluginText("Down")}</button>
                   <button
                     type="button"
                     onclick={() =>
                       setDraft({ ...draft, months: draft.months.filter((_, itemIndex) => itemIndex !== index) })}
-                    >Remove</button>
+                    >{$pluginText("Remove")}</button>
                 </li>
               {/each}
             </ol>
@@ -419,13 +420,13 @@ $effect(() => {
         </section>
 
         <section>
-          <h4>Epoch</h4>
+          <h4>{$pluginText("Epoch")}</h4>
           <p class="calendar-note">
-            Year numbering and the Gregorian timeline day that counts as the first day of that year.
+            {$pluginText("Year numbering and the Gregorian timeline day that counts as the first day of that year.")}
           </p>
           <div class="calendar-grid">
             <label>
-              First year number
+              {$pluginText("First year number")}
               <input
                 type="number"
                 value={draft.startingYear ?? 1}
@@ -436,14 +437,14 @@ $effect(() => {
                   })} />
             </label>
             <label>
-              Gregorian year
+              {$pluginText("Gregorian year")}
               <input
                 type="number"
                 value={draft.epoch?.year ?? 1}
                 onchange={(event) => setEpoch("year", event.currentTarget.value)} />
             </label>
             <label>
-              Month
+              {$pluginText("Month")}
               <input
                 type="number"
                 min="1"
@@ -452,7 +453,7 @@ $effect(() => {
                 onchange={(event) => setEpoch("month", event.currentTarget.value)} />
             </label>
             <label>
-              Day
+              {$pluginText("Day")}
               <input
                 type="number"
                 min="1"
@@ -464,9 +465,9 @@ $effect(() => {
         </section>
 
         <section>
-          <h4>Year labels</h4>
+          <h4>{$pluginText("Year labels")}</h4>
           <p class="calendar-note">
-            Control whether dates can be before the first year and how year suffixes are labeled.
+            {$pluginText("Control whether dates can be before the first year and how year suffixes are labeled.")}
           </p>
           <label class="calendar-checkbox"
             ><input
@@ -481,11 +482,11 @@ $effect(() => {
                   if (next.eraLabels) delete next.eraLabels;
                   setDraft(next);
                 }
-              }} /> Allow years before the first year</label>
+              }} /> {$pluginText("Allow years before the first year")}</label>
           {#if draft.allowNegativeYears}
             <div class="calendar-grid">
               <label>
-                Label for years before epoch
+                {$pluginText("Label for years before epoch")}
                 <input
                   value={draft.eraLabels?.bce ?? ""}
                   oninput={(event) => {
@@ -501,7 +502,7 @@ $effect(() => {
                   }} />
               </label>
               <label>
-                Label for years after epoch (optional)
+                {$pluginText("Label for years after epoch (optional)")}
                 <input
                   value={draft.eraLabels?.ce ?? ""}
                   oninput={(event) => {
@@ -522,13 +523,13 @@ $effect(() => {
 
         <section>
           <div class="calendar-group-head">
-            <h4>Date display</h4>
+            <h4>{$pluginText("Date display")}</h4>
             <div class="calendar-format-help">
               <button
                 type="button"
                 class="calendar-help"
                 bind:this={helpTrigger}
-                aria-label="Date format guide"
+                aria-label={$pluginText("Date format guide")}
                 aria-describedby={helpOpen ? "calendar-format-help" : undefined}
                 onmouseenter={() => void showHelp()}
                 onmouseleave={scheduleHideHelp}
@@ -544,33 +545,33 @@ $effect(() => {
                 type="button"
                 class:selected={(draft.dateFormat || DEFAULT_DATE_FORMAT) === preset.pattern}
                 onclick={() => setDraft({ ...draft, dateFormat: preset.pattern })}>
-                <strong>{preset.label}</strong>
+                <strong>{$pluginText(preset.label)}</strong>
               </button>
             {/each}
           </div>
           <label class="calendar-format">
-            Format
+            {$pluginText("Format")}
             <input
               value={draft.dateFormat ?? DEFAULT_DATE_FORMAT}
-              placeholder="D MMMM YYYY"
+              placeholder={$pluginText("D MMMM YYYY")}
               oninput={(event) => setDraft({ ...draft, dateFormat: event.currentTarget.value })} />
           </label>
-          <p class="calendar-preview"><span>Preview</span> {preview}</p>
+          <p class="calendar-preview"><span>{$pluginText("Preview")}</span> {preview}</p>
         </section>
 
         <section>
           <div class="calendar-group-head">
-            <h4>Weekdays</h4>
-            <button type="button" onclick={addWeekday}>Add weekday</button>
+            <h4>{$pluginText("Weekdays")}</h4>
+            <button type="button" onclick={addWeekday}>{$pluginText("Add weekday")}</button>
           </div>
           {#if draft.weekdays.length === 0}
-            <p class="calendar-note">No week. Dates omit weekday names.</p>
+            <p class="calendar-note">{$pluginText("No week. Dates omit weekday names.")}</p>
           {:else}
             <ol>
               {#each draft.weekdays as weekday, index (weekday.id)}
                 <li>
                   <input
-                    aria-label={`Weekday ${index + 1} name`}
+                    aria-label={$pluginText("Weekday {0} name", { 0: String(index + 1) })}
                     value={weekday.name}
                     oninput={(event) => {
                       const weekdays = draft.weekdays.map((item, itemIndex) =>
@@ -581,16 +582,16 @@ $effect(() => {
                   <button
                     type="button"
                     disabled={index === 0}
-                    onclick={() => setDraft({ ...draft, weekdays: move(draft.weekdays, index, -1) })}>Up</button>
+                    onclick={() => setDraft({ ...draft, weekdays: move(draft.weekdays, index, -1) })}>{$pluginText("Up")}</button>
                   <button
                     type="button"
                     disabled={index === draft.weekdays.length - 1}
-                    onclick={() => setDraft({ ...draft, weekdays: move(draft.weekdays, index, 1) })}>Down</button>
+                    onclick={() => setDraft({ ...draft, weekdays: move(draft.weekdays, index, 1) })}>{$pluginText("Down")}</button>
                   <button
                     type="button"
                     onclick={() =>
                       setDraft({ ...draft, weekdays: draft.weekdays.filter((_, itemIndex) => itemIndex !== index) })}
-                    >Remove</button>
+                    >{$pluginText("Remove")}</button>
                 </li>
               {/each}
             </ol>
@@ -599,17 +600,17 @@ $effect(() => {
 
         <section>
           <div class="calendar-group-head">
-            <h4>Seasons</h4>
-            <button type="button" onclick={addSeason}>Add season</button>
+            <h4>{$pluginText("Seasons")}</h4>
+            <button type="button" onclick={addSeason}>{$pluginText("Add season")}</button>
           </div>
           {#if draft.seasons.length === 0}
-            <p class="calendar-note">No seasons. They can span months independently.</p>
+            <p class="calendar-note">{$pluginText("No seasons. They can span months independently.")}</p>
           {:else}
             <ol>
               {#each draft.seasons as season, index (season.id)}
                 <li class="calendar-season">
                   <input
-                    aria-label={`Season ${index + 1} name`}
+                    aria-label={$pluginText("Season {0} name", { 0: String(index + 1) })}
                     value={season.name}
                     oninput={(event) => {
                       const seasons = draft.seasons.map((item, itemIndex) =>
@@ -618,7 +619,7 @@ $effect(() => {
                       setDraft({ ...draft, seasons });
                     }} />
                   <label
-                    >From month<input
+                    >{$pluginText("From month")}<input
                       type="number"
                       min="1"
                       value={season.startMonth}
@@ -632,7 +633,7 @@ $effect(() => {
                         });
                       }} /></label>
                   <label
-                    >Day<input
+                    >{$pluginText("Day")}<input
                       type="number"
                       min="1"
                       value={season.startDay}
@@ -646,7 +647,7 @@ $effect(() => {
                         });
                       }} /></label>
                   <label
-                    >To month<input
+                    >{$pluginText("To month")}<input
                       type="number"
                       min="1"
                       value={season.endMonth}
@@ -660,7 +661,7 @@ $effect(() => {
                         });
                       }} /></label>
                   <label
-                    >Day<input
+                    >{$pluginText("Day")}<input
                       type="number"
                       min="1"
                       value={season.endDay}
@@ -677,7 +678,7 @@ $effect(() => {
                     type="button"
                     onclick={() =>
                       setDraft({ ...draft, seasons: draft.seasons.filter((_, itemIndex) => itemIndex !== index) })}
-                    >Remove</button>
+                    >{$pluginText("Remove")}</button>
                 </li>
               {/each}
             </ol>
@@ -685,9 +686,9 @@ $effect(() => {
         </section>
       </div>
       <div class="calendar-modal-actions">
-        <button type="button" onclick={closeModal}>Cancel</button>
+        <button type="button" onclick={closeModal}>{$pluginText("Cancel")}</button>
         <button type="button" class="primary" disabled={saving || errors.length > 0} onclick={() => void persist()}>
-          {saving ? "Saving…" : "Save"}
+          {saving ? $pluginText("Saving…") : $pluginText("Save")}
         </button>
       </div>
     </div>
@@ -703,15 +704,15 @@ $effect(() => {
         onclick={(event: MouseEvent) => event.stopPropagation()}
         onmouseenter={() => void showHelp()}
         onmouseleave={scheduleHideHelp}>
-        <p>Write a pattern with these tokens. Spaces, slashes, dashes, and commas stay as you type them.</p>
+        <p>{$pluginText("Write a pattern with these tokens. Spaces, slashes, dashes, and commas stay as you type them.")}</p>
         <p>
-          If a date has no month, day, weekday, or season, that token is dropped and leftover punctuation is cleaned up.
+          {$pluginText("If a date has no month, day, weekday, or season, that token is dropped and leftover punctuation is cleaned up.")}
         </p>
         <dl>
           {#each DATE_FORMAT_GUIDE as item}
             <div>
               <dt><code>{item.token}</code></dt>
-              <dd>{item.meaning}</dd>
+              <dd>{$pluginText(item.meaning)}</dd>
             </div>
           {/each}
         </dl>

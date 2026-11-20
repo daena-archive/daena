@@ -1,3 +1,4 @@
+import { localizeUi } from "../i18n/ui.ts";
 import { parseCalendarDate } from "$lib/date";
 import { buildModuleContext } from "$lib/modules/context";
 import { project } from "$lib/project/client";
@@ -262,7 +263,7 @@ async function writeUnlinkedChange(
   at: { date: unknown; reason?: string },
 ): Promise<{ profile: StoredProfile; changes: StoredProfileChange[] }> {
   const date = parseCalendarDate(at.date);
-  if (!date) throw new Error("Choose a date for this change");
+  if (!date) throw new Error(localizeUi("Choose a date for this change"));
   const target = unlinkedChangeAt(changes, date);
   const reason = at.reason?.trim() ?? "";
   return writeChange(
@@ -342,7 +343,7 @@ export async function upsertEventProfileChange(
   reason?: string,
 ): Promise<StoredProfileChange[]> {
   const parsed = parseCalendarDate(date);
-  if (!parsed) throw new Error("Set Starts on this event to date Profile changes.");
+  if (!parsed) throw new Error(localizeUi("Set Starts on this event to date Profile changes."));
   const matches = changesForEvent(changes, eventId);
   const [target, ...dupes] = matches;
   for (const dupe of dupes) await deleteProfileChange(context, ownerEntityId, dupe);

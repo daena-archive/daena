@@ -25,6 +25,7 @@ import { applyPluginAppearance, validateThemePack } from "./theme.js";
 export * from "./generated.js";
 export type { MetadataFieldDefinition } from "./generated.js";
 export * from "./maps.js";
+export * from "./i18n.js";
 export {
   applyPluginAppearance,
   hostHasFeature,

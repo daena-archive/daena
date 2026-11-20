@@ -1,4 +1,6 @@
 <script lang="ts">
+import { messages } from "../../../../../src/lib/i18n/index.ts";
+import { pluginText } from "../i18n.ts";
 import type { EntityRecord, EntitySummary, ModuleContext, ModuleManifest } from "../../../../module-api/src/index";
 import type { FieldDefinition } from "../../../../plugin-sdk/src/generated";
 import RichTextEditor from "../../../../../src/lib/editor/RichTextEditor.svelte";
@@ -69,7 +71,7 @@ $effect(() => {
 
 $effect(() => {
   if (!active) return;
-  registerLeaveGuard(() => tryLeaveOverview((message) => confirm("Unsaved changes", message)));
+  registerLeaveGuard(() => tryLeaveOverview((message) => confirm($pluginText("Unsaved changes"), message)));
   return () => {
     registerLeaveGuard(null);
   };
@@ -97,7 +99,7 @@ async function tryLeaveOverview(confirmLeave: (message: string) => Promise<boole
   if (overviewSaving) return false;
   const saved = await saveOverview(false);
   if (saved) return true;
-  const allowed = await confirmLeave("Language details could not be saved. Leave and discard these changes?");
+  const allowed = await confirmLeave($pluginText("Language details could not be saved. Leave and discard these changes?"));
   if (allowed) {
     clearOverviewAutosave();
     overviewDirty = false;
@@ -179,7 +181,7 @@ async function loadOverview({ quiet = false }: { quiet?: boolean } = {}) {
       context.fields.listRecords(selectedLanguage.id),
     ]);
     if (cancelled || token !== overviewRequest) return;
-    if (!entity) throw new Error("This language is no longer available.");
+    if (!entity) throw new Error($pluginText("This language is no longer available."));
     const values = Object.fromEntries(fieldRecords.map((record) => [record.key, record.value]));
     for (const definition of overviewFieldDefinitions) {
       if (!(definition.key in values)) values[definition.key] = "";
@@ -208,7 +210,7 @@ async function saveOverview(automatic = false): Promise<boolean> {
   clearOverviewAutosave();
   const name = overviewName.trim();
   if (!name) {
-    overviewError = "Language name is required.";
+    overviewError = $pluginText("Language name is required.");
     return false;
   }
   const entityId = overviewEntity.id;
@@ -289,8 +291,8 @@ async function saveOverview(automatic = false): Promise<boolean> {
 async function archiveOverviewLanguage() {
   if (!selectedLanguage || !overviewEntity || overviewDeleting) return;
   const name = selectedLanguage.name;
-  const dirtyNote = overviewDirty ? "Unsaved language details will be discarded." : undefined;
-  const archive = archiveConfirmOptions(name, { dirtyNote });
+  const dirtyNote = overviewDirty ? $pluginText("Unsaved language details will be discarded.") : undefined;
+  const archive = archiveConfirmOptions(name, { dirtyNote, copy: $messages.inspector });
   if (!(await confirm(archive.title, archive.message, { confirmLabel: archive.confirmLabel, danger: archive.danger })))
     return;
   clearOverviewAutosave();
@@ -338,7 +340,7 @@ let status = $derived.by(() => {
 
 <div class="language-toolbar">
   <div class="language-toolbar-title">
-    <h2>Overview</h2>
+    <h2>{$pluginText("Overview")}</h2>
   </div>
   <div class="language-toolbar-actions">
     {#if selectedLanguage && (overviewDirty || overviewError)}
@@ -346,34 +348,34 @@ let status = $derived.by(() => {
         type="button"
         class="language-button secondary"
         disabled={overviewSaving || overviewDeleting}
-        onclick={() => void saveOverview(false)}>{overviewError ? "Try saving again" : "Save now"}</button>
+        onclick={() => void saveOverview(false)}>{overviewError ? $pluginText("Try saving again") : $pluginText("Save now")}</button>
     {/if}
     <span class="language-overview-status" role="status" aria-live="polite" data-state={status.state}
-      >{status.text}</span>
+      >{$pluginText(status.text)}</span>
   </div>
 </div>
 {#if !selectedLanguage}
   <div class="language-empty-card">
-    <p class="language-empty" role="status">Select a language, or create one from the list.</p>
+    <p class="language-empty" role="status">{$pluginText("Select a language, or create one from the list.")}</p>
   </div>
 {:else if overviewLoading || !overviewEntity}
-  <p class="language-empty language-loading" role="status" aria-live="polite">Loading language details…</p>
+  <p class="language-empty language-loading" role="status" aria-live="polite">{$pluginText("Loading language details…")}</p>
 {:else}
   <form class="language-overview" onsubmit={(event) => event.preventDefault()}>
     <section class="language-overview-identity">
       <div class="language-overview-identity-header">
         <div>
-          <h3>Language identity</h3>
-          <p>Keep the name and short identity details close while you build the language.</p>
+          <h3>{$pluginText("Language identity")}</h3>
+          <p>{$pluginText("Keep the name and short identity details close while you build the language.")}</p>
         </div>
         <button
           type="button"
           class="language-button secondary language-danger language-overview-archive-btn"
           disabled={overviewSaving || overviewDeleting}
-          onclick={archiveOverviewLanguage}>{archivePendingLabel(overviewDeleting)}</button>
+          onclick={archiveOverviewLanguage}>{$pluginText(archivePendingLabel(overviewDeleting))}</button>
       </div>
       <label class="language-field">
-        <span>Language name</span>
+        <span>{$pluginText("Language name")}</span>
         <input
           name="overviewName"
           autocomplete="off"
@@ -385,25 +387,25 @@ let status = $derived.by(() => {
     <section class="language-overview-section">
       <div class="language-overview-section-header">
         <div>
-          <h3>Properties</h3>
-          <p>A few useful anchors for how this language belongs in the world.</p>
+          <h3>{$pluginText("Properties")}</h3>
+          <p>{$pluginText("A few useful anchors for how this language belongs in the world.")}</p>
         </div>
       </div>
       <div class="language-overview-fields">
         {#each overviewFieldDefinitions as definition (definition.key)}
           <label class="language-field">
-            <span>{definition.label}</span>
+            <span>{$pluginText(definition.label)}</span>
             {#if definition.multiple}
               <textarea
                 name={`overview-${definition.key}`}
                 rows={2}
-                placeholder={FIELD_HINTS[definition.key] ?? ""}
+                placeholder={$pluginText(FIELD_HINTS[definition.key] ?? "")}
                 value={fieldValue(definition)}
                 oninput={(event) => onOverviewFieldInput(definition, event.currentTarget.value)}></textarea>
             {:else}
               <input
                 name={`overview-${definition.key}`}
-                placeholder={FIELD_HINTS[definition.key] ?? ""}
+                placeholder={$pluginText(FIELD_HINTS[definition.key] ?? "")}
                 value={fieldValue(definition)}
                 oninput={(event) => onOverviewFieldInput(definition, event.currentTarget.value)} />
             {/if}
@@ -415,8 +417,8 @@ let status = $derived.by(() => {
     <section class="language-overview-section">
       <div class="language-overview-section-header">
         <div>
-          <h3>Canonical notes</h3>
-          <p>Describe what makes this language itself. These notes stay with the language as the projection grows.</p>
+          <h3>{$pluginText("Canonical notes")}</h3>
+          <p>{$pluginText("Describe what makes this language itself. These notes stay with the language as the projection grows.")}</p>
         </div>
       </div>
       <div class="language-overview-editor">

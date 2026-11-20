@@ -1,4 +1,6 @@
 <script lang="ts">
+import { manifestText } from "$lib/i18n/manifest-copy";
+import { ui } from "$lib/i18n/ui";
 import type { FieldDefinition } from "$lib/project/client";
 import DateEditor from "$lib/date/DateEditor.svelte";
 import RelationshipPicker from "$lib/RelationshipPicker.svelte";
@@ -12,6 +14,7 @@ import type {
 export type SchemaFieldValue = unknown;
 
 let {
+  pluginId = null,
   field,
   value = $bindable(),
   required = false,
@@ -28,6 +31,7 @@ let {
   onClearDate,
   onSelectCalendar,
 }: {
+  pluginId?: string | null;
   field: FieldDefinition;
   value?: SchemaFieldValue;
   required?: boolean;
@@ -45,6 +49,7 @@ let {
   onSelectCalendar?: (id: string) => void;
 } = $props();
 
+const label = $derived($manifestText(pluginId, "field", field.key, field.label));
 const inputId = $derived(`${idPrefix}-${field.key}`);
 const locked = $derived(disabled || readOnly);
 
@@ -87,13 +92,14 @@ const hasDateValue = $derived(value != null && value !== "");
 <div class="schema-field-input {className}" class:is-readonly={readOnly} data-field-key={field.key}>
   <label class="schema-field-label" for={inputId}>
     <span>
-      {field.label}
+      {label}
       {#if required}<b aria-hidden="true">*</b>{/if}
     </span>
   </label>
 
   {#if field.type === "relationship"}
     <RelationshipPicker
+      {label}
       {field}
       search={search ?? stubSearch}
       resolveSelected={resolveSelected ?? stubResolve}
@@ -107,7 +113,7 @@ const hasDateValue = $derived(value != null && value !== "");
       readonly={readOnly}
       rows="3"
       value={String(value ?? "")}
-      placeholder={`Add ${field.label.toLowerCase()}`}
+      placeholder={$ui("Add {0}", label.toLowerCase())}
       oninput={(event) => emit((event.currentTarget as HTMLTextAreaElement).value)}></textarea>
   {:else if field.type === "number"}
     <input
@@ -117,7 +123,7 @@ const hasDateValue = $derived(value != null && value !== "");
       disabled={locked}
       readonly={readOnly}
       value={String(value ?? "")}
-      placeholder={`Add ${field.label.toLowerCase()}`}
+      placeholder={$ui("Add {0}", label.toLowerCase())}
       oninput={(event) => emit((event.currentTarget as HTMLInputElement).value)} />
   {:else if field.type === "boolean"}
     <label class="schema-field-checkbox" for={inputId}>
@@ -128,7 +134,7 @@ const hasDateValue = $derived(value != null && value !== "");
         disabled={locked}
         checked={value === true}
         onchange={(event) => emit((event.currentTarget as HTMLInputElement).checked)} />
-      <span>Yes</span>
+      <span>{$ui("Yes")}</span>
     </label>
   {:else if field.type === "enum"}
     <select
@@ -138,9 +144,9 @@ const hasDateValue = $derived(value != null && value !== "");
       multiple={field.multiple ?? false}
       value={field.multiple ? (Array.isArray(value) ? value : []) : String(value ?? "")}
       onchange={(event) => updateEnum(event, field.multiple ?? false)}>
-      <option value="">Choose {field.label.toLowerCase()}</option>
+      <option value="">{$ui("Choose {0}", label.toLowerCase())}</option>
       {#each field.options ?? [] as option}
-        <option value={option}>{option}</option>
+        <option value={option}>{$manifestText(pluginId, "option", field.key + "/" + option, option)}</option>
       {/each}
     </select>
   {:else if field.type === "oneof"}
@@ -150,20 +156,20 @@ const hasDateValue = $derived(value != null && value !== "");
       disabled={locked}
       value={String(value ?? "")}
       onchange={(event) => emit((event.currentTarget as HTMLSelectElement).value)}>
-      <option value="">Choose {field.label.toLowerCase()}</option>
+      <option value="">{$ui("Choose {0}", label.toLowerCase())}</option>
       {#each field.options ?? [] as option}
-        <option value={option}>{option}</option>
+        <option value={option}>{$manifestText(pluginId, "option", field.key + "/" + option, option)}</option>
       {/each}
       {#each (field as FieldDefinition & { oneOf?: Array<{ label: string; options?: string[] }> }).oneOf ?? [] as variant}
         {#each variant.options ?? [] as opt}
-          <option value={opt}>{variant.label}: {opt}</option>
+          <option value={opt}>{$manifestText(pluginId, "variant", field.key, variant.label)}: {$manifestText(pluginId, "option", field.key + "/" + opt, opt)}</option>
         {/each}
       {/each}
     </select>
   {:else if field.type === "date"}
     {#if hasDateValue || dateEditorOpen || readOnly}
       <DateEditor
-        label={field.label}
+        label={label}
         {value}
         calendar={calendar as any}
         calendars={calendars as any}
@@ -179,9 +185,7 @@ const hasDateValue = $derived(value != null && value !== "");
         }}
         onSelectCalendar={(id) => onSelectCalendar?.(id)} />
     {:else}
-      <button class="date-empty" type="button" disabled={locked} onclick={() => (dateEditorOpen = true)}>
-        Add a date
-      </button>
+      <button class="date-empty" type="button" disabled={locked} onclick={() => (dateEditorOpen = true)}> {$ui("Add a date")} </button>
     {/if}
   {:else}
     <input

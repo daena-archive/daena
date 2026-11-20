@@ -1,4 +1,5 @@
 <script lang="ts">
+import { ui } from "$lib/i18n/ui";
 import { Scissors } from "@lucide/svelte";
 import {
   canRunOperation,
@@ -32,17 +33,17 @@ let {
 const percent = $derived(progress && progress.total > 0 ? Math.round((100 * progress.completed) / progress.total) : 0);
 </script>
 
-<div class="geometry-ops" aria-label="Geometry operations">
+<div class="geometry-ops" aria-label={$ui("Geometry operations")}>
   {#if progress && !preview}
     <p class="section-note" role="status">{progress.label}… {percent}%</p>
     <div class="quick-add-row">
-      <button type="button" class="quiet-button small" onclick={() => oncancel()}>Cancel</button>
+      <button type="button" class="quiet-button small" onclick={() => oncancel()}>{$ui("Cancel")}</button>
     </div>
   {:else if preview}
-    <p class="section-note">Preview: {preview.label}. Commit or cancel to finish.</p>
+    <p class="section-note">{$ui("Preview: {0}. Commit or cancel to finish.", preview.label)}</p>
     <div class="quick-add-row">
-      <button type="button" class="primary-button small" onclick={() => oncommit()}>Apply</button>
-      <button type="button" class="quiet-button small" onclick={() => oncancel()}>Cancel</button>
+      <button type="button" class="primary-button small" onclick={() => oncommit()}>{$ui("Apply")}</button>
+      <button type="button" class="quiet-button small" onclick={() => oncancel()}>{$ui("Cancel")}</button>
     </div>
   {:else}
     <div class="quick-add-row">
@@ -50,60 +51,60 @@ const percent = $derived(progress && progress.total > 0 ? Math.round((100 * prog
         type="button"
         class="quiet-button small"
         disabled={!canRunOperation("union", features)}
-        onclick={() => onrun("union")}>Union</button>
+        onclick={() => onrun("union")}>{$ui("Union")}</button>
       <button
         type="button"
         class="quiet-button small"
         disabled={!canRunOperation("difference", features)}
-        onclick={() => onrun("difference")}>Diff</button>
+        onclick={() => onrun("difference")}>{$ui("Diff")}</button>
       <button
         type="button"
         class="quiet-button small"
         disabled={!canRunOperation("intersection", features)}
-        onclick={() => onrun("intersection")}>Intersect</button>
+        onclick={() => onrun("intersection")}>{$ui("Intersect")}</button>
     </div>
     <div class="quick-add-row">
       <button
         type="button"
         class="quiet-button small"
         disabled={!canRunOperation("split", features)}
-        onclick={() => onrun("split")}><Scissors size={12} strokeWidth={1.8} /> Split</button>
+        onclick={() => onrun("split")}><Scissors size={12} strokeWidth={1.8} /> {$ui("Split")}</button>
       <button
         type="button"
         class="quiet-button small"
         disabled={!canRunOperation("reverse", features)}
-        onclick={() => onrun("reverse")}>Reverse</button>
+        onclick={() => onrun("reverse")}>{$ui("Reverse")}</button>
       <button
         type="button"
         class="quiet-button small"
         disabled={!canRunOperation("merge-lines", features)}
-        onclick={() => onrun("merge-lines")}>Merge</button>
+        onclick={() => onrun("merge-lines")}>{$ui("Merge")}</button>
       <label class="inline-field"
-        ><span>Buffer</span><input
+        ><span>{$ui("Buffer")}</span><input
           type="number"
           min="0"
           step="any"
           bind:value={bufferDistance}
-          aria-label="Buffer distance" /></label>
+          aria-label={$ui("Buffer distance")} /></label>
       <button
         type="button"
         class="quiet-button small"
         disabled={!canRunOperation("buffer", features)}
-        onclick={() => onrun("buffer")}>Run</button>
+        onclick={() => onrun("buffer")}>{$ui("Run")}</button>
     </div>
     <div class="quick-add-row">
       <label class="inline-field"
-        ><span>Simplify</span><input
+        ><span>{$ui("Simplify")}</span><input
           type="number"
           min="0"
           step="any"
           bind:value={simplifyTolerance}
-          aria-label="Simplify tolerance" /></label>
+          aria-label={$ui("Simplify tolerance")} /></label>
       <button
         type="button"
         class="quiet-button small"
         disabled={!canRunOperation("simplify", features)}
-        onclick={() => onrun("simplify")}>Run</button>
+        onclick={() => onrun("simplify")}>{$ui("Run")}</button>
     </div>
     {#if notice}<p class="field-hint" role="status">{notice}</p>{/if}
   {/if}

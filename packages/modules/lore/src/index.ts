@@ -1,5 +1,10 @@
+import { translatePluginText as t } from "../../plugin-i18n.ts";
+import { get } from "svelte/store";
+import { schemaLabels } from "../../projection-labels.ts";
+import { messages } from "../../../../src/lib/i18n/index.ts";
+import { loreTypeLabel } from "../../../../src/lib/i18n/lore-labels.ts";
 import type { Core, ElementDefinition, NodeSingular } from "cytoscape";
-import { defaultHiddenGraphRelations, relationTypeLabel } from "./graphFilters.ts";
+import { defaultHiddenGraphRelations } from "./graphFilters.ts";
 import type { LoreEntityRef, LoreGraphSource, LoreRelationshipRef } from "./projection-source.ts";
 
 type NodeColors = { fill: string; border: string; text: string };
@@ -181,7 +186,7 @@ function graphElements(
           id: relationship.id,
           source: relationship.sourceId,
           target: relationship.targetId,
-          label: relationTypeLabel(relationship.type),
+          label: get(schemaLabels).relationship(relationship.type),
           relationType: relationship.type,
         },
       })),
@@ -199,6 +204,7 @@ function renderSelection(
   relationships: LoreRelationshipRef[],
   source: LoreGraphSource,
   hiddenRelationTypes: Set<string>,
+  typeNames: Map<string, string>,
 ) {
   const entity = isGraphNode(nodeOrEntity) ? entities.get(nodeOrEntity.id()) : nodeOrEntity;
   if (!entity) return;
@@ -211,21 +217,21 @@ function renderSelection(
     .map((relationship) => {
       const otherId = relationship.sourceId === entity.id ? relationship.targetId : relationship.sourceId;
       const other = entities.get(otherId);
-      return other ? `${relationTypeLabel(relationship.type)} · ${other.name}` : null;
+      return other ? `${get(schemaLabels).relationship(relationship.type)} · ${other.name}` : null;
     })
     .filter((label): label is string => Boolean(label));
   details.replaceChildren();
   const name = document.createElement("strong");
   name.textContent = entity.name;
   const type = document.createElement("small");
-  type.textContent = `${displayType(entity.type)} · ${connected.length} connection${connected.length === 1 ? "" : "s"}`;
+  type.textContent = t(connected.length === 1 ? "{type} · {count} connection" : "{type} · {count} connections", { type: typeNames.get(displayType(entity.type)) ?? get(schemaLabels).type(entity.type), count: connected.length });
   const actionRow = document.createElement("div");
   actionRow.className = "lore-graph-toolbar-actions";
   if (source.mapsNavigationEnabled()) {
     const mapButton = document.createElement("button");
     mapButton.type = "button";
     mapButton.className = "lore-graph-map-button";
-    mapButton.textContent = "Show on map";
+    mapButton.textContent = t("Show on map");
     mapButton.onclick = () => void showOnMap(source, entity.id);
     actionRow.append(mapButton);
   }
@@ -294,15 +300,17 @@ async function showOnMap(source: LoreGraphSource, entityId: string) {
 export function mountLoreGraph(element: HTMLElement, source: LoreGraphSource) {
   let cancelled = false;
   let graph: Core | null = null;
-  const listeners = new AbortController();
+  let listeners = new AbortController();
+  let generation = 0;
   const style = createGraphStyles();
   const render = async () => {
+    const current = ++generation;
     const entityTypes = source.module.schemas.flatMap((schema) =>
       schema.entityTypes.map((entityType) => entityType.id),
     );
     const typeNameMap = new Map(
       source.module.schemas.flatMap((schema) =>
-        schema.entityTypes.map((entityType) => [entityType.id, entityType.name]),
+        schema.entityTypes.map((entityType) => [entityType.id, source.module.id === "daena.lore" ? loreTypeLabel(get(messages).loreTypes, entityType.id, entityType.name) : entityType.name]),
       ),
     );
     const entities = await source.listEntities(entityTypes);
@@ -315,21 +323,25 @@ export function mountLoreGraph(element: HTMLElement, source: LoreGraphSource) {
           entities.some((entity) => entity.id === relationship.targetId),
       )
       .sort((left, right) => left.id.localeCompare(right.id));
-    if (cancelled) return;
+    if (cancelled || current !== generation) return;
+    listeners.abort();
+    listeners = new AbortController();
+    graph?.destroy();
+    graph = null;
 
     element.replaceChildren();
     element.className = "projection-graph";
     const shell = document.createElement("div");
     shell.className = "lore-graph-shell";
     source.reportSurfaceMeta?.({
-      subtitle: `${entities.length} entities · ${relationships.length} links`,
+      subtitle: t("{count} entities · {links} links", { count: entities.length, links: relationships.length }),
     });
     shell.append(style);
 
     if (entities.length === 0) {
       const empty = document.createElement("p");
       empty.className = "lore-graph-empty";
-      empty.textContent = "No entities yet.";
+      empty.textContent = t("No entities yet.");
       shell.append(empty);
       element.append(shell);
       return;
@@ -350,14 +362,14 @@ export function mountLoreGraph(element: HTMLElement, source: LoreGraphSource) {
       legendItem.type = "button";
       legendItem.className = "lore-graph-legend-item";
       legendItem.setAttribute("aria-pressed", "true");
-      legendItem.title = type;
+      legendItem.title = typeNameMap.get(type) ?? get(schemaLabels).type(type);
       const swatch = document.createElement("span");
       swatch.className = "lore-graph-legend-swatch";
       const colors = colorsByType.get(type)!;
       swatch.style.color = colors.border;
       swatch.style.background = colors.fill;
       const label = document.createElement("span");
-      label.textContent = typeNameMap.get(type) ?? type;
+      label.textContent = typeNameMap.get(type) ?? get(schemaLabels).type(type);
       legendItem.append(swatch, label);
       legendButtons.set(type, legendItem);
       legend.append(legendItem);
@@ -369,24 +381,24 @@ export function mountLoreGraph(element: HTMLElement, source: LoreGraphSource) {
     const relationsSummary = document.createElement("summary");
     const syncRelationsSummary = () => {
       const hiddenCount = hiddenRelationTypes.size;
-      relationsSummary.textContent = hiddenCount > 0 ? `Relations · ${hiddenCount} hidden` : "Relations";
+      relationsSummary.textContent = hiddenCount > 0 ? t("Relations · {count} hidden", { count: hiddenCount }) : t("Relations");
     };
     if (relationTypes.length > 0) {
       relationsMenu.className = "lore-graph-relations";
-      relationsSummary.textContent = "Relations";
+      relationsSummary.textContent = t("Relations");
       const menu = document.createElement("div");
       menu.className = "lore-graph-relations-menu";
       menu.setAttribute("role", "group");
-      menu.setAttribute("aria-label", "Relations");
+      menu.setAttribute("aria-label", t("Relations"));
       for (const type of relationTypes) {
         const option = document.createElement("label");
         option.className = "lore-graph-relations-option";
-        option.title = type;
+        option.title = get(schemaLabels).relationship(type);
         const input = document.createElement("input");
         input.type = "checkbox";
         input.checked = !hiddenRelationTypes.has(type);
         const label = document.createElement("span");
-        label.textContent = relationTypeLabel(type);
+        label.textContent = get(schemaLabels).relationship(type);
         option.append(input, label);
         relationInputs.set(type, input);
         menu.append(option);
@@ -407,19 +419,19 @@ export function mountLoreGraph(element: HTMLElement, source: LoreGraphSource) {
     const zoomOutButton = document.createElement("button");
     zoomOutButton.type = "button";
     zoomOutButton.textContent = "−";
-    zoomOutButton.setAttribute("aria-label", "Zoom out");
-    zoomOutButton.title = "Zoom out";
+    zoomOutButton.setAttribute("aria-label", t("Zoom out"));
+    zoomOutButton.title = t("Zoom out");
     const zoomInButton = document.createElement("button");
     zoomInButton.type = "button";
     zoomInButton.textContent = "+";
-    zoomInButton.setAttribute("aria-label", "Zoom in");
-    zoomInButton.title = "Zoom in";
+    zoomInButton.setAttribute("aria-label", t("Zoom in"));
+    zoomInButton.title = t("Zoom in");
     const fitButton = document.createElement("button");
     fitButton.type = "button";
-    fitButton.textContent = "Fit graph";
+    fitButton.textContent = t("Fit graph");
     const layoutButton = document.createElement("button");
     layoutButton.type = "button";
-    layoutButton.textContent = "Rearrange";
+    layoutButton.textContent = t("Rearrange");
     actions.append(zoomOutButton, zoomInButton, fitButton, layoutButton);
     toolbar.append(legend, actions);
     shell.append(toolbar);
@@ -431,7 +443,7 @@ export function mountLoreGraph(element: HTMLElement, source: LoreGraphSource) {
     details.className = "lore-graph-details";
     const hint = document.createElement("small");
     hint.textContent =
-      "Hover or select an entity to inspect its connections. Click a type to show or hide it. Use Relations to filter connection types.";
+      t("Hover or select an entity to inspect its connections. Click a type to show or hide it. Use Relations to filter connection types.");
     details.append(hint);
     shell.append(details);
     element.append(shell);
@@ -439,7 +451,7 @@ export function mountLoreGraph(element: HTMLElement, source: LoreGraphSource) {
     const entityMap = new Map(entities.map((entity) => [entity.id, entity]));
     const positions = stablePositions(entities);
     const { default: createCytoscape } = await import("cytoscape");
-    if (cancelled) return;
+    if (cancelled || current !== generation) return;
     const layoutOptions = {
       animate: false,
       fit: false,
@@ -545,7 +557,7 @@ export function mountLoreGraph(element: HTMLElement, source: LoreGraphSource) {
         details.replaceChildren(hint);
       } else {
         applyNeighborhoodHighlight(graph, selected[0]);
-        renderSelection(details, selected[0], entityMap, relationships, source, hiddenRelationTypes);
+        renderSelection(details, selected[0], entityMap, relationships, source, hiddenRelationTypes, typeNameMap);
       }
       if (relayout) arrangeGraph();
     };
@@ -585,12 +597,12 @@ export function mountLoreGraph(element: HTMLElement, source: LoreGraphSource) {
           hiddenTypes.delete(type);
           legendItem.classList.remove("is-hidden");
           legendItem.setAttribute("aria-pressed", "true");
-          legendItem.title = type;
+          legendItem.title = typeNameMap.get(type) ?? get(schemaLabels).type(type);
         } else {
           hiddenTypes.add(type);
           legendItem.classList.add("is-hidden");
           legendItem.setAttribute("aria-pressed", "false");
-          legendItem.title = type;
+          legendItem.title = typeNameMap.get(type) ?? get(schemaLabels).type(type);
         }
         syncGraphVisibility();
       };
@@ -640,7 +652,7 @@ export function mountLoreGraph(element: HTMLElement, source: LoreGraphSource) {
       graph!.elements().removeClass("selected");
       node.addClass("selected");
       node.connectedEdges().not(".type-hidden").addClass("selected");
-      renderSelection(details, node, entityMap, relationships, source, hiddenRelationTypes);
+      renderSelection(details, node, entityMap, relationships, source, hiddenRelationTypes, typeNameMap);
       applyNeighborhoodHighlight(graph!, node);
     });
     graph.on("tap", (event) => {
@@ -650,7 +662,7 @@ export function mountLoreGraph(element: HTMLElement, source: LoreGraphSource) {
       details.replaceChildren(hint);
     });
   };
-  render().catch((cause) => {
+  const refreshLanguage = () => render().catch((cause) => {
     if (cancelled) return;
     const message = cause instanceof Error ? cause.message : String(cause);
     const error = document.createElement("p");
@@ -658,7 +670,10 @@ export function mountLoreGraph(element: HTMLElement, source: LoreGraphSource) {
     error.textContent = message;
     element.replaceChildren(style, error);
   });
+  void refreshLanguage();
+  window.addEventListener("daena:language", refreshLanguage);
   return () => {
+    window.removeEventListener("daena:language", refreshLanguage);
     cancelled = true;
     listeners.abort();
     graph?.destroy();

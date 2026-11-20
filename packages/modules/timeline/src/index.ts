@@ -1,3 +1,6 @@
+import { get } from "svelte/store";
+import { manifestText } from "../../projection-labels.ts";
+import { translatePluginText as t } from "../../plugin-i18n.ts";
 import type { Timeline, DataGroup, DataItem, TimelineOptions } from "vis-timeline";
 import { buildTypeLabelMap, resolveEntityTypeLabel, type FieldRecord } from "../../../module-api/src/index";
 import { type TimelineProjectionSource } from "./projection-source";
@@ -152,11 +155,11 @@ function createLayerChip(label: string, count: number, active: boolean, onToggle
 function createLegend() {
   const legend = document.createElement("div");
   legend.className = "timeline-legend";
-  legend.setAttribute("aria-label", "Timeline legend");
+  legend.setAttribute("aria-label", t("Timeline legend"));
   for (const [className, label] of [
-    ["timeline-legend-dot", "Known date"],
-    ["timeline-legend-range", "Date span"],
-    ["timeline-legend-approx", "Year or month precision"],
+    ["timeline-legend-dot", t("Known date")],
+    ["timeline-legend-range", t("Date span")],
+    ["timeline-legend-approx", t("Year or month precision")],
   ]) {
     const item = document.createElement("span");
     item.className = "timeline-legend-item";
@@ -202,7 +205,7 @@ async function appendShowOnMapButton(
     const mapButton = document.createElement("button");
     mapButton.type = "button";
     mapButton.className = "timeline-map-button";
-    mapButton.textContent = "Show on map";
+    mapButton.textContent = t("Show on map");
     mapButton.onclick = () => void showOnMap(source, entityId);
     details.append(mapButton);
   } catch {
@@ -234,7 +237,7 @@ function renderSelection(
   const range = document.createElement("small");
   range.textContent = rangeLabel(event, definitions);
   const calendar = document.createElement("small");
-  calendar.textContent = `Displayed on the ${displayCalendarName} calendar`;
+  calendar.textContent = t("Displayed on the {calendar} calendar", { calendar: displayCalendarName });
   details.append(kicker, name, type, divider, range, calendar);
   const contextText = contextLabel(event);
   if (contextText) {
@@ -251,14 +254,14 @@ function renderUndatedSelection(details: HTMLElement, event: UndatedEvent, sourc
   details.replaceChildren();
   const kicker = document.createElement("small");
   kicker.className = "timeline-inspector-kicker";
-  kicker.textContent = event.relativeYear === undefined ? "Unplaced item" : "Relative chronology";
+  kicker.textContent = event.relativeYear === undefined ? t("Unplaced item") : t("Relative chronology");
   const name = document.createElement("strong");
   name.textContent = event.entity.name;
   const status = document.createElement("small");
   status.textContent =
     event.relativeYear === undefined
-      ? "No date yet — add a start or end date to place this event in the chronology."
-      : `Relative chronology: ${relativeOffsetLabel(event.relativeYear)}. It is kept relative rather than converted to a Gregorian date.`;
+      ? t("No date yet — add a start or end date to place this event in the chronology.")
+      : t("Relative chronology: {offset}. It is kept relative rather than converted to a Gregorian date.", { offset: relativeOffsetLabel(event.relativeYear) });
   details.append(kicker, name, status);
   const contextText = contextLabel(event);
   if (contextText) {
@@ -280,7 +283,7 @@ function renderOutline(
 ): void {
   const heading = document.createElement("span");
   heading.className = "timeline-outline-heading";
-  heading.textContent = "Chronological outline";
+  heading.textContent = t("Chronological outline");
   outline.append(heading);
   let currentYear: number | null = null;
   for (const event of events) {
@@ -355,9 +358,9 @@ function timelineGroups(events: readonly TimelineEvent[]): DataGroup[] {
     counts.set(group, (counts.get(group) ?? 0) + 1);
   }
   return [
-    { id: "events", label: "Events" },
-    { id: "lifelines", label: "Lifelines" },
-    { id: "dates", label: "Project dates" },
+    { id: "events", label: t("Events") },
+    { id: "lifelines", label: t("Lifelines") },
+    { id: "dates", label: t("Project dates") },
   ]
     .filter(({ id }) => counts.has(id as TimelineGroupId))
     .map(({ id, label }) => ({
@@ -411,7 +414,7 @@ export function mountTimeline(element: HTMLElement, source: TimelineProjectionSo
               const entityTypes = new Set(
                 source.module.schemas.flatMap((schema) => schema.entityTypes.map((entityType) => entityType.id)),
               );
-              const contributionSpecs = discoverTimelineFieldSpecs(enabledManifests, source.module.id);
+              const contributionSpecs = discoverTimelineFieldSpecs(enabledManifests, source.module.id, get(manifestText));
               const contributionNamespaces = [...new Set(contributionSpecs.map((spec) => spec.namespace))];
               const loaded: LoadedTimelineEntry[] = await Promise.all(
                 entities.map(async (entity) => {
@@ -474,7 +477,7 @@ export function mountTimeline(element: HTMLElement, source: TimelineProjectionSo
               snapshot = {
                 calendarOptions,
                 loaded,
-                typeLabels: buildTypeLabelMap([source.module, ...enabledManifests]),
+                typeLabels: buildTypeLabelMap([source.module, ...enabledManifests], (owner, type) => get(manifestText)(owner, "type", type.id, type.name)),
               };
               sourceSnapshot = snapshot;
             }
@@ -638,12 +641,12 @@ export function mountTimeline(element: HTMLElement, source: TimelineProjectionSo
             element.className = "timeline-projection";
             const shell = document.createElement("div");
             shell.className = "timeline-shell";
-            const calendarName = selectedCalendarOption?.name ?? "Gregorian";
+            const calendarName = selectedCalendarOption?.id === "gregorian" || !selectedCalendarOption ? t("Gregorian") : selectedCalendarOption.name;
             source.reportSurfaceMeta?.({
               subtitle:
                 scopedUndated.length > 0
-                  ? `${plotted.length} placed · ${scopedUndated.length} unplaced or relative · ${calendarName}`
-                  : `${plotted.length} items · ${calendarName}`,
+                  ? t("{placed} placed · {unplaced} unplaced or relative · {calendar}", { placed: plotted.length, unplaced: scopedUndated.length, calendar: calendarName })
+                  : t("{count} items · {calendar}", { count: plotted.length, calendar: calendarName }),
             });
             shell.append(style);
             let details: HTMLElement | null = null;
@@ -651,7 +654,7 @@ export function mountTimeline(element: HTMLElement, source: TimelineProjectionSo
             if (allEvents.length === 0 && scopedEras.length === 0 && scopedUndated.length === 0) {
               const empty = document.createElement("p");
               empty.className = "timeline-empty";
-              empty.textContent = "No timeline items yet.";
+              empty.textContent = t("No timeline items yet.");
               shell.append(empty);
               element.append(shell);
               return;
@@ -662,13 +665,13 @@ export function mountTimeline(element: HTMLElement, source: TimelineProjectionSo
               empty.className = "timeline-empty";
               empty.textContent =
                 scopedContributed.length > 0
-                  ? "No items are visible with the current date layers."
-                  : "No dated timeline items to plot yet.";
+                  ? t("No items are visible with the current date layers.")
+                  : t("No dated timeline items to plot yet.");
               const detailPanel = document.createElement("div");
               details = detailPanel;
               detailPanel.className = "timeline-details";
               const hint = document.createElement("small");
-              hint.textContent = "Choose an unplaced item below to inspect it.";
+              hint.textContent = t("Choose an unplaced item below to inspect it.");
               detailPanel.append(hint);
               shell.append(empty, detailPanel);
             } else {
@@ -680,8 +683,8 @@ export function mountTimeline(element: HTMLElement, source: TimelineProjectionSo
               search.type = "search";
               search.className = "timeline-search";
               search.value = searchQuery;
-              search.placeholder = "Name, type, place…";
-              search.setAttribute("aria-label", "Search timeline");
+              search.placeholder = t("Name, type, place…");
+              search.setAttribute("aria-label", t("Search timeline"));
               search.oninput = () => {
                 searchQuery = search.value;
                 const cursor = search.selectionStart ?? search.value.length;
@@ -697,10 +700,10 @@ export function mountTimeline(element: HTMLElement, source: TimelineProjectionSo
               };
               const scope = document.createElement("select");
               scope.className = "timeline-scope";
-              scope.setAttribute("aria-label", "Chronology scope");
+              scope.setAttribute("aria-label", t("Chronology scope"));
               const allDates = document.createElement("option");
               allDates.value = "";
-              allDates.textContent = "All dates";
+              allDates.textContent = t("All dates");
               scope.append(allDates);
               for (const year of years) {
                 const option = document.createElement("option");
@@ -716,11 +719,11 @@ export function mountTimeline(element: HTMLElement, source: TimelineProjectionSo
               };
               const calendar = document.createElement("select");
               calendar.className = "timeline-calendar";
-              calendar.setAttribute("aria-label", "Displayed calendar");
+              calendar.setAttribute("aria-label", t("Displayed calendar"));
               for (const optionValue of calendarOptions) {
                 const option = document.createElement("option");
                 option.value = optionValue.id;
-                option.textContent = optionValue.name;
+                option.textContent = optionValue.id === "gregorian" ? t("Gregorian") : optionValue.name;
                 option.selected = optionValue.id === selectedCalendarId;
                 calendar.append(option);
               }
@@ -734,7 +737,7 @@ export function mountTimeline(element: HTMLElement, source: TimelineProjectionSo
               typeFilter.className = "timeline-type-filter";
               const allTypes = document.createElement("option");
               allTypes.value = "";
-              allTypes.textContent = "All entity types";
+              allTypes.textContent = t("All entity types");
               typeFilter.append(allTypes);
               for (const entityType of availableEntityTypes) {
                 const option = document.createElement("option");
@@ -754,7 +757,7 @@ export function mountTimeline(element: HTMLElement, source: TimelineProjectionSo
               eraFilter.setAttribute("aria-label", "Era");
               const allEras = document.createElement("option");
               allEras.value = "";
-              allEras.textContent = "All history";
+              allEras.textContent = t("All history");
               eraFilter.append(allEras);
               for (const era of eraOptions) {
                 const option = document.createElement("option");
@@ -775,18 +778,18 @@ export function mountTimeline(element: HTMLElement, source: TimelineProjectionSo
                 void render();
               };
               controls.append(
-                createFilterField("Search", search),
-                createFilterField("Era", eraFilter),
-                createFilterField("Calendar", calendar),
-                createFilterField("Entity type", typeFilter),
-                createFilterField("Year", scope),
+                createFilterField(t("Search"), search),
+                createFilterField(t("Era"), eraFilter),
+                createFilterField(t("Calendar"), calendar),
+                createFilterField(t("Entity type"), typeFilter),
+                createFilterField(t("Year"), scope),
               );
               const actions = document.createElement("div");
               actions.className = "timeline-toolbar-actions";
-              const zoomInButton = createToolbarButton("+", "Zoom in");
-              const zoomOutButton = createToolbarButton("−", "Zoom out");
-              const fitButton = createToolbarButton("Fit", "Fit timeline to visible items");
-              const outlineButton = createToolbarButton(outlineCollapsed ? "Show outline" : "Hide outline");
+              const zoomInButton = createToolbarButton("+", t("Zoom in"));
+              const zoomOutButton = createToolbarButton("−", t("Zoom out"));
+              const fitButton = createToolbarButton(t("Fit"), t("Fit timeline to visible items"));
+              const outlineButton = createToolbarButton(outlineCollapsed ? t("Show outline") : t("Hide outline"));
               outlineButton.onclick = () => {
                 outlineCollapsed = !outlineCollapsed;
                 void render();
@@ -799,19 +802,19 @@ export function mountTimeline(element: HTMLElement, source: TimelineProjectionSo
               const chips = document.createElement("div");
               chips.className = "timeline-layer-chips";
               chips.append(
-                createLayerChip("Events", layerCounts.events, showTimelineEvents, () => {
+                createLayerChip(t("Events"), layerCounts.events, showTimelineEvents, () => {
                   showTimelineEvents = !showTimelineEvents;
                   activeYear = null;
                   selectedEventId = null;
                   void render();
                 }),
-                createLayerChip("Lifelines", layerCounts.lifelines, showLifelines, () => {
+                createLayerChip(t("Lifelines"), layerCounts.lifelines, showLifelines, () => {
                   showLifelines = !showLifelines;
                   activeYear = null;
                   selectedEventId = null;
                   void render();
                 }),
-                createLayerChip("Project dates", layerCounts.dates, showProjectDates, () => {
+                createLayerChip(t("Project dates"), layerCounts.dates, showProjectDates, () => {
                   showProjectDates = !showProjectDates;
                   activeYear = null;
                   selectedEventId = null;
@@ -832,7 +835,7 @@ export function mountTimeline(element: HTMLElement, source: TimelineProjectionSo
               details = detailPanel;
               detailPanel.className = "timeline-details timeline-inspector";
               const hint = document.createElement("small");
-              hint.textContent = "Select an item to inspect its dates, type, and related context.";
+              hint.textContent = t("Select an item to inspect its dates, type, and related context.");
               detailPanel.append(hint);
               const selectEvent = (event: TimelineEvent) => {
                 selectedEventId = event.id;
@@ -863,7 +866,7 @@ export function mountTimeline(element: HTMLElement, source: TimelineProjectionSo
                   event,
                   source,
                   calendarDefinitions,
-                  selectedCalendarOption?.name ?? "Gregorian",
+                  selectedCalendarOption?.id === "gregorian" || !selectedCalendarOption ? t("Gregorian") : selectedCalendarOption.name,
                   typeLabels,
                 );
               };
@@ -871,7 +874,7 @@ export function mountTimeline(element: HTMLElement, source: TimelineProjectionSo
                 if (yearFilteredEras.length > 0) {
                   const heading = document.createElement("span");
                   heading.className = "timeline-outline-heading";
-                  heading.textContent = "Eras";
+                  heading.textContent = t("Eras");
                   outline.append(heading);
                   for (const era of yearFilteredEras) {
                     const card = document.createElement("button");
@@ -897,14 +900,14 @@ export function mountTimeline(element: HTMLElement, source: TimelineProjectionSo
               } else {
                 const empty = document.createElement("p");
                 empty.className = "timeline-empty";
-                empty.textContent = "No items match the current filters.";
+                empty.textContent = t("No items match the current filters.");
                 outline.append(empty);
               }
               if (!outlineCollapsed) {
                 const resizeHandle = document.createElement("div");
                 resizeHandle.className = "timeline-outline-resize";
                 resizeHandle.setAttribute("role", "separator");
-                resizeHandle.setAttribute("aria-label", "Resize chronological outline");
+                resizeHandle.setAttribute("aria-label", t("Resize chronological outline"));
                 resizeHandle.tabIndex = 0;
                 resizeHandle.onpointerdown = (event) => {
                   event.preventDefault();
@@ -938,7 +941,7 @@ export function mountTimeline(element: HTMLElement, source: TimelineProjectionSo
                   selectedEvent,
                   source,
                   calendarDefinitions,
-                  selectedCalendarOption?.name ?? "Gregorian",
+                  selectedCalendarOption?.id === "gregorian" || !selectedCalendarOption ? t("Gregorian") : selectedCalendarOption.name,
                   typeLabels,
                 );
               shell.append(toolbar, layerbar, workspace);
@@ -1036,10 +1039,10 @@ export function mountTimeline(element: HTMLElement, source: TimelineProjectionSo
               note.className = "timeline-undated";
               const label = document.createElement("small");
               label.textContent = scopedEra
-                ? "Unplaced in this era"
+                ? t("Unplaced in this era")
                 : scopedUndated.some((entry) => entry.relativeYear !== undefined)
-                  ? "Unplaced or relative items"
-                  : "Unplaced items";
+                  ? t("Unplaced or relative items")
+                  : t("Unplaced items");
               const list = document.createElement("div");
               list.className = "timeline-undated-list";
               for (const entry of scopedUndated) {
@@ -1070,8 +1073,14 @@ export function mountTimeline(element: HTMLElement, source: TimelineProjectionSo
             element.append(shell);
           }
         };
+        const refreshLanguage = () => {
+          sourceSnapshot = null;
+          void render();
+        };
+        window.addEventListener("daena:language", refreshLanguage);
         void render();
         return () => {
+          window.removeEventListener("daena:language", refreshLanguage);
           cancelled = true;
           if (searchTimer !== null) window.clearTimeout(searchTimer);
           searchTimer = null;

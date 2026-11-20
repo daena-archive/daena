@@ -1,3 +1,4 @@
+import { translatePluginText as t } from "../../plugin-i18n.ts";
 import { parseCalendarDate, type CalendarDate } from "./calendar-date";
 import {
   calendarDateToParts,
@@ -89,7 +90,7 @@ export function physicalOffset(value: unknown): number | null {
 }
 
 export function relativeOffsetLabel(year: number): string {
-  return `${year >= 0 ? "+" : ""}${year} years from accepted source`;
+  return t("{offset} years from accepted source", { offset: `${year >= 0 ? "+" : ""}${year}` });
 }
 
 export function hslToHex(hue: number, saturation: number, lightness: number) {
@@ -139,10 +140,10 @@ export function groupForEvent(event: TimelineEvent): TimelineGroupId {
 }
 
 export function layerLabel(event: TimelineEvent): string {
-  if (event.layer === "lifelines") return "Lifeline";
-  if (event.layer === "dates") return "Project date";
-  if (event.entity.type === "daena.timeline:era") return "Era";
-  return "Timeline event";
+  if (event.layer === "lifelines") return t("Lifeline");
+  if (event.layer === "dates") return t("Project date");
+  if (event.entity.type === "daena.timeline:era") return t("Era");
+  return t("Timeline event");
 }
 
 export function matchesTimelineQuery(event: TimelineEvent, query: string): boolean {

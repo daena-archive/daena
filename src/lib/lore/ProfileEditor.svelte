@@ -1,4 +1,7 @@
 <script lang="ts">
+import { nativeErrorText } from "$lib/i18n/native-errors.ts";
+import { profileKindCopy, profileComponentCopy, presetCopy } from "../i18n/profile-copy.ts";
+import { ui } from "$lib/i18n/ui";
 import type { Component } from "svelte";
 import type { ModuleManifest } from "../../../packages/module-api/src/index";
 import { Check, Dices, Minus, Plus, Rocket, Sparkles, UserRound, X } from "@lucide/svelte";
@@ -176,14 +179,14 @@ const tabs = $derived.by(() => {
   const built: SheetTab[] = [];
   const scores: SheetSection[] = (
     [
-      { id: "identity", title: "Identity", layout: "identity", items: of("tag") },
-      { id: "abilities", title: "Abilities", layout: "abilities", items: abilities },
-      { id: "stats", title: "Combat", layout: "stats", items: stats },
-      { id: "vitals", title: "Vitals", layout: "vitals", items: vitals },
-      { id: "conditions", title: "Flags", layout: "chips", items: of("condition") },
+      { id: "identity", title: $ui("Identity"), layout: "identity", items: of("tag") },
+      { id: "abilities", title: $ui("Abilities"), layout: "abilities", items: abilities },
+      { id: "stats", title: $ui("Combat"), layout: "stats", items: stats },
+      { id: "vitals", title: $ui("Vitals"), layout: "vitals", items: vitals },
+      { id: "conditions", title: $ui("Flags"), layout: "chips", items: of("condition") },
     ] satisfies SheetSection[]
   ).filter((section) => section.items.length > 0);
-  if (scores.length) built.push({ id: "scores", label: "Scores", sections: scores });
+  if (scores.length) built.push({ id: "scores", label: $ui("Scores"), sections: scores });
   const extra: [string, string, SheetLayout, ProfileComponent[]][] = [
     ["skills", "Skills", "skills", of("skill")],
     ["proficiencies", "Proficiencies", "ranks", of("proficiency")],
@@ -193,7 +196,8 @@ const tabs = $derived.by(() => {
   ];
   for (const [id, label, layout, items] of extra) {
     if (!items.length) continue;
-    built.push({ id, label, sections: [{ id, title: label, layout, items }] });
+    const title = $ui(label);
+    built.push({ id, label: title, sections: [{ id, title, layout, items }] });
   }
   return built;
 });
@@ -206,7 +210,7 @@ const preview = $derived(
     )
     .slice(0, 4)
     .map(
-      (component) => `${shortName(component.name)} ${component.value.type === "number" ? component.value.value : ""}`,
+      (component) => `${shortName(profileComponentCopy(draft.presetOrigin, component.id, component.name))} ${component.value.type === "number" ? component.value.value : ""}`,
     )
     .join(" · "),
 );
@@ -362,7 +366,7 @@ async function persist(next: ProfileDocument) {
           if (generation !== persistGeneration) return;
           stored = reloaded;
           draft = reloaded ? cloneProfileData(reloaded.value) : emptyProfile();
-          error = reloaded?.error ?? "Profile changed elsewhere. Reloaded.";
+          error = reloaded?.error ?? $ui("Profile changed elsewhere. Reloaded.");
           return;
         } catch (reloadCause) {
           error = reloadCause instanceof Error ? reloadCause.message : String(reloadCause);
@@ -422,7 +426,7 @@ function parseOptionalNumber(raw: string): number | null {
   if (!trimmed) return null;
   const value = Number(trimmed);
   if (!Number.isFinite(value)) {
-    error = "Enter a number";
+    error = $ui("Enter a number");
     return Number.NaN;
   }
   return value;
@@ -452,9 +456,9 @@ async function removeProfile() {
   if (!stored) return;
   if (
     !(await confirmDialog({
-      title: "Remove Profile?",
-      message: `Remove the Profile from ${entityName}? This does not archive the entity.`,
-      confirmLabel: "Remove Profile",
+      title: $ui("Remove Profile?"),
+      message: $ui("Remove the Profile from {0}? This does not archive the entity.", entityName),
+      confirmLabel: $ui("Remove Profile"),
       danger: true,
     }))
   )
@@ -574,11 +578,11 @@ function setHistoryDate(next: unknown) {
 async function removeHistoryRow(change: StoredProfileChange) {
   if (
     !(await confirmDialog({
-      title: "Remove this change?",
+      title: $ui("Remove this change?"),
       message: change.invalid
-        ? "Remove this invalid Profile change?"
-        : "Remove this dated Profile change? Later values stay as they are.",
-      confirmLabel: "Remove change",
+        ? $ui("Remove this invalid Profile change?")
+        : $ui("Remove this dated Profile change? Later values stay as they are."),
+      confirmLabel: $ui("Remove change"),
       danger: true,
     }))
   )
@@ -609,7 +613,7 @@ async function removeHistoryRow(change: StoredProfileChange) {
     class="num {size}"
     type="text"
     inputmode="numeric"
-    aria-label={component.name}
+    aria-label={profileComponentCopy(draft.presetOrigin, component.id, component.name)}
     value={component.value.type === "number" ? displayNumber(component.value.value) : ""}
     onchange={(event) => void setNumber(component, event.currentTarget.value)} />
 {/snippet}
@@ -617,7 +621,7 @@ async function removeHistoryRow(change: StoredProfileChange) {
 {#snippet textInput(component: ProfileComponent)}
   <input
     type="text"
-    aria-label={component.name}
+    aria-label={profileComponentCopy(draft.presetOrigin, component.id, component.name)}
     value={component.value.type === "text" ? (component.value.value ?? "") : ""}
     onchange={(event) => {
       void patchComponent(component.id, { value: { type: "text", value: event.currentTarget.value || null } });
@@ -626,7 +630,7 @@ async function removeHistoryRow(change: StoredProfileChange) {
 
 {#snippet rankInput(component: ProfileComponent)}
   <select
-    aria-label={component.name}
+    aria-label={profileComponentCopy(draft.presetOrigin, component.id, component.name)}
     value={component.value.type === "rank" || component.value.type === "enum" ? (component.value.value ?? "") : ""}
     onchange={(event) => {
       if (component.value.type !== "rank" && component.value.type !== "enum") return;
@@ -636,7 +640,7 @@ async function removeHistoryRow(change: StoredProfileChange) {
     }}>
     <option value=""></option>
     {#each component.scale ?? [] as option}
-      <option value={option}>{option}</option>
+      <option value={option}>{profileComponentCopy(draft.presetOrigin, component.id, option)}</option>
     {/each}
   </select>
 {/snippet}
@@ -645,13 +649,13 @@ async function removeHistoryRow(change: StoredProfileChange) {
   {@const ratio = resourceRatio(component)}
   <div class="vital">
     <div class="vital-head">
-      <span>{component.name}</span>
+      <span>{profileComponentCopy(draft.presetOrigin, component.id, component.name)}</span>
       <div class="vital-inputs">
         <input
           class="num stat"
           type="text"
           inputmode="numeric"
-          aria-label="{component.name} current"
+          aria-label={$ui("{0} current", profileComponentCopy(draft.presetOrigin, component.id, component.name))}
           value={component.value.type === "resource" ? displayNumber(component.value.current) : ""}
           onchange={(event) => {
             const next = parseOptionalNumber(event.currentTarget.value);
@@ -663,7 +667,7 @@ async function removeHistoryRow(change: StoredProfileChange) {
           class="num stat"
           type="text"
           inputmode="numeric"
-          aria-label="{component.name} max"
+          aria-label={$ui("{0} max", profileComponentCopy(draft.presetOrigin, component.id, component.name))}
           value={component.value.type === "resource" ? displayNumber(component.value.max) : ""}
           onchange={(event) => {
             const next = parseOptionalNumber(event.currentTarget.value);
@@ -676,7 +680,7 @@ async function removeHistoryRow(change: StoredProfileChange) {
       class="vital-track"
       class:empty={ratio === null}
       role="progressbar"
-      aria-label="{component.name} remaining"
+      aria-label={$ui("{0} remaining", profileComponentCopy(draft.presetOrigin, component.id, component.name))}
       aria-valuemin={0}
       aria-valuemax={component.value.type === "resource" ? (component.value.max ?? 0) : 0}
       aria-valuenow={component.value.type === "resource" ? (component.value.current ?? 0) : 0}>
@@ -686,20 +690,20 @@ async function removeHistoryRow(change: StoredProfileChange) {
 {/snippet}
 
 {#if loading}
-  <p class="inspector-copy">Loading Profile…</p>
+  <p class="inspector-copy">{$ui("Loading Profile…")}</p>
 {:else if stored}
   <p class="inspector-copy">
     {profilePresetLabel(draft.presetOrigin, presets)}
     {#if remaining !== null}
-      · {overBudget ? "Over budget" : `${remaining} pts left`}
+      · {overBudget ? $ui("Over budget") : $ui("{0} pts left", remaining)}
     {/if}
   </p>
   {#if preview}<p class="inspector-preview">{preview}</p>{/if}
-  <button class="primary-button inspector-open" type="button" onclick={() => (open = true)}>Edit Profile</button>
+  <button class="primary-button inspector-open" type="button" onclick={() => (open = true)}>{$ui("Edit Profile")}</button>
 {:else}
-  {#if error}<p class="inspector-copy" role="alert">{error}</p>{/if}
-  <p class="inspector-copy">Optional attributes, skills, and traits.</p>
-  <button class="primary-button inspector-open" type="button" onclick={() => (open = true)}>Add Profile</button>
+  {#if error}<p class="inspector-copy" role="alert">{$nativeErrorText(error)}</p>{/if}
+  <p class="inspector-copy">{$ui("Optional attributes, skills, and traits.")}</p>
+  <button class="primary-button inspector-open" type="button" onclick={() => (open = true)}>{$ui("Add Profile")}</button>
 {/if}
 
 {#if open}
@@ -708,7 +712,7 @@ async function removeHistoryRow(change: StoredProfileChange) {
       type="button"
       class="backdrop"
       tabindex="-1"
-      aria-label="Close Profile"
+      aria-label={$ui("Close Profile")}
       onclick={(event) => {
         if (isBackdropTarget(event)) close();
       }}></button>
@@ -724,29 +728,25 @@ async function removeHistoryRow(change: StoredProfileChange) {
       onkeydown={onDialogKeydown}>
       <header class="dialog-heading">
         <div>
-          <span class="panel-kicker">PROFILE</span>
+          <span class="panel-kicker">{$ui("PROFILE")}</span>
           <h2 id="profile-editor-title">{entityName}</h2>
         </div>
-        <button type="button" class="dialog-close" aria-label="Close Profile" onclick={close}
+        <button type="button" class="dialog-close" aria-label={$ui("Close Profile")} onclick={close}
           ><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
       </header>
       {#if error}
-        <p id="profile-editor-error" class="banner" role="alert">{error}</p>
+        <p id="profile-editor-error" class="banner" role="alert">{$nativeErrorText(error)}</p>
       {/if}
       {#if !stored}
         <div class="dialog-body" bind:this={sheetEl}>
           <p class="lead">
-            {#if presets.length}
-              Choose a starting sheet. Values can be edited after you create it.
-            {:else}
-              No presets are stored. Creating a Profile starts empty.
-            {/if}
+            {#if presets.length} {$ui("Choose a starting sheet. Values can be edited after you create it.")} {:else} {$ui("No presets are stored. Creating a Profile starts empty.")} {/if}
           </p>
           <div class="preset-groups">
             {#if presetGroups.suggested.length}
               <section class="preset-group">
-                <h3>Suggested</h3>
-                <div class="preset-grid" role="group" aria-label="Suggested presets">
+                <h3>{$ui("Suggested")}</h3>
+                <div class="preset-grid" role="group" aria-label={$ui("Suggested presets")}>
                   {#each presetGroups.suggested as preset (preset.id)}
                     {@render presetCard(preset)}
                   {/each}
@@ -755,14 +755,15 @@ async function removeHistoryRow(change: StoredProfileChange) {
             {/if}
             {#if presetGroups.others.length}
               <section class="preset-group">
-                <h3>All Presets</h3>
+                <h3>{$ui("All Presets")}</h3>
                 {#each presetGroups.others as group (group.genre ?? "")}
+                  {@const genre = group.genre && presetCopy(group.presets[0]?.id, "genre", group.genre)}
                   <div class="preset-genre">
-                    {#if group.genre}<h4>{group.genre}</h4>{/if}
+                    {#if genre}<h4>{genre}</h4>{/if}
                     <div
                       class="preset-grid"
                       role="group"
-                      aria-label={group.genre ? `${group.genre} presets` : "Presets"}>
+                      aria-label={genre ? $ui("{0} presets", genre) : $ui("Presets")}>
                       {#each group.presets as preset (preset.id)}
                         {@render presetCard(preset)}
                       {/each}
@@ -792,35 +793,35 @@ async function removeHistoryRow(change: StoredProfileChange) {
                 selectedPreset = preset.id;
               }}>
               <span class="preset-icon" aria-hidden="true"><Icon size={18} strokeWidth={1.8} /></span>
-              <strong>{preset.document.name}</strong>
-              <span>{preset.document.description ?? ""}</span>
+              <strong>{presetCopy(preset.id, "name", preset.document.name)}</strong>
+              <span>{presetCopy(preset.id, "description", preset.document.description ?? "")}</span>
               {#if selectedPreset === preset.id}
                 <span class="preset-check" aria-hidden="true"><Check size={14} strokeWidth={2.2} /></span>
               {/if}
             </button>
           {/snippet}
-          <section class="preset-preview" aria-label="Preset preview">
-            <h3>Preview</h3>
+          <section class="preset-preview" aria-label={$ui("Preset preview")}>
+            <h3>{$ui("Preview")}</h3>
             {#if selectedPresetPreview.length}
               <ul>
                 {#each selectedPresetPreview as component (component.id)}
                   <li>
-                    <strong>{component.name}</strong>
-                    <span>{component.kind}</span>
+                    <strong>{profileComponentCopy(selectedPreset, component.id, component.name)}</strong>
+                    <span>{profileKindCopy(component.kind)}</span>
                   </li>
                 {/each}
               </ul>
             {:else}
-              <p>No components. Create Profile starts an empty sheet.</p>
+              <p>{$ui("No components. Create Profile starts an empty sheet.")}</p>
             {/if}
           </section>
         </div>
         <footer class="dialog-footer">
           <button class="quiet-button" type="button" disabled={creating} onclick={() => (presetManager = "manage")}
-            >Presets</button>
-          <button class="quiet-button" type="button" disabled={creating} onclick={close}>Cancel</button>
+            >{$ui("Presets")}</button>
+          <button class="quiet-button" type="button" disabled={creating} onclick={close}>{$ui("Cancel")}</button>
           <button class="primary-button" type="button" disabled={creating} onclick={() => void addProfile()}>
-            {creating ? "Creating…" : "Create Profile"}
+            {creating ? $ui("Creating…") : $ui("Create Profile")}
           </button>
         </footer>
       {:else}
@@ -831,19 +832,19 @@ async function removeHistoryRow(change: StoredProfileChange) {
               <div
                 class="pool-track"
                 role="progressbar"
-                aria-label="Point pool"
+                aria-label={$ui("Point pool")}
                 aria-valuemin={0}
                 aria-valuemax={pool}
                 aria-valuenow={spent}
                 aria-valuetext="{spent} of {pool} points spent, {remaining} remaining">
                 <i style="width: {spentRatio * 100}%"></i>
               </div>
-              <span>{spent} / {pool} · {overBudget ? `${Math.abs(remaining)} over` : `${remaining} left`}</span>
+              <span>{spent} / {pool} · {overBudget ? $ui("{0} over", Math.abs(remaining)) : $ui("{0} left", remaining)}</span>
             </div>
           {/if}
         </div>
         {#if tabs.length > 1}
-          <div class="tabs" role="tablist" aria-label="Profile sections">
+          <div class="tabs" role="tablist" aria-label={$ui("Profile sections")}>
             {#each tabs as tab (tab.id)}
               <button
                 type="button"
@@ -863,7 +864,7 @@ async function removeHistoryRow(change: StoredProfileChange) {
           id="profile-panel-{currentTab?.id}"
           aria-labelledby="profile-tab-{currentTab?.id}">
           {#if !currentTab}
-            <p class="lead">This profile has no fields yet.</p>
+            <p class="lead">{$ui("This profile has no fields yet.")}</p>
           {:else}
             {#each currentTab.sections as section (section.id)}
               <section class="group">
@@ -874,12 +875,12 @@ async function removeHistoryRow(change: StoredProfileChange) {
                   <div class="identity-grid">
                     {#if isDndPresetOrigin(draft.presetOrigin)}
                       <label class="stat">
-                        <span>Ancestry</span>
+                        <span>{$ui("Ancestry")}</span>
                         <select
-                          aria-label="Ancestry"
+                          aria-label={$ui("Ancestry")}
                           value={matchingDndAncestry(draft)?.id ?? ""}
                           onchange={(event) => void persistDraft(applyDndAncestry(draft, event.currentTarget.value))}>
-                          <option value="">Custom</option>
+                          <option value="">{$ui("Custom")}</option>
                           {#each dndAncestriesByLineage() as group}
                             <optgroup label={group.lineage}>
                               {#each group.ancestries as ancestry}
@@ -893,7 +894,7 @@ async function removeHistoryRow(change: StoredProfileChange) {
                     {#each section.items as component (component.id)}
                       {#if !(isDndPresetOrigin(draft.presetOrigin) && component.id === "tag-species" && matchingDndAncestry(draft))}
                         <label class="stat">
-                          <span>{component.name}</span>
+                          <span>{profileComponentCopy(draft.presetOrigin, component.id, component.name)}</span>
                           {@render textInput(component)}
                         </label>
                       {/if}
@@ -904,21 +905,21 @@ async function removeHistoryRow(change: StoredProfileChange) {
                     {#each section.items as component (component.id)}
                       {@const paired = modifierFor.get(component.id)}
                       <div class="ability">
-                        <span class="ability-abbr" title={component.name}>{shortName(component.name)}</span>
-                        <span class="ability-name">{component.name}</span>
+                        <span class="ability-abbr" title={profileComponentCopy(draft.presetOrigin, component.id, component.name)}>{shortName(profileComponentCopy(draft.presetOrigin, component.id, component.name))}</span>
+                        <span class="ability-name">{profileComponentCopy(draft.presetOrigin, component.id, component.name)}</span>
                         <div class="ability-value">
                           {#if component.value.type === "number"}
                             <button
                               type="button"
                               class="nudge"
-                              aria-label="Decrease {component.name}"
+                              aria-label={$ui("Decrease {0}", profileComponentCopy(draft.presetOrigin, component.id, component.name))}
                               onclick={() => void nudge(component, -1)}
                               ><Minus size={12} strokeWidth={2} aria-hidden="true" /></button>
                             {@render numberInput(component, "ability")}
                             <button
                               type="button"
                               class="nudge"
-                              aria-label="Increase {component.name}"
+                              aria-label={$ui("Increase {0}", profileComponentCopy(draft.presetOrigin, component.id, component.name))}
                               onclick={() => void nudge(component, 1)}
                               ><Plus size={12} strokeWidth={2} aria-hidden="true" /></button>
                           {:else}
@@ -926,7 +927,7 @@ async function removeHistoryRow(change: StoredProfileChange) {
                           {/if}
                         </div>
                         {#if paired}
-                          <span class="ability-mod" title={paired.name}>{modifierText(component)}</span>
+                          <span class="ability-mod" title={profileComponentCopy(draft.presetOrigin, paired.id, paired.name)}>{modifierText(component)}</span>
                         {/if}
                       </div>
                     {/each}
@@ -935,7 +936,7 @@ async function removeHistoryRow(change: StoredProfileChange) {
                   <div class="stat-grid">
                     {#each section.items as component (component.id)}
                       <label class="stat">
-                        <span>{component.name}</span>
+                        <span>{profileComponentCopy(draft.presetOrigin, component.id, component.name)}</span>
                         {#if component.value.type === "number"}
                           {@render numberInput(component, "stat")}
                         {:else}
@@ -958,10 +959,10 @@ async function removeHistoryRow(change: StoredProfileChange) {
                           type="button"
                           class="flag"
                           aria-pressed={component.value.value === true}
-                          onclick={() => void toggleFlag(component)}>{component.name}</button>
+                          onclick={() => void toggleFlag(component)}>{profileComponentCopy(draft.presetOrigin, component.id, component.name)}</button>
                       {:else}
                         <label class="stat">
-                          <span>{component.name}</span>
+                          <span>{profileComponentCopy(draft.presetOrigin, component.id, component.name)}</span>
                           {@render textInput(component)}
                         </label>
                       {/if}
@@ -971,7 +972,7 @@ async function removeHistoryRow(change: StoredProfileChange) {
                   <div class="skill-grid">
                     {#each section.items as component (component.id)}
                       <label class="skill">
-                        <span>{component.name}</span>
+                        <span>{profileComponentCopy(draft.presetOrigin, component.id, component.name)}</span>
                         {#if component.value.type === "number"}
                           {@render numberInput(component, "skill")}
                         {:else if component.value.type === "rank" || component.value.type === "enum"}
@@ -986,7 +987,7 @@ async function removeHistoryRow(change: StoredProfileChange) {
                   <div class="rank-grid">
                     {#each section.items as component (component.id)}
                       <label class="stat">
-                        <span>{component.name}</span>
+                        <span>{profileComponentCopy(draft.presetOrigin, component.id, component.name)}</span>
                         {@render rankInput(component)}
                       </label>
                     {/each}
@@ -995,7 +996,7 @@ async function removeHistoryRow(change: StoredProfileChange) {
                   <div class="field-list">
                     {#each section.items as component (component.id)}
                       <label class="skill">
-                        <span>{component.name}</span>
+                        <span>{profileComponentCopy(draft.presetOrigin, component.id, component.name)}</span>
                         {#if component.kind === "derived"}
                           <span class="computed"
                             >{formatProfileValue(component, evaluated.get(component.id) ?? null) || "—"}</span>
@@ -1012,11 +1013,11 @@ async function removeHistoryRow(change: StoredProfileChange) {
             {/each}
           {/if}
           <section class="history">
-            <h3>History</h3>
+            <h3>{$ui("History")}</h3>
             <p class="lead">
               {parseCalendarDate(historyDate)
-                ? "Edits apply at this date. Clear the date to edit the current sheet."
-                : "Pick a date to edit historical values, or add changes from a Timeline event."}
+                ? $ui("Edits apply at this date. Clear the date to edit the current sheet.")
+                : $ui("Pick a date to edit historical values, or add changes from a Timeline event.")}
             </p>
             {#if changes.length}
               <ol>
@@ -1027,17 +1028,17 @@ async function removeHistoryRow(change: StoredProfileChange) {
                         ? row.change.error
                         : row.date
                           ? formatCalendarDate(row.date)
-                          : "Missing event"}</span>
-                    {#if row.change.value.eventId}<span>Event</span>{/if}
+                          : $ui("Missing event")}</span>
+                    {#if row.change.value.eventId}<span>{$ui("Event")}</span>{/if}
                     {#if row.change.value.reason}<span>{row.change.value.reason}</span>{/if}
                     {#if !row.change.invalid}
                       <span
-                        >{row.change.value.patches.length} value{row.change.value.patches.length === 1
+                        >{$ui("{0} value{1}", row.change.value.patches.length, row.change.value.patches.length === 1
                           ? ""
-                          : "s"}</span>
+                          : $ui("s"))}</span>
                     {/if}
                     <button class="quiet" type="button" onclick={() => void removeHistoryRow(row.change)}
-                      >Remove</button>
+                      >{$ui("Remove")}</button>
                   </li>
                 {/each}
               </ol>
@@ -1045,7 +1046,7 @@ async function removeHistoryRow(change: StoredProfileChange) {
             <div class="history-add">
               {#if parseCalendarDate(historyDate) || historyDateOpen}
                 <DateEditor
-                  label="Edit at date"
+                  label={$ui("Edit at date")}
                   value={historyDate}
                   calendars={calendarCache.snapshot().entities}
                   calendar={calendarCache.getDefinition(historyCalendarId)}
@@ -1061,14 +1062,14 @@ async function removeHistoryRow(change: StoredProfileChange) {
                     if (parsed) setHistoryDate({ ...parsed, calendar: id });
                   }} />
               {:else}
-                <button class="date-empty" type="button" onclick={() => (historyDateOpen = true)}>Edit at date</button>
+                <button class="date-empty" type="button" onclick={() => (historyDateOpen = true)}>{$ui("Edit at date")}</button>
               {/if}
               {#if parseCalendarDate(historyDate)}
                 <label class="stat">
-                  <span>Reason</span>
+                  <span>{$ui("Reason")}</span>
                   <input
                     type="text"
-                    placeholder="Optional"
+                    placeholder={$ui("Optional")}
                     value={historyReason}
                     onchange={(event) => {
                       historyReason = event.currentTarget.value;
@@ -1081,10 +1082,10 @@ async function removeHistoryRow(change: StoredProfileChange) {
         </div>
         <footer class="dialog-footer">
           <button class="danger-button" type="button" disabled={removing} onclick={() => void removeProfile()}
-            >{removing ? "Removing…" : "Remove"}</button>
-          <button class="quiet-button" type="button" onclick={() => (presetManager = "manage")}>Presets</button>
-          <button class="quiet-button" type="button" onclick={() => (presetManager = "save")}>Save as Preset</button>
-          <button class="primary-button" type="button" onclick={close}>Done</button>
+            >{removing ? $ui("Removing…") : $ui("Remove")}</button>
+          <button class="quiet-button" type="button" onclick={() => (presetManager = "manage")}>{$ui("Presets")}</button>
+          <button class="quiet-button" type="button" onclick={() => (presetManager = "save")}>{$ui("Save as Preset")}</button>
+          <button class="primary-button" type="button" onclick={close}>{$ui("Done")}</button>
         </footer>
       {/if}
     </div>

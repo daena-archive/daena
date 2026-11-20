@@ -1,4 +1,5 @@
 <script lang="ts">
+import { pluginText, translatePluginText as formatText } from "../i18n.ts";
 import { untrack } from "svelte";
 import type { EntitySummary, ModuleContext, ModuleRecord } from "../../../../module-api/src/index";
 import type { LexemeValue } from "../lexeme";
@@ -88,7 +89,7 @@ function formsHasDraft() {
 async function tryLeaveForms(confirmLeave: (message: string) => Promise<boolean> | boolean) {
   if (!formsHasDraft()) return true;
   if (paradigmSaving) return false;
-  const allowed = await confirmLeave("You have unsaved changes to a paradigm. Discard them?");
+  const allowed = await confirmLeave($pluginText("You have unsaved changes to a paradigm. Discard them?"));
   if (allowed) closeParadigmEditor();
   return allowed;
 }
@@ -182,12 +183,12 @@ async function saveParadigm(): Promise<"ok" | "name" | "error" | "none"> {
     rule.operations.some((operation) => !operation.slotId || !slotIds.has(operation.slotId)),
   );
   if (incompleteOperation) {
-    error = "Every operation must target an existing slot.";
+    error = $pluginText("Every operation must target an existing slot.");
     return "error";
   }
   const value = normalizeParadigm(paradigmDraft);
   if (!value.name) {
-    error = "Name is required.";
+    error = $pluginText("Name is required.");
     return "name";
   }
   error = "";
@@ -223,7 +224,7 @@ async function saveParadigm(): Promise<"ok" | "name" | "error" | "none"> {
 
 async function deleteParadigm() {
   if (!selectedLanguage || !paradigmEditing) return;
-  if (!(await confirm("Delete", `Delete “${paradigmEditing.value.name}”?`))) return;
+  if (!(await confirm("Delete", formatText("Delete “{name}”?", { name: paradigmEditing.value.name })))) return;
   const ownerLanguageId = selectedLanguage.id;
   error = "";
   try {
@@ -255,7 +256,7 @@ async function persistLexemeForms(record: ModuleRecord<LexemeValue>, forms: Lexe
     });
     const next = { ...updated, value: normalizeLexeme(updated.value) };
     records = records.map((item) => (item.id === next.id ? next : item));
-    if (ownerLanguageId !== selectedLanguage?.id) throw new Error("Language changed while updating lexeme.");
+    if (ownerLanguageId !== selectedLanguage?.id) throw new Error($pluginText("Language changed while updating lexeme."));
     return;
   } finally {
     setMutationActive(false);
@@ -333,14 +334,14 @@ function addRule() {
 async function removeRule(index: number) {
   const rule = paradigmDraft.rules[index];
   if (!rule) return;
-  if (!(await confirm("Remove rule", `Remove “${rule.name || `Rule ${index + 1}`}” from this paradigm?`))) return;
+  if (!(await confirm("Remove rule", formatText("Remove “{name}” from this paradigm?", { name: rule.name || formatText("Rule {index}", { index: index + 1 }) })))) return;
   paradigmDraft.rules.splice(index, 1);
 }
 
 function addOperation(ruleIndex: number) {
   const firstSlot = slotOptions[0];
   if (!firstSlot) {
-    error = "Add and label a slot before adding rule operations.";
+    error = $pluginText("Add and label a slot before adding rule operations.");
     return;
   }
   error = "";
@@ -365,15 +366,15 @@ async function handleSubmit(event: SubmitEvent) {
 
 <div class="language-toolbar">
   <div class="language-toolbar-title">
-    <h2>Morphology</h2>
+    <h2>{$pluginText("Morphology")}</h2>
   </div>
   <div class="language-toolbar-actions">
     <button type="button" class="language-button" disabled={!selectedLanguage} onclick={addParadigm}
-      >Add paradigm</button>
+      >{$pluginText("Add paradigm")}</button>
   </div>
 </div>
 {#if paneLoading}
-  <p class="language-empty language-loading" role="status">Loading paradigms…</p>
+  <p class="language-empty language-loading" role="status">{$pluginText("Loading paradigms…")}</p>
 {:else if paradigmEditorOpen}
   <form class="language-editor" onsubmit={handleSubmit}>
     <datalist id="language-pos">
@@ -382,37 +383,37 @@ async function handleSubmit(event: SubmitEvent) {
       {/each}
     </datalist>
     <label class="language-field">
-      <span>Name</span>
+      <span>{$pluginText("Name")}</span>
       <input name="name" bind:this={nameInput} bind:value={paradigmDraft.name} />
     </label>
     <label class="language-field">
-      <span>Kind</span>
-      <select name="kind" aria-label="Paradigm kind" bind:value={paradigmDraft.kind}>
+      <span>{$pluginText("Kind")}</span>
+      <select name="kind" aria-label={$pluginText("Paradigm kind")} bind:value={paradigmDraft.kind}>
         {#each PARADIGM_KINDS as item (item.id)}
-          <option value={item.id}>{item.label}</option>
+          <option value={item.id}>{$pluginText(item.label)}</option>
         {/each}
       </select>
     </label>
     <label class="language-field">
-      <span>Part of speech (optional)</span>
+      <span>{$pluginText("Part of speech (optional)")}</span>
       <input name="partOfSpeech" list="language-pos" bind:value={paradigmDraft.partOfSpeech} />
     </label>
     <label class="language-field">
-      <span>Notes (optional)</span>
+      <span>{$pluginText("Notes (optional)")}</span>
       <textarea name="notes" bind:value={paradigmDraft.notes}></textarea>
     </label>
     <section class="language-form-section">
       <div class="language-form-section-header">
         <div>
-          <h3>Slots</h3>
-          <p>Define the cells in your paradigm table (e.g., 1sg, plural, comparative).</p>
+          <h3>{$pluginText("Slots")}</h3>
+          <p>{$pluginText("Define the cells in your paradigm table (e.g., 1sg, plural, comparative).")}</p>
         </div>
-        <button type="button" class="language-button secondary" onclick={addSlot}>Add slot</button>
+        <button type="button" class="language-button secondary" onclick={addSlot}>{$pluginText("Add slot")}</button>
       </div>
       {#if paradigmDraft.slots.length === 0}
         <div class="language-empty-card">
           <p class="language-empty" role="status">
-            No slots defined yet. Add cells such as 1sg, plural, or comparative.
+            {$pluginText("No slots defined yet. Add cells such as 1sg, plural, or comparative.")}
           </p>
         </div>
       {:else}
@@ -425,18 +426,18 @@ async function handleSubmit(event: SubmitEvent) {
                   type="button"
                   class="forms-slot-remove"
                   onclick={() => void removeSlot(index)}
-                  aria-label="Remove slot">&times;</button>
+                  aria-label={$pluginText("Remove slot")}>&times;</button>
               </div>
               <label class="language-field">
-                <span>Label</span>
-                <input name={`slot-label-${index}`} bind:value={slot.label} placeholder="e.g. 1sg" />
+                <span>{$pluginText("Label")}</span>
+                <input name={`slot-label-${index}`} bind:value={slot.label} placeholder={$pluginText("e.g. 1sg")} />
               </label>
               <label class="language-field">
-                <span>Features (optional)</span>
+                <span>{$pluginText("Features (optional)")}</span>
                 <input
                   name={`slot-features-${index}`}
                   bind:value={slot.features}
-                  placeholder="e.g. person=1, number=sg" />
+                  placeholder={$pluginText("e.g. person=1, number=sg")} />
               </label>
             </div>
           {/each}
@@ -446,23 +447,23 @@ async function handleSubmit(event: SubmitEvent) {
     <section class="language-form-section">
       <div class="language-form-section-header">
         <div>
-          <h3>Rules</h3>
-          <p>Define how forms are generated from the stem. More specific suffix matches win.</p>
+          <h3>{$pluginText("Rules")}</h3>
+          <p>{$pluginText("Define how forms are generated from the stem. More specific suffix matches win.")}</p>
         </div>
-        <button type="button" class="language-button secondary" onclick={addRule}>Add rule</button>
+        <button type="button" class="language-button secondary" onclick={addRule}>{$pluginText("Add rule")}</button>
       </div>
       {#if paradigmDraft.rules.length === 0}
         <div class="language-empty-card">
-          <p class="language-empty" role="status">No rules defined yet. Add inflection or derivation rules.</p>
+          <p class="language-empty" role="status">{$pluginText("No rules defined yet. Add inflection or derivation rules.")}</p>
         </div>
       {:else}
         <div class="forms-rules-list">
           {#each paradigmDraft.rules as rule, index (rule.id)}
             <details class="forms-rule-item" open={index === 0}>
               <summary>
-                <span class="forms-rule-name">{rule.name || `Rule ${index + 1}`}</span>
+                <span class="forms-rule-name">{rule.name || $pluginText("Rule {0}", { 0: String(index + 1) })}</span>
                 <span class="forms-rule-kind"
-                  >{PARADIGM_KINDS.find((k) => k.id === rule.kind)?.label ?? rule.kind}</span>
+                  >{$pluginText(PARADIGM_KINDS.find((k) => k.id === rule.kind)?.label ?? rule.kind)}</span>
                 <button
                   type="button"
                   class="forms-rule-remove"
@@ -470,51 +471,51 @@ async function handleSubmit(event: SubmitEvent) {
                     e.preventDefault();
                     void removeRule(index);
                   }}
-                  aria-label="Remove rule">&times;</button>
+                  aria-label={$pluginText("Remove rule")}>&times;</button>
               </summary>
               <div class="forms-rule-content">
                 <div class="language-section-grid">
                   <label class="language-field">
-                    <span>Rule name</span>
-                    <input name={`rule-name-${index}`} bind:value={rule.name} placeholder="e.g. Regular plural" />
+                    <span>{$pluginText("Rule name")}</span>
+                    <input name={`rule-name-${index}`} bind:value={rule.name} placeholder={$pluginText("e.g. Regular plural")} />
                   </label>
                   <label class="language-field">
-                    <span>Kind</span>
-                    <select name={`rule-kind-${index}`} aria-label="Rule kind" bind:value={rule.kind}>
+                    <span>{$pluginText("Kind")}</span>
+                    <select name={`rule-kind-${index}`} aria-label={$pluginText("Rule kind")} bind:value={rule.kind}>
                       {#each PARADIGM_KINDS as item (item.id)}
-                        <option value={item.id}>{item.label}</option>
+                        <option value={item.id}>{$pluginText(item.label)}</option>
                       {/each}
                     </select>
                   </label>
                 </div>
                 <label class="language-field">
-                  <span>Match lemma ending (optional)</span>
+                  <span>{$pluginText("Match lemma ending (optional)")}</span>
                   <input
                     name={`rule-match-${index}`}
                     bind:value={rule.match}
-                    placeholder="e.g. -ar (matches verbs ending in -ar)" />
+                    placeholder={$pluginText("e.g. -ar (matches verbs ending in -ar)")} />
                 </label>
                 <label class="language-field">
-                  <span>Notes (optional)</span>
+                  <span>{$pluginText("Notes (optional)")}</span>
                   <textarea
                     name={`rule-notes-${index}`}
                     rows={2}
                     bind:value={rule.notes}
-                    placeholder="Explain when this rule applies"></textarea>
+                    placeholder={$pluginText("Explain when this rule applies")}></textarea>
                 </label>
                 <div class="forms-operations">
                   <div class="forms-operations-header">
-                    <h4>Operations</h4>
+                    <h4>{$pluginText("Operations")}</h4>
                     <button
                       type="button"
                       class="language-button secondary"
                       disabled={slotOptions.length === 0}
-                      title={slotOptions.length === 0 ? "Add and label a slot first" : undefined}
-                      onclick={() => addOperation(index)}>Add operation</button>
+                      title={slotOptions.length === 0 ? $pluginText("Add and label a slot first") : undefined}
+                      onclick={() => addOperation(index)}>{$pluginText("Add operation")}</button>
                   </div>
                   {#if rule.operations.length === 0}
                     <p class="language-empty" role="status">
-                      No operations defined. Add suffix, prefix, or replacement rules.
+                      {$pluginText("No operations defined. Add suffix, prefix, or replacement rules.")}
                     </p>
                   {:else}
                     <div class="forms-operations-list">
@@ -522,54 +523,54 @@ async function handleSubmit(event: SubmitEvent) {
                         <div class="forms-operation-item">
                           <div class="forms-operation-fields">
                             <label class="language-field">
-                              <span>Slot</span>
+                              <span>{$pluginText("Slot")}</span>
                               <select
                                 name={`op-slot-${index}-${operationIndex}`}
-                                aria-label="Operation slot"
+                                aria-label={$pluginText("Operation slot")}
                                 bind:value={operation.slotId}>
-                                <option value="">Select slot...</option>
+                                <option value="">{$pluginText("Select slot...")}</option>
                                 {#each slotOptions as option (option.id)}
                                   <option value={option.id}>{option.label}</option>
                                 {/each}
                               </select>
                             </label>
                             <label class="language-field">
-                              <span>Operation</span>
+                              <span>{$pluginText("Operation")}</span>
                               <select
                                 name={`op-kind-${index}-${operationIndex}`}
-                                aria-label="Operation kind"
+                                aria-label={$pluginText("Operation kind")}
                                 bind:value={operation.op}>
                                 {#each OPERATION_KINDS as item (item.id)}
-                                  <option value={item.id}>{item.label}</option>
+                                  <option value={item.id}>{$pluginText(item.label)}</option>
                                 {/each}
                               </select>
                             </label>
                             {#if operation.op === "replace-suffix"}
                               <label class="language-field">
-                                <span>Replace from</span>
+                                <span>{$pluginText("Replace from")}</span>
                                 <input
                                   name={`op-from-${index}-${operationIndex}`}
                                   bind:value={operation.from}
-                                  placeholder="e.g. -ar" />
+                                  placeholder={$pluginText("e.g. -ar")} />
                               </label>
                             {/if}
                             <label class="language-field">
-                              <span>{operation.op === "replace-suffix" ? "Replace with" : "Affix"}</span>
+                              <span>{operation.op === "replace-suffix" ? $pluginText("Replace with") : $pluginText("Affix")}</span>
                               <input
                                 name={`op-value-${index}-${operationIndex}`}
                                 bind:value={operation.value}
                                 placeholder={operation.op === "prefix"
-                                  ? "e.g. un-"
+                                  ? $pluginText("e.g. un-")
                                   : operation.op === "suffix"
-                                    ? "e.g. -ed"
-                                    : "e.g. -ó"} />
+                                    ? $pluginText("e.g. -ed")
+                                    : $pluginText("e.g. -ó")} />
                             </label>
                           </div>
                           <button
                             type="button"
                             class="forms-operation-remove"
                             onclick={() => removeOperation(index, operationIndex)}
-                            aria-label="Remove operation">&times;</button>
+                            aria-label={$pluginText("Remove operation")}>&times;</button>
                         </div>
                       {/each}
                     </div>
@@ -582,25 +583,25 @@ async function handleSubmit(event: SubmitEvent) {
       {/if}
     </section>
     <section class="language-group">
-      <h3>Generated preview</h3>
+      <h3>{$pluginText("Generated preview")}</h3>
       <p class="language-empty" role="status">
-        This table is computed from the current rules. Saving a rule never rewrites authored word forms.
+        {$pluginText("This table is computed from the current rules. Saving a rule never rewrites authored word forms.")}
       </p>
       <label class="language-field">
-        <span>Preview lexeme (optional)</span>
+        <span>{$pluginText("Preview lexeme (optional)")}</span>
         <select
           name="previewLexemeId"
-          aria-label="Preview lexeme"
+          aria-label={$pluginText("Preview lexeme")}
           bind:value={previewLexemeId}
           onchange={handleLexemeChange}>
-          <option value={""}>Type a stem</option>
+          <option value={""}>{$pluginText("Type a stem")}</option>
           {#each records as record (record.id)}
             <option value={record.id}>{record.value.lemma}</option>
           {/each}
         </select>
       </label>
       <label class="language-field">
-        <span>Stem</span>
+        <span>{$pluginText("Stem")}</span>
         <input
           name="previewStem"
           value={previewStemValue}
@@ -608,17 +609,17 @@ async function handleSubmit(event: SubmitEvent) {
       </label>
       {#if paradigmDraft.slots.length === 0}
         <div class="language-empty-card">
-          <p class="language-empty" role="status">Add a slot to preview generated forms.</p>
+          <p class="language-empty" role="status">{$pluginText("Add a slot to preview generated forms.")}</p>
         </div>
       {:else}<div class="language-chart-wrap">
           <table class="paradigm-preview">
             <thead>
               <tr>
-                <th>Slot</th>
-                <th>Form</th>
-                <th>Source</th>
-                <th>Rule</th>
-                <th>Override</th>
+                <th>{$pluginText("Slot")}</th>
+                <th>{$pluginText("Form")}</th>
+                <th>{$pluginText("Source")}</th>
+                <th>{$pluginText("Rule")}</th>
+                <th>{$pluginText("Override")}</th>
               </tr>
             </thead>
             <tbody>
@@ -629,7 +630,7 @@ async function handleSubmit(event: SubmitEvent) {
                   <td
                     >{cell.form ||
                       "—"}{#if cell.provenance === "authored" && cell.generated && cell.generated !== cell.form}
-                      <small> rule: {cell.generated}</small>
+                      <small> {$pluginText("rule:")} {cell.generated}</small>
                     {/if}</td>
                   <td
                     ><span
@@ -637,10 +638,10 @@ async function handleSubmit(event: SubmitEvent) {
                       class:is-authored={cell.provenance === "authored"}
                       class:is-missing={cell.provenance === "missing"}
                       >{cell.provenance === "authored"
-                        ? "authored"
+                        ? $pluginText("authored")
                         : cell.provenance === "generated"
-                          ? "generated"
-                          : "no rule"}</span
+                          ? $pluginText("generated")
+                          : $pluginText("no rule")}</span
                     ></td>
                   <td>{cell.ruleName || "—"}</td>
                   <td
@@ -649,12 +650,12 @@ async function handleSubmit(event: SubmitEvent) {
                         type="button"
                         class="language-button secondary"
                         onclick={() => void pinPreviewOverride(previewLexeme, cell.slot, cell.form)}
-                        >Pin override</button>
+                        >{$pluginText("Pin override")}</button>
                     {:else if previewLexeme && previewParadigmId && cell.provenance === "authored"}
                       <button
                         type="button"
                         class="language-button secondary"
-                        onclick={() => void clearPreviewOverride(previewLexeme, cell.slot)}>Clear override</button>
+                        onclick={() => void clearPreviewOverride(previewLexeme, cell.slot)}>{$pluginText("Clear override")}</button>
                     {/if}</td>
                 </tr>
               {/each}
@@ -672,14 +673,14 @@ async function handleSubmit(event: SubmitEvent) {
             type="button"
             class="language-button secondary language-danger"
             onclick={deleteParadigm}
-            disabled={paradigmSaving}>Delete</button>
+            disabled={paradigmSaving}>{$pluginText("Delete")}</button>
         {/if}
       </span>
       <span>
         <button type="button" class="language-button secondary" onclick={closeParadigmEditor} disabled={paradigmSaving}
-          >Cancel</button>
+          >{$pluginText("Cancel")}</button>
         <button type="submit" class="language-button" disabled={paradigmSaving}
-          >{paradigmSaving ? "Saving…" : "Save paradigm"}</button>
+          >{paradigmSaving ? $pluginText("Saving…") : $pluginText("Save paradigm")}</button>
       </span>
     </div>
   </form>
@@ -687,40 +688,38 @@ async function handleSubmit(event: SubmitEvent) {
   <div class="language-empty-card language-error-card">
     <p class="language-status error" role="alert">{error}</p>
     {#if selectedLanguage}
-      <button type="button" class="language-button secondary" onclick={() => void loadForms()}>Try again</button>
+      <button type="button" class="language-button secondary" onclick={() => void loadForms()}>{$pluginText("Try again")}</button>
     {/if}
   </div>
 {:else if !selectedLanguage}
   <div class="language-empty-card">
-    <p class="language-empty" role="status">Select a language to document its paradigms.</p>
+    <p class="language-empty" role="status">{$pluginText("Select a language to document its paradigms.")}</p>
   </div>
 {:else if paradigms.length === 0}
   <div class="language-empty-card">
     <p class="language-empty" role="status">
-      No paradigms yet. Add an inflection or derivation table, then preview generated forms.
+      {$pluginText("No paradigms yet. Add an inflection or derivation table, then preview generated forms.")}
     </p>
     <div class="language-inline">
-      <button type="button" class="language-button" onclick={addParadigm}>Add first paradigm</button>
+      <button type="button" class="language-button" onclick={addParadigm}>{$pluginText("Add first paradigm")}</button>
     </div>
   </div>
 {:else}
   <section class="language-pane-section">
-    <h3>Paradigm library</h3>
-    <p>{paradigms.length} paradigm{paradigms.length === 1 ? "" : "s"} · select one to edit rules or preview forms.</p>
+    <h3>{$pluginText("Paradigm library")}</h3>
+    <p>{$pluginText(paradigms.length === 1 ? "{count} paradigm" : "{count} paradigms", { count: paradigms.length })} {$pluginText("· select one to edit rules or preview forms.")}</p>
     <ul class="lexeme-list">
       {#each paradigms as record (record.id)}
         <li>
           <button
             type="button"
             class="language-item"
-            aria-label={`Edit paradigm ${record.value.name}`}
+            aria-label={$pluginText("Edit paradigm {0}", { 0: String(record.value.name) })}
             onclick={() => openParadigmEditor(record)}>
             <strong>{record.value.name}</strong>
-            <small>{record.value.kind}</small>
+            <small>{$pluginText(PARADIGM_KINDS.find(item => item.id === record.value.kind)?.label ?? record.value.kind)}</small>
             <span
-              >{record.value.slots.length} slot{record.value.slots.length === 1 ? "" : "s"} · {record.value.rules
-                .length}
-              rule{record.value.rules.length === 1 ? "" : "s"}</span>
+              >{$pluginText(record.value.slots.length === 1 ? "{count} slot" : "{count} slots", { count: record.value.slots.length })} · {$pluginText(record.value.rules.length === 1 ? "{count} rule" : "{count} rules", { count: record.value.rules.length })}</span>
           </button>
         </li>
       {/each}

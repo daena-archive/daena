@@ -1,3 +1,4 @@
+import { localizeUi } from "../../i18n/ui.ts";
 import difference from "@turf/difference";
 import { feature, featureCollection, multiPolygon, polygon } from "@turf/helpers";
 import union from "@turf/union";
@@ -209,7 +210,7 @@ export function combineModeFromModifiers(shiftKey: boolean, altKey: boolean): Co
 
 function combinedLabel(current: LandmassSelection, incoming: LandmassSelection): string {
   if (current.regionIds.length + incoming.regionIds.length <= 1) return incoming.label;
-  return `${current.regionIds.length + incoming.regionIds.length} landmasses`;
+  return localizeUi("{0} landmasses", current.regionIds.length + incoming.regionIds.length);
 }
 
 function unionGeometries(left: RegionGeometry, right: RegionGeometry): RegionGeometry | null {

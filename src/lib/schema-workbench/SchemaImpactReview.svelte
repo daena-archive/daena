@@ -1,4 +1,6 @@
 <script lang="ts">
+import { nativeErrorText } from "$lib/i18n/native-errors.ts";
+import { ui } from "$lib/i18n/ui";
 import type { SchemaOverlayPreviewResult } from "$lib/project/client";
 import { AlertTriangle, Check, X } from "@lucide/svelte";
 
@@ -50,21 +52,18 @@ const canConfirm = $derived(preview.ok && preview.unresolvedTypeRemovals.length 
         <AlertTriangle size={18} strokeWidth={1.8} aria-hidden="true" />
       {/if}
     </div>
-    <strong id="schema-impact-title">Review schema impact</strong>
-    <p>
-      This save is <span class="kind">{changeKindLabel}</span>. Confirm the live-data impact before writing the project
-      overlay.
-    </p>
+    <strong id="schema-impact-title">{$ui("Review schema impact")}</strong>
+    <p> {$ui("This save is")} <span class="kind">{changeKindLabel}</span>{$ui(". Confirm the live-data impact before writing the project overlay.")} </p>
 
     {#if preview.errors.length > 0}
       <div class="impact-group">
-        <span>Blocking issues</span>
+        <span>{$ui("Blocking issues")}</span>
         <ul class="issue-list">
           {#each preview.errors as issue}
             <li>
               <strong>{issue.kind}:{issue.id}</strong>
               {#if issue.property}<code>{issue.property}</code>{/if}
-              — {issue.message}
+              — {$nativeErrorText(issue.message)}
             </li>
           {/each}
         </ul>
@@ -73,11 +72,11 @@ const canConfirm = $derived(preview.ok && preview.unresolvedTypeRemovals.length 
 
     {#if preview.warnings.length > 0}
       <div class="impact-group">
-        <span>Warnings</span>
+        <span>{$ui("Warnings")}</span>
         <ul class="issue-list">
           {#each preview.warnings as issue}
             <li>
-              <strong>{issue.kind}:{issue.id}</strong> — {issue.message}
+              <strong>{issue.kind}:{issue.id}</strong> — {$nativeErrorText(issue.message)}
             </li>
           {/each}
         </ul>
@@ -86,14 +85,14 @@ const canConfirm = $derived(preview.ok && preview.unresolvedTypeRemovals.length 
 
     {#if preview.affectedTypes.length > 0}
       <div class="impact-group">
-        <span>Types</span>
+        <span>{$ui("Types")}</span>
         <ul>
           {#each preview.affectedTypes as item}
             <li>
               <code>{item.entityType}</code>
               <em>{item.change}</em>
               · {item.entityCount}
-              {item.entityCount === 1 ? "entity" : "entities"}
+              {item.entityCount === 1 ? $ui("entity") : $ui("entities")}
             </li>
           {/each}
         </ul>
@@ -102,14 +101,14 @@ const canConfirm = $derived(preview.ok && preview.unresolvedTypeRemovals.length 
 
     {#if preview.affectedFields.length > 0}
       <div class="impact-group">
-        <span>Fields</span>
+        <span>{$ui("Fields")}</span>
         <ul>
           {#each preview.affectedFields as item}
             <li>
               <code>{item.fieldKey}</code>
               <em>{item.change}</em>
               · {item.valueCount}
-              {item.valueCount === 1 ? "stored value" : "stored values"}
+              {item.valueCount === 1 ? $ui("stored value") : $ui("stored values")}
             </li>
           {/each}
         </ul>
@@ -118,7 +117,7 @@ const canConfirm = $derived(preview.ok && preview.unresolvedTypeRemovals.length 
 
     {#if preview.affectedTemplates.length > 0}
       <div class="impact-group">
-        <span>Templates</span>
+        <span>{$ui("Templates")}</span>
         <ul>
           {#each preview.affectedTemplates as id}
             <li><code>{id}</code></li>
@@ -129,7 +128,7 @@ const canConfirm = $derived(preview.ok && preview.unresolvedTypeRemovals.length 
 
     {#if preview.compatibilityNotes.length > 0}
       <div class="impact-group">
-        <span>Notes</span>
+        <span>{$ui("Notes")}</span>
         <ul>
           {#each preview.compatibilityNotes as note}
             <li>{note}</li>
@@ -140,9 +139,9 @@ const canConfirm = $derived(preview.ok && preview.unresolvedTypeRemovals.length 
 
     <div class="impact-actions">
       <button type="button" class="quiet" disabled={busy} onclick={onCancel}
-        ><X size={14} strokeWidth={1.8} aria-hidden="true" /> Cancel</button>
+        ><X size={14} strokeWidth={1.8} aria-hidden="true" /> {$ui("Cancel")}</button>
       <button type="button" class="primary" disabled={busy || !canConfirm} onclick={onConfirm}>
-        {#if busy}Saving…{:else}Confirm save{/if}
+        {#if busy}{$ui("Saving…")}{:else}{$ui("Confirm save")}{/if}
       </button>
     </div>
   </div>

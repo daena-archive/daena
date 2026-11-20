@@ -1,4 +1,7 @@
 <script lang="ts">
+import { nativeErrorText } from "$lib/i18n/native-errors.ts";
+import { displayLanguage } from "$lib/i18n";
+import { ui } from "$lib/i18n/ui";
 import {
   X,
   Sparkles,
@@ -110,7 +113,7 @@ let aiMessageLastSequence = $state(-1);
 let aiMessageUnlisten: (() => void) | null = null;
 let wrapDiffLines = $state(false);
 let expandedSnapshotGroups = $state<string[]>([]);
-let snapshotChangeGroups = $derived(groupSnapshotChanges(snapshotChanges, entities));
+let snapshotChangeGroups = $derived(groupSnapshotChanges(snapshotChanges, entities, $ui));
 let commitMessageTitle = $derived(snapshotMessageTitle(commitMessage));
 let commitMessageBody = $derived(snapshotMessageBody(commitMessage));
 let diffLines = $derived(
@@ -128,7 +131,7 @@ type GitConfirmation = {
 };
 let confirmation = $state<GitConfirmation | null>(null);
 let confirmationBusy = $state(false);
-let squashMessage = $state("Consolidate snapshot history");
+let squashMessage = $state($ui("Consolidate snapshot history"));
 
 function notifyStatus(nextStatus: GitStatus | null) {
   status = nextStatus;
@@ -259,9 +262,9 @@ function handleAiMessageEvent(event: AiStreamEvent) {
     aiMessageRequestId = null;
     clearAiMessageListener();
     if (event.phase === "deadline_exceeded" && partialText) {
-      onError("AI generation reached its time limit. The partial snapshot message is preserved.");
+      onError($ui("AI generation reached its time limit. The partial snapshot message is preserved."));
     } else if (event.phase !== "cancelled") {
-      onError(event.error ?? "Could not generate a snapshot message.");
+      onError(event.error ?? $ui("Could not generate a snapshot message."));
     }
   }
 }
@@ -353,18 +356,18 @@ function toggleSnapshotGroup(label: string) {
     : [...expandedSnapshotGroups, label];
 }
 
-let changeGroups = $derived(buildChangeGroups(preflight?.staging_paths ?? [], entities));
+let changeGroups = $derived(buildChangeGroups(preflight?.staging_paths ?? [], entities, $ui));
 
 let selectedPaths = $derived(selectedPathsFromGroups(selectedGroupIds, changeGroups));
 let selectedFileCount = $derived(selectedPaths.length);
 let totalChangeCount = $derived(preflight?.staging_paths.length ?? 0);
 let snapshotBlockReason = $derived(
   !preflight?.ready
-    ? "Resolve the snapshot diagnostics before continuing."
+    ? $ui("Resolve the snapshot diagnostics before continuing.")
     : selectedPaths.length === 0
-      ? "Select at least one change."
+      ? $ui("Select at least one change.")
       : !commitMessage.trim()
-        ? "Add a snapshot message."
+        ? $ui("Add a snapshot message.")
         : "",
 );
 
@@ -551,23 +554,23 @@ function generateMessage() {
     other: selected.filter((group) => group.kind === "project").length,
   };
   const parts = [
-    buckets.entities ? `${buckets.entities} entit${buckets.entities === 1 ? "y" : "ies"}` : "",
-    buckets.plugins ? `${buckets.plugins} plugin${buckets.plugins === 1 ? "" : "s"}` : "",
-    buckets.assets ? `${buckets.assets} asset${buckets.assets === 1 ? "" : "s"}` : "",
-    buckets.other ? "project settings" : "",
+    buckets.entities ? $ui(buckets.entities === 1 ? "{0} entity" : "{0} entities", buckets.entities) : "",
+    buckets.plugins ? $ui(buckets.plugins === 1 ? "{0} plugin" : "{0} plugins", buckets.plugins) : "",
+    buckets.assets ? $ui(buckets.assets === 1 ? "{0} asset" : "{0} assets", buckets.assets) : "",
+    buckets.other ? $ui("project settings") : "",
   ].filter(Boolean);
-  const headline = `Update ${parts.join(", ") || `${selected.length} change${selected.length === 1 ? "" : "s"}`}`;
+  const headline = $ui("Update {0}", parts.join($ui(", ")));
   const list = selected
     .slice(0, 12)
     .map((group) => `- ${group.title}${group.subtitle ? ` (${group.subtitle})` : ""}`)
     .join("\n");
-  const more = selected.length > 12 ? `\n- …and ${selected.length - 12} more` : "";
+  const more = selected.length > 12 ? `\n- ${$ui("…and {0} more", selected.length - 12)}` : "";
   commitMessage = `${headline}\n\n${list}${more}\n`;
   messageExpanded = false;
 }
 
 async function initializeGit() {
-  await withBusy("Enabling snapshots…", async () => {
+  await withBusy($ui("Enabling snapshots…"), async () => {
     notifyStatus(await project.gitInit());
     await refresh();
   });
@@ -576,7 +579,7 @@ async function initializeGit() {
 async function commitSelected() {
   if (!commitMessage.trim() || selectedPaths.length === 0) return;
   if (!(await prepareWrite())) return;
-  await withBusy("Creating snapshot…", async () => {
+  await withBusy($ui("Creating snapshot…"), async () => {
     notifyStatus(await project.gitCommit(formatSnapshotMessage(commitMessage), selectedPaths));
     commitMessage = "";
     messageExpanded = true;
@@ -586,14 +589,14 @@ async function commitSelected() {
 
 function askSuperSquash() {
   if (!preflight?.ready || preflight.staging_paths.length > 0 || log.length < 2) return;
-  squashMessage = "Consolidate snapshot history";
+  squashMessage = $ui("Consolidate snapshot history");
   askConfirmation(
-    "Keep only the latest snapshot?",
-    "This permanently replaces the snapshot history with one snapshot representing the latest committed state. All earlier snapshots will be pruned. Remote history may diverge and require an explicit force-push with lease.",
-    "Keep latest snapshot",
+    $ui("Keep only the latest snapshot?"),
+    $ui("This permanently replaces the snapshot history with one snapshot representing the latest committed state. All earlier snapshots will be pruned. Remote history may diverge and require an explicit force-push with lease."),
+    $ui("Keep latest snapshot"),
     async () => {
       if (!(await prepareWrite())) return false;
-      const completed = await withBusy("Squashing snapshots…", async () => {
+      const completed = await withBusy($ui("Squashing snapshots…"), async () => {
         const result = await project.gitSuperSquash(squashMessage.trim() || "Consolidate snapshot history");
         notifyStatus(result.status);
         recoveryUpstream = result.divergedFromUpstream ? result.upstream : null;
@@ -635,14 +638,14 @@ async function submitRemoteModal() {
   if (!remoteUrl.trim()) return;
   if (remoteModalMode === "add") {
     if (!remoteName.trim()) return;
-    await withBusy("Adding remote…", async () => {
+    await withBusy($ui("Adding remote…"), async () => {
       remotes = await project.gitRemoteAdd(remoteName.trim(), remoteUrl.trim());
       closeRemoteModal();
     });
     return;
   }
   if (!editingRemoteName) return;
-  await withBusy("Updating remote…", async () => {
+  await withBusy($ui("Updating remote…"), async () => {
     remotes = await project.gitRemoteSetUrl(editingRemoteName!, remoteUrl.trim());
     closeRemoteModal();
   });
@@ -650,11 +653,11 @@ async function submitRemoteModal() {
 
 function removeRemote(name: string) {
   askConfirmation(
-    `Remove ${name}?`,
-    "This removes the remote from this repository. It does not delete anything from the remote server.",
-    "Remove remote",
+    $ui("Remove {0}?", name),
+    $ui("This removes the remote from this repository. It does not delete anything from the remote server."),
+    $ui("Remove remote"),
     async () => {
-      const completed = await withBusy("Removing remote…", async () => {
+      const completed = await withBusy($ui("Removing remote…"), async () => {
         remotes = await project.gitRemoteRemove(name);
         return true;
       });
@@ -666,7 +669,7 @@ function removeRemote(name: string) {
 async function pushRemote(remote: GitRemote) {
   const branch = status?.branch?.trim();
   if (!branch) return;
-  await withBusy(`Pushing ${branch} to ${remote.name}…`, async () => {
+  await withBusy($ui("Pushing {0} to {1}…", branch, remote.name), async () => {
     notifyStatus(await project.gitPush(remote.name, branch, false));
     await refresh();
   });
@@ -689,7 +692,7 @@ async function selectCommit(hash: string) {
   selectedChangePath = null;
   changeDiff = "";
   snapshotChanges = [];
-  await withBusy("Loading snapshot…", async () => {
+  await withBusy($ui("Loading snapshot…"), async () => {
     const [message, changes] = await Promise.all([
       historyMessages[hash] !== undefined ? Promise.resolve(historyMessages[hash]) : project.gitShowMessage(hash),
       project.gitShowChanges(hash),
@@ -699,7 +702,7 @@ async function selectCommit(hash: string) {
       historyMessages = { ...historyMessages, [hash]: message };
       snapshotChanges = changes;
       const groups = groupSnapshotChanges(changes, entities);
-      expandedSnapshotGroups = groups[0] ? [groups[0].label] : [];
+      expandedSnapshotGroups = groups[0] ? [groups[0].id] : [];
       firstChangedPath = changes[0]?.path ?? null;
     }
   });
@@ -743,12 +746,12 @@ async function selectSnapshotChange(path: string) {
 
 function askReset(hash: string) {
   askConfirmation(
-    `Hard-reset to ${hash}?`,
-    "This discards later commits and all uncommitted changes. Remotes may diverge and need recovery afterward.",
-    "Hard-reset to snapshot",
+    $ui("Hard-reset to {0}?", hash),
+    $ui("This discards later commits and all uncommitted changes. Remotes may diverge and need recovery afterward."),
+    $ui("Hard-reset to snapshot"),
     async () => {
       if (!(await prepareWrite())) return false;
-      const completed = await withBusy("Restoring snapshot…", async () => {
+      const completed = await withBusy($ui("Restoring snapshot…"), async () => {
         const result = await project.gitResetHard(hash);
         notifyStatus(result.status);
         recoveryUpstream = result.divergedFromUpstream ? result.upstream : null;
@@ -766,11 +769,11 @@ function forcePushRecovery() {
   if (!recoveryUpstream) return;
   const upstream = recoveryUpstream;
   askConfirmation(
-    "Rewrite the remote history?",
-    `Force-push local history to ${upstream.remote}/${upstream.branch} with lease. This may rewrite the remote history, but the lease protects newer remote work.`,
-    "Force-push with lease",
+    $ui("Rewrite the remote history?"),
+    $ui("Force-push local history to {0}/{1} with lease. This may rewrite the remote history, but the lease protects newer remote work.", upstream.remote, upstream.branch),
+    $ui("Force-push with lease"),
     async () => {
-      const completed = await withBusy("Force-pushing with lease…", async () => {
+      const completed = await withBusy($ui("Force-pushing with lease…"), async () => {
         notifyStatus(await project.gitPush(upstream.remote, upstream.branch, true));
         recoveryUpstream = null;
         await refresh();
@@ -783,11 +786,11 @@ function forcePushRecovery() {
 
 function restoreFromRemote() {
   askConfirmation(
-    "Restore from the remote?",
-    "This discards the local hard-reset state and rebuilds the project index from the upstream remote.",
-    "Restore from remote",
+    $ui("Restore from the remote?"),
+    $ui("This discards the local hard-reset state and rebuilds the project index from the upstream remote."),
+    $ui("Restore from remote"),
     async () => {
-      const completed = await withBusy("Restoring from remote…", async () => {
+      const completed = await withBusy($ui("Restoring from remote…"), async () => {
         const result = await project.gitRestoreFromUpstream();
         notifyStatus(result.status);
         recoveryUpstream = null;
@@ -814,15 +817,15 @@ onDestroy(() => {
       <GitBranch size={18} strokeWidth={1.8} aria-hidden="true" />
     </div>
     <div class="hero-copy">
-      <span class="kicker">VERSIONING</span>
-      <strong>Snapshots</strong>
-      <p>Save named versions of this project’s canonical files. Every snapshot is a Git commit you can restore.</p>
+      <span class="kicker">{$ui("VERSIONING")}</span>
+      <strong>{$ui("Snapshots")}</strong>
+      <p>{$ui("Save named versions of this project’s canonical files. Every snapshot is a Git commit you can restore.")}</p>
     </div>
-    <div class="hero-stats" aria-label="Snapshot summary">
+    <div class="hero-stats" aria-label={$ui("Snapshot summary")}>
       <span class="stat-pill"
-        ><GitBranch size={12} strokeWidth={1.8} aria-hidden="true" /> {status?.branch || "No repo"}</span>
-      <span class="stat-pill"><History size={12} strokeWidth={1.8} aria-hidden="true" /> {log.length} snapshots</span>
-      <span class="stat-pill"><Cable size={12} strokeWidth={1.8} aria-hidden="true" /> {remotes.length} remotes</span>
+        ><GitBranch size={12} strokeWidth={1.8} aria-hidden="true" /> {status?.branch || $ui("No repo")}</span>
+      <span class="stat-pill"><History size={12} strokeWidth={1.8} aria-hidden="true" /> {$ui("{0} snapshots", log.length)}</span>
+      <span class="stat-pill"><Cable size={12} strokeWidth={1.8} aria-hidden="true" /> {$ui("{0} remotes", remotes.length)}</span>
     </div>
   </div>
 
@@ -831,17 +834,17 @@ onDestroy(() => {
       <div class="block-heading">
         <div class="heading-left">
           <span class="heading-icon"><DatabaseZap size={14} strokeWidth={1.8} aria-hidden="true" /></span>
-          <h3>Version control</h3>
+          <h3>{$ui("Version control")}</h3>
         </div>
-        <span class="block-hint">Git availability</span>
+        <span class="block-hint">{$ui("Git availability")}</span>
       </div>
       {#if tool === null}
-        <p class="settings-empty">Checking Git…</p>
+        <p class="settings-empty">{$ui("Checking Git…")}</p>
       {:else if tool.available}
         <p class="git-tool-ok">{tool.version}</p>
       {:else}
-        <p class="settings-empty">{tool.error ?? "Git was not found on this computer."}</p>
-        <button type="button" class="primary-button" onclick={() => void openDownload()}>Download Git</button>
+        <p class="settings-empty">{tool.error ?? $ui("Git was not found on this computer.")}</p>
+        <button type="button" class="primary-button" onclick={() => void openDownload()}>{$ui("Download Git")}</button>
       {/if}
     </section>
   {/if}
@@ -850,25 +853,25 @@ onDestroy(() => {
     <div class="empty-inline">
       <GitBranch size={16} strokeWidth={1.7} aria-hidden="true" />
       <div>
-        <strong>Open a project to manage snapshots</strong><span>Snapshots, remotes, and history are per-project.</span>
+        <strong>{$ui("Open a project to manage snapshots")}</strong><span>{$ui("Snapshots, remotes, and history are per-project.")}</span>
       </div>
     </div>
   {:else if tool && !tool.available}
     <div class="empty-inline">
       <DatabaseZap size={16} strokeWidth={1.7} aria-hidden="true" />
-      <div><strong>Git not available</strong><span>Install Git to save snapshots for this project.</span></div>
+      <div><strong>{$ui("Git not available")}</strong><span>{$ui("Install Git to save snapshots for this project.")}</span></div>
     </div>
   {:else if loading && !status}
     <div class="empty-inline" role="status">
       <GitBranch size={16} strokeWidth={1.7} aria-hidden="true" />
-      <div><strong>Loading snapshots…</strong><span>Reading repository status and canonical changes.</span></div>
+      <div><strong>{$ui("Loading snapshots…")}</strong><span>{$ui("Reading repository status and canonical changes.")}</span></div>
     </div>
   {:else if loadError && !status}
     <div class="empty-inline load-error" role="alert">
       <GitBranch size={16} strokeWidth={1.7} aria-hidden="true" />
       <div>
-        <strong>Could not load snapshots</strong><span>{loadError}</span>
-        <button type="button" class="quiet-button inline-retry" onclick={() => void refresh()}>Try again</button>
+        <strong>{$ui("Could not load snapshots")}</strong><span>{$nativeErrorText(loadError)}</span>
+        <button type="button" class="quiet-button inline-retry" onclick={() => void refresh()}>{$ui("Try again")}</button>
       </div>
     </div>
   {:else if status && !status.repository}
@@ -876,52 +879,48 @@ onDestroy(() => {
       <div class="block-heading">
         <div class="heading-left">
           <span class="heading-icon"><ShieldCheck size={14} strokeWidth={1.8} aria-hidden="true" /></span>
-          <h3>Repository</h3>
+          <h3>{$ui("Repository")}</h3>
         </div>
       </div>
       <div class="empty-inline">
         <ShieldCheck size={16} strokeWidth={1.7} aria-hidden="true" />
         <div>
-          <strong>Snapshots not enabled yet</strong><span>Enable snapshots to start versioning this project.</span>
+          <strong>{$ui("Snapshots not enabled yet")}</strong><span>{$ui("Enable snapshots to start versioning this project.")}</span>
         </div>
       </div>
       <button type="button" class="primary-button" disabled={busy} onclick={() => void initializeGit()}
-        >Enable snapshots</button>
+        >{$ui("Enable snapshots")}</button>
     </section>
   {:else if status}
     {#if loadError}
       <div class="inline-warning" role="alert">
-        <span>{loadError}</span>
-        <button type="button" class="quiet-button" disabled={loading} onclick={() => void refresh()}>Try again</button>
+        <span>{$nativeErrorText(loadError)}</span>
+        <button type="button" class="quiet-button" disabled={loading} onclick={() => void refresh()}>{$ui("Try again")}</button>
       </div>
     {/if}
-    <section class="git-overview elevated" aria-label="Repository status">
+    <section class="git-overview elevated" aria-label={$ui("Repository status")}>
       <div>
-        <span class="panel-kicker">REPOSITORY</span>
-        <strong>{status.branch || "Detached HEAD"}</strong>
+        <span class="panel-kicker">{$ui("REPOSITORY")}</span>
+        <strong>{status.branch || $ui("Detached HEAD")}</strong>
         <small
-          >{totalChangeCount === 0 ? "No snapshot-ready changes" : `${totalChangeCount} snapshot-ready changes`}</small>
+          >{totalChangeCount === 0 ? $ui("No snapshot-ready changes") : $ui("{0} snapshot-ready changes", totalChangeCount)}</small>
       </div>
       <div class:git-overview-warn={!preflight?.ready || totalChangeCount > 0} class="git-overview-stat">
         <strong>{totalChangeCount}</strong>
-        <small>{totalChangeCount === 1 ? "snapshot-ready change" : "snapshot-ready changes"}</small>
+        <small>{totalChangeCount === 1 ? $ui("snapshot-ready change") : $ui("snapshot-ready changes")}</small>
       </div>
       <button type="button" class="quiet-button" disabled={busy || loading} onclick={() => void refresh()}
-        >{loading ? "Refreshing…" : "Refresh"}</button>
+        >{loading ? $ui("Refreshing…") : $ui("Refresh")}</button>
     </section>
     {#if recoveryUpstream}
       <section class="git-recovery elevated" role="status">
-        <strong>Remote history diverged after restore</strong>
-        <p>
-          Local HEAD no longer matches {recoveryUpstream.remote}/{recoveryUpstream.branch}. Force-push with lease
-          rewrites the remote to match this snapshot. Restore from remote undoes the local hard reset using the remote
-          tip.
-        </p>
+        <strong>{$ui("Remote history diverged after restore")}</strong>
+        <p> {$ui("Local HEAD no longer matches {0}/{1}. Force-push with lease rewrites the remote to match this snapshot. Restore from remote undoes the local hard reset using the remote tip.", recoveryUpstream.remote, recoveryUpstream.branch)} </p>
         <div class="git-actions">
           <button type="button" class="danger-button" disabled={busy} onclick={() => void forcePushRecovery()}
-            >Force-push with lease</button>
+            >{$ui("Force-push with lease")}</button>
           <button type="button" class="primary-button" disabled={busy} onclick={() => void restoreFromRemote()}
-            >Restore from remote</button>
+            >{$ui("Restore from remote")}</button>
         </div>
       </section>
     {/if}
@@ -930,23 +929,23 @@ onDestroy(() => {
       <div class="block-heading">
         <div class="heading-left">
           <span class="heading-icon"><FileText size={14} strokeWidth={1.8} aria-hidden="true" /></span>
-          <h3>Create snapshot</h3>
+          <h3>{$ui("Create snapshot")}</h3>
         </div>
-        <span class="block-hint">Canonical files only</span>
+        <span class="block-hint">{$ui("Canonical files only")}</span>
       </div>
-      <p class="git-section-copy">Choose what to preserve, add a short message, then create the snapshot.</p>
+      <p class="git-section-copy">{$ui("Choose what to preserve, add a short message, then create the snapshot.")}</p>
       {#if preflight && !preflight.ready}
         <div class="git-diagnostics" role="alert">
-          <strong>Snapshot blocked</strong>
+          <strong>{$ui("Snapshot blocked")}</strong>
           <ul>
             {#each preflight.diagnostics as diagnostic}
-              <li>{diagnostic}</li>
+              <li>{$nativeErrorText(diagnostic)}</li>
             {/each}
           </ul>
         </div>
       {/if}
       {#if changeGroups.length === 0}
-        <p class="settings-empty">Working tree has no canonical changes to commit.</p>
+        <p class="settings-empty">{$ui("Working tree has no canonical changes to commit.")}</p>
       {:else}
         <div class="git-disclosure">
           <button
@@ -955,8 +954,8 @@ onDestroy(() => {
             aria-expanded={changesExpanded}
             onclick={() => (changesExpanded = !changesExpanded)}>
             <span class="git-disclosure-copy">
-              <strong>Changes</strong>
-              <small>{selectedFileCount} of {totalChangeCount} files selected</small>
+              <strong>{$ui("Changes")}</strong>
+              <small>{$ui("{0} of {1} files selected", selectedFileCount, totalChangeCount)}</small>
             </span>
             <span class="git-disclosure-chevron" aria-hidden="true">
               {#if changesExpanded}<ChevronDown size={16} strokeWidth={1.8} />{:else}<ChevronRight
@@ -967,10 +966,10 @@ onDestroy(() => {
           {#if changesExpanded}
             <div class="git-disclosure-body">
               <div class="git-change-toolbar">
-                <small>Selection is limited to canonical project files.</small>
+                <small>{$ui("Selection is limited to canonical project files.")}</small>
                 <div class="git-actions">
-                  <button type="button" class="quiet-button" onclick={selectAllGroups}>Select all</button>
-                  <button type="button" class="quiet-button" onclick={clearGroups}>Select none</button>
+                  <button type="button" class="quiet-button" onclick={selectAllGroups}>{$ui("Select all")}</button>
+                  <button type="button" class="quiet-button" onclick={clearGroups}>{$ui("Select none")}</button>
                 </div>
               </div>
               <ul class="git-change-list">
@@ -999,14 +998,14 @@ onDestroy(() => {
             aria-expanded={messageExpanded}
             onclick={toggleMessageEditor}>
             <span class="git-disclosure-copy">
-              <span>Snapshot message</span>
-              <strong>{commitMessageTitle || "Add a message"}</strong>
+              <span>{$ui("Snapshot message")}</span>
+              <strong>{commitMessageTitle || $ui("Add a message")}</strong>
               <small
                 >{commitMessageTitle
                   ? commitMessageBody
-                    ? "Title and notes"
-                    : "Title only"
-                  : "A short title is required"}</small>
+                    ? $ui("Title and notes")
+                    : $ui("Title only")
+                  : $ui("A short title is required")}</small>
             </span>
             <span class="git-disclosure-chevron" aria-hidden="true">
               {#if messageExpanded}<ChevronDown size={16} strokeWidth={1.8} />{:else}<ChevronRight
@@ -1016,40 +1015,40 @@ onDestroy(() => {
           </button>
           {#if messageExpanded}
             <label class="create-input-field git-message-field" for="git-commit-message">
-              <span>Title on the first line; optional notes below</span>
+              <span>{$ui("Title on the first line; optional notes below")}</span>
               <textarea
                 id="git-commit-message"
                 rows="4"
                 bind:value={commitMessage}
-                placeholder="Describe this snapshot"
+                placeholder={$ui("Describe this snapshot")}
                 disabled={busy || aiMessageBusy}></textarea>
             </label>
             <div class="git-message-actions">
               <button type="button" class="quiet-button" disabled={busy || aiMessageBusy} onclick={generateMessage}
-                >Suggest message</button>
+                >{$ui("Suggest message")}</button>
               {#if aiEnabled && (aiMessageBusy || !commitMessage.trim())}
                 <button
                   type="button"
                   class="quiet-button git-ai-action"
                   disabled={busy || (!aiMessageBusy && (!preflight?.ready || selectedPaths.length === 0))}
                   onclick={() => void (aiMessageBusy ? cancelAiMessage() : generateAiMessage())}>
-                  {#if aiMessageBusy}<X size={14} strokeWidth={1.8} aria-hidden="true" /> Cancel AI{:else}<Sparkles
+                  {#if aiMessageBusy}<X size={14} strokeWidth={1.8} aria-hidden="true" /> {$ui("Cancel AI")}{:else}<Sparkles
                       size={14}
                       strokeWidth={1.8}
-                      aria-hidden="true" /> Write with AI{/if}
+                      aria-hidden="true" /> {$ui("Write with AI")}{/if}
                 </button>
               {/if}
             </div>
           {/if}
           <div class="git-commit-footer">
             <span class:ready={!snapshotBlockReason} role="status">
-              {snapshotBlockReason || `${selectedFileCount} ${selectedFileCount === 1 ? "file" : "files"} ready`}
+              {snapshotBlockReason || $ui("{0} {1} ready", selectedFileCount, selectedFileCount === 1 ? $ui("file") : $ui("files"))}
             </span>
             <button
               type="button"
               class="primary-button"
               disabled={busy || Boolean(snapshotBlockReason)}
-              onclick={() => void commitSelected()}>Create snapshot</button>
+              onclick={() => void commitSelected()}>{$ui("Create snapshot")}</button>
           </div>
         </div>
       {/if}
@@ -1059,13 +1058,13 @@ onDestroy(() => {
       <div class="block-heading">
         <div class="heading-left">
           <span class="heading-icon"><History size={14} strokeWidth={1.8} aria-hidden="true" /></span>
-          <h3>Snapshot history</h3>
+          <h3>{$ui("Snapshot history")}</h3>
           <span class="count-badge">{log.length}</span>
         </div>
-        <span class="block-hint">Newest first</span>
+        <span class="block-hint">{$ui("Newest first")}</span>
       </div>
       {#if log.length === 0}
-        <p class="settings-empty">No snapshots yet.</p>
+        <p class="settings-empty">{$ui("No snapshots yet.")}</p>
       {:else}
         <ul class="git-log-list">
           {#each log as entry}
@@ -1081,20 +1080,20 @@ onDestroy(() => {
                       strokeWidth={1.8} />{:else}<ChevronRight size={16} strokeWidth={1.8} />{/if}
                 </span>
                 <span class="git-history-copy">
-                  <strong>{entry.subject || "Untitled snapshot"}</strong>
-                  <small>{snapshotDateLabel(entry.date)}</small>
+                  <strong>{entry.subject || $ui("Untitled snapshot")}</strong>
+                  <small>{snapshotDateLabel(entry.date, $displayLanguage)}</small>
                 </span>
               </button>
               {#if expandedHistoryHash === entry.hash}
                 <div class="git-history-details">
                   {#if historyMessageLoading === entry.hash}
-                    <p>Loading message…</p>
+                    <p>{$ui("Loading message…")}</p>
                   {:else}
                     {@const historyBody = snapshotMessageBody(historyMessages[entry.hash] ?? "")}
-                    <p class:empty={!historyBody}>{historyBody || "No additional notes for this snapshot."}</p>
+                    <p class:empty={!historyBody}>{historyBody || $ui("No additional notes for this snapshot.")}</p>
                   {/if}
                   <details class="git-technical-details">
-                    <summary>Technical details</summary>
+                    <summary>{$ui("Technical details")}</summary>
                     <code>{entry.hash}</code>
                   </details>
                   <div class="git-history-actions">
@@ -1102,9 +1101,9 @@ onDestroy(() => {
                       type="button"
                       class="quiet-button"
                       disabled={busy}
-                      onclick={() => void selectCommit(entry.hash)}>Review changes</button>
+                      onclick={() => void selectCommit(entry.hash)}>{$ui("Review changes")}</button>
                     <button type="button" class="danger-button" disabled={busy} onclick={() => askReset(entry.hash)}
-                      >Restore this snapshot…</button>
+                      >{$ui("Restore this snapshot…")}</button>
                   </div>
                 </div>
               {/if}
@@ -1125,10 +1124,10 @@ onDestroy(() => {
             onkeydown={(event) => trapModalFocus(event, snapshotDialog)}>
             <div class="new-form-heading">
               <div>
-                <span class="panel-kicker">SNAPSHOT DETAILS</span>
-                <strong id="snapshot-title">{snapshotEntry?.subject ?? "Snapshot details"}</strong>
+                <span class="panel-kicker">{$ui("SNAPSHOT DETAILS")}</span>
+                <strong id="snapshot-title">{snapshotEntry?.subject ?? $ui("Snapshot details")}</strong>
                 <small class="git-snapshot-meta"
-                  >{snapshotEntry ? snapshotDateLabel(snapshotEntry.date) : "Snapshot"}</small>
+                  >{snapshotEntry ? snapshotDateLabel(snapshotEntry.date, $displayLanguage) : $ui("Snapshot")}</small>
                 {#if selectedCommitMessage}
                   {@const messageBody = snapshotMessageBody(selectedCommitMessage)}
                   {#if messageBody}
@@ -1136,7 +1135,7 @@ onDestroy(() => {
                   {/if}
                 {/if}
                 <details class="git-technical-details snapshot-technical-details">
-                  <summary>Technical details</summary>
+                  <summary>{$ui("Technical details")}</summary>
                   <code>{selectedCommit}</code>
                 </details>
               </div>
@@ -1144,19 +1143,19 @@ onDestroy(() => {
                 type="button"
                 id="git-snapshot-close"
                 class="new-form-close"
-                aria-label="Close snapshot details"
+                aria-label={$ui("Close snapshot details")}
                 onclick={closeSnapshotModal}><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
             </div>
             <div class="git-snapshot-summary">
               <div>
-                <strong>{snapshotChanges.length} changed {snapshotChanges.length === 1 ? "file" : "files"}</strong>
-                <span>The first change is selected automatically.</span>
+                <strong>{$ui("{0} changed {1}", snapshotChanges.length, snapshotChanges.length === 1 ? $ui("file") : $ui("files"))}</strong>
+                <span>{$ui("The first change is selected automatically.")}</span>
               </div>
               <button type="button" class="danger-button" disabled={busy} onclick={() => askReset(selectedCommit!)}
-                >Restore this snapshot…</button>
+                >{$ui("Restore this snapshot…")}</button>
             </div>
             {#if snapshotChanges.length === 0}
-              <p class="settings-empty">{busy ? "Loading changes…" : "No canonical file changes in this snapshot."}</p>
+              <p class="settings-empty">{busy ? $ui("Loading changes…") : $ui("No canonical file changes in this snapshot.")}</p>
             {:else}
               <div class="git-snapshot-layout">
                 <div class="git-snapshot-files">
@@ -1169,20 +1168,20 @@ onDestroy(() => {
                       <button
                         type="button"
                         class="git-change-category-toggle"
-                        onclick={() => toggleSnapshotGroup(group.label)}>
+                        onclick={() => toggleSnapshotGroup(group.id)}>
                         <span class="git-tree-chevron" aria-hidden="true"
-                          >{#if snapshotGroupExpanded(group.label)}<ChevronDown
+                          >{#if snapshotGroupExpanded(group.id)}<ChevronDown
                               size={14}
                               strokeWidth={1.8}
                               aria-hidden="true" />{:else}<ChevronRight
                               size={14}
                               strokeWidth={1.8}
                               aria-hidden="true" />{/if}</span>
-                        <span class="git-change-kind">{group.kind === "other" ? "Changes" : group.kind}</span>
+                        <span class="git-change-kind">{group.kind === "other" ? $ui("Changes") : $ui(group.kind)}</span>
                         <span>{group.label}</span>
                         <small>{group.changes.length}</small>
                       </button>
-                      {#if snapshotGroupExpanded(group.label)}<ul class="git-path-list compact">
+                      {#if snapshotGroupExpanded(group.id)}<ul class="git-path-list compact">
                           {#each group.changes as change (change.path)}
                             <li>
                               <button
@@ -1203,19 +1202,19 @@ onDestroy(() => {
                 </div>
                 <div class="git-diff-panel">
                   {#if diffLoading}
-                    <p class="settings-empty">Loading diff…</p>
+                    <p class="settings-empty">{$ui("Loading diff…")}</p>
                   {:else if selectedChangePath}
                     <div class="git-diff-heading">
                       <div class="git-diff-file-copy">
                         <strong>{snapshotChangeLabel(selectedChangePath)}</strong>
                         <details class="git-technical-details">
-                          <summary>Show stored path</summary>
+                          <summary>{$ui("Show stored path")}</summary>
                           <code>{selectedChangePath}</code>
                         </details>
                       </div>
                       <label class="diff-wrap-toggle">
                         <input type="checkbox" bind:checked={wrapDiffLines} />
-                        <span>Wrap lines</span>
+                        <span>{$ui("Wrap lines")}</span>
                       </label>
                     </div>
                     {#if changeDiff}
@@ -1224,10 +1223,10 @@ onDestroy(() => {
                             >{line}
 </span>{/each}</pre>
                     {:else}
-                      <p class="settings-empty">No textual diff available for this file.</p>
+                      <p class="settings-empty">{$ui("No textual diff available for this file.")}</p>
                     {/if}
                   {:else}
-                    <p class="settings-empty">Choose a changed file to view its diff.</p>
+                    <p class="settings-empty">{$ui("Choose a changed file to view its diff.")}</p>
                   {/if}
                 </div>
               </div>
@@ -1246,8 +1245,8 @@ onDestroy(() => {
         <span class="heading-left">
           <span class="heading-icon"><Cable size={14} strokeWidth={1.8} aria-hidden="true" /></span>
           <span>
-            <strong>Sync & repository</strong>
-            <small>{remotes.length} {remotes.length === 1 ? "remote" : "remotes"} · {tool?.version}</small>
+            <strong>{$ui("Sync & repository")}</strong>
+            <small>{remotes.length === 1 ? $ui("{0} remote", 1) : $ui("{0} remotes", remotes.length)} · {tool?.version}</small>
           </span>
         </span>
         <span class="git-disclosure-chevron" aria-hidden="true">
@@ -1261,14 +1260,14 @@ onDestroy(() => {
           <div class="git-repository-group">
             <div class="git-subsection-heading">
               <div>
-                <strong>Remotes</strong>
-                <small>Push snapshots or connect another repository.</small>
+                <strong>{$ui("Remotes")}</strong>
+                <small>{$ui("Push snapshots or connect another repository.")}</small>
               </div>
               <button type="button" class="primary-button" disabled={busy} onclick={openAddRemoteModal}
-                >Add remote</button>
+                >{$ui("Add remote")}</button>
             </div>
             {#if remotes.length === 0}
-              <p class="settings-empty">No remotes configured. Local snapshots still work without one.</p>
+              <p class="settings-empty">{$ui("No remotes configured. Local snapshots still work without one.")}</p>
             {:else}
               <ul class="git-remote-list">
                 {#each remotes as remote}
@@ -1276,7 +1275,7 @@ onDestroy(() => {
                     <div>
                       <strong>{remote.name}</strong>
                       <small>{remote.fetchUrl}</small>
-                      {#if remote.pushUrl !== remote.fetchUrl}<small>Push: {remote.pushUrl}</small>{/if}
+                      {#if remote.pushUrl !== remote.fetchUrl}<small>{$ui("Push: {0}", remote.pushUrl)}</small>{/if}
                     </div>
                     <div class="git-remote-actions">
                       <button
@@ -1284,21 +1283,21 @@ onDestroy(() => {
                         class="primary-button compact-button"
                         disabled={busy || loading || !status.branch || log.length === 0}
                         title={!status.branch
-                          ? "Switch to a branch before pushing"
+                          ? $ui("Switch to a branch before pushing")
                           : log.length === 0
-                            ? "Create a snapshot before pushing"
-                            : `Push ${status.branch} to ${remote.name}`}
-                        onclick={() => void pushRemote(remote)}>Push</button>
+                            ? $ui("Create a snapshot before pushing")
+                            : $ui("Push {0} to {1}", status.branch, remote.name)}
+                        onclick={() => void pushRemote(remote)}>{$ui("Push")}</button>
                       <button
                         type="button"
                         class="quiet-button"
                         disabled={busy}
-                        onclick={() => openEditRemoteModal(remote)}>Edit URL</button>
+                        onclick={() => openEditRemoteModal(remote)}>{$ui("Edit URL")}</button>
                       <button
                         type="button"
                         class="quiet-button"
                         disabled={busy}
-                        onclick={() => void removeRemote(remote.name)}>Remove</button>
+                        onclick={() => void removeRemote(remote.name)}>{$ui("Remove")}</button>
                     </div>
                   </li>
                 {/each}
@@ -1308,8 +1307,8 @@ onDestroy(() => {
           <div class="git-repository-group">
             <div class="git-subsection-heading">
               <div>
-                <strong>History maintenance</strong>
-                <small>Git: {tool?.version}. Condensing permanently removes earlier local snapshots.</small>
+                <strong>{$ui("History maintenance")}</strong>
+                <small>{$ui("Git: {0}. Condensing permanently removes earlier local snapshots.", tool?.version)}</small>
               </div>
               {#if log.length > 1}
                 <button
@@ -1317,9 +1316,9 @@ onDestroy(() => {
                   class="quiet-button"
                   disabled={busy || !preflight?.ready || preflight.staging_paths.length > 0}
                   title={preflight?.staging_paths.length
-                    ? "Create a snapshot for pending changes first"
-                    : "Replace history with one snapshot of the latest committed state"}
-                  onclick={askSuperSquash}>Condense history…</button>
+                    ? $ui("Create a snapshot for pending changes first")
+                    : $ui("Replace history with one snapshot of the latest committed state")}
+                  onclick={askSuperSquash}>{$ui("Condense history…")}</button>
               {/if}
             </div>
           </div>
@@ -1341,46 +1340,44 @@ onDestroy(() => {
       onkeydown={(event) => trapModalFocus(event, remoteDialog)}>
       <div class="new-form-heading">
         <div>
-          <span class="panel-kicker">SNAPSHOT REMOTE</span>
+          <span class="panel-kicker">{$ui("SNAPSHOT REMOTE")}</span>
           <strong id="git-remote-title"
-            >{remoteModalMode === "add" ? "Add remote" : `Edit ${editingRemoteName}`}</strong>
+            >{remoteModalMode === "add" ? $ui("Add remote") : $ui("Edit {0}", editingRemoteName)}</strong>
         </div>
-        <button type="button" class="new-form-close" aria-label="Close remote dialog" onclick={closeRemoteModal}
+        <button type="button" class="new-form-close" aria-label={$ui("Close remote dialog")} onclick={closeRemoteModal}
           ><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
       </div>
       <form onsubmit={(event) => (event.preventDefault(), void submitRemoteModal())}>
         <div class="git-remote-form">
           {#if remoteModalMode === "add"}
             <label class="create-input-field" for="git-remote-name">
-              <span>Name</span>
+              <span>{$ui("Name")}</span>
               <input
                 id="git-remote-name"
                 bind:value={remoteName}
-                placeholder={remotes.length === 0 ? "origin" : "upstream"} />
+                placeholder={remotes.length === 0 ? $ui("origin") : $ui("upstream")} />
             </label>
           {:else}
-            <p class="dialog-body-copy">
-              Remote name stays <code>{editingRemoteName}</code>. Update the fetch/push URL below.
-            </p>
+            <p class="dialog-body-copy"> {$ui("Remote name stays")} <code>{editingRemoteName}</code>{$ui(". Update the fetch/push URL below.")} </p>
           {/if}
           <label class="create-input-field" for="git-remote-url">
-            <span>URL</span>
+            <span>{$ui("URL")}</span>
             <input
               id="git-remote-url"
               type="text"
               inputmode="url"
               autocomplete="url"
               bind:value={remoteUrl}
-              placeholder="https://…" />
+              placeholder={$ui("https://…")} />
           </label>
         </div>
         <div class="new-form-actions">
-          <button type="button" class="quiet-button" onclick={closeRemoteModal}>Cancel</button>
+          <button type="button" class="quiet-button" onclick={closeRemoteModal}>{$ui("Cancel")}</button>
           <button
             type="submit"
             class="primary-button"
             disabled={busy || !remoteUrl.trim() || (remoteModalMode === "add" && !remoteName.trim())}
-            >{remoteModalMode === "add" ? "Add remote" : "Save URL"}</button>
+            >{remoteModalMode === "add" ? $ui("Add remote") : $ui("Save URL")}</button>
         </div>
       </form>
     </div>
@@ -1400,21 +1397,21 @@ onDestroy(() => {
       onkeydown={(event) => trapModalFocus(event, confirmationDialog)}>
       <div class="new-form-heading">
         <div>
-          <span class="panel-kicker">CONFIRM SNAPSHOT ACTION</span>
+          <span class="panel-kicker">{$ui("CONFIRM SNAPSHOT ACTION")}</span>
           <strong id="git-confirm-title">{confirmation.title}</strong>
         </div>
         <button
           type="button"
           class="new-form-close"
-          aria-label="Close confirmation"
+          aria-label={$ui("Close confirmation")}
           disabled={confirmationBusy}
           onclick={closeConfirmation}><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
       </div>
       <p id="git-confirm-description" class="dialog-body-copy">{confirmation.message}</p>
       {#if confirmation.squash}
         <label class="create-input-field squash-message-field" for="squash-message">
-          <span>Snapshot message <small>(optional)</small></span>
-          <input id="squash-message" bind:value={squashMessage} placeholder="Consolidate snapshot history" />
+          <span>{$ui("Snapshot message")} <small>{$ui("(optional)")}</small></span>
+          <input id="squash-message" bind:value={squashMessage} placeholder={$ui("Consolidate snapshot history")} />
         </label>
       {/if}
       <div class="new-form-actions">
@@ -1423,7 +1420,7 @@ onDestroy(() => {
           type="button"
           class="quiet-button"
           disabled={confirmationBusy}
-          onclick={closeConfirmation}>Cancel</button>
+          onclick={closeConfirmation}>{$ui("Cancel")}</button>
         <button
           type="button"
           class="primary-button danger-button"

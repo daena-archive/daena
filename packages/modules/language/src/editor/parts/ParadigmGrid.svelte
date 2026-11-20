@@ -1,4 +1,5 @@
 <script lang="ts">
+import { pluginText } from "../../i18n.ts";
 import { CELL_STATE_OPTIONS, cartesianCoordinates, coordKey } from "../../grammar/paradigm";
 import type { ParadigmCell, ParadigmCellState, ParadigmAxis } from "../../grammar/types";
 
@@ -21,16 +22,16 @@ const rowCombos = $derived(cartesianCoordinates(rowAxes));
 </script>
 
 {#if axes.length === 0}
-  <p class="language-empty" role="status">Select at least one distinction to generate the paradigm.</p>
+  <p class="language-empty" role="status">{$pluginText("Select at least one distinction to generate the paradigm.")}</p>
 {:else}
-  <div class="grammar-paradigm" role="group" aria-label="Paradigm">
+  <div class="grammar-paradigm" role="group" aria-label={$pluginText("Paradigm")}>
     <table class="grammar-paradigm-table">
-      <caption class="visually-hidden">Paradigm</caption>
+      <caption class="visually-hidden">{$pluginText("Paradigm")}</caption>
       <thead>
         <tr>
           <th scope="col">{rowAxes.map((axis) => axis.label).join(" · ")}</th>
           {#each columns as column (column.id)}
-            <th scope="col">{column.label || colAxis?.label || "Form"}</th>
+            <th scope="col">{column.label || colAxis?.label || $pluginText("Form")}</th>
           {/each}
         </tr>
       </thead>
@@ -47,22 +48,22 @@ const rowCombos = $derived(cartesianCoordinates(rowAxes));
                 {#if cell}
                   <div class="grammar-paradigm-cell">
                     <select
-                      aria-label="Cell state"
+                      aria-label={$pluginText("Cell state")}
                       disabled={locked}
                       onchange={(event) => oncell(cell.id, { state: event.currentTarget.value as ParadigmCellState })}>
                       {#each CELL_STATE_OPTIONS as option (option.value)}
-                        <option value={option.value} selected={option.value === cell.state}>{option.label}</option>
+                        <option value={option.value} selected={option.value === cell.state}>{$pluginText(option.label)}</option>
                       {/each}
                     </select>
                     {#if cell.state === "form"}
-                      <input aria-label="Form" type="text" bind:value={cell.form} disabled={locked} />
+                      <input aria-label={$pluginText("Form")} type="text" bind:value={cell.form} disabled={locked} />
                     {:else if cell.state === "same-as"}
                       <select
-                        aria-label="Same as"
+                        aria-label={$pluginText("Same as")}
                         value={cell.sameAsCellId ?? ""}
                         disabled={locked}
                         onchange={(event) => oncell(cell.id, { sameAsCellId: event.currentTarget.value || undefined })}>
-                        <option value="">Choose a form…</option>
+                        <option value="">{$pluginText("Choose a form…")}</option>
                         {#each cells.filter((other) => other.id !== cell.id) as other (other.id)}
                           <option value={other.id}>
                             {Object.values(other.coordinates).join(" · ")}{other.form ? ` (${other.form})` : ""}
@@ -71,9 +72,9 @@ const rowCombos = $derived(cartesianCoordinates(rowAxes));
                       </select>
                     {/if}
                     <input
-                      aria-label="Notes"
+                      aria-label={$pluginText("Notes")}
                       type="text"
-                      placeholder="Notes"
+                      placeholder={$pluginText("Notes")}
                       bind:value={cell.notes}
                       disabled={locked} />
                   </div>

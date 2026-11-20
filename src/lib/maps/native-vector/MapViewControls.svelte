@@ -1,4 +1,5 @@
 <script lang="ts">
+import { ui } from "$lib/i18n/ui";
 import { ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Minus, Plus } from "@lucide/svelte";
 
 let {
@@ -27,23 +28,23 @@ function zoomOut() {
 }
 </script>
 
-<div class="map-view-controls" aria-label="Map view">
+<div class="map-view-controls" aria-label={$ui("Map view")}>
   {#if onpan}
-    <div class="pan-pad" role="group" aria-label="Pan map">
-      <button type="button" class="north" aria-label="Pan north" title="Pan north" onclick={() => onpan(0, 15)}
+    <div class="pan-pad" role="group" aria-label={$ui("Pan map")}>
+      <button type="button" class="north" aria-label={$ui("Pan north")} title={$ui("Pan north")} onclick={() => onpan(0, 15)}
         ><ChevronUp {...iconProps} /></button>
-      <button type="button" class="west" aria-label="Pan west" title="Pan west" onclick={() => onpan(-30, 0)}
+      <button type="button" class="west" aria-label={$ui("Pan west")} title={$ui("Pan west")} onclick={() => onpan(-30, 0)}
         ><ChevronLeft {...iconProps} /></button>
-      <button type="button" class="east" aria-label="Pan east" title="Pan east" onclick={() => onpan(30, 0)}
+      <button type="button" class="east" aria-label={$ui("Pan east")} title={$ui("Pan east")} onclick={() => onpan(30, 0)}
         ><ChevronRight {...iconProps} /></button>
-      <button type="button" class="south" aria-label="Pan south" title="Pan south" onclick={() => onpan(0, -15)}
+      <button type="button" class="south" aria-label={$ui("Pan south")} title={$ui("Pan south")} onclick={() => onpan(0, -15)}
         ><ChevronDown {...iconProps} /></button>
     </div>
   {/if}
-  <div class="zoom-stack" role="group" aria-label="Zoom">
-    <button type="button" aria-label="Zoom in" title="Zoom in" disabled={zoom >= max} onclick={zoomIn}
+  <div class="zoom-stack" role="group" aria-label={$ui("Zoom")}>
+    <button type="button" aria-label={$ui("Zoom in")} title={$ui("Zoom in")} disabled={zoom >= max} onclick={zoomIn}
       ><Plus {...iconProps} /></button>
-    <button type="button" aria-label="Zoom out" title="Zoom out" disabled={zoom <= min} onclick={zoomOut}
+    <button type="button" aria-label={$ui("Zoom out")} title={$ui("Zoom out")} disabled={zoom <= min} onclick={zoomOut}
       ><Minus {...iconProps} /></button>
   </div>
 </div>

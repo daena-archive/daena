@@ -15,3 +15,8 @@ variables. It also reads a small project
 entry summary through the broker and stores scratch notes in its owned
 `ink-tools` namespace. Broker mutations use the revision returned by the prior
 read and the SDK transport's request ID; the host rejects stale revisions.
+
+Date Lens and Field Notes include Japanese catalogs in `locales/ja.json`. Run
+`npm run build:plugin-examples` at the repository root before packaging Date Lens to
+copy the compiled SDK into its UI. In Daena, switch the display language while the
+plugin is open to see both the sidebar and the view update.

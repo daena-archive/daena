@@ -1,4 +1,6 @@
 <script lang="ts">
+import { ui } from "$lib/i18n/ui";
+import { messages } from "$lib/i18n";
 import { X } from "@lucide/svelte";
 import CalendarPicker from "$lib/CalendarPicker.svelte";
 import {
@@ -138,9 +140,9 @@ function removeTime() {
   {/if}
   <div class="date-fields" class:has-custom-months={months.length > 0}>
     <label
-      >Year<input
+      >{$messages.date.year}<input
         type="number"
-        aria-label={`${label} year`}
+        aria-label={$messages.date.part(label, $messages.date.year)}
         value={parts?.year ?? (rawDate as any)?.year ?? ""}
         onchange={(e) =>
           updatePart(
@@ -150,27 +152,28 @@ function removeTime() {
           )} /></label>
     {#if months.length > 0}
       <label
-        >Month<select
-          aria-label={`${label} month`}
+        >{$messages.date.month}<select
+          aria-label={$messages.date.part(label, $messages.date.month)}
           value={displayMonth ?? ""}
           onchange={(e) => updatePart("month", (e.currentTarget as HTMLSelectElement).value, 1, months.length)}
-          ><option value="">Month</option>{#each months as month, i}<option value={i + 1}>{month.name}</option
+          ><option value="">{$messages.date.month}</option>{#each months as month, i}<option value={i + 1}
+              >{month.name}</option
             >{/each}</select
         ></label>
     {:else}
       <label
-        >Month<input
+        >{$messages.date.month}<input
           type="number"
-          aria-label={`${label} month`}
+          aria-label={$messages.date.part(label, $messages.date.month)}
           min="1"
           max="12"
           value={displayMonth ?? (rawDate as any)?.month ?? ""}
           onchange={(e) => updatePart("month", (e.currentTarget as HTMLInputElement).value, 1, 12)} /></label>
     {/if}
     <label
-      >Day<input
+      >{$messages.date.day}<input
         type="number"
-        aria-label={`${label} day`}
+        aria-label={$messages.date.part(label, $messages.date.day)}
         min="1"
         max={maxDay}
         value={displayDay ?? (rawDate as any)?.day ?? ""}
@@ -181,13 +184,13 @@ function removeTime() {
     <div class="date-time-row">
       <div class="date-time-fields">
         <label
-          >Hour<input
+          >{$messages.date.hour}<input
             type="number"
-            aria-label={`${label} hour`}
+            aria-label={$messages.date.part(label, $messages.date.hour)}
             min="0"
             max={maxHour}
             value={rawDate?.hour ?? ""}
-            placeholder="HH"
+            placeholder={$ui("HH")}
             onchange={(e) => {
               const v = (e.currentTarget as HTMLInputElement).value;
               if (!v.trim()) {
@@ -207,13 +210,13 @@ function removeTime() {
             }} /></label>
         <span class="date-time-sep">:</span>
         <label
-          >Minute<input
+          >{$messages.date.minute}<input
             type="number"
-            aria-label={`${label} minute`}
+            aria-label={$messages.date.part(label, $messages.date.minute)}
             min="0"
             max="59"
             value={rawDate?.minute ?? ""}
-            placeholder="MM"
+            placeholder={$ui("MM")}
             onchange={(e) => {
               const v = (e.currentTarget as HTMLInputElement).value;
               if (!v.trim() && rawDate?.hour === undefined) return;
@@ -222,13 +225,13 @@ function removeTime() {
             }} /></label>
         <span class="date-time-sep">:</span>
         <label
-          >Second<input
+          >{$messages.date.second}<input
             type="number"
-            aria-label={`${label} second`}
+            aria-label={$messages.date.part(label, $messages.date.second)}
             min="0"
             max="59"
             value={rawDate?.second ?? ""}
-            placeholder="SS"
+            placeholder={$ui("SS")}
             onchange={(e) => {
               const v = (e.currentTarget as HTMLInputElement).value;
               const s = v.trim() ? Math.max(0, Math.min(59, Math.floor(Number(v)))) : 0;
@@ -240,7 +243,7 @@ function removeTime() {
               } as any);
             }} /></label>
       </div>
-      <button type="button" class="date-time-remove" aria-label="Remove time" onclick={removeTime}
+      <button type="button" class="date-time-remove" aria-label={$messages.date.removeTime} onclick={removeTime}
         ><X size={14} strokeWidth={1.8} aria-hidden="true" /></button>
     </div>
   {:else}
@@ -248,15 +251,15 @@ function removeTime() {
       type="button"
       class="date-time-add"
       disabled={rawDate === null}
-      title={rawDate === null ? "Enter a year first" : undefined}
+      title={rawDate === null ? $messages.date.enterYear : undefined}
       onclick={() => {
         timeDraftOpen = true;
-      }}>Add time</button>
+      }}>{$messages.date.addTime}</button>
   {/if}
   <div class="date-editor-footer">
     <small class="date-preview"
       >{rawDate ? (calendar ? formatWithCalendar(value, calendar) : formatCalendarDate(rawDate)) : ""}</small>
-    <button type="button" class="date-clear" onclick={onClear}>Clear date</button>
+    <button type="button" class="date-clear" onclick={onClear}>{$messages.date.clear}</button>
   </div>
 </div>
 

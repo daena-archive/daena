@@ -1,3 +1,4 @@
+import { localizeUi } from "../i18n/ui.ts";
 import { TYPE_COLOR_PRESET_IDS, type EntityTypeColor } from "../../../packages/plugin-sdk/src/generated";
 import type { ResolvedTheme } from "$lib/theme";
 
@@ -141,7 +142,7 @@ export function normalizeHexColor(value: string): string | null {
 }
 
 export function validateCustomTypeColor(light: string, dark: string): string | null {
-  if (!normalizeHexColor(light)) return "Light color must be a #RRGGBB hex value.";
-  if (!normalizeHexColor(dark)) return "Dark color must be a #RRGGBB hex value.";
+  if (!normalizeHexColor(light)) return localizeUi("Light color must be a #RRGGBB hex value.");
+  if (!normalizeHexColor(dark)) return localizeUi("Dark color must be a #RRGGBB hex value.");
   return null;
 }

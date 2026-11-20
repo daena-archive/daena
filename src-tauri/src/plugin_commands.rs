@@ -462,6 +462,9 @@ pub(super) async fn plugin_admin_view(
             };
             let mut view = serde_json::to_value(manifest)
                 .map_err(|error| CoreError::Validation(error.to_string()))?;
+            if let Some(catalogs) = host.translations_for(manifest) {
+                view["localization"] = serde_json::json!({ "source": manifest, "catalogs": catalogs });
+            }
             let object = view
                 .as_object_mut()
                 .expect("manifest is a JSON object");

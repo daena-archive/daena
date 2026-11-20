@@ -1,4 +1,5 @@
 <script lang="ts">
+import { pluginText } from "../../plugin-i18n.ts";
 import { onDestroy, onMount, untrack } from "svelte";
 import AiProposalPreview from "../../../../src/lib/ai/AiProposalPreview.svelte";
 import { aiCanStart, buildAiStartRequest, isTerminalAiPhase, type WritingAiMode } from "./ai-flow.ts";
@@ -57,18 +58,18 @@ const canStart = $derived(aiCanStart(mode, selectionMarkdown, instruction));
 const message = $derived(notice || run?.error || "");
 const title = $derived(
   cancelling
-    ? "Cancelling request…"
+    ? $pluginText("Cancelling request…")
     : busy
       ? mode === "generate"
-        ? "Generating text…"
-        : "Rewriting selection…"
+        ? $pluginText("Generating text…")
+        : $pluginText("Rewriting selection…")
       : proposal
         ? mode === "generate"
-          ? "Review generated text"
-          : "Review rewrite"
+          ? $pluginText("Review generated text")
+          : $pluginText("Review rewrite")
         : mode === "generate"
-          ? "Generate text"
-          : "Rewrite selection",
+          ? $pluginText("Generate text")
+          : $pluginText("Rewrite selection"),
 );
 
 async function start() {
@@ -167,15 +168,15 @@ onDestroy(() => active?.dispose());
     bind:this={panel}>
     <div class="ai-rewrite-heading">
       <div>
-        <span class="panel-kicker">{providerName || "AI provider"}</span><strong id="ai-rewrite-title">{title}</strong>
+        <span class="panel-kicker">{providerName || $pluginText("AI provider")}</span><strong id="ai-rewrite-title">{title}</strong>
       </div>
     </div>
     {#if !busy}<label class="ai-instruction"
-        >Instruction<textarea
+        >{$pluginText("Instruction")}<textarea
           rows="2"
           bind:value={instruction}
           disabled={busy}
-          placeholder={`Tell ${providerName || "the AI provider"} ${mode === "generate" ? "what to write at the cursor" : "how to rewrite the selection"}`}
+          placeholder={$pluginText(mode === "generate" ? "Tell {provider} what to write at the cursor" : "Tell {provider} how to rewrite the selection", { provider: providerName || $pluginText("the AI provider") })}
         ></textarea
         ></label
       >{/if}
@@ -183,27 +184,27 @@ onDestroy(() => active?.dispose());
       original={selectionPlain}
       bind:proposal
       streamText={run?.streamText ?? ""}
-      progressMessage={run?.progressMessage ?? "Preparing model…"}
+      progressMessage={run?.progressMessage ?? $pluginText("Preparing model…")}
       {busy}
       {cancelling}
       onCancel={cancel}
       onDiscard={close}
       onAccept={() => void acceptProposal()} />
-    {#if message}<p class="ai-error" role="alert">{message}</p>{/if}
+    {#if message}<p class="ai-error" role="alert">{$pluginText(message)}</p>{/if}
     {#if run?.usage}<p class="muted-note">
-        Provider usage: {run.usage.inputTokens} input + {run.usage.outputTokens} output tokens.
+        {$pluginText("Provider usage:")} {run.usage.inputTokens} {$pluginText("input +")} {run.usage.outputTokens} {$pluginText("output tokens.")}
       </p>{/if}
     {#if !busy && proposal}<div class="ai-rewrite-actions">
         <button class="primary-button" type="button" disabled={accepting} onclick={() => void acceptProposal()}
-          >Accept proposal</button>
+          >{$pluginText("Accept proposal")}</button>
         <button class="quiet-button ai-retry-button" type="button" disabled={accepting} onclick={() => void start()}
-          >Retry</button>
-        <button class="quiet-button ai-discard-button" type="button" onclick={close}>Discard</button>
+          >{$pluginText("Retry")}</button>
+        <button class="quiet-button ai-discard-button" type="button" onclick={close}>{$pluginText("Discard")}</button>
       </div>
     {:else if !busy}<div class="ai-rewrite-actions">
         <button class="primary-button" type="button" disabled={!canStart} onclick={() => void start()}
-          >{mode === "generate" ? "Generate text" : "Generate rewrite"}</button>
-        <button class="quiet-button" type="button" onclick={close}>Cancel</button>
+          >{mode === "generate" ? $pluginText("Generate text") : $pluginText("Generate rewrite")}</button>
+        <button class="quiet-button" type="button" onclick={close}>{$pluginText("Cancel")}</button>
       </div>{/if}
   </div>
 </div>

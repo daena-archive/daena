@@ -1,4 +1,5 @@
 <script lang="ts">
+import { messages } from "$lib/i18n";
 import DateEditor from "$lib/date/DateEditor.svelte";
 import { parseCalendarDate } from "$lib/date";
 import type { CalendarDefinition } from "../../../packages/modules/timeline/src/calendar";
@@ -53,7 +54,7 @@ const showEditor = $derived(hasValue || editorOpen);
         {onSelectCalendar} />
     {/key}
   {:else}
-    <button class="date-empty" type="button" onclick={onOpen}>Add a date</button>
+    <button class="date-empty" type="button" onclick={onOpen}>{$messages.inspector.addDate}</button>
   {/if}
 </div>
 

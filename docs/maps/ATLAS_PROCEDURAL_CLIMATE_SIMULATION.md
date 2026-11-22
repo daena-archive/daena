@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This document is the climate model. Product behavior is in [`MAPS.md`](./MAPS.md). It is not a delivery plan.
+This document describes the climate model of the retired `daena-physical` generator, which was deleted in phase E8 of the world engine. It is kept as design background. The live climate is the world engine (`crates/daena-worldgen/src/climate.rs`), described in [`plans/world-engine.md`](../plans/world-engine.md). Product behavior is in [`MAPS.md`](./MAPS.md). It is not a delivery plan.
 
 Atlas generates climate as the result of interacting physical processes rather than independently generating temperature, wind, rainfall, humidity, and biomes as unrelated procedural fields.
 
@@ -1510,11 +1510,11 @@ A planet parameter should not secretly compensate for a numerical parameter.
 
 ---
 
-# 38. Current derivation
+# 38. Retired derivation
 
-The model above is the current derivation in `crates/daena-physical/src/climate.rs`, forced by `crates/daena-physical/src/planetary.rs`. Atlas and maps consume `ClimateField`. Product behavior is in [`MAPS.md`](./MAPS.md).
+The model above was the derivation in `crates/daena-physical/src/climate.rs`, which phase E8 of the world engine deleted. Humidity and ocean currents have no engine equivalent and were removed from the product. The live climate is `crates/daena-worldgen/src/climate.rs`, forced by the engine planet settings; `daena_physical::products::ClimateField` adapts it for Maps and Atlas (`CLIMATE_DERIVATION_VERSION` 3). Product behavior is in [`MAPS.md`](./MAPS.md).
 
-`CLIMATE_DERIVATION_VERSION` is 2. Cached climate that does not match that version fails validation. Do not add a second climate authority. Derivation must not write elevation. Historical epoch offsets apply after derivation.
+The rules still hold: do not add a second climate authority, derivation must not write elevation, and historical epoch offsets apply after derivation.
 
 There is no remaining climate implementation sequence.
 

@@ -224,25 +224,11 @@ pub struct ClimateSummary {
 }
 
 impl ClimateSummary {
+    /// The source climate hash; one implementation lives in
+    /// `crate::hash_climate_with_cancel`.
     pub(crate) fn hash_bits(&self) -> u64 {
-        let mut hash = 0xcbf2_9ce4_8422_2325u64;
-        for field in [
-            self.t_annual_c.as_slice(),
-            self.t_warm_c.as_slice(),
-            self.t_cold_c.as_slice(),
-            self.p_annual_mm.as_slice(),
-            self.p_dry_month_mm.as_slice(),
-            self.pet_annual_mm.as_slice(),
-            self.runoff_mm.as_slice(),
-            self.ice_balance_mm.as_slice(),
-        ] {
-            hash = fnv_f32(hash, field);
-        }
-        for byte in &self.sea_ice_months {
-            hash ^= u64::from(*byte);
-            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-        }
-        hash
+        crate::hash_climate_with_cancel(self, &|| false)
+            .expect("a never-cancelled hash cannot be cancelled")
     }
 }
 
@@ -3056,16 +3042,6 @@ fn itcz_to_f32(itcz: &[[f64; LON_BINS]; MONTHS]) -> Vec<f32> {
         }
     }
     out
-}
-
-fn fnv_f32(mut hash: u64, values: &[f32]) -> u64 {
-    for value in values {
-        for byte in value.to_bits().to_le_bytes() {
-            hash ^= u64::from(byte);
-            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-        }
-    }
-    hash
 }
 
 /// Heat capacity seen by the air. Sea ice insulates the ocean below it, so an

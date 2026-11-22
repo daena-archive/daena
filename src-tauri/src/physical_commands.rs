@@ -4,7 +4,12 @@ use std::collections::VecDeque;
 use super::*;
 
 pub(super) const HISTORICAL_CACHE_CAPACITY: usize = 16;
-pub(super) const TOOL_SURFACE_CACHE_CAPACITY: usize = 2;
+/// Byte budget of the in-process tool-surface cache.
+///
+/// One n=1024 surface measures about 252 MB by `ToolSurface::heap_bytes`, so
+/// this holds the present and one epoch surface with headroom. A single
+/// surface larger than the budget is not cached.
+pub(super) const TOOL_SURFACE_CACHE_BYTES: usize = 640 * 1024 * 1024;
 pub(super) type ToolSurfaceCache =
     Mutex<VecDeque<(String, Arc<daena_physical::engine::ToolSurface>)>>;
 pub(super) static TOOL_SURFACE_CACHE: OnceLock<ToolSurfaceCache> = OnceLock::new();
@@ -277,96 +282,6 @@ pub(super) fn project_physical_preview(
         .ok_or_else(|| "physical job preview is not ready".to_string())
 }
 
-#[cfg(test)]
-pub(super) fn physical_climate_products(
-    climate: &daena_physical::climate::ClimateField,
-) -> serde_json::Value {
-    let mut products = serde_json::json!({
-        "derivationVersion": climate.derivation_version,
-        "width": climate.grid.width,
-        "height": climate.grid.height,
-        "temperatureCentiC": climate.temperature_centi_c,
-        "temperatureNhSummerCentiC": climate.temperature_nh_summer_centi_c,
-        "temperatureNhWinterCentiC": climate.temperature_nh_winter_centi_c,
-        "moistureMmPerYear": climate.moisture_mm_per_year,
-        "precipitationMmPerYear": climate.precipitation_mm_per_year,
-        "runoffMmPerYear": climate.runoff_mm_per_year,
-        "runoffVolumeM3PerYear": climate.runoff_volume_m3_per_year,
-        "maritimeFactorPpm": climate.maritime_factor_ppm,
-        "windEastMilli": climate.wind_east_milli,
-        "windNorthMilli": climate.wind_north_milli,
-        "windEastNhSummerMilli": climate.wind_east_nh_summer_milli,
-        "windNorthNhSummerMilli": climate.wind_north_nh_summer_milli,
-        "windEastNhWinterMilli": climate.wind_east_nh_winter_milli,
-        "windNorthNhWinterMilli": climate.wind_north_nh_winter_milli,
-        "windDivergencePpm": climate.wind_divergence_ppm,
-        "windBand": climate.wind_band,
-    });
-    products["windDivergenceNhSummerPpm"] =
-        serde_json::json!(climate.wind_divergence_nh_summer_ppm);
-    products["windDivergenceNhWinterPpm"] =
-        serde_json::json!(climate.wind_divergence_nh_winter_ppm);
-    products["windBandNhSummer"] = serde_json::json!(climate.wind_band_nh_summer);
-    products["windBandNhWinter"] = serde_json::json!(climate.wind_band_nh_winter);
-    products["currentEastMilli"] = serde_json::json!(climate.current_east_milli);
-    products["currentNorthMilli"] = serde_json::json!(climate.current_north_milli);
-    products["humidityPpm"] = serde_json::json!(climate.humidity_ppm);
-    products["aridityPpm"] = serde_json::json!(climate.aridity_ppm);
-    products["precipitationNhSummerMm"] = serde_json::json!(climate.precipitation_nh_summer_mm);
-    products["precipitationNhWinterMm"] = serde_json::json!(climate.precipitation_nh_winter_mm);
-    products["biomeClass"] = serde_json::json!(climate.biome_class);
-    products["stormSuitabilityPpm"] = serde_json::json!(climate.storm_suitability_ppm);
-    products["stormTrackPpm"] = serde_json::json!(climate.storm_track_ppm);
-    products["stormIntensityPpm"] = serde_json::json!(climate.storm_intensity_ppm);
-    products["biomeLegend"] = serde_json::json!(daena_physical::climate::biome_legend()
-        .iter()
-        .map(|entry| serde_json::json!({
-            "id": entry.id,
-            "name": entry.name,
-            "reason": entry.reason,
-            "fill": entry.fill,
-        }))
-        .collect::<Vec<_>>());
-    products["metrics"] = serde_json::json!({
-        "precipitationVolumeM3PerYear": climate.metrics.precipitation_volume_m3_per_year,
-        "runoffVolumeM3PerYear": climate.metrics.runoff_volume_m3_per_year,
-        "meanTemperatureCentiC": climate.metrics.mean_temperature_centi_c,
-        "minimumTemperatureCentiC": climate.metrics.minimum_temperature_centi_c,
-        "maximumTemperatureCentiC": climate.metrics.maximum_temperature_centi_c,
-        "meanPrecipitationMmPerYear": climate.metrics.mean_precipitation_mm_per_year,
-        "meanRunoffMmPerYear": climate.metrics.mean_runoff_mm_per_year,
-        "wettestCellPrecipitationMmPerYear": climate.metrics.wettest_cell_precipitation_mm_per_year,
-        "driestLandCellPrecipitationMmPerYear": climate.metrics.driest_land_cell_precipitation_mm_per_year,
-        "transportIterations": climate.metrics.transport_iterations,
-        "meanSeasonalRangeCentiC": climate.metrics.mean_seasonal_range_centi_c,
-        "minimumSeasonalTemperatureCentiC": climate.metrics.minimum_seasonal_temperature_centi_c,
-        "maximumSeasonalTemperatureCentiC": climate.metrics.maximum_seasonal_temperature_centi_c,
-        "permanentlyFrozenLandPpm": climate.metrics.permanently_frozen_land_ppm,
-        "seasonallyFrozenLandPpm": climate.metrics.seasonally_frozen_land_ppm,
-        "meanWindSpeedMilli": climate.metrics.mean_wind_speed_milli,
-        "itczLatitudeMilliDeg": climate.metrics.itcz_latitude_milli_deg,
-        "easterlyCellPpm": climate.metrics.easterly_cell_ppm,
-        "convergingCellPpm": climate.metrics.converging_cell_ppm,
-        "meanCurrentSpeedMilli": climate.metrics.mean_current_speed_milli,
-        "meanHumidityPpm": climate.metrics.mean_humidity_ppm,
-        "meanLandAridityPpm": climate.metrics.mean_land_aridity_ppm,
-        "meanSeasonalPrecipitationRangeMm": climate.metrics.mean_seasonal_precipitation_range_mm,
-        "dominantLandBiome": climate.metrics.dominant_land_biome,
-        "meanOceanStormSuitabilityPpm": climate.metrics.mean_ocean_storm_suitability_ppm,
-        "stormProneOceanPpm": climate.metrics.storm_prone_ocean_ppm,
-        "meanStormIntensityPpm": climate.metrics.mean_storm_intensity_ppm,
-        "meanLandStormTrackPpm": climate.metrics.mean_land_storm_track_ppm,
-        "expectedStormsPerYearMilli": climate.metrics.expected_storms_per_year_milli,
-        "meanLandDroughtPotentialPpm": climate.metrics.mean_land_drought_potential_ppm,
-        "meanHeatWavePotentialPpm": climate.metrics.mean_heat_wave_potential_ppm,
-        "meanExtremeRainfallPotentialPpm": climate.metrics.mean_extreme_rainfall_potential_ppm,
-        "meanLandGrowingSeasonPpm": climate.metrics.mean_land_growing_season_ppm,
-        "meanLandDrySeasonPpm": climate.metrics.mean_land_dry_season_ppm,
-        "meanLandWetSeasonPpm": climate.metrics.mean_land_wet_season_ppm,
-    });
-    products
-}
-
 pub(super) fn engine_climate_products(
     climate: &daena_physical::products::ClimateField,
 ) -> serde_json::Value {
@@ -406,7 +321,6 @@ pub(super) fn engine_climate_products(
         .map(|(id, name, fill)| serde_json::json!({
             "id": id,
             "name": name,
-            "reason": name,
             "fill": fill,
         }))
         .collect::<Vec<_>>());
@@ -556,125 +470,6 @@ pub(super) fn engine_hazard_products(
     })
 }
 
-#[cfg(test)]
-pub(super) fn physical_evolution_products(
-    evolution: &daena_physical::evolution::EvolutionField,
-) -> serde_json::Value {
-    serde_json::json!({
-        "derivationVersion": evolution.derivation_version,
-        "preset": evolution.preset.as_str(),
-        "width": evolution.grid.width,
-        "height": evolution.grid.height,
-        "beforeElevationsMm": evolution.before_elevations_mm,
-        "elevationsMm": evolution.elevations_mm,
-        "routingElevationMm": evolution.drainage.routing_elevation_mm,
-        "fillDepthMm": evolution.drainage.fill_depth_mm,
-        "slopePpm": evolution.drainage.slope_ppm,
-        "accumulationM3PerYear": evolution.drainage.accumulation_m3_per_year,
-        "outletCells": evolution.drainage.outlet_cells,
-        "edges": evolution.drainage.edges.iter().map(|edge| serde_json::json!({
-            "sourceCell": edge.source_cell,
-            "destinationCell": edge.destination_cell,
-            "weightPpm": edge.weight_ppm,
-            "distanceMetres": edge.distance_metres,
-        })).collect::<Vec<_>>(),
-        "drainageMetrics": {
-            "directRunoffM3PerYear": evolution.drainage.metrics.direct_runoff_m3_per_year,
-            "routedRunoffM3PerYear": evolution.drainage.metrics.routed_runoff_m3_per_year,
-            "routedEdgeCount": evolution.drainage.metrics.routed_edge_count,
-            "drainageDensityPpm": evolution.drainage.metrics.drainage_density_ppm,
-            "gridAnisotropyPpm": evolution.drainage.metrics.grid_anisotropy_ppm,
-            "convergencePpm": evolution.drainage.metrics.convergence_ppm,
-            "outletCount": evolution.drainage.metrics.outlet_count,
-            "routingSurfaceRaiseMaxMm": evolution.drainage.metrics.routing_surface_raise_max_mm,
-        },
-        "evolutionMetrics": {
-            "initialReliefSpanMm": evolution.metrics.initial_relief_span_mm,
-            "finalReliefSpanMm": evolution.metrics.final_relief_span_mm,
-            "reliefChangeMm": evolution.metrics.relief_change_mm,
-            "meanAbsoluteElevationChangeMm": evolution.metrics.mean_absolute_elevation_change_mm,
-            "erosionWorkM3": evolution.metrics.erosion_work_m3,
-            "upliftWorkM3": evolution.metrics.uplift_work_m3,
-            "maxStepReliefLossMm": evolution.metrics.max_step_relief_loss_mm,
-            "drainageDensityPpm": evolution.metrics.drainage_density_ppm,
-            "gridAnisotropyPpm": evolution.metrics.grid_anisotropy_ppm,
-            "convergencePpm": evolution.metrics.convergence_ppm,
-            "tectonicRangeOrientationPpm": evolution.metrics.tectonic_range_orientation_ppm,
-        },
-    })
-}
-
-#[cfg(test)]
-pub(super) fn physical_hydrology_products(
-    hydrology: &daena_physical::hydrology::HydrologyField,
-) -> serde_json::Value {
-    serde_json::json!({
-        "derivationVersion": hydrology.derivation_version,
-        "width": hydrology.grid.width,
-        "height": hydrology.grid.height,
-        "seaLevelMm": hydrology.sea_level_mm,
-        "waterLevelMm": hydrology.water_level_mm,
-        "lakeLevelMm": hydrology.lake_level_mm,
-        "slopePpm": hydrology.slope_ppm,
-        "hillshadePpm": hydrology.hillshade_ppm,
-        "bathymetryMm": hydrology.bathymetry_mm,
-        "watershedId": hydrology.watershed_id,
-        "basinByCell": hydrology.basin_by_cell,
-        "lakeCells": hydrology.lake_cells,
-        "iceCells": hydrology.ice_cells,
-        "iceThicknessMm": hydrology.ice_thickness_mm,
-        "shelfCells": hydrology.shelf_cells,
-        "islandId": hydrology.island_id,
-        "basins": hydrology.basins.iter().map(|basin| serde_json::json!({
-            "id": basin.id,
-            "minimumCell": basin.minimum_cell,
-            "minimumElevationMm": basin.minimum_elevation_mm,
-            "cellCount": basin.cell_count,
-            "spillCell": basin.spill_cell,
-            "spillElevationMm": basin.spill_elevation_mm,
-            "volumeToSpillM3": basin.volume_to_spill_m3,
-            "parentBasin": basin.parent_basin,
-            "children": basin.children,
-            "destination": basin.destination.label(),
-            "waterLevelMm": basin.water_level_mm,
-            "waterVolumeM3": basin.water_volume_m3,
-            "inflowM3PerYear": basin.inflow_m3_per_year,
-            "directPrecipitationM3PerYear": basin.direct_precipitation_m3_per_year,
-            "evaporationM3PerYear": basin.evaporation_m3_per_year,
-            "outflowM3PerYear": basin.outflow_m3_per_year,
-            "status": basin.status.label(),
-        })).collect::<Vec<_>>(),
-        "rivers": hydrology.rivers.iter().map(|river| serde_json::json!({
-            "id": river.id,
-            "sourceCell": river.source_cell,
-            "mouthCell": river.mouth_cell,
-            "strahlerOrder": river.strahler_order,
-            "destination": river.destination.label(),
-            "spillOutlet": river.spill_outlet,
-            "coordinateCount": river.coordinate_count,
-        })).collect::<Vec<_>>(),
-        "metrics": {
-            "totalWaterM3": hydrology.metrics.total_water_m3,
-            "oceanWaterM3": hydrology.metrics.ocean_water_m3,
-            "inlandWaterM3": hydrology.metrics.inland_water_m3,
-            "landIceM3": hydrology.metrics.land_ice_m3,
-            "balanceErrorM3": hydrology.metrics.balance_error_m3,
-            "toleranceM3": hydrology.metrics.tolerance_m3,
-            "fixedPointIterations": hydrology.metrics.fixed_point_iterations,
-            "converged": hydrology.metrics.converged,
-            "lakeCount": hydrology.metrics.lake_count,
-            "riverCount": hydrology.metrics.river_count,
-            "watershedCount": hydrology.metrics.watershed_count,
-            "coastlineSegmentCount": hydrology.metrics.coastline_segment_count,
-            "landPolygonCount": hydrology.metrics.land_polygon_count,
-            "oceanPolygonCount": hydrology.metrics.ocean_polygon_count,
-            "shelfCellCount": hydrology.metrics.shelf_cell_count,
-            "bathymetryContourCount": hydrology.metrics.bathymetry_contour_count,
-            "islandCount": hydrology.metrics.island_count,
-        },
-    })
-}
-
 pub(super) fn historical_forcing_from_generation(
     generation: &serde_json::Value,
 ) -> Result<daena_physical::history::HistoricalForcingParameters, String> {
@@ -772,8 +567,8 @@ pub(super) fn historical_cache_key(
         daena_physical::engine::SOURCE_VERSION,
         daena_physical::engine::WORLD_ENGINE_VERSION,
         daena_physical::history::HISTORICAL_DERIVATION_VERSION,
-        daena_physical::hazards::HAZARD_DERIVATION_VERSION,
-        daena_physical::hazards::VOLCANIC_SOURCE_DERIVATION_VERSION,
+        daena_physical::products::HAZARD_DERIVATION_VERSION,
+        daena_physical::products::VOLCANIC_SOURCE_DERIVATION_VERSION,
         daena_physical::products::CLIMATE_DERIVATION_VERSION,
         daena_physical::products::HYDROLOGY_DERIVATION_VERSION,
         view_width,
@@ -803,27 +598,6 @@ pub(super) fn hash_json_value(value: &serde_json::Value) -> String {
     format!("sha256:{:x}", Sha256::digest(bytes))
 }
 
-#[cfg(test)]
-pub(super) fn historical_derived_hashes(
-    world: &daena_physical::tectonics::TectonicWorld,
-    source_hash: &str,
-    geojson: &str,
-    climate: &serde_json::Value,
-    hydrology: &serde_json::Value,
-) -> serde_json::Value {
-    let field = world.physical_field();
-    let elevation = serde_json::to_value(field.elevations_mm)
-        .expect("elevation fields used for hashes are serializable");
-    serde_json::json!({
-        "canonicalSource": source_hash,
-        "finalElevation": hash_json_value(&elevation),
-        "tectonics": source_hash,
-        "geography": format!("sha256:{:x}", Sha256::digest(geojson.as_bytes())),
-        "climate": hash_json_value(climate),
-        "hydrology": hash_json_value(hydrology),
-    })
-}
-
 pub(super) fn begin_historical_epoch_request(
     map_entity_id: &str,
 ) -> Result<(Arc<AtomicU64>, u64), String> {
@@ -837,98 +611,6 @@ pub(super) fn begin_historical_epoch_request(
         .clone();
     let expected = generation.fetch_add(1, Ordering::AcqRel).saturating_add(1);
     Ok((generation, expected))
-}
-
-#[cfg(test)]
-pub(super) fn derive_reopened_hydrology(
-    world: &daena_physical::tectonics::TectonicWorld,
-    generation: &serde_json::Value,
-    reference_water_inventory_m3: u64,
-) -> Result<(String, daena_physical::hydrology::HydrologyField), String> {
-    let physics = compute_static_derived(world, generation, reference_water_inventory_m3)?;
-    Ok((physics.geojson, physics.hydrology))
-}
-
-#[cfg(test)]
-pub(super) fn compute_static_derived(
-    world: &daena_physical::tectonics::TectonicWorld,
-    generation: &serde_json::Value,
-    reference_water_inventory_m3: u64,
-) -> Result<daena_physical::derived_cache::LegacyDerivedPhysics, String> {
-    let field = world.physical_field();
-    let mut progress = daena_physical::NoopProgress;
-    let mut climate_settings = daena_physical::climate::ClimateSettings::default_for(field.grid);
-    climate_settings.planetary = planetary_from_generation(generation);
-    let climate = daena_physical::climate::derive_current_climate(
-        &field,
-        climate_settings,
-        world.seed,
-        world.retry_index,
-        &mut progress,
-    )
-    .map_err(|error| format!("maps.physical: {error}"))?;
-    let preset = generation
-        .get("settings")
-        .and_then(|settings| settings.get("evolutionPreset"))
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| "evolutionPreset is required for physical sources".to_string())?;
-    let preset = daena_physical::evolution::EvolutionPreset::parse(preset)
-        .map_err(|error| error.to_string())?;
-    let mut tectonic_settings = world.settings;
-    if let Some(value) = generation
-        .get("settings")
-        .and_then(|settings| settings.get("tectonicStyle"))
-    {
-        let style = value
-            .as_str()
-            .ok_or_else(|| "tectonicStyle must be a string".to_string())?;
-        tectonic_settings.style = daena_physical::tectonics::TectonicStyle::parse(style)
-            .map_err(|error| error.to_string())?;
-    }
-    let mut initial_progress = daena_physical::NoopProgress;
-    let initial_world = daena_physical::tectonics::generate_tectonic_world(
-        world.grid,
-        tectonic_settings,
-        world.target_land_fraction_ppm,
-        world.seed,
-        world.retry_index,
-        &mut initial_progress,
-    )
-    .map_err(|error| format!("maps.physical: {error}"))?;
-    let evolution = daena_physical::evolution::diagnostics_from_before_after(
-        initial_world.elevations_mm,
-        &field,
-        &climate,
-        preset,
-    )
-    .map_err(|error| format!("maps.physical: {error}"))?;
-    let hydrology = daena_physical::hydrology::derive_hydrology_with_crust(
-        &field,
-        &climate,
-        &evolution.drainage,
-        reference_water_inventory_m3,
-        Some(&world.crust_by_cell),
-    )
-    .map_err(|error| format!("maps.physical: {error}"))?;
-    let diagnostic = daena_physical::tectonics::to_diagnostic_geojson(world)
-        .map_err(|error| format!("maps.physical: {error}"))?;
-    let hazards = daena_physical::hazards::to_geojson(world)
-        .map_err(|error| format!("maps.physical: {error}"))?;
-    let water = daena_physical::hydrology::to_geojson(&hydrology)
-        .map_err(|error| format!("maps.physical: {error}"))?;
-    let diagnostic_with_hazards =
-        daena_physical::merge_geojson_features_for_host(&diagnostic, &hazards)?;
-    let geojson =
-        daena_physical::merge_geojson_features_for_host(&diagnostic_with_hazards, &water)?;
-    let ocean_curve = daena_physical::hydrology::ocean_volume_curve(&field)
-        .map_err(|error| format!("maps.physical: {error}"))?;
-    Ok(daena_physical::derived_cache::LegacyDerivedPhysics {
-        climate,
-        evolution,
-        hydrology,
-        ocean_curve,
-        geojson,
-    })
 }
 
 pub(super) fn engine_static_derived(
@@ -996,13 +678,25 @@ fn cached_tool_surface(key: &str) -> Option<Arc<daena_physical::engine::ToolSurf
 }
 
 fn store_tool_surface(key: String, surface: Arc<daena_physical::engine::ToolSurface>) {
+    let surface_bytes = surface.heap_bytes();
+    if surface_bytes > TOOL_SURFACE_CACHE_BYTES {
+        return;
+    }
     let Ok(mut cache) = tool_surface_cache().lock() else {
         return;
     };
     if let Some(index) = cache.iter().position(|(entry, _)| entry == &key) {
         cache.remove(index);
     }
-    while cache.len() >= TOOL_SURFACE_CACHE_CAPACITY {
+    let mut used = cache
+        .iter()
+        .map(|(_, entry)| entry.heap_bytes())
+        .sum::<usize>();
+    while let Some((_, oldest)) = cache.front() {
+        if used.saturating_add(surface_bytes) <= TOOL_SURFACE_CACHE_BYTES {
+            break;
+        }
+        used = used.saturating_sub(oldest.heap_bytes());
         cache.pop_front();
     }
     cache.push_back((key, surface));
@@ -1158,103 +852,6 @@ pub(super) fn engine_historical_response(
         "climate": climate,
         "hydrology": hydrology,
         "hazards": engine_hazard_products(&products.hazards, resolution, radius_metres),
-        "derivedHashes": derived_hashes,
-        "forcing": historical_forcing_products(parameters),
-        "history": {
-            "derivationVersion": historical.metrics.derivation_version,
-            "epochOffsetYears": historical.metrics.epoch_offset_years,
-            "normalizedEpoch": historical.metrics.normalized_epoch,
-            "temperatureOffsetCentiC": historical.metrics.temperature_offset_centi_c,
-            "laggedTemperatureOffsetCentiC": historical.metrics.lagged_temperature_offset_centi_c,
-            "landIceEquilibriumM3": historical.metrics.land_ice_equilibrium_m3,
-            "landIceM3": historical.metrics.land_ice_m3,
-            "thermalExpansionM3": historical.metrics.thermal_expansion_m3,
-            "effectiveOceanWaterM3": historical.metrics.effective_ocean_water_m3,
-            "conservedWaterM3": historical.metrics.conserved_water_m3,
-            "balanceErrorM3": historical.metrics.balance_error_m3,
-            "seaLevelMm": historical.metrics.sea_level_mm,
-        },
-    })
-}
-
-#[cfg(test)]
-pub(super) fn derive_reopened_historical(
-    world: &daena_physical::tectonics::TectonicWorld,
-    generation: &serde_json::Value,
-    reference_water_inventory_m3: u64,
-    epoch_offset_years: i64,
-    progress: &mut dyn daena_physical::ProgressSink,
-) -> Result<
-    (
-        daena_physical::history::HistoricalWorld,
-        daena_physical::history::HistoricalForcingParameters,
-        String,
-    ),
-    String,
-> {
-    let parameters = historical_forcing_from_generation(generation)?;
-    let field = world.physical_field();
-    let historical = daena_physical::history::derive_historical_world_with_planet(
-        &field,
-        reference_water_inventory_m3,
-        Some(&world.crust_by_cell),
-        parameters,
-        epoch_offset_years,
-        planetary_from_generation(generation),
-        progress,
-    )
-    .map_err(|error| format!("maps.physical: {error}"))?;
-    let diagnostic = daena_physical::tectonics::to_diagnostic_geojson(world)
-        .map_err(|error| format!("maps.physical: {error}"))?;
-    let hazards = daena_physical::hazards::to_geojson(world)
-        .map_err(|error| format!("maps.physical: {error}"))?;
-    let water = daena_physical::hydrology::to_geojson(&historical.hydrology)
-        .map_err(|error| format!("maps.physical: {error}"))?;
-    let diagnostic_with_hazards =
-        daena_physical::merge_geojson_features_for_host(&diagnostic, &hazards)?;
-    let geojson =
-        daena_physical::merge_geojson_features_for_host(&diagnostic_with_hazards, &water)?;
-    Ok((historical, parameters, geojson))
-}
-
-#[cfg(test)]
-#[allow(clippy::too_many_arguments)]
-pub(super) fn historical_response(
-    world: &daena_physical::tectonics::TectonicWorld,
-    source_hash: &str,
-    physical_identity: &str,
-    cache_key: String,
-    epoch_offset_years: i64,
-    normalized_epoch: i64,
-    historical: &daena_physical::history::HistoricalWorld,
-    parameters: daena_physical::history::HistoricalForcingParameters,
-    geojson: String,
-) -> serde_json::Value {
-    let climate = physical_climate_products(&historical.climate);
-    let hydrology = physical_hydrology_products(&historical.hydrology);
-    let derived_hashes =
-        historical_derived_hashes(world, source_hash, &geojson, &climate, &hydrology);
-    serde_json::json!({
-        "cacheKey": cache_key,
-        "sourceHash": source_hash,
-        "physicalIdentity": physical_identity,
-        "epochOffsetYears": epoch_offset_years,
-        "normalizedEpoch": normalized_epoch,
-        "chronology": {
-            "contractVersion": 1,
-            "kind": "physical-offset-years",
-            "reference": "accepted-source",
-            "epochOffsetYears": epoch_offset_years,
-        },
-        "geojson": geojson,
-        "climate": climate,
-        "hydrology": hydrology,
-        "hazards": {
-            "derivationVersion": daena_physical::hazards::HAZARD_DERIVATION_VERSION,
-            "volcanicSourceDerivationVersion": daena_physical::hazards::VOLCANIC_SOURCE_DERIVATION_VERSION,
-            "model": "relative-generated-v1",
-            "prediction": false,
-        },
         "derivedHashes": derived_hashes,
         "forcing": historical_forcing_products(parameters),
         "history": {
@@ -1928,7 +1525,7 @@ pub(super) fn physical_materialize_events_response(
             } else {
                 provenance.insert(
                     "hazardDerivationVersion".into(),
-                    serde_json::json!(daena_physical::hazards::HAZARD_DERIVATION_VERSION),
+                    serde_json::json!(daena_physical::products::HAZARD_DERIVATION_VERSION),
                 );
                 provenance.insert("hazardSeed".into(), serde_json::json!(request.hazard_seed));
                 provenance.insert(
@@ -2044,7 +1641,7 @@ pub(super) fn physical_materialize_events_response(
                 Some(daena_physical::products::HYDROLOGY_DERIVATION_VERSION),
             )
         } else {
-            (daena_physical::hazards::HAZARD_DERIVATION_VERSION, None)
+            (daena_physical::products::HAZARD_DERIVATION_VERSION, None)
         };
     Ok(PhysicalEventMaterializationResult {
         request_id,

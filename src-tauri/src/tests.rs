@@ -235,6 +235,8 @@ fn accepted_engine_source_rebuilds_and_rejects_an_external_checkpoint_edit() {
         .unwrap();
     let identity = accepted.physical_identity.clone();
     let source_path = accepted.source.path.clone();
+    let original = daena_physical::engine::decode_source(products.source()).unwrap();
+    let original_hashes = original.hashes();
     store.flush_checkpoint("engine storage test").unwrap();
     drop(store);
 
@@ -251,6 +253,18 @@ fn accepted_engine_source_rebuilds_and_rejects_an_external_checkpoint_edit() {
         daena_core::maps::physical::validate_source(&bytes, &descriptor.value["generation"])
             .unwrap();
     assert_eq!(validated.identity, identity);
+    assert_eq!(validated.source.hashes(), original_hashes);
+    let physics = engine_static_derived(
+        &validated.source,
+        daena_physical::planetary::PlanetaryConfiguration::earth_like(),
+    )
+    .unwrap();
+    assert_eq!(physics.hashes, original_hashes);
+    assert_eq!(&physics.view, products.view());
+    assert_eq!(&physics.climate, products.climate());
+    assert_eq!(&physics.hydrology, products.hydrology());
+    assert_eq!(&physics.hazards, products.hazards());
+    assert_eq!(physics.geojson, products.derived_geojson());
     drop(rebuilt);
 
     let portable_source = root.join(source_path);
@@ -368,350 +382,6 @@ fn physical_command_cancellation_latency_is_under_budget() {
     assert!(
         worst_1024.as_millis() < daena_physical::CANCELLATION_LATENCY_BUDGET_MS,
         "n=1024 cancellation was {worst_1024:?} late at {at_1024} ms ({phase_1024})"
-    );
-}
-#[test]
-fn physical_climate_products_expose_derived_fields_without_source_data() {
-    let grid = daena_physical::Grid::new(8, 4, daena_physical::DEFAULT_RADIUS_METRES).unwrap();
-    let mut elevations = vec![500; grid.sample_count()];
-    elevations[grid.index(2, 4)] = -2_000;
-    let field = daena_physical::PhysicalField {
-        grid,
-        seed: 831_429,
-        retry_index: 0,
-        target_land_fraction_ppm: 300_000,
-        sea_level_mm: 0,
-        elevations_mm: elevations,
-    };
-    let mut progress = daena_physical::NoopProgress;
-    let climate = daena_physical::climate::derive_current_climate(
-        &field,
-        daena_physical::climate::ClimateSettings::default_for(grid),
-        field.seed,
-        field.retry_index,
-        &mut progress,
-    )
-    .unwrap();
-    let products = physical_climate_products(&climate);
-    assert_eq!(
-        products["derivationVersion"],
-        daena_physical::climate::CLIMATE_DERIVATION_VERSION
-    );
-    assert_eq!(products["width"], 8);
-    assert_eq!(products["height"], 4);
-    for key in [
-        "temperatureCentiC",
-        "temperatureNhSummerCentiC",
-        "temperatureNhWinterCentiC",
-        "moistureMmPerYear",
-        "precipitationMmPerYear",
-        "runoffMmPerYear",
-        "runoffVolumeM3PerYear",
-        "windEastMilli",
-        "windNorthMilli",
-        "windEastNhSummerMilli",
-        "windNorthNhSummerMilli",
-        "windEastNhWinterMilli",
-        "windNorthNhWinterMilli",
-        "windDivergencePpm",
-        "windDivergenceNhSummerPpm",
-        "windDivergenceNhWinterPpm",
-        "windBand",
-        "windBandNhSummer",
-        "windBandNhWinter",
-        "currentEastMilli",
-        "currentNorthMilli",
-        "humidityPpm",
-        "aridityPpm",
-        "precipitationNhSummerMm",
-        "precipitationNhWinterMm",
-        "biomeClass",
-        "stormSuitabilityPpm",
-        "stormTrackPpm",
-        "stormIntensityPpm",
-    ] {
-        assert_eq!(products[key].as_array().unwrap().len(), grid.sample_count());
-    }
-    assert_eq!(products["biomeLegend"].as_array().unwrap().len(), 10);
-    assert!(
-        products["metrics"]["precipitationVolumeM3PerYear"]
-            .as_u64()
-            .unwrap()
-            > 0
-    );
-    for key in [
-        "meanLandGrowingSeasonPpm",
-        "meanLandDrySeasonPpm",
-        "meanLandWetSeasonPpm",
-    ] {
-        assert!(products["metrics"][key].as_u64().is_some(), "{key}");
-    }
-}
-
-#[test]
-fn physical_evolution_products_expose_routing_and_before_after_fields() {
-    let settings = daena_physical::GenerationSettings {
-        width: 8,
-        height: 4,
-        radius_metres: daena_physical::DEFAULT_RADIUS_METRES,
-        target_land_fraction_ppm: 300_000,
-    };
-    let mut progress = daena_physical::NoopProgress;
-    let world = daena_physical::generate_world(settings, 831_429, 0, &mut progress).unwrap();
-    let products = physical_evolution_products(&world.evolution);
-    assert_eq!(
-        products["derivationVersion"],
-        daena_physical::evolution::EVOLUTION_DERIVATION_VERSION
-    );
-    assert_eq!(products["preset"], "mature");
-    for key in [
-        "beforeElevationsMm",
-        "elevationsMm",
-        "routingElevationMm",
-        "fillDepthMm",
-        "slopePpm",
-        "accumulationM3PerYear",
-    ] {
-        assert_eq!(
-            products[key].as_array().unwrap().len(),
-            settings.width as usize * settings.height as usize
-        );
-    }
-    assert_eq!(products["drainageMetrics"]["convergencePpm"], 1_000_000);
-    assert!(!products["edges"].as_array().unwrap().is_empty());
-}
-
-#[test]
-fn physical_hydrology_products_expose_current_water_and_renderer_fields() {
-    let settings = daena_physical::GenerationSettings {
-        width: 8,
-        height: 4,
-        radius_metres: daena_physical::DEFAULT_RADIUS_METRES,
-        target_land_fraction_ppm: 300_000,
-    };
-    let mut progress = daena_physical::NoopProgress;
-    let world = daena_physical::generate_world(settings, 831_429, 0, &mut progress).unwrap();
-    let products = physical_hydrology_products(&world.hydrology);
-    assert_eq!(
-        products["derivationVersion"],
-        daena_physical::hydrology::HYDROLOGY_DERIVATION_VERSION
-    );
-    for key in [
-        "waterLevelMm",
-        "lakeLevelMm",
-        "hillshadePpm",
-        "bathymetryMm",
-        "watershedId",
-        "lakeCells",
-        "iceCells",
-        "iceThicknessMm",
-        "islandId",
-    ] {
-        assert_eq!(
-            products[key].as_array().unwrap().len(),
-            settings.width as usize * settings.height as usize
-        );
-    }
-    assert_eq!(products["metrics"]["converged"], true);
-    assert!(products["metrics"]["toleranceM3"].as_u64().unwrap() > 0);
-    assert!(products["metrics"]["watershedCount"].as_u64().unwrap() > 0);
-    assert!(products["metrics"]["islandCount"].as_u64().unwrap() > 0);
-    let geojson: serde_json::Value = serde_json::from_str(&world.derived_geojson).unwrap();
-    assert_eq!(geojson["type"], "FeatureCollection");
-    fn walk(value: &serde_json::Value) {
-        if let Some(pair) = value.as_array() {
-            if pair.len() >= 2 && pair[0].is_number() && pair[1].is_number() {
-                let lon = pair[0].as_f64().unwrap();
-                let lat = pair[1].as_f64().unwrap();
-                assert!((-180.0..=180.0).contains(&lon));
-                assert!((-90.0..=90.0).contains(&lat));
-            } else {
-                for item in pair {
-                    walk(item);
-                }
-            }
-        }
-    }
-    for feature in geojson["features"].as_array().unwrap() {
-        walk(&feature["geometry"]["coordinates"]);
-    }
-}
-
-#[test]
-fn reopened_physical_hydrology_matches_the_generated_fixture() {
-    let settings = daena_physical::GenerationSettings {
-        width: 8,
-        height: 4,
-        radius_metres: daena_physical::DEFAULT_RADIUS_METRES,
-        target_land_fraction_ppm: 300_000,
-    };
-    let mut progress = daena_physical::NoopProgress;
-    let generated = daena_physical::generate_world(settings, 831_429, 0, &mut progress).unwrap();
-    let generation = serde_json::json!({"settings": {
-        "evolutionPreset": "mature",
-        "historicalForcing": historical_forcing_products(
-            daena_physical::history::HistoricalForcingParameters::default_for(831_429, 0)
-        )
-    }});
-    let (derived_geojson, reopened) = derive_reopened_hydrology(
-        &generated.tectonics,
-        &generation,
-        generated.report.reference_water_inventory_m3,
-    )
-    .unwrap();
-    assert_eq!(derived_geojson, generated.derived_geojson);
-    assert_eq!(reopened, generated.hydrology);
-}
-
-#[test]
-fn reopened_historical_products_preserve_terrain_and_report_water_balance() {
-    let settings = daena_physical::GenerationSettings {
-        width: 8,
-        height: 4,
-        radius_metres: daena_physical::DEFAULT_RADIUS_METRES,
-        target_land_fraction_ppm: 300_000,
-    };
-    let mut progress = daena_physical::NoopProgress;
-    let generated = daena_physical::generate_world(settings, 831_429, 0, &mut progress).unwrap();
-    let before = generated.tectonics.physical_field();
-    let parameters = daena_physical::history::HistoricalForcingParameters::default_for(831_429, 0);
-    let generation = serde_json::json!({
-        "id": daena_core::maps::PHYSICAL_GENERATOR_ID,
-        "version": daena_core::maps::PHYSICAL_GENERATOR_VERSION,
-        "seed": 831_429,
-        "retryIndex": 0,
-        "settings": {
-            "width": settings.width,
-            "height": settings.height,
-            "radiusMetres": settings.radius_metres,
-            "targetLandFractionPpm": settings.target_land_fraction_ppm,
-            "referenceWaterInventoryM3": generated.report.reference_water_inventory_m3,
-            "plateCount": generated.tectonics.settings.plate_count,
-            "continentalPlateCount": generated.tectonics.settings.continental_plate_count,
-            "tectonicActivityPpm": generated.tectonics.settings.tectonic_activity_ppm,
-            "islandActivityPpm": generated.tectonics.settings.island_activity_ppm,
-            "evolutionPreset": "mature",
-            "historicalForcing": historical_forcing_products(parameters)
-        }
-    });
-    let mut history_progress = daena_physical::NoopProgress;
-    let (historical, persisted, geojson) = derive_reopened_historical(
-        &generated.tectonics,
-        &generation,
-        generated.report.reference_water_inventory_m3,
-        parameters.period_years() / 4,
-        &mut history_progress,
-    )
-    .unwrap();
-    assert_eq!(persisted, parameters);
-    assert!(!geojson.is_empty());
-    assert_eq!(generated.tectonics.physical_field(), before);
-    assert!(historical.hydrology.metrics.converged);
-    assert!(historical.metrics.balance_error_m3 <= historical.hydrology.metrics.tolerance_m3);
-    let engine_settings = daena_physical::engine::Settings::from_parts(
-        831_429,
-        daena_physical::engine::WorldPreset::Earthlike,
-        32,
-        daena_physical::DEFAULT_RADIUS_METRES,
-        290_000,
-        daena_physical::planetary::PlanetaryConfiguration::earth_like(),
-    );
-    let products = daena_physical::engine::generate(engine_settings, &mut progress).unwrap();
-    let source = products.source().to_vec();
-    let source_hash = format!("sha256:{:x}", Sha256::digest(&source));
-    let physical_identity =
-        daena_core::maps::physical::validate_source(&source, products.generation().unwrap())
-            .unwrap()
-            .identity;
-    let cache_key = historical_cache_key(
-        &physical_identity,
-        persisted,
-        historical.metrics.normalized_epoch,
-        daena_physical::planetary::PlanetaryConfiguration::earth_like(),
-        daena_physical::engine::PRODUCT_VIEW_WIDTH,
-        daena_physical::engine::PRODUCT_VIEW_HEIGHT,
-    );
-    let response = historical_response(
-        &generated.tectonics,
-        &source_hash,
-        &physical_identity,
-        cache_key,
-        historical.metrics.epoch_offset_years,
-        historical.metrics.normalized_epoch,
-        &historical,
-        persisted,
-        geojson.clone(),
-    );
-    assert_eq!(response["derivedHashes"]["canonicalSource"], source_hash);
-    assert_eq!(response["derivedHashes"]["tectonics"], source_hash);
-    assert_eq!(
-        response["hazards"]["derivationVersion"],
-        daena_physical::hazards::HAZARD_DERIVATION_VERSION
-    );
-    assert_eq!(response["hazards"]["model"], "relative-generated-v1");
-    let cache_key = response["cacheKey"].as_str().unwrap();
-    assert!(cache_key.contains(&physical_identity));
-    assert!(cache_key.contains(&format!("epoch:{}", historical.metrics.normalized_epoch)));
-    assert_eq!(response["chronology"]["contractVersion"], 1);
-    assert_eq!(response["chronology"]["kind"], "physical-offset-years");
-    assert_eq!(response["chronology"]["reference"], "accepted-source");
-    assert_eq!(
-        response["derivedHashes"]["geography"]
-            .as_str()
-            .unwrap()
-            .len(),
-        71
-    );
-    let repeated = historical_response(
-        &generated.tectonics,
-        response["sourceHash"].as_str().unwrap(),
-        response["physicalIdentity"].as_str().unwrap(),
-        response["cacheKey"].as_str().unwrap().to_string(),
-        historical.metrics.epoch_offset_years,
-        historical.metrics.normalized_epoch,
-        &historical,
-        persisted,
-        geojson,
-    );
-    assert_eq!(response["derivedHashes"], repeated["derivedHashes"]);
-    let mut cold_progress = daena_physical::NoopProgress;
-    let (cold, cold_parameters, cold_geojson) = derive_reopened_historical(
-        &generated.tectonics,
-        &generation,
-        generated.report.reference_water_inventory_m3,
-        -persisted.period_years() / 4,
-        &mut cold_progress,
-    )
-    .unwrap();
-    let cold_response = historical_response(
-        &generated.tectonics,
-        &source_hash,
-        &physical_identity,
-        historical_cache_key(
-            &physical_identity,
-            cold_parameters,
-            cold.metrics.normalized_epoch,
-            daena_physical::planetary::PlanetaryConfiguration::earth_like(),
-            daena_physical::engine::PRODUCT_VIEW_WIDTH,
-            daena_physical::engine::PRODUCT_VIEW_HEIGHT,
-        ),
-        cold.metrics.epoch_offset_years,
-        cold.metrics.normalized_epoch,
-        &cold,
-        cold_parameters,
-        cold_geojson,
-    );
-    assert_eq!(
-        response["derivedHashes"]["finalElevation"],
-        cold_response["derivedHashes"]["finalElevation"]
-    );
-    assert_eq!(
-        response["derivedHashes"]["tectonics"],
-        cold_response["derivedHashes"]["tectonics"]
-    );
-    assert!(
-        cold_response["history"]["landIceM3"].as_u64().unwrap()
-            > response["history"]["landIceM3"].as_u64().unwrap()
     );
 }
 
@@ -5988,6 +5658,152 @@ fn largest_landmass_pair(surface: &daena_physical::engine::ToolSurface) -> (u32,
 }
 
 #[test]
+#[ignore = "writes E8 identity artifacts when DAENA_E8_ARTIFACTS is set"]
+fn e8_identity_artifacts() {
+    let Some(dir) = std::env::var_os("DAENA_E8_ARTIFACTS") else {
+        return;
+    };
+    let dir = std::path::PathBuf::from(dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let specs = [
+        (
+            831_429u64,
+            512u32,
+            daena_physical::engine::WorldPreset::Earthlike,
+        ),
+        (
+            831_429,
+            1024,
+            daena_physical::engine::WorldPreset::Earthlike,
+        ),
+        (4, 64, daena_physical::engine::WorldPreset::Earthlike),
+        (4, 64, daena_physical::engine::WorldPreset::Pangea),
+    ];
+    for (seed, resolution, preset) in specs {
+        let settings = daena_physical::engine::Settings::from_parts(
+            seed,
+            preset,
+            resolution,
+            daena_physical::DEFAULT_RADIUS_METRES,
+            0,
+            daena_physical::planetary::PlanetaryConfiguration::earth_like(),
+        );
+        let products =
+            daena_physical::engine::generate(settings, &mut daena_physical::NoopProgress).unwrap();
+        let label = format!("{}-{}-{}", seed, resolution, preset.as_str());
+        let write = |name: &str, value: &serde_json::Value| {
+            std::fs::write(
+                dir.join(format!("{label}.{name}.json")),
+                serde_json::to_vec(value).unwrap(),
+            )
+            .unwrap();
+        };
+        let generation = products.generation().unwrap().clone();
+        write("generation", &generation);
+        let validated =
+            daena_core::maps::physical::validate_source(products.source(), &generation).unwrap();
+        let snapshot = validated.source.settings_snapshot();
+        write("climate", &engine_climate_products(products.climate()));
+        write(
+            "hydrology",
+            &engine_hydrology_products(products.hydrology()),
+        );
+        write(
+            "hazards",
+            &engine_hazard_products(products.hazards(), snapshot.resolution, snapshot.radius_m),
+        );
+        std::fs::write(dir.join(format!("{label}.source.bin")), products.source()).unwrap();
+        if resolution != 64 {
+            continue;
+        }
+        let surface =
+            tool_surface_for_source(&validated.identity, &validated.source, &generation, 0)
+                .unwrap();
+        let find = physical_find_place_response(
+            &validated.identity,
+            &validated.source,
+            &generation,
+            0,
+            &daena_physical::find_place::FindPlaceQuery {
+                temperature_centi_c_min: Some(-10_000),
+                precipitation_mm_min: Some(0),
+                ..daena_physical::find_place::FindPlaceQuery::default()
+            },
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join(format!("{label}.find.json")),
+            serde_json::to_vec(&find).unwrap(),
+        )
+        .unwrap();
+        let epoch_find = physical_find_place_response(
+            &validated.identity,
+            &validated.source,
+            &generation,
+            -21_000,
+            &daena_physical::find_place::FindPlaceQuery {
+                temperature_centi_c_min: Some(-10_000),
+                precipitation_mm_min: Some(0),
+                ..daena_physical::find_place::FindPlaceQuery::default()
+            },
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join(format!("{label}.epoch-find.json")),
+            serde_json::to_vec(&epoch_find).unwrap(),
+        )
+        .unwrap();
+        let land = (0..surface.cell_count() as u32)
+            .filter(|cell| !surface.ocean(*cell))
+            .collect::<Vec<_>>();
+        let start = land.first().copied().unwrap();
+        let end = surface
+            .neighbors(start)
+            .into_iter()
+            .find(|cell| {
+                *cell != daena_physical::engine::TOOL_SURFACE_NONE && !surface.ocean(*cell)
+            })
+            .unwrap_or(start);
+        let start_point = surface.center_microdegrees(start);
+        let end_point = surface.center_microdegrees(end);
+        let routes = physical_routes_response(
+            &validated.identity,
+            &validated.source,
+            &generation,
+            0,
+            &daena_physical::routing::RouteSuggestQuery {
+                start_longitude_microdegrees: start_point[0],
+                start_latitude_microdegrees: start_point[1],
+                end_longitude_microdegrees: end_point[0],
+                end_latitude_microdegrees: end_point[1],
+                existing_routes: Vec::new(),
+            },
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join(format!("{label}.routes.json")),
+            serde_json::to_vec(&routes).unwrap(),
+        )
+        .unwrap();
+        let region = physical_region_response(
+            &validated.identity,
+            &validated.source,
+            &generation,
+            0,
+            start_point[0],
+            start_point[1],
+            daena_physical::region::DETECTOR_LANDMASS,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join(format!("{label}.region.json")),
+            serde_json::to_vec(&region).unwrap(),
+        )
+        .unwrap();
+    }
+}
+
+#[test]
 fn physical_tool_commands_use_canonical_cells_and_the_surface_cache() {
     let products = engine_products(64);
     let generation = products.generation().unwrap().clone();
@@ -5998,7 +5814,13 @@ fn physical_tool_commands_use_canonical_cells_and_the_surface_cache() {
     let cached =
         tool_surface_for_source(&validated.identity, &validated.source, &generation, 0).unwrap();
     assert_eq!(cached.cell_count(), surface.cell_count());
-    assert!(tool_surface_cache().lock().unwrap().len() <= TOOL_SURFACE_CACHE_CAPACITY);
+    let cache_bytes = tool_surface_cache()
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(_, entry)| entry.heap_bytes())
+        .sum::<usize>();
+    assert!(cache_bytes <= TOOL_SURFACE_CACHE_BYTES);
     let canonical_cells = 6 * validated.source.settings_snapshot().resolution.pow(2);
 
     let find = physical_find_place_response(
@@ -6165,10 +5987,10 @@ fn e5a_release_timing_table() {
         let epoch_time = started.elapsed();
         record_e5a_measurement(&format!(
             "n={resolution}: present surface {} bytes ({:.2} B/cell) cold {present_time:?}; epoch surface {} bytes ({:.2} B/cell) cold {epoch_time:?}; epoch sea level {} mm",
-            present.byte_size(),
-            present.byte_size() as f64 / present.cell_count() as f64,
-            epoch_surface.byte_size(),
-            epoch_surface.byte_size() as f64 / epoch_surface.cell_count() as f64,
+            present.heap_bytes(),
+            present.heap_bytes() as f64 / present.cell_count() as f64,
+            epoch_surface.heap_bytes(),
+            epoch_surface.heap_bytes() as f64 / epoch_surface.cell_count() as f64,
             epoch_surface.sea_level_mm
         ));
 

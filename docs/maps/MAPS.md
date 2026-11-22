@@ -500,38 +500,89 @@ lifecycle, persistence, recovery, deterministic rendering, or output safety.
 
 ## Current physical-world product
 
-The accepted world already includes a planetary configuration and a disposable
-climate derivation. Climate does not rewrite elevation or bathymetry. Cached
-climate that does not match `CLIMATE_DERIVATION_VERSION` fails validation
-rather than mixing semantics. The live derivation is
-`crates/daena-physical/src/climate.rs`. The climate model, not a second product
-authority, is [`ATLAS_PROCEDURAL_CLIMATE_SIMULATION.md`](./ATLAS_PROCEDURAL_CLIMATE_SIMULATION.md).
+The world engine (`crates/daena-worldgen`) generates the world on an
+equiangular cube sphere of `6·n²` cells. Two resolutions are offered:
+`n = 512` (about 20 km cells, the default) and `n = 1024` (about 10 km).
+`crates/daena-physical` is the only crate the product calls: it encodes the
+source, validates it, and adapts engine fields into the products below. The
+engine design and its measured results are in
+[`plans/world-engine.md`](../plans/world-engine.md).
+
+### Source and budgets
+
+The accepted source is `DAENAPW2`. It records:
+
+- the resolved settings: preset, planet, seed, `n` and every engine setting;
+- the tectonic record;
+- the canonical elevation of every cube cell;
+- the hashes of the generated elevation, tectonics, climate, hydrology, biomes
+  and hazards.
+
+A fresh derivation from the source must reproduce every stored hash before
+its products are used, and a cached product is used only when it carries the
+same hashes. `DAENAPW1` sources are rejected as an unsupported
+version.
+
+Climate, hydrology and hazard products are drawn on a fixed 1024×512
+cell-centred equirectangular view; Atlas uses its own 384×192 view. Tools
+(Find Place, routes, regions, claims) work on the canonical cube cells.
+Derived products are disposable and cached under `.daena/`. Every derivation
+version is part of the cache key, so a version change misses the cache and
+refills it instead of mixing semantics.
+
+The bounded contracts in `crates/daena-physical/src/lib.rs` are set from the
+measured E8 envelopes (macOS, M4 Pro):
+
+| Limit                               | Value   |
+| ----------------------------------- | ------- |
+| Generation time                     | 8 s     |
+| Working memory                      | 1.5 GiB |
+| Source size                         | 32 MiB  |
+| Derived GeoJSON                     | 4 MiB   |
+| Top-level features and region rings | 4,096   |
+| Coastline segments                  | 65,536  |
+
+Asset import and export have their own 128 MiB limit.
 
 ### Planetary configuration
 
-Authors configure the planet before or with generation. Presets cover ordinary
-worlds. Advanced controls expose star luminosity, orbital distance,
-eccentricity, axial tilt, rotation period, retained heat, bond albedo, radius,
-and density. Secondary values such as year length, sunlight, and surface
-gravity are derived. `ClimateSettings.global_temperature_centi_c` remains an
-artistic offset, not a substitute for the planetary cause.
+Authors pick a world preset and a resolution, and may configure the planet
+before generation. The presets are Earthlike, Frozen, Hothouse, Desert,
+Archipelago, Water world, Pangea, Shattered and Custom; only Custom sets the
+land fraction directly.
+
+Advanced controls expose star luminosity, orbital distance, eccentricity,
+axial tilt, rotation period, retained heat, bond albedo, radius and density.
+Secondary values such as year length, sunlight and surface gravity are
+derived. A preset's temperature offset is an artistic shift, not a substitute
+for the planetary cause.
 
 ### Climate, biomes, and storms
 
-Derivation follows planetary forcing into an energy-balance temperature field,
-pressure-driven winds, saturation-limited moisture, orographic cooling, a land
-surface-water store, a seasonal loop in which ocean heat capacity lags land,
-and surface currents whose heat is imprinted on product temperature. Humidity
-is remaining moisture over local saturation. Land biome classes are a reading
-of those conditions, not an independent paint. Storm genesis, tracks, and
-intensity potential, plus drought, heat-wave, and extreme-rain metrics, are
-climatology of that seasonal state. They are not a weather forecast.
-Materialized storms remain explicit natural events.
+Climate is a seasonal energy balance on a coarse climate grid. It runs after
+terrain and does not rewrite elevation or bathymetry, and it carries lagged
+snow and sea-ice cover, meridional heat transport and maritime heat capacity
+from geography. Prevailing winds are diagnosed from that state and carry
+moisture, so rainfall follows winds, mountains and warmer seas. The result is
+lapsed onto the terrain.
 
-Climate views may show annual and solstice temperature, freeze, wind, rainfall,
-humidity, aridity, biome, storm genesis, storm tracks, ice, and currents.
-Toggling a view does not change physical truth. Cell inspection explains the
-derived reading, including why a biome class was chosen.
+Water follows the climate:
+
+- lakes settle by water balance (fresh, salt and salt flat);
+- rivers trace the drainage;
+- glaciers, ice sheets and sea ice form where the climate allows.
+
+The 26 biome classes are a reading of temperature, aridity and seasonality,
+not an independent paint. Storm genesis, tracks and intensity are climatology
+of the seasonal state, not a weather forecast; materialized storms remain
+explicit natural events. Earthquake and volcanic hazard and the volcanic
+sources come from the tectonic record.
+
+Climate views may show annual and solstice temperature, freeze, wind,
+rainfall, aridity, biome, storm genesis and storm tracks. Map layers add ice, lakes,
+earthquake hazard, volcanic hazard and volcanoes. Toggling a view does not
+change physical truth. Cell inspection shows the biome class and the sampled
+temperature, rainfall, aridity and hazards.
 
 ### Find Place
 

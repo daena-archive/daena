@@ -1,9 +1,10 @@
 # World engine: emergent physical worlds at real-world scale
 
-Status: phases A–C are built (terrain; climate, water and ice; presets). What
-is left of them is under "Remaining work". Phase D adds hazards and phase E
-integrates the engine. The engine is a new crate, `crates/daena-worldgen`; the
-current `crates/daena-physical` pipeline keeps working until phase E.
+Status: phases A–E are built (terrain; climate, water and ice; presets;
+hazards; integration, E1–E8). The engine is `crates/daena-worldgen`;
+`crates/daena-physical` is its product facade, and the old `daena-physical`
+generator was deleted in E8. Open realism work is under "Known realism gaps,
+deferred to after E8".
 
 Decisions (2026-11-08):
 
@@ -121,7 +122,7 @@ peak sits in the hazard stage, about 695 MB of live fields plus about 350 MB
 of cached erosion and routing buffers; at `n = 512` the live peak is 233 MB
 and the rest is cache. `malloc_zone_pressure_relief` does not release that
 cache on macOS 27.2 (it returns zero), so the engine does not call it.
-Windows retention is measured with the production envelopes in E8.
+Windows retention was not measured in E8 either; the E8 budget table is macOS only.
 
 `timings_ms.total` is engine time from after settings validation to the last
 hazard field. The CLI's wall time adds process startup and the serial JSON
@@ -2658,6 +2659,152 @@ Review fixes:
   now ±1 ×10⁻⁶ s⁻¹.
 - Still open for E8: the climate legend's `reason` field is the name again and
   no consumer reads it.
+
+#### E8 notes
+
+Implemented on `world-engine-v2` on top of E7 (`96e3afe`). E8 deletes the
+retired generator, moves the cancellable source hashing into the engine, bounds
+the tool-surface cache by bytes and sets the budget constants from measured
+envelopes. It changes no physics: generated worlds are byte-identical to E7.
+
+- **Deleted.**
+  - The `daena-physical` modules `tectonics`, `evolution`, `climate`,
+    `hydrology`, `hazards` and `resolution`.
+  - The `climate-profile` bin.
+  - The view-grid `find_place`, `suggest_routes`, `propose_region` and
+    `claim_at` paths and their id formatters.
+  - `GenerationSettings`, `generate_world*`, `GeneratedWorld` and
+    `LegacyDerivedPhysics`.
+  - The old product JSON builders in `physical_commands.rs` and the
+    `TectonicWorld` test helpers.
+  - `PRODUCTION_{DEFAULT,MAX}_{WIDTH,HEIGHT}`, `DEFAULT_WIDTH/HEIGHT` and
+    `MAX_WIDTH/HEIGHT`.
+
+  `crates/daena-physical/src` went from 37,326 to 14,173 lines; the branch
+  diff against E7 is 877 insertions and 24,418 deletions.
+- **Kept or moved.**
+  - The derivation versions now live in `products.rs`; their values are
+    unchanged: climate 3, hydrology 3, hazard 2, volcanic source 2.
+  - The thermal-expansion clamp moved into `history.rs`, byte-identical to the
+    deleted `hydrology::thermal_expansion_delta_m3`.
+  - `epoch-profile` was ported to the engine (`--resolution`, `--preset`,
+    `--offset-years`).
+  - `engine::PRODUCT_RESOLUTIONS` (`[512, 1024]`) is the production resolution
+    constant.
+  - Cache keys, the source magic and version checks are unchanged.
+  - A `DAENAPW1` source still fails with `physical.source.unsupported-version`
+    (tests in `engine.rs`, `lib.rs`, `daena-core` `maps/physical.rs` and Atlas).
+- **Hashing.**
+  - `worldgen::World::generation_hashes_with_cancel(elevation_mm, cancelled)`
+    is the one implementation. It polls `cancelled` every 65,536 values and
+    once per lake, river and volcanic source.
+  - `generation_hashes` calls it with a never-cancel closure, and the per-field
+    `hash_bits` of climate, hydrology, biome and hazards delegate to the same
+    functions.
+  - The hazard stage still computes `stats.hazard_hash` in two parts,
+    overlapped with the extremes pass. `tests/hazards.rs` checks that it
+    equals `Hazards::hash_bits`.
+  - `generation_hash_values_are_pinned` pins an n=32 world's six hashes to
+    literal values.
+  - `daena_physical::engine::source_hashes_with_cancel` is now a thin adapter
+    that maps `WorldError::Cancelled` to `PhysicalError::Cancelled`.
+- **Tool-surface memory.**
+  - `TOOL_SURFACE_CACHE_BYTES = 640 MiB` replaces the two-entry cap.
+    `ToolSurface::heap_bytes` measures 63.2 MB at n=512 and 252.1 MB at
+    n=1024, so a present surface and one epoch surface fit at either
+    resolution. A surface larger than the budget is not cached.
+  - Atlas builds the year-zero structure pass from `AtlasControlInputs`,
+    without a `ToolSurface`.
+  - No surface field was narrowed: none was proven lossless for every engine
+    value.
+  - Asset import and export now use their own
+    `MAX_ASSET_TRANSFER_BYTES = 128 MiB` in `transfer.rs`. They are no longer
+    tied to `MAX_SOURCE_BYTES`.
+- **Identity gate.**
+  - Compared against a `git archive` build of `96e3afe`.
+  - Byte-identical: the `physical-map` CLI source and derived GeoJSON (seeds
+    831429 and 4 at n=64 and n=512, Earthlike; seed 4 Pangea at n=64), and the
+    generation JSON, hydrology, hazards and source bytes from the command
+    builders (seed 831429 at n=512 and n=1024; seed 4 Earthlike and Pangea at
+    n=64).
+  - Find Place, routes and regions on the n=64 surfaces, and Find Place at
+    −21,000 years, are byte-identical too.
+  - The climate JSON differs only by the removed legend `reason` field.
+  - The artifacts come from the ignored `e8_identity_artifacts` test in
+    `src-tauri/src/tests.rs` (`DAENA_E8_ARTIFACTS=<dir>`).
+- **Recovery.** Covered by the existing command tests:
+  - `accepted_engine_source_rebuilds_and_rejects_an_external_checkpoint_edit`;
+  - `engine_cache_rebuilds_after_the_derived_directory_is_deleted`;
+  - `physical_event_materialization_uses_engine_events_and_survives_rebuild`,
+    which deletes `.daena/` and reopens with the events intact.
+
+  The physical identity, source hashes and products are compared after the
+  rebuild.
+
+**Budget table** (release, 12-thread M4 Pro, seed 831429, Earthlike; RSS from
+`/usr/bin/time -l`; "live" is the peak memory footprint with
+`MallocLargeCache=0`, see "Performance results" for why RSS includes the malloc
+cache):
+
+| Measurement | n=512 | n=1024 | Constant | Headroom |
+| --- | ---: | ---: | --- | --- |
+| Generation, engine plus product adapters (CLI `generationMs`) | 2.39–2.47 s | 4.16–4.23 s (ignored test, 3 runs) | `GENERATION_TIME_BUDGET_MS = 8_000` | 1.9× |
+| Generation peak RSS / live | 532 MB / 328 MB | 1.33 GB / 0.95 GB | `WORKING_MEMORY_BUDGET_BYTES = 1.5 GiB` | 1.2× RSS, 1.7× live |
+| Source bytes (`DAENAPW2`, 348 + 24·n²) | 6,291,804 | 25,166,172 | `MAX_SOURCE_BYTES = 32 MiB` | 1.33× |
+| Derived GeoJSON bytes, worst of the sweep below | 236,372 | 242,827 | `MAX_DERIVED_GEOJSON_BYTES = 4 MiB` | 17× |
+| Top-level GeoJSON features / region rings, worst | 342 / 730 | 427 / 932 | `MAX_GEOJSON_FEATURES = 4_096` | 4.4× |
+| Coastline segments on the 1024×512 view, worst | 8,334 | 8,820 | `MAX_COASTLINE_SEGMENTS = 65_536` | 7.4× |
+| `static.bin` derived cache, worst | 97.0 MB | 97.6 MB | `MAX_CACHE_BYTES = 196 MiB` | 2.1× |
+| `ToolSurface::heap_bytes` | 63.2 MB | 252.1 MB | `TOOL_SURFACE_CACHE_BYTES = 640 MiB` | present plus one epoch |
+| Epoch derive at −8,000 years (`epoch-profile`, mean of 3) | 1.18 s | 2.24 s | – | – |
+| Atlas epoch prepare at −8,000 years (`e8_prepare_peak`, 1024×512 request) | 2.84–3.00 s, 1.16 GB RSS / 0.59 GB live | 4.62–4.80 s, 2.12 GB RSS / 1.64 GB live | – | over the working budget, see doubts |
+| Event sampling | see the E6 table | see the E6 table | – | – |
+| Hash cancellation, worst lateness over a 0–90 % deadline sweep | – | 14.8 ms (hash 48 ms) | `CANCELLATION_LATENCY_BUDGET_MS = 100` | 6.8× |
+
+The "worst" rows come from a 24-world sweep: Earthlike, Frozen, Hothouse,
+Desert, Archipelago, Water world, Pangea and Shattered, at seeds 831429 and 4
+for n=512 and seed 831429 for n=1024, each at the present and at −21,000
+years. The ignored tests
+`e8_generation_meets_the_time_budget_at_1024` and
+`e8_hash_cancellation_stays_under_the_deadline_budget` assert the time and
+cancellation budgets in release. The memory budget is checked with
+`/usr/bin/time -l` as above, not in-process.
+
+Review fixes:
+
+- **The feature cap broke generation.** Workhorse lowered
+  `MAX_GEOJSON_FEATURES` to 4,096 from one seed's 290 features, but the same
+  constant also bounded coastline segments. Seed 4 at n=512 (Earthlike) then
+  failed with "engine coastline exceeds the feature budget", and half the
+  sweep has more than 4,096 segments. Coastlines now have
+  `MAX_COASTLINE_SEGMENTS`. `coastline_segments_have_their_own_limit_above_the_feature_cap`
+  generates an n=128 world with more segments than the feature cap.
+- **Two hash copies in worldgen.** The plain path called the new chunked code,
+  but the per-field `hash_bits` still had their own copies, used by the
+  harness reports and the hazard stats. They now delegate to the single
+  implementation. The old "cancellable matches plain" test could no longer
+  fail; the pinned-value test is the lock.
+- **The elevation was rebuilt on every hash call.** Each call rebuilt
+  `source_elevation_mm()` (25 MB at n=1024) although every caller already held
+  it. The elevation is now passed in.
+- **The cancellation sweep was flaky.** It cancelled at 100 % of the hash time,
+  which races the hash finishing; it failed once the baseline and the
+  measured path differed. The sweep now stops at 90 %, and the baseline is the
+  same cancellable path.
+
+Doubts:
+
+- **Atlas epoch prepare is over the working budget.** At n=1024 it peaks at
+  1.64 GB live (2.12 GB RSS) against the 1.5 GiB working budget, which is set
+  from generation. Building the year-zero pass without a `ToolSurface` did not
+  move that peak (E7 measured 1.64 GB live too). The peak is the epoch world
+  derivation plus the Atlas scene, so the surface overlap was never the cause.
+  Reducing it needs Atlas to drop the world before building its scene. That is
+  follow-up work, not a budget change.
+- **Windows malloc retention was not measured**; all figures are macOS.
+- **The source limit has little headroom.** `MAX_SOURCE_BYTES` leaves 1.33× over
+  an n=1024 source. A future n=2048 setting (100.7 MB) would need an explicit
+  contract change.
 
 ## Known realism gaps, deferred to after E8
 

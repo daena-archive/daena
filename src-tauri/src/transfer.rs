@@ -3,7 +3,10 @@ use super::APP_HANDLE;
 use super::*;
 use daena_core::{AssetBytesInput, ASSET_REFERENCE_SCOPE_PROJECT};
 
-const MAX_ASSET_TRANSFER_BYTES: usize = daena_core::maps::PHYSICAL_MAX_SOURCE_BYTES;
+/// Every project asset import and export is bounded by this. It is
+/// deliberately independent of `PHYSICAL_MAX_SOURCE_BYTES`: lowering the
+/// physical-source limit must not cap unrelated assets. Kept at 128 MiB.
+const MAX_ASSET_TRANSFER_BYTES: usize = 128 * 1024 * 1024;
 /// Largest text a plugin may hand to the shell through `text.transfer.*`.
 pub(super) const MAX_TEXT_TRANSFER_BYTES: usize = 32 * 1024 * 1024;
 /// Text transfers a plugin session may hold open at once. A draft that never

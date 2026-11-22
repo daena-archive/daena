@@ -24,9 +24,6 @@
             },
             "name": {
               "kind": "string"
-            },
-            "reason": {
-              "kind": "string"
             }
           },
           "kind": "object"

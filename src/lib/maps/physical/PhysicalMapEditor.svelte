@@ -430,7 +430,6 @@ function biomeLegendEntry(biomeClass: number) {
     climate?.biomeLegend?.find((entry) => entry.id === biomeClass) ?? {
       id: biomeClass,
       name: "unclassified",
-      reason: "",
       fill: "#78787c",
     }
   );

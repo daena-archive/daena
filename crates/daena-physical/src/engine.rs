@@ -1054,7 +1054,7 @@ impl ToolSurface {
         cursor
     }
 
-    pub fn byte_size(&self) -> usize {
+    pub fn heap_bytes(&self) -> usize {
         std::mem::size_of::<Self>()
             + self.elevation_mm.capacity() * std::mem::size_of::<i32>()
             + self.flags.capacity() * std::mem::size_of::<u8>()
@@ -1442,21 +1442,12 @@ impl DecodedSource {
         Ok(build_tool_surface(&world, epoch_sea_level_mm))
     }
 
-    /// Derive the world for one Atlas epoch and build its product inputs.
-    ///
-    /// `None`, or a solve whose normalized epoch is zero, uses `derive_world`
-    /// and verifies every source hash. An epoch uses `derive_epoch` with the
-    /// solve's sea level and temperature offset and is not hash-checked. The
-    /// view keeps reference elevations; `hydrology.sea_level_mm` carries the
-    /// epoch sea level. The world is dropped before this returns.
-    pub fn derive_atlas_inputs(
+    /// Derive one Atlas world, checking every hash on the present path.
+    fn derive_atlas_world(
         &self,
         epoch: Option<&crate::history::EpochSolve>,
-        view_width: u32,
-        view_height: u32,
-        planetary: PlanetaryConfiguration,
         progress: &mut dyn ProgressSink,
-    ) -> Result<AtlasInputs, PhysicalError> {
+    ) -> Result<worldgen::World, PhysicalError> {
         let present = match epoch {
             None => true,
             Some(solve) => solve.normalized_epoch == 0,
@@ -1491,6 +1482,25 @@ impl DecodedSource {
                 )));
             }
         }
+        Ok(world)
+    }
+
+    /// Derive the world for one Atlas epoch and build its product inputs.
+    ///
+    /// `None`, or a solve whose normalized epoch is zero, uses `derive_world`
+    /// and verifies every source hash. An epoch uses `derive_epoch` with the
+    /// solve's sea level and temperature offset and is not hash-checked. The
+    /// view keeps reference elevations; `hydrology.sea_level_mm` carries the
+    /// epoch sea level. The world is dropped before this returns.
+    pub fn derive_atlas_inputs(
+        &self,
+        epoch: Option<&crate::history::EpochSolve>,
+        view_width: u32,
+        view_height: u32,
+        planetary: PlanetaryConfiguration,
+        progress: &mut dyn ProgressSink,
+    ) -> Result<AtlasInputs, PhysicalError> {
+        let world = self.derive_atlas_world(epoch, progress)?;
         let sea_level_mm = epoch.map_or(0, |solve| solve.sea_level_mm);
         let fields = build_world_product_fields(
             &world,
@@ -1512,6 +1522,49 @@ impl DecodedSource {
             hazards: fields.hazards,
             tectonics,
             surface,
+        })
+    }
+
+    /// Derive one Atlas epoch without building a [`ToolSurface`].
+    pub fn derive_atlas_control_inputs(
+        &self,
+        epoch: Option<&crate::history::EpochSolve>,
+        view_width: u32,
+        view_height: u32,
+        planetary: PlanetaryConfiguration,
+        progress: &mut dyn ProgressSink,
+    ) -> Result<AtlasControlInputs, PhysicalError> {
+        let world = self.derive_atlas_world(epoch, progress)?;
+        let sea_level_mm = epoch.map_or(0, |solve| solve.sea_level_mm);
+        let fields = build_world_product_fields(
+            &world,
+            sea_level_mm,
+            planetary,
+            view_width,
+            view_height,
+            progress,
+        )?;
+        let tectonics = tectonic_view(&world, view_width, view_height)?;
+        let volcanic_centers = world
+            .hazards
+            .volcanic_sources
+            .iter()
+            .map(|source| {
+                let (latitude, longitude) = world.grid.lat_lon(source.cell);
+                [
+                    (longitude.to_degrees() * 1_000_000.0).round() as i32,
+                    (latitude.to_degrees() * 1_000_000.0).round() as i32,
+                ]
+            })
+            .collect();
+        progress.check_cancelled()?;
+        Ok(AtlasControlInputs {
+            view: fields.view,
+            climate: fields.climate,
+            hydrology: fields.hydrology,
+            hazards: fields.hazards,
+            tectonics,
+            volcanic_centers,
         })
     }
 }
@@ -1610,6 +1663,20 @@ pub struct AtlasInputs {
     pub hazards: products::HazardField,
     pub tectonics: TectonicView,
     pub surface: ToolSurface,
+}
+
+/// Atlas inputs that do not need a [`ToolSurface`].
+///
+/// The year-zero structure pass builds this instead of a full [`AtlasInputs`],
+/// so an epoch prepare holds one tool surface, not two. Volcanic source centres
+/// are resolved while the canonical grid is still available.
+pub struct AtlasControlInputs {
+    pub view: PhysicalField,
+    pub climate: products::ClimateField,
+    pub hydrology: products::HydrologyField,
+    pub hazards: products::HazardField,
+    pub tectonics: TectonicView,
+    pub volcanic_centers: Vec<[i32; 2]>,
 }
 
 fn view_cell_direction(row: u32, col: u32, width: u32, height: u32) -> [f64; 3] {
@@ -2252,7 +2319,7 @@ fn generation_json(
             "sourceVersion": SOURCE_VERSION,
             "planetary": settings.planetary,
             "historicalForcing": forcing_json(forcing),
-            "hazardDerivationVersion": crate::hazards::HAZARD_DERIVATION_VERSION,
+            "hazardDerivationVersion": crate::products::HAZARD_DERIVATION_VERSION,
         }
     })
 }
@@ -2374,223 +2441,30 @@ fn elevation_mm_hash(values: &[i32]) -> u64 {
     hash
 }
 
-const HASH_CHUNK: usize = 65_536;
-
-fn hash_byte(mut hash: u64, byte: u8) -> u64 {
-    hash ^= u64::from(byte);
-    hash.wrapping_mul(FNV_PRIME)
-}
-
-fn hash_u32(mut hash: u64, value: u32) -> u64 {
-    for byte in value.to_le_bytes() {
-        hash = hash_byte(hash, byte);
-    }
-    hash
-}
-
-fn hash_u64(mut hash: u64, value: u64) -> u64 {
-    for byte in value.to_le_bytes() {
-        hash = hash_byte(hash, byte);
-    }
-    hash
-}
-
-fn hash_f32_value(hash: u64, value: f32) -> u64 {
-    hash_u32(hash, value.to_bits())
-}
-
-fn hash_f64_value(hash: u64, value: f64) -> u64 {
-    hash_u64(hash, value.to_bits())
-}
-
-fn hash_elevation_mm(
-    mut hash: u64,
-    values: &[i32],
-    progress: &dyn ProgressSink,
-) -> Result<u64, PhysicalError> {
-    for chunk in values.chunks(HASH_CHUNK) {
-        progress.check_cancelled()?;
-        for value in chunk {
-            hash = hash_u32(hash, *value as u32);
-        }
-    }
-    Ok(hash)
-}
-
-fn hash_u8_values(
-    mut hash: u64,
-    values: &[u8],
-    progress: &dyn ProgressSink,
-) -> Result<u64, PhysicalError> {
-    for chunk in values.chunks(HASH_CHUNK) {
-        progress.check_cancelled()?;
-        for value in chunk {
-            hash = hash_byte(hash, *value);
-        }
-    }
-    Ok(hash)
-}
-
-fn hash_u32_values(
-    mut hash: u64,
-    values: &[u32],
-    progress: &dyn ProgressSink,
-) -> Result<u64, PhysicalError> {
-    for chunk in values.chunks(HASH_CHUNK) {
-        progress.check_cancelled()?;
-        for value in chunk {
-            hash = hash_u32(hash, *value);
-        }
-    }
-    Ok(hash)
-}
-
-fn hash_f32_values(
-    mut hash: u64,
-    values: &[f32],
-    progress: &dyn ProgressSink,
-) -> Result<u64, PhysicalError> {
-    for chunk in values.chunks(HASH_CHUNK) {
-        progress.check_cancelled()?;
-        for value in chunk {
-            hash = hash_f32_value(hash, *value);
-        }
-    }
-    Ok(hash)
-}
-
-fn hash_f64_values(
-    mut hash: u64,
-    values: &[f64],
-    progress: &dyn ProgressSink,
-) -> Result<u64, PhysicalError> {
-    for chunk in values.chunks(HASH_CHUNK) {
-        progress.check_cancelled()?;
-        for value in chunk {
-            hash = hash_f64_value(hash, *value);
-        }
-    }
-    Ok(hash)
-}
-
-fn climate_hash(
-    climate: &worldgen::ClimateSummary,
-    progress: &dyn ProgressSink,
-) -> Result<u64, PhysicalError> {
-    let mut hash = FNV_OFFSET;
-    for field in [
-        climate.t_annual_c.as_slice(),
-        climate.t_warm_c.as_slice(),
-        climate.t_cold_c.as_slice(),
-        climate.p_annual_mm.as_slice(),
-        climate.p_dry_month_mm.as_slice(),
-        climate.pet_annual_mm.as_slice(),
-        climate.runoff_mm.as_slice(),
-        climate.ice_balance_mm.as_slice(),
-    ] {
-        hash = hash_f32_values(hash, field, progress)?;
-    }
-    hash_u8_values(hash, &climate.sea_ice_months, progress)
-}
-
-fn hydrology_hash(
-    hydrology: &worldgen::Hydrology,
-    progress: &dyn ProgressSink,
-) -> Result<u64, PhysicalError> {
-    let mut hash = FNV_OFFSET;
-    for lake in &hydrology.lakes {
-        progress.check_cancelled()?;
-        hash = hash_byte(hash, lake.kind as u8);
-        hash = hash_f64_value(hash, lake.level_m);
-        hash = hash_f64_value(hash, lake.area_m2);
-        hash = hash_f64_value(hash, lake.volume_m3);
-        hash = hash_f64_value(hash, lake.evaporated_m3);
-        hash = hash_f64_value(hash, lake.outflow_m3);
-        hash = hash_f64_value(hash, lake.inflow_m3);
-    }
-    for river in &hydrology.rivers {
-        hash = hash_byte(hash, river.end as u8);
-        hash = hash_f64_value(hash, river.max_discharge_m3s);
-        for chunk in river.cells.chunks(HASH_CHUNK) {
-            progress.check_cancelled()?;
-            for cell in chunk {
-                hash = hash_u32(hash, *cell);
-            }
-        }
-    }
-    hash = hash_u32_values(hash, &hydrology.lake_id, progress)?;
-    hash = hash_f64_values(hash, &hydrology.discharge_m3s, progress)?;
-    hash = hash_u8_values(hash, &hydrology.ice_cover, progress)?;
-    hash_u32_values(hash, &hydrology.receiver, progress)
-}
-
-fn hazards_hash(
-    hazards: &worldgen::Hazards,
-    progress: &dyn ProgressSink,
-) -> Result<u64, PhysicalError> {
-    let mut hash = FNV_OFFSET;
-    hash = hash_f32_values(hash, &hazards.quake_rate_km2, progress)?;
-    hash = hash_u8_values(hash, &hazards.quake_hazard, progress)?;
-    hash = hash_u8_values(hash, &hazards.volcanic_hazard, progress)?;
-    for source in &hazards.volcanic_sources {
-        progress.check_cancelled()?;
-        hash = hash_u64(hash, source.id);
-        for component in source.pos {
-            hash = hash_f64_value(hash, component);
-        }
-        hash = hash_u32(hash, source.cell);
-        hash = hash_byte(
-            hash,
-            match source.origin {
-                worldgen::VolcanicOrigin::SubductionArc => 0,
-                worldgen::VolcanicOrigin::Hotspot => 1,
-                worldgen::VolcanicOrigin::Rift => 2,
-            },
-        );
-        hash = hash_byte(
-            hash,
-            match source.activity {
-                worldgen::VolcanicActivity::Dormant => 0,
-                worldgen::VolcanicActivity::Moderate => 1,
-                worldgen::VolcanicActivity::Vigorous => 2,
-            },
-        );
-        hash = hash_f32_value(hash, source.eruptions_per_yr);
-    }
-    hash = hash_f32_values(hash, &hazards.storms.genesis_km2, progress)?;
-    hash = hash_f32_values(hash, &hazards.storms.track_km2, progress)?;
-    hash = hash_f32_values(hash, &hazards.storms.intensity, progress)?;
-    hash = hash_f32_values(hash, &hazards.storms.genesis_monthly_km2, progress)?;
-    hash = hash_u8_values(hash, &hazards.drought, progress)?;
-    hash = hash_u8_values(hash, &hazards.heat_wave, progress)?;
-    hash = hash_u8_values(hash, &hazards.extreme_rain, progress)?;
-    hash_u8_values(hash, &hazards.flood, progress)
-}
-
-/// Compute the source hashes with cancellation between chunks.
+/// Chunked, cancellable source hashing from the engine.
 ///
-/// This mirrors `World::generation_hashes` exactly; the equality test at
-/// `source_hashes_match_the_engine` keeps the two implementations locked.
+/// The elevation argument must be the world's canonical source elevation or
+/// the identical decoded source slice; it is hashed as given.
 pub fn source_hashes_with_cancel(
     world: &worldgen::World,
     elevation_mm: &[i32],
     progress: &dyn ProgressSink,
 ) -> Result<SourceHashes, PhysicalError> {
     progress.check_cancelled()?;
-    let elevation_mm_hash = hash_elevation_mm(FNV_OFFSET, elevation_mm, progress)?;
-    let tectonics = world.tectonics_hash();
-    progress.check_cancelled()?;
-    let climate = climate_hash(&world.climate, progress)?;
-    let hydrology = hydrology_hash(&world.hydrology, progress)?;
-    let biome = hash_u8_values(FNV_OFFSET, &world.biome, progress)?;
-    let hazards = hazards_hash(&world.hazards, progress)?;
+    debug_assert_eq!(elevation_mm, world.source_elevation_mm());
+    let hashes = world
+        .generation_hashes_with_cancel(elevation_mm, &|| progress.check_cancelled().is_err())
+        .map_err(|error| match error {
+            worldgen::WorldError::Cancelled => PhysicalError::Cancelled,
+            other => PhysicalError::Validation(other.to_string()),
+        })?;
     Ok(SourceHashes {
-        elevation_mm: elevation_mm_hash,
-        tectonics,
-        climate,
-        hydrology,
-        biome,
-        hazards,
+        elevation_mm: hashes.elevation_mm,
+        tectonics: hashes.tectonics,
+        climate: hashes.climate,
+        hydrology: hashes.hydrology,
+        biome: hashes.biome,
+        hazards: hashes.hazards,
     })
 }
 
@@ -2729,19 +2603,115 @@ mod tests {
     }
 
     #[test]
-    fn source_hashes_match_the_engine() {
+    fn cancellable_source_hashes_match_the_plain_engine_path() {
         let world_settings = settings(64).world_settings().unwrap();
         let progress = NoopProgress;
         let world = worldgen::generate(&world_settings, &mut worldgen::NoProgress).unwrap();
         let elevation = world.source_elevation_mm();
-        let ours = source_hashes_with_cancel(&world, &elevation, &progress).unwrap();
-        let engine = world.generation_hashes();
-        assert_eq!(ours.elevation_mm, engine.elevation_mm);
-        assert_eq!(ours.tectonics, engine.tectonics);
-        assert_eq!(ours.climate, engine.climate);
-        assert_eq!(ours.hydrology, engine.hydrology);
-        assert_eq!(ours.biome, engine.biome);
-        assert_eq!(ours.hazards, engine.hazards);
+        let cancelled = source_hashes_with_cancel(&world, &elevation, &progress).unwrap();
+        let plain = world.generation_hashes();
+        assert_eq!(cancelled.elevation_mm, plain.elevation_mm);
+        assert_eq!(cancelled.tectonics, plain.tectonics);
+        assert_eq!(cancelled.climate, plain.climate);
+        assert_eq!(cancelled.hydrology, plain.hydrology);
+        assert_eq!(cancelled.biome, plain.biome);
+        assert_eq!(cancelled.hazards, plain.hazards);
+    }
+
+    #[test]
+    #[ignore = "wall-clock: release-only generation budget"]
+    fn e8_generation_meets_the_time_budget_at_1024() {
+        let started = Instant::now();
+        let products = generate(settings(1024), &mut NoopProgress).unwrap();
+        let elapsed = started.elapsed();
+        println!(
+            "E8 n=1024 generation {:?}, source {} bytes, geojson {} bytes, {} hashes",
+            elapsed,
+            products.source().len(),
+            products.derived_geojson().len(),
+            6
+        );
+        assert!(
+            elapsed.as_millis() < crate::GENERATION_TIME_BUDGET_MS,
+            "generation took {elapsed:?}, budget {} ms",
+            crate::GENERATION_TIME_BUDGET_MS
+        );
+    }
+
+    #[test]
+    #[ignore = "wall-clock: release-only hash cancellation deadline sweep"]
+    fn e8_hash_cancellation_stays_under_the_deadline_budget() {
+        let world_settings = settings(1024).world_settings().unwrap();
+        let world = worldgen::generate(&world_settings, &mut worldgen::NoProgress).unwrap();
+        let elevation = world.source_elevation_mm();
+        let started = Instant::now();
+        world
+            .generation_hashes_with_cancel(&elevation, &|| false)
+            .unwrap();
+        let hash_duration = started.elapsed();
+        let mut worst = std::time::Duration::ZERO;
+        let mut worst_deadline = std::time::Duration::ZERO;
+        // Deadlines up to 90 % of the uncancelled time; a deadline at 100 %
+        // races the hash finishing and proves nothing about latency.
+        for step in 0..10 {
+            let deadline = hash_duration.mul_f64(f64::from(step) / 10.0);
+            let started = Instant::now();
+            let result =
+                world.generation_hashes_with_cancel(&elevation, &|| started.elapsed() >= deadline);
+            let elapsed = started.elapsed();
+            assert_eq!(result, Err(worldgen::WorldError::Cancelled));
+            let late = elapsed.saturating_sub(deadline);
+            if late > worst {
+                worst = late;
+                worst_deadline = deadline;
+            }
+        }
+        println!(
+            "E8 hash sweep: plain {hash_duration:?}, worst late {worst:?} at deadline {worst_deadline:?}"
+        );
+        assert!(
+            worst.as_millis() < crate::CANCELLATION_LATENCY_BUDGET_MS,
+            "hash cancellation was {worst:?} late at {worst_deadline:?}"
+        );
+    }
+
+    #[test]
+    fn coastline_segments_have_their_own_limit_above_the_feature_cap() {
+        // Coastline segments are counted on the fixed 1024x512 view, so even a
+        // small world can carry more of them than the top-level feature cap.
+        // In the E8 review the shared 4,096 cap made seed 4 (n=512) fail to
+        // generate; the sweep's worst world has 8,820 segments.
+        let mut most = 0;
+        for preset in [WorldPreset::Shattered, WorldPreset::Archipelago] {
+            let settings = Settings::from_parts(
+                4,
+                preset,
+                128,
+                6_371_000,
+                0,
+                PlanetaryConfiguration::earth_like(),
+            );
+            let products = generate(settings, &mut NoopProgress).unwrap();
+            most = most.max(products.hydrology().coastline_segments.len());
+        }
+        assert!(
+            most > crate::MAX_GEOJSON_FEATURES,
+            "expected a world with more coastline segments than features, got {most}"
+        );
+        assert!(most <= crate::MAX_COASTLINE_SEGMENTS);
+    }
+
+    #[test]
+    fn generation_hash_values_are_pinned() {
+        let world_settings = settings(32).world_settings().unwrap();
+        let world = worldgen::generate(&world_settings, &mut worldgen::NoProgress).unwrap();
+        let hashes = world.generation_hashes();
+        assert_eq!(hashes.elevation_mm, 14_057_032_883_735_868_487);
+        assert_eq!(hashes.tectonics, 2_178_534_385_459_862_412);
+        assert_eq!(hashes.climate, 17_281_621_976_253_921_028);
+        assert_eq!(hashes.hydrology, 5_046_656_125_177_288_775);
+        assert_eq!(hashes.biome, 12_713_969_144_926_352_957);
+        assert_eq!(hashes.hazards, 5_626_183_643_324_330_689);
     }
 
     #[test]
@@ -2912,7 +2882,7 @@ mod tests {
                 assert!(id as usize <= cell);
             }
         }
-        assert!(surface.byte_size() > surface.cell_count() * 30);
+        assert!(surface.heap_bytes() > surface.cell_count() * 30);
     }
 
     #[test]
@@ -3081,8 +3051,8 @@ mod tests {
             let elapsed = started.elapsed();
             record_measurement(&format!(
                 "n={resolution}: surface {} bytes ({:.2} bytes/cell), present build {elapsed:?}",
-                surface.byte_size(),
-                surface.byte_size() as f64 / surface.cell_count() as f64
+                surface.heap_bytes(),
+                surface.heap_bytes() as f64 / surface.cell_count() as f64
             ));
         }
     }

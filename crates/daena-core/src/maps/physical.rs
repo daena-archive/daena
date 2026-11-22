@@ -326,7 +326,7 @@ pub fn validate_generation(value: &Value) -> Result<PhysicalMapGenerationSetting
     // epoch keys carry it), so an older map stays readable. Only a version this
     // build does not know is rejected.
     if let Some(version) = settings.hazard_derivation_version {
-        if version == 0 || version > daena_physical::hazards::HAZARD_DERIVATION_VERSION {
+        if version == 0 || version > daena_physical::products::HAZARD_DERIVATION_VERSION {
             return Err(invalid(
                 CODE_INVALID_GENERATION,
                 format!("unsupported hazardDerivationVersion {version}"),
@@ -520,7 +520,7 @@ mod tests {
     #[test]
     fn older_hazard_versions_stay_readable_and_future_ones_are_rejected() {
         let world = products(32);
-        let current = daena_physical::hazards::HAZARD_DERIVATION_VERSION;
+        let current = daena_physical::products::HAZARD_DERIVATION_VERSION;
         let mut older = generation(&world);
         older["settings"]["hazardDerivationVersion"] = serde_json::json!(1);
         assert!(current > 1);

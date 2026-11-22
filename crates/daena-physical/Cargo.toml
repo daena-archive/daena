@@ -20,10 +20,6 @@ name = "physical-map"
 path = "src/main.rs"
 
 [[bin]]
-name = "climate-profile"
-path = "src/bin/climate_profile.rs"
-
-[[bin]]
 name = "epoch-profile"
 path = "src/bin/epoch_profile.rs"
 

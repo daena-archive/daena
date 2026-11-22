@@ -8,25 +8,21 @@
 use std::fs;
 use std::path::Path;
 
-use crate::climate::ClimateField as LegacyClimateField;
 use crate::engine::{SourceHashes, SOURCE_VERSION, WORLD_ENGINE_VERSION};
-use crate::evolution::EvolutionField;
-use crate::hydrology::{
-    ocean_volume_curve, HydrologyField as LegacyHydrologyField, OceanVolumeSample,
-};
 use crate::products::{
     Basin, BasinStatus, ClimateField, ClimateMetrics, HazardField, HazardMetrics, HydrologyField,
     HydrologyMetrics, RiverDestination, RiverSegment, VolcanicActivity, VolcanicOrigin,
     VolcanicSource,
 };
 use crate::{
-    GeneratedWorld, Grid, PhysicalError, PhysicalErrorCode, PhysicalField, Segment,
-    MAX_DERIVED_GEOJSON_BYTES,
+    Grid, PhysicalError, PhysicalErrorCode, PhysicalField, Segment, MAX_DERIVED_GEOJSON_BYTES,
 };
 
 pub const CACHE_FORMAT_VERSION: u32 = 3;
 pub const CACHE_FILE_NAME: &str = "static.bin";
 const MAGIC: &[u8; 8] = b"DAENAPDC";
+/// The E8 sweep's largest `static.bin` is 97.6 MB (the view is 1024x512 at
+/// every resolution), so 196 MiB leaves about 2x.
 const MAX_CACHE_BYTES: usize = MAX_DERIVED_GEOJSON_BYTES.saturating_add(192 * 1024 * 1024);
 
 /// Engine-backed derived physics for one accepted world view.
@@ -76,35 +72,12 @@ impl StaticDerivedPhysics {
             SOURCE_VERSION,
             crate::products::CLIMATE_DERIVATION_VERSION,
             crate::products::HYDROLOGY_DERIVATION_VERSION,
-            crate::hazards::HAZARD_DERIVATION_VERSION,
-            crate::hazards::VOLCANIC_SOURCE_DERIVATION_VERSION,
+            crate::products::HAZARD_DERIVATION_VERSION,
+            crate::products::VOLCANIC_SOURCE_DERIVATION_VERSION,
             view_width,
             view_height,
             planetary.climate_cache_token(),
         )
-    }
-}
-
-/// The old product-generation cache shape. It is kept only for the old
-/// history/generator tests that E8 deletes; it is never written to disk.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LegacyDerivedPhysics {
-    pub climate: LegacyClimateField,
-    pub evolution: EvolutionField,
-    pub hydrology: LegacyHydrologyField,
-    pub ocean_curve: Vec<OceanVolumeSample>,
-    pub geojson: String,
-}
-
-impl LegacyDerivedPhysics {
-    pub fn from_world(world: &GeneratedWorld) -> Result<Self, PhysicalError> {
-        Ok(Self {
-            climate: world.climate.clone(),
-            evolution: world.evolution.clone(),
-            hydrology: world.hydrology.clone(),
-            ocean_curve: ocean_volume_curve(&world.field)?,
-            geojson: world.derived_geojson.clone(),
-        })
     }
 }
 

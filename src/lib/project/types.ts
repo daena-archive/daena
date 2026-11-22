@@ -367,7 +367,7 @@ export interface PhysicalClimateProducts {
   precipitationNhSummerMm: number[];
   precipitationNhWinterMm: number[];
   biomeClass: number[];
-  biomeLegend: { id: number; name: string; reason: string; fill: string }[];
+  biomeLegend: { id: number; name: string; fill: string }[];
   stormSuitabilityPpm: number[];
   stormTrackPpm: number[];
   stormIntensityPpm: number[];

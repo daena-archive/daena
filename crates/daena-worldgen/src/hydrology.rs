@@ -677,37 +677,11 @@ fn trace_rivers(
 }
 
 impl Hydrology {
+    /// The source hydrology hash; one implementation lives in
+    /// `crate::hash_hydrology_with_cancel`.
     pub(crate) fn hash_bits(&self) -> u64 {
-        let mut hash = 0xcbf2_9ce4_8422_2325u64;
-        for lake in &self.lakes {
-            hash = fnv_byte(hash, lake.kind as u8);
-            hash = fnv_f64(hash, lake.level_m);
-            hash = fnv_f64(hash, lake.area_m2);
-            hash = fnv_f64(hash, lake.volume_m3);
-            hash = fnv_f64(hash, lake.evaporated_m3);
-            hash = fnv_f64(hash, lake.outflow_m3);
-            hash = fnv_f64(hash, lake.inflow_m3);
-        }
-        for river in &self.rivers {
-            hash = fnv_byte(hash, river.end as u8);
-            hash = fnv_f64(hash, river.max_discharge_m3s);
-            for cell in &river.cells {
-                hash = fnv_u32(hash, *cell);
-            }
-        }
-        for id in &self.lake_id {
-            hash = fnv_u32(hash, *id);
-        }
-        for value in &self.discharge_m3s {
-            hash = fnv_f64(hash, *value);
-        }
-        for flag in &self.ice_cover {
-            hash = fnv_byte(hash, *flag);
-        }
-        for cell in &self.receiver {
-            hash = fnv_u32(hash, *cell);
-        }
-        hash
+        crate::hash_hydrology_with_cancel(self, &|| false)
+            .expect("a never-cancelled hash cannot be cancelled")
     }
 
     /// Great-circle length of every segment, metres.
@@ -733,23 +707,4 @@ fn cell_distance(grid: &CubeSphere, a: u32, b: u32) -> f64 {
     let pb = grid.position(b);
     let dot = (pa[0] * pb[0] + pa[1] * pb[1] + pa[2] * pb[2]).clamp(-1.0, 1.0);
     dot.acos() * grid.radius_m
-}
-
-fn fnv_byte(mut hash: u64, byte: u8) -> u64 {
-    hash ^= u64::from(byte);
-    hash.wrapping_mul(0x0000_0100_0000_01b3)
-}
-
-fn fnv_u32(mut hash: u64, value: u32) -> u64 {
-    for byte in value.to_le_bytes() {
-        hash = fnv_byte(hash, byte);
-    }
-    hash
-}
-
-fn fnv_f64(mut hash: u64, value: f64) -> u64 {
-    for byte in value.to_bits().to_le_bytes() {
-        hash = fnv_byte(hash, byte);
-    }
-    hash
 }

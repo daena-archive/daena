@@ -363,22 +363,13 @@ pub(crate) fn build(
 
 impl Hazards {
     /// FNV-1a over the hazard fields in declaration order, sources by id.
+    ///
+    /// One implementation lives in `crate::hash_hazards_with_cancel`; the
+    /// hazard stage computes `stats.hazard_hash` in two overlapped parts, and a
+    /// test checks that it equals this value.
     pub fn hash_bits(&self) -> u64 {
-        let hash = hash_quake_fields(
-            0xcbf2_9ce4_8422_2325u64,
-            &self.quake_rate_km2,
-            &self.quake_hazard,
-            &self.volcanic_hazard,
-            &self.volcanic_sources,
-            &self.storms,
-        );
-        hash_extreme_fields(
-            hash,
-            &self.drought,
-            &self.heat_wave,
-            &self.extreme_rain,
-            &self.flood,
-        )
+        crate::hash_hazards_with_cancel(self, &|| false)
+            .expect("a never-cancelled hash cannot be cancelled")
     }
 }
 

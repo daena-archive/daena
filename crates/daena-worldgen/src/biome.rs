@@ -492,10 +492,6 @@ fn east_north(up: [f64; 3]) -> ([f64; 3], [f64; 3]) {
 }
 
 pub(crate) fn hash_bits(biome: &[u8]) -> u64 {
-    let mut hash = 0xcbf2_9ce4_8422_2325u64;
-    for byte in biome {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    hash
+    crate::hash_u8_values_with_cancel(crate::FNV_OFFSET, biome, &|| false)
+        .expect("a never-cancelled hash cannot be cancelled")
 }

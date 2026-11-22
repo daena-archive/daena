@@ -18,16 +18,18 @@ use daena_worldgen as worldgen;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::{
-    hazards::{RATE_NANO, VOLCANIC_SOURCE_DERIVATION_VERSION},
     products::{
         earthquake_rate_nano, fraction_ppm, hazard_ppm, rate_per_million_years_ppm,
         CLIMATE_DERIVATION_VERSION, HYDROLOGY_DERIVATION_VERSION,
+        VOLCANIC_SOURCE_DERIVATION_VERSION,
     },
     splitmix64, PhysicalError,
 };
 
 pub const EVENT_MATERIALIZATION_VERSION: u16 = 3;
 pub const MAX_INTERVAL_OFFSET_YEARS: i64 = 100_000;
+/// Nano-units per event or per year.
+const RATE_NANO: u64 = 1_000_000_000;
 pub const MAX_EVENTS: u32 = 128;
 const MAX_EXPECTED_EVENTS: f64 = 1_024.0;
 /// Earthlike seed 831429, `n = 512`: the retired 384×192 product generator

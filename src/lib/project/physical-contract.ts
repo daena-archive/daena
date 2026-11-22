@@ -83,7 +83,7 @@ export const physicalContract = {
     precipitationNhSummerMm: [0],
     precipitationNhWinterMm: [0],
     biomeClass: [0],
-    biomeLegend: [{ id: 0, name: "", reason: "", fill: "#000000" }],
+    biomeLegend: [{ id: 0, name: "", fill: "#000000" }],
     stormSuitabilityPpm: [0],
     stormTrackPpm: [0],
     stormIntensityPpm: [0],

@@ -676,15 +676,37 @@ impl World {
 
     /// Hashes the source stores for decode/derive validation.
     pub fn generation_hashes(&self) -> GenerationHashes {
-        let elevation_mm = self.source_elevation_mm();
-        GenerationHashes {
-            elevation_mm: elevation_mm_hash(&elevation_mm),
-            tectonics: self.tectonics.hash_bits(),
-            climate: self.climate.hash_bits(),
-            hydrology: self.hydrology.hash_bits(),
-            biome: self.biome_hash(),
-            hazards: self.hazards.hash_bits(),
-        }
+        self.generation_hashes_with_cancel(&self.source_elevation_mm(), &|| false)
+            .expect("a never-cancelled hash cannot be cancelled")
+    }
+
+    /// [`Self::generation_hashes`] with cancellation between hash chunks.
+    ///
+    /// The values are byte-identical to the plain path. `elevation_mm` must be
+    /// [`Self::source_elevation_mm`] (or the identical decoded source slice);
+    /// callers pass it because they already hold it. `cancelled` is polled
+    /// between chunks of 65,536 values and once per lake, river and volcanic
+    /// source.
+    pub fn generation_hashes_with_cancel(
+        &self,
+        elevation_mm: &[i32],
+        cancelled: &(dyn Fn() -> bool + Sync),
+    ) -> Result<GenerationHashes, WorldError> {
+        debug_assert_eq!(elevation_mm.len(), self.grid.cell_count());
+        let elevation_mm = hash_i32_values_with_cancel(FNV_OFFSET, elevation_mm, cancelled)?;
+        let tectonics = self.tectonics.hash_bits();
+        let climate = hash_climate_with_cancel(&self.climate, cancelled)?;
+        let hydrology = hash_hydrology_with_cancel(&self.hydrology, cancelled)?;
+        let biome = hash_u8_values_with_cancel(FNV_OFFSET, &self.biome, cancelled)?;
+        let hazards = hash_hazards_with_cancel(&self.hazards, cancelled)?;
+        Ok(GenerationHashes {
+            elevation_mm,
+            tectonics,
+            climate,
+            hydrology,
+            biome,
+            hazards,
+        })
     }
 
     /// Reference water inventory: all cells below sea level, in cubic metres.
@@ -1702,15 +1724,215 @@ pub(crate) fn elevation_hash(values: &[f32]) -> u64 {
     hash
 }
 
-fn elevation_mm_hash(values: &[i32]) -> u64 {
-    let mut hash = 0xcbf2_9ce4_8422_2325u64;
-    for value in values {
-        for byte in value.to_le_bytes() {
-            hash ^= u64::from(byte);
-            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-        }
+pub(crate) const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+const HASH_CHUNK: usize = 65_536;
+
+fn hash_byte(mut hash: u64, byte: u8) -> u64 {
+    hash ^= u64::from(byte);
+    hash.wrapping_mul(FNV_PRIME)
+}
+
+fn hash_u32(mut hash: u64, value: u32) -> u64 {
+    for byte in value.to_le_bytes() {
+        hash = hash_byte(hash, byte);
     }
     hash
+}
+
+fn hash_u64(mut hash: u64, value: u64) -> u64 {
+    for byte in value.to_le_bytes() {
+        hash = hash_byte(hash, byte);
+    }
+    hash
+}
+
+fn hash_f32(hash: u64, value: f32) -> u64 {
+    hash_u32(hash, value.to_bits())
+}
+
+fn hash_f64(hash: u64, value: f64) -> u64 {
+    hash_u64(hash, value.to_bits())
+}
+
+fn hash_i32_values_with_cancel(
+    mut hash: u64,
+    values: &[i32],
+    cancelled: &(dyn Fn() -> bool + Sync),
+) -> Result<u64, WorldError> {
+    for chunk in values.chunks(HASH_CHUNK) {
+        if cancelled() {
+            return Err(WorldError::Cancelled);
+        }
+        for value in chunk {
+            hash = hash_u32(hash, *value as u32);
+        }
+    }
+    Ok(hash)
+}
+
+pub(crate) fn hash_u8_values_with_cancel(
+    mut hash: u64,
+    values: &[u8],
+    cancelled: &(dyn Fn() -> bool + Sync),
+) -> Result<u64, WorldError> {
+    for chunk in values.chunks(HASH_CHUNK) {
+        if cancelled() {
+            return Err(WorldError::Cancelled);
+        }
+        for value in chunk {
+            hash = hash_byte(hash, *value);
+        }
+    }
+    Ok(hash)
+}
+
+fn hash_u32_values_with_cancel(
+    mut hash: u64,
+    values: &[u32],
+    cancelled: &(dyn Fn() -> bool + Sync),
+) -> Result<u64, WorldError> {
+    for chunk in values.chunks(HASH_CHUNK) {
+        if cancelled() {
+            return Err(WorldError::Cancelled);
+        }
+        for value in chunk {
+            hash = hash_u32(hash, *value);
+        }
+    }
+    Ok(hash)
+}
+
+fn hash_f32_values_with_cancel(
+    mut hash: u64,
+    values: &[f32],
+    cancelled: &(dyn Fn() -> bool + Sync),
+) -> Result<u64, WorldError> {
+    for chunk in values.chunks(HASH_CHUNK) {
+        if cancelled() {
+            return Err(WorldError::Cancelled);
+        }
+        for value in chunk {
+            hash = hash_f32(hash, *value);
+        }
+    }
+    Ok(hash)
+}
+
+fn hash_f64_values_with_cancel(
+    mut hash: u64,
+    values: &[f64],
+    cancelled: &(dyn Fn() -> bool + Sync),
+) -> Result<u64, WorldError> {
+    for chunk in values.chunks(HASH_CHUNK) {
+        if cancelled() {
+            return Err(WorldError::Cancelled);
+        }
+        for value in chunk {
+            hash = hash_f64(hash, *value);
+        }
+    }
+    Ok(hash)
+}
+
+pub(crate) fn hash_climate_with_cancel(
+    climate: &ClimateSummary,
+    cancelled: &(dyn Fn() -> bool + Sync),
+) -> Result<u64, WorldError> {
+    let mut hash = FNV_OFFSET;
+    for field in [
+        climate.t_annual_c.as_slice(),
+        climate.t_warm_c.as_slice(),
+        climate.t_cold_c.as_slice(),
+        climate.p_annual_mm.as_slice(),
+        climate.p_dry_month_mm.as_slice(),
+        climate.pet_annual_mm.as_slice(),
+        climate.runoff_mm.as_slice(),
+        climate.ice_balance_mm.as_slice(),
+    ] {
+        hash = hash_f32_values_with_cancel(hash, field, cancelled)?;
+    }
+    hash_u8_values_with_cancel(hash, &climate.sea_ice_months, cancelled)
+}
+
+pub(crate) fn hash_hydrology_with_cancel(
+    hydrology: &Hydrology,
+    cancelled: &(dyn Fn() -> bool + Sync),
+) -> Result<u64, WorldError> {
+    let mut hash = FNV_OFFSET;
+    for lake in &hydrology.lakes {
+        if cancelled() {
+            return Err(WorldError::Cancelled);
+        }
+        hash = hash_byte(hash, lake.kind as u8);
+        hash = hash_f64(hash, lake.level_m);
+        hash = hash_f64(hash, lake.area_m2);
+        hash = hash_f64(hash, lake.volume_m3);
+        hash = hash_f64(hash, lake.evaporated_m3);
+        hash = hash_f64(hash, lake.outflow_m3);
+        hash = hash_f64(hash, lake.inflow_m3);
+    }
+    for river in &hydrology.rivers {
+        hash = hash_byte(hash, river.end as u8);
+        hash = hash_f64(hash, river.max_discharge_m3s);
+        for chunk in river.cells.chunks(HASH_CHUNK) {
+            if cancelled() {
+                return Err(WorldError::Cancelled);
+            }
+            for cell in chunk {
+                hash = hash_u32(hash, *cell);
+            }
+        }
+    }
+    hash = hash_u32_values_with_cancel(hash, &hydrology.lake_id, cancelled)?;
+    hash = hash_f64_values_with_cancel(hash, &hydrology.discharge_m3s, cancelled)?;
+    hash = hash_u8_values_with_cancel(hash, &hydrology.ice_cover, cancelled)?;
+    hash_u32_values_with_cancel(hash, &hydrology.receiver, cancelled)
+}
+
+pub(crate) fn hash_hazards_with_cancel(
+    hazards: &Hazards,
+    cancelled: &(dyn Fn() -> bool + Sync),
+) -> Result<u64, WorldError> {
+    let mut hash = FNV_OFFSET;
+    hash = hash_f32_values_with_cancel(hash, &hazards.quake_rate_km2, cancelled)?;
+    hash = hash_u8_values_with_cancel(hash, &hazards.quake_hazard, cancelled)?;
+    hash = hash_u8_values_with_cancel(hash, &hazards.volcanic_hazard, cancelled)?;
+    for source in &hazards.volcanic_sources {
+        if cancelled() {
+            return Err(WorldError::Cancelled);
+        }
+        hash = hash_u64(hash, source.id);
+        for component in source.pos {
+            hash = hash_f64(hash, component);
+        }
+        hash = hash_u32(hash, source.cell);
+        hash = hash_byte(
+            hash,
+            match source.origin {
+                VolcanicOrigin::SubductionArc => 0,
+                VolcanicOrigin::Hotspot => 1,
+                VolcanicOrigin::Rift => 2,
+            },
+        );
+        hash = hash_byte(
+            hash,
+            match source.activity {
+                VolcanicActivity::Dormant => 0,
+                VolcanicActivity::Moderate => 1,
+                VolcanicActivity::Vigorous => 2,
+            },
+        );
+        hash = hash_f32(hash, source.eruptions_per_yr);
+    }
+    hash = hash_f32_values_with_cancel(hash, &hazards.storms.genesis_km2, cancelled)?;
+    hash = hash_f32_values_with_cancel(hash, &hazards.storms.track_km2, cancelled)?;
+    hash = hash_f32_values_with_cancel(hash, &hazards.storms.intensity, cancelled)?;
+    hash = hash_f32_values_with_cancel(hash, &hazards.storms.genesis_monthly_km2, cancelled)?;
+    hash = hash_u8_values_with_cancel(hash, &hazards.drought, cancelled)?;
+    hash = hash_u8_values_with_cancel(hash, &hazards.heat_wave, cancelled)?;
+    hash = hash_u8_values_with_cancel(hash, &hazards.extreme_rain, cancelled)?;
+    hash_u8_values_with_cancel(hash, &hazards.flood, cancelled)
 }
 
 pub(crate) fn direction_from_lat_lon(lat_deg: f64, lon_deg: f64) -> [f64; 3] {

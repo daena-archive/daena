@@ -1,98 +1,91 @@
 use std::env;
 use std::time::Instant;
 
-use daena_physical::derived_cache::LegacyDerivedPhysics;
+use daena_physical::engine::{self, Settings, WorldPreset};
 use daena_physical::history::{
-    derive_historical_world_from_static, derive_historical_world_with_planet,
-    HistoricalForcingParameters, HistoricalWorld,
+    derive_historical_products, solve_epoch, HistoricalForcingParameters,
 };
 use daena_physical::planetary::PlanetaryConfiguration;
-use daena_physical::{
-    generate_world, GenerationSettings, NoopProgress, DEFAULT_RADIUS_METRES,
-    PRODUCTION_DEFAULT_HEIGHT, PRODUCTION_DEFAULT_WIDTH,
-};
+use daena_physical::{NoopProgress, DEFAULT_RADIUS_METRES};
 
-fn option_u32(args: &[String], name: &str) -> Result<Option<u32>, String> {
+fn option<T: std::str::FromStr>(args: &[String], name: &str) -> Result<Option<T>, String> {
     args.windows(2)
         .find(|window| window[0] == name)
-        .map(|window| window[1].parse::<u32>())
+        .map(|window| {
+            window[1]
+                .parse::<T>()
+                .map_err(|_| format!("{name} has an invalid value: {}", window[1]))
+        })
         .transpose()
-        .map_err(|error| format!("{name} must be an unsigned integer: {error}"))
-}
-
-fn option_i64(args: &[String], name: &str) -> Result<Option<i64>, String> {
-    args.windows(2)
-        .find(|window| window[0] == name)
-        .map(|window| window[1].parse::<i64>())
-        .transpose()
-        .map_err(|error| format!("{name} must be an integer: {error}"))
 }
 
 fn main() -> Result<(), String> {
     let args = env::args().skip(1).collect::<Vec<_>>();
-    let width = option_u32(&args, "--width")?.unwrap_or(PRODUCTION_DEFAULT_WIDTH);
-    let height = option_u32(&args, "--height")?.unwrap_or(PRODUCTION_DEFAULT_HEIGHT);
-    let seed = option_u32(&args, "--seed")?.unwrap_or(831_429);
-    let warmup = option_u32(&args, "--warmup")?.unwrap_or(1);
-    let repeat = option_u32(&args, "--repeat")?.unwrap_or(1);
-    let offset_years = option_i64(&args, "--offset-years")?.unwrap_or(0);
-    let use_static = args.iter().any(|arg| arg == "--static");
-    let settings = GenerationSettings {
-        width,
-        height,
-        radius_metres: DEFAULT_RADIUS_METRES,
-        target_land_fraction_ppm: 300_000,
-    };
+    let resolution = option(&args, "--resolution")?.unwrap_or(512);
+    let seed = option(&args, "--seed")?.unwrap_or(831_429);
+    let preset_name = args
+        .windows(2)
+        .find(|window| window[0] == "--preset")
+        .map(|window| window[1].clone())
+        .unwrap_or_else(|| "earthlike".into());
+    let preset =
+        WorldPreset::parse(&preset_name).ok_or_else(|| format!("unknown preset {preset_name}"))?;
+    let warmup: u32 = option(&args, "--warmup")?.unwrap_or(1);
+    let repeat: u32 = option(&args, "--repeat")?.unwrap_or(1);
+    let offset_years: i64 = option(&args, "--offset-years")?.unwrap_or(-8_000);
     println!(
-        "pid={} width={} height={} seed={} offsetYears={} static={}",
+        "pid={} resolution={} seed={} preset={} offsetYears={}",
         std::process::id(),
-        width,
-        height,
+        resolution,
         seed,
-        offset_years,
-        use_static
+        preset.as_str(),
+        offset_years
+    );
+    let settings = Settings::from_parts(
+        seed,
+        preset,
+        resolution,
+        DEFAULT_RADIUS_METRES,
+        0,
+        PlanetaryConfiguration::earth_like(),
     );
     let generate_started = Instant::now();
-    let world = generate_world(settings, seed, 0, &mut NoopProgress).map_err(|e| e.to_string())?;
+    let products = engine::generate(settings, &mut NoopProgress).map_err(|e| e.to_string())?;
     let generation_ms = generate_started.elapsed().as_secs_f64() * 1000.0;
-    let inventory = world.report.reference_water_inventory_m3;
-    let forcing =
-        HistoricalForcingParameters::default_for(world.field.seed, world.field.retry_index);
-    let physics = LegacyDerivedPhysics::from_world(&world).map_err(|e| e.to_string())?;
+    let source = products.source().to_vec();
+    let decoded = engine::decode_source(&source).map_err(|e| e.to_string())?;
+    let forcing = HistoricalForcingParameters::default_for_seed(decoded.seed());
     let planetary = PlanetaryConfiguration::earth_like();
-    let derive = |progress: &mut NoopProgress| -> Result<HistoricalWorld, String> {
-        if use_static {
-            derive_historical_world_from_static(
-                &world.field,
-                &physics,
-                inventory,
-                Some(&world.tectonics.crust_by_cell),
-                forcing,
-                offset_years,
-                progress,
-            )
-            .map_err(|error| error.to_string())
-        } else {
-            derive_historical_world_with_planet(
-                &world.field,
-                inventory,
-                Some(&world.tectonics.crust_by_cell),
-                forcing,
-                offset_years,
-                planetary,
-                progress,
-            )
-            .map_err(|error| error.to_string())
-        }
+    let present = daena_physical::derived_cache::StaticDerivedPhysics::new(
+        products.view().clone(),
+        products.climate().clone(),
+        products.hydrology().clone(),
+        products.hazards().clone(),
+        products.derived_geojson().to_string(),
+        products.hashes(),
+    );
+    let derive = || -> Result<_, String> {
+        let solved = solve_epoch(&decoded, forcing, offset_years, &NoopProgress)
+            .map_err(|e| e.to_string())?;
+        derive_historical_products(
+            &decoded,
+            &present,
+            forcing,
+            offset_years,
+            planetary,
+            &mut NoopProgress,
+        )
+        .map(|historical| (solved, historical))
+        .map_err(|e| e.to_string())
     };
     for _ in 0..warmup {
-        derive(&mut NoopProgress)?;
+        derive()?;
     }
     let mut times_ms = Vec::with_capacity(repeat as usize);
-    let mut last: Option<HistoricalWorld> = None;
+    let mut last = None;
     for _ in 0..repeat {
         let started = Instant::now();
-        let historical = derive(&mut NoopProgress)?;
+        let historical = derive()?;
         times_ms.push(started.elapsed().as_secs_f64() * 1000.0);
         last = Some(historical);
     }
@@ -101,26 +94,24 @@ fn main() -> Result<(), String> {
     } else {
         times_ms.iter().sum::<f64>() / times_ms.len() as f64
     };
-    let historical = last.ok_or_else(|| "no epoch runs".to_string())?;
+    let (solved, historical) = last.ok_or_else(|| "no epoch runs".to_string())?;
     println!(
-        "{{\"width\":{},\"height\":{},\"seed\":{},\"offsetYears\":{},\"static\":{},\"warmup\":{},\"repeat\":{},\"generationMs\":{:.3},\"meanMs\":{:.3},\"seaLevelMm\":{},\"temperatureOffsetCentiC\":{},\"laggedTemperatureOffsetCentiC\":{},\"meanTemperatureCentiC\":{},\"meanPrecipitationMm\":{},\"landIceM3\":{},\"balanceErrorM3\":{},\"transportIterations\":{},\"runsMs\":[{}]}}",
-        width,
-        height,
+        "{{\"resolution\":{},\"seed\":{},\"preset\":\"{}\",\"offsetYears\":{},\"warmup\":{},\"repeat\":{},\"generationMs\":{:.3},\"meanMs\":{:.3},\"seaLevelMm\":{},\"temperatureOffsetCentiC\":{},\"laggedTemperatureOffsetCentiC\":{},\"meanTemperatureCentiC\":{},\"meanPrecipitationMm\":{},\"landIceM3\":{},\"balanceErrorM3\":{},\"runsMs\":[{}]}}",
+        resolution,
         seed,
+        preset.as_str(),
         offset_years,
-        use_static,
         warmup,
         repeat,
         generation_ms,
         mean,
-        historical.metrics.sea_level_mm,
-        historical.metrics.temperature_offset_centi_c,
-        historical.metrics.lagged_temperature_offset_centi_c,
-        historical.climate.metrics.mean_temperature_centi_c,
-        historical.climate.metrics.mean_precipitation_mm_per_year,
+        solved.sea_level_mm,
+        solved.temperature_offset_centi_c,
+        solved.lagged_temperature_offset_centi_c,
+        historical.products.climate.metrics.mean_temperature_centi_c,
+        historical.products.climate.metrics.mean_precipitation_mm_per_year,
         historical.metrics.land_ice_m3,
         historical.metrics.balance_error_m3,
-        historical.climate.metrics.transport_iterations,
         times_ms
             .iter()
             .map(|value| format!("{value:.3}"))

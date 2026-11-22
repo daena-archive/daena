@@ -1,8 +1,8 @@
 //! Seam-wrapped, pole-safe samplers for accepted physical control fields.
 
-use daena_physical::engine::{AtlasInputs, TectonicBoundaryKind, TectonicView, ToolSurface};
+use daena_physical::engine::{AtlasControlInputs, AtlasInputs, TectonicBoundaryKind, TectonicView};
 use daena_physical::products::{self, HazardField, VolcanicActivity};
-use daena_physical::Grid;
+use daena_physical::{Grid, PhysicalField};
 
 use crate::detail::{nearest_cell, sample_cell_field_mm};
 use crate::projection::{clamp_lat_micro, wrap_lon_micro};
@@ -71,11 +71,45 @@ fn to_i32(values: impl IntoIterator<Item = u32>) -> Vec<i32> {
 
 impl ControlFields {
     pub fn from_atlas_inputs(inputs: &AtlasInputs) -> Result<Self, crate::AtlasError> {
-        let field = &inputs.view;
-        let climate = &inputs.climate;
-        let hydrology = &inputs.hydrology;
+        let volcanic_centers = inputs
+            .hazards
+            .volcanic_sources
+            .iter()
+            .map(|source| inputs.surface.center_microdegrees(source.cell))
+            .collect::<Vec<_>>();
+        Self::from_parts(
+            &inputs.view,
+            &inputs.climate,
+            &inputs.hydrology,
+            &inputs.hazards,
+            &inputs.tectonics,
+            &volcanic_centers,
+        )
+    }
+
+    pub fn from_atlas_control_inputs(
+        inputs: &AtlasControlInputs,
+    ) -> Result<Self, crate::AtlasError> {
+        Self::from_parts(
+            &inputs.view,
+            &inputs.climate,
+            &inputs.hydrology,
+            &inputs.hazards,
+            &inputs.tectonics,
+            &inputs.volcanic_centers,
+        )
+    }
+
+    fn from_parts(
+        field: &PhysicalField,
+        climate: &products::ClimateField,
+        hydrology: &products::HydrologyField,
+        hazards: &HazardField,
+        tectonics: &TectonicView,
+        volcanic_centers: &[[i32; 2]],
+    ) -> Result<Self, crate::AtlasError> {
         let count = field.grid.sample_count();
-        if inputs.tectonics.continental.len() != count
+        if tectonics.continental.len() != count
             || climate.temperature_centi_c.len() != count
             || climate.temperature_nh_summer_centi_c.len() != count
             || climate.temperature_nh_winter_centi_c.len() != count
@@ -112,8 +146,7 @@ impl ControlFields {
                 "control field sample count does not match the grid",
             ));
         }
-        let crust_influence_ppm = inputs
-            .tectonics
+        let crust_influence_ppm = tectonics
             .continental
             .iter()
             .map(|continental| {
@@ -124,8 +157,7 @@ impl ControlFields {
                 }
             })
             .collect::<Vec<_>>();
-        let crust_class = inputs
-            .tectonics
+        let crust_class = tectonics
             .continental
             .iter()
             .map(|continental| i32::from(*continental))
@@ -156,9 +188,9 @@ impl ControlFields {
             elevation_mm: field.elevations_mm.clone(),
             mountain_influence_ppm: mountain_influence_ppm(
                 field.grid,
-                &inputs.tectonics,
-                &inputs.hazards,
-                &inputs.surface,
+                tectonics,
+                hazards,
+                volcanic_centers,
                 &field.elevations_mm,
             ),
             crust_influence_ppm,
@@ -408,7 +440,7 @@ pub fn mountain_influence_ppm(
     grid: Grid,
     tectonics: &TectonicView,
     hazards: &HazardField,
-    surface: &ToolSurface,
+    volcanic_centers: &[[i32; 2]],
     elevations_mm: &[i32],
 ) -> Vec<i32> {
     let count = grid.sample_count();
@@ -431,9 +463,8 @@ pub fn mountain_influence_ppm(
             influence[second] = influence[second].max(bump);
         }
     }
-    for source in &hazards.volcanic_sources {
-        let [lon, lat] = surface.center_microdegrees(source.cell);
-        let cell = nearest_cell(grid, lon, lat);
+    for (source, center) in hazards.volcanic_sources.iter().zip(volcanic_centers) {
+        let cell = nearest_cell(grid, center[0], center[1]);
         let bump = match source.activity_class {
             VolcanicActivity::Vigorous => 1_000_000,
             VolcanicActivity::Moderate => 700_000,

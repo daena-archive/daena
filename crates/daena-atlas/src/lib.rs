@@ -234,7 +234,7 @@ fn derive_atlas_inputs_for_request(
 ) -> Result<
     (
         daena_physical::engine::AtlasInputs,
-        Option<daena_physical::engine::AtlasInputs>,
+        Option<daena_physical::engine::AtlasControlInputs>,
     ),
     AtlasError,
 > {
@@ -261,7 +261,7 @@ fn derive_atlas_inputs_for_request(
                     inner: present_shared,
                     phase: AtlasPhase::DerivingEpoch,
                 };
-                decoded.derive_atlas_inputs(
+                decoded.derive_atlas_control_inputs(
                     None,
                     ATLAS_VIEW_WIDTH,
                     ATLAS_VIEW_HEIGHT,
@@ -1009,7 +1009,7 @@ pub fn prepare_from_source_with_structure(
         ),
         _ => {
             let structure_owned = match year0_inputs.as_ref() {
-                Some(present) => Some(control::ControlFields::from_atlas_inputs(present)?),
+                Some(present) => Some(control::ControlFields::from_atlas_control_inputs(present)?),
                 None => None,
             };
             let structure = structure_owned.as_ref().unwrap_or(&controls);
@@ -2485,6 +2485,33 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "wall-clock: release-only E8 prepare peak"]
+    fn e8_prepare_peak() {
+        let source_path = std::env::var("DAENA_E8_SOURCE").expect("DAENA_E8_SOURCE");
+        let source = std::fs::read(source_path).unwrap();
+        let mut request = crate::request::AtlasRenderRequest::spike_png(1024, 512).unwrap();
+        request.offset_years = -8_000;
+        let request = request.normalize().unwrap();
+        let started = std::time::Instant::now();
+        let prepared = prepare_from_source(
+            &source,
+            b"e8-prepare-peak",
+            &request,
+            None,
+            None,
+            &mut NoopProgress,
+        )
+        .unwrap();
+        println!(
+            "E8 prepare {:?}, surface {} bytes, {} lakes, {} rivers",
+            started.elapsed(),
+            prepared.surface.heap_bytes(),
+            prepared.hydrology.basins.len(),
+            prepared.hydrology.rivers.len()
+        );
+    }
+
+    #[test]
     #[ignore = "wall-clock: release-only E5b timings at n=512"]
     fn e5b_release_timings_512() {
         e5b_release_timings(512);
@@ -2634,7 +2661,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
         println!(
             "E5b n={resolution}: generation {generation:?}; cold present {cold_present:?}; cold epoch {cold_epoch:?}; standard cold {cold_standard:?}; standard warm {warm_standard:?}; detailed {detailed_time:?}; biome {biome_time:?}; pick {pick:?}; region {region:?}; scene bytes {scene_bytes}; surface bytes {}; boundary segments {}",
-            present.surface.byte_size(),
+            present.surface.heap_bytes(),
             present.tectonics.boundaries.len()
         );
     }

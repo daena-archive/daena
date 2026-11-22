@@ -13,12 +13,20 @@ use rayon::prelude::*;
 
 use crate::contours;
 use crate::planetary::PlanetaryConfiguration;
-use crate::{Grid, PhysicalError, PhysicalErrorCode, PhysicalField, Segment, MAX_GEOJSON_FEATURES};
+use crate::{
+    Grid, PhysicalError, PhysicalErrorCode, PhysicalField, Segment, MAX_COASTLINE_SEGMENTS,
+};
 
-pub use crate::climate::CLIMATE_DERIVATION_VERSION;
-pub use crate::hydrology::HYDROLOGY_DERIVATION_VERSION;
 pub use worldgen::Biome;
 
+/// Climate product derivation version. It is part of the derived-cache key.
+pub const CLIMATE_DERIVATION_VERSION: u16 = 3;
+/// Hydrology product derivation version. It is part of the derived-cache key.
+pub const HYDROLOGY_DERIVATION_VERSION: u16 = 3;
+/// Hazard product derivation version. It is part of the derived-cache key.
+pub const HAZARD_DERIVATION_VERSION: u16 = 2;
+/// Volcanic-source derivation version. It is part of the derived-cache key.
+pub const VOLCANIC_SOURCE_DERIVATION_VERSION: u16 = 2;
 pub const BIOME_CLASS_COUNT: usize = 26;
 const MAX_WIND_MILLI: i32 = 400_000;
 const GROWING_SEASON_CENTI_C: f64 = 500.0;
@@ -422,7 +430,7 @@ impl HydrologyField {
                 ));
             }
         }
-        if self.coastline_segments.len() > MAX_GEOJSON_FEATURES {
+        if self.coastline_segments.len() > MAX_COASTLINE_SEGMENTS {
             return Err(PhysicalError::coded(
                 PhysicalErrorCode::LimitExceeded,
                 "engine coastline exceeds the feature budget",
@@ -1285,8 +1293,8 @@ pub(crate) fn build_hazards(
         .map(|source| source.eruptions_per_model_year_nano)
         .fold(0u64, u64::saturating_add);
     let metrics = HazardMetrics {
-        derivation_version: crate::hazards::HAZARD_DERIVATION_VERSION,
-        volcanic_source_derivation_version: crate::hazards::VOLCANIC_SOURCE_DERIVATION_VERSION,
+        derivation_version: HAZARD_DERIVATION_VERSION,
+        volcanic_source_derivation_version: VOLCANIC_SOURCE_DERIVATION_VERSION,
         volcanic_source_count: volcanic_sources.len() as u32,
         non_dormant_source_count: volcanic_sources
             .iter()

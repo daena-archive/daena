@@ -85,3 +85,39 @@ changes.
 - 2026-08-26: phase and packet records were consolidated here; current product
   behavior is documented in [`MAPS.md`](../maps/MAPS.md), and future work remains in
   [`PHYSICAL_WORLD_ROADMAP.md`](../plans/PHYSICAL_WORLD_ROADMAP.md).
+- 2026-11-14: the product moved to the cube-sphere world engine
+  (`crates/daena-worldgen`) as a hard cut.
+  - The accepted source is `DAENAPW2`. It stores the resolved settings, the
+    tectonic record, the canonical elevation of every cube cell and the
+    generation hashes.
+  - `DAENAPW1` sources are rejected with `physical.source.unsupported-version`
+    and are not migrated.
+  - Materialized events stay authored history.
+  - Climate, hydrology, hazards, epochs, tools, Atlas and the frontend read
+    engine products. Humidity, ocean currents, terrain age and the evolution
+    products were removed rather than synthesized.
+  - The record of that work is
+    [`plans/world-engine.md`](../plans/world-engine.md), phase E.
+- 2026-11-21: the bounded product contracts were re-set from measured engine
+  envelopes, and the old generator was deleted.
+
+  | Constant                            | Value                              | Measured basis                                |
+  | ----------------------------------- | ---------------------------------- | --------------------------------------------- |
+  | Resolutions                         | `n = 512` (default) and `n = 1024` | –                                             |
+  | Generation time                     | 8 s                                | 4.2 s at `n = 1024`                           |
+  | Working memory                      | 1.5 GiB                            | 1.33 GB peak RSS for generation at `n = 1024` |
+  | Source size                         | 32 MiB                             | an `n = 1024` source is 25.2 MB               |
+  | Derived GeoJSON                     | 4 MiB                              | worst 243 KB in a 24-world sweep              |
+  | Top-level features and region rings | 4,096                              | worst 932                                     |
+  | Coastline segments                  | 65,536                             | worst 8,820                                   |
+  | Derived cache                       | 196 MiB                            | worst 97.6 MB                                 |
+  | Tool-surface cache                  | 640 MiB                            | –                                             |
+
+  Asset transfer got its own 128 MiB limit, independent of the source limit.
+  The former 128 MB working-memory figure was below the engine's measured peak
+  and was not kept.
+
+  An Atlas epoch prepare at `n = 1024` peaks above the working budget
+  (1.64 GB live). This is a known gap, not an accepted envelope. The budget
+  table is in the E8 notes of
+  [`plans/world-engine.md`](../plans/world-engine.md).

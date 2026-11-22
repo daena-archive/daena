@@ -360,3 +360,150 @@ fn parallel_uncached_grid_builds_do_not_deadlock() {
     });
     crate::grid::clear_tables_cache();
 }
+
+fn reconstruct(grid: &CubeSphere, field: &[f64], p: [f64; 3]) -> f64 {
+    let (cells, weights) = grid.bicubic_stencil(p);
+    cells
+        .iter()
+        .zip(weights)
+        .map(|(cell, weight)| field[*cell as usize] * weight)
+        .sum()
+}
+
+fn weight_sum(weights: &[f64]) -> f64 {
+    weights.iter().sum()
+}
+
+#[test]
+fn bicubic_is_exact_at_cell_centres_and_weights_sum_to_one() {
+    for n in [8u32, 16, 32] {
+        let grid = CubeSphere::new(n, RADIUS).unwrap();
+        let field: Vec<f64> = (0..grid.cell_count())
+            .map(|cell| (cell as f64 * 0.37).sin() * 8.0 + cell as f64 * 0.01)
+            .collect();
+        let mut worst = 0.0f64;
+        for cell in 0..grid.cell_count() as u32 {
+            let p = grid.position(cell);
+            let (_, weights) = grid.bicubic_stencil(p);
+            let (_, bilinear) = grid.bilinear_stencil(p);
+            let sum = weight_sum(&weights);
+            let bilinear_sum = weight_sum(&bilinear);
+            assert!(
+                (sum - 1.0).abs() < 1e-9,
+                "n={n} cell {cell} bicubic weight sum {sum}"
+            );
+            assert!(
+                (bilinear_sum - 1.0).abs() < 1e-9,
+                "n={n} cell {cell} bilinear weight sum {bilinear_sum}"
+            );
+            let value = reconstruct(&grid, &field, p);
+            worst = worst.max((value - field[cell as usize]).abs());
+        }
+        assert!(
+            worst < 1e-6,
+            "n={n} centre error {worst} exceeds exact interpolation"
+        );
+    }
+}
+
+#[test]
+fn stencils_do_not_panic_on_edges_or_cube_corners() {
+    let grid = CubeSphere::new(16, RADIUS).unwrap();
+    let n = grid.n as f64;
+    for face in 0..6u32 {
+        let mut along = 0.0;
+        while along <= n {
+            for (fx, fy) in [(0.0, along), (n, along), (along, 0.0), (along, n)] {
+                let p = point_on_face(face, grid.n, fx, fy);
+                let (_, weights) = grid.bicubic_stencil(p);
+                let (_, bilinear) = grid.bilinear_stencil(p);
+                assert!((weight_sum(&weights) - 1.0).abs() < 1e-8);
+                assert!((weight_sum(&bilinear) - 1.0).abs() < 1e-8);
+            }
+            along += 0.5;
+        }
+    }
+    for sx in [-1.0, 1.0] {
+        for sy in [-1.0, 1.0] {
+            for sz in [-1.0, 1.0] {
+                let p = [sx, sy, sz];
+                let (_, weights) = grid.bicubic_stencil(p);
+                let (_, bilinear) = grid.bilinear_stencil(p);
+                assert!((weight_sum(&weights) - 1.0).abs() < 1e-8);
+                assert!((weight_sum(&bilinear) - 1.0).abs() < 1e-8);
+            }
+        }
+    }
+    for i in 0..400u32 {
+        let y = 1.0 - 2.0 * f64::from(i) / 399.0;
+        let radius = (1.0 - y * y).max(0.0).sqrt();
+        let theta = f64::from(i) * 2.399963229728653;
+        let p = [radius * theta.cos(), y, radius * theta.sin()];
+        let (_, weights) = grid.bicubic_stencil(p);
+        let (_, bilinear) = grid.bilinear_stencil(p);
+        assert!((weight_sum(&weights) - 1.0).abs() < 1e-8, "i={i}");
+        assert!((weight_sum(&bilinear) - 1.0).abs() < 1e-8, "i={i}");
+    }
+}
+
+#[test]
+fn bicubic_is_continuous_across_every_face_edge() {
+    let grid = CubeSphere::new(16, RADIUS).unwrap();
+    let field: Vec<f64> = (0..grid.cell_count())
+        .map(|cell| {
+            let p = grid.position(cell as u32);
+            p[0] * 3.0 + p[1] * -2.0 + p[2] * 5.0
+        })
+        .collect();
+    let n = grid.n;
+    let nf = n as f64;
+    let step = 0.05;
+    let mut worst_ratio = 0.0f64;
+    let mut worst = String::new();
+    for face in 0..6u32 {
+        for edge in 0..4u32 {
+            let mut along = 0.25;
+            while along <= nf - 0.25 {
+                let (fx, fy, dfx, dfy) = match edge {
+                    0 => (0.0, along, step, 0.0),
+                    1 => (nf, along, -step, 0.0),
+                    2 => (along, 0.0, 0.0, step),
+                    _ => (along, nf, 0.0, -step),
+                };
+                let inside = point_on_face(face, n, fx + dfx, fy + dfy);
+                let outside = point_on_face(face, n, fx - dfx, fy - dfy);
+                let deeper = point_on_face(face, n, fx + 2.0 * dfx, fy + 2.0 * dfy);
+                let behind = point_on_face(face, n, fx - 2.0 * dfx, fy - 2.0 * dfy);
+                let fin = reconstruct(&grid, &field, inside);
+                let fout = reconstruct(&grid, &field, outside);
+                let delta = (fout - fin).abs();
+                let g_in = (reconstruct(&grid, &field, deeper) - fin).abs() / step;
+                let g_out = (reconstruct(&grid, &field, behind) - fout).abs() / step;
+                let along_a = along - step;
+                let along_b = along + step;
+                let (ax, ay, bx, by) = match edge {
+                    0 | 1 => (fx, along_a, fx, along_b),
+                    _ => (along_a, fy, along_b, fy),
+                };
+                let g_along = (reconstruct(&grid, &field, point_on_face(face, n, bx, by))
+                    - reconstruct(&grid, &field, point_on_face(face, n, ax, ay)))
+                .abs()
+                    / (2.0 * step);
+                let gradient = g_in.max(g_out).hypot(g_along);
+                let bound = gradient * (2.0 * step);
+                let ratio = if bound > 1e-12 { delta / bound } else { delta };
+                if ratio > worst_ratio {
+                    worst_ratio = ratio;
+                    worst = format!(
+                        "face {face} edge {edge} along {along}: delta {delta} bound {bound}"
+                    );
+                }
+                along += 0.5;
+            }
+        }
+    }
+    assert!(
+        worst_ratio <= 1.5,
+        "edge jump exceeds the local gradient: ratio {worst_ratio} at {worst}"
+    );
+}

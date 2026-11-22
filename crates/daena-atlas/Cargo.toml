@@ -22,3 +22,7 @@ serde_json = "1"
 name = "atlas-map"
 path = "src/main.rs"
 
+[[bin]]
+name = "atlas-terrain"
+path = "src/bin/atlas_terrain.rs"
+

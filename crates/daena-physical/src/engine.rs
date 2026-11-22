@@ -746,6 +746,12 @@ pub struct SurfaceLake {
     /// Whether the lake holds water at this surface epoch. A salt flat is dry
     /// even though the engine keeps its depression record.
     pub has_water: bool,
+    /// Water surface on the reference elevation datum, millimetres.
+    ///
+    /// An epoch world's elevation is the reference elevation minus
+    /// `epoch_sea_level_mm`, and the lake is settled on that shifted field.
+    /// `elevation_mm` adds `sea_level_mm` back, so `level_mm` does too.
+    pub level_mm: i32,
     pub cell_count: u32,
 }
 
@@ -880,6 +886,21 @@ impl ToolSurface {
 
     pub fn radius_metres(&self) -> f64 {
         self.grid.radius_m
+    }
+
+    /// Nominal cell width `π/2 · R / n`, in metres.
+    pub fn cell_size_m(&self) -> f64 {
+        self.grid.cell_size_m()
+    }
+
+    /// Bilinear canonical cell ids and weights at a direction.
+    pub fn bilinear_stencil(&self, direction: [f64; 3]) -> ([u32; 4], [f64; 4]) {
+        self.grid.bilinear_stencil(direction)
+    }
+
+    /// Catmull-Rom canonical cell ids and weights at a direction.
+    pub fn bicubic_stencil(&self, direction: [f64; 3]) -> ([u32; 16], [f64; 16]) {
+        self.grid.bicubic_stencil(direction)
     }
 
     pub fn ocean(&self, cell: u32) -> bool {
@@ -1089,6 +1110,17 @@ fn add_saturating_i32(value: i32, delta: i32) -> i32 {
     i64::from(value)
         .saturating_add(i64::from(delta))
         .clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
+}
+
+/// Whole millimetres. Epoch lake levels are metres on the shifted datum;
+/// the caller adds `sea_level_mm` to reach the reference datum.
+fn millimetres_from_metres(metres: f64) -> i32 {
+    if !metres.is_finite() {
+        return 0;
+    }
+    (metres * 1000.0)
+        .round()
+        .clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32
 }
 
 fn tool_surface_slope(
@@ -1316,6 +1348,7 @@ fn build_tool_surface_with_cancel(
             overflowing: lake.kind == worldgen::LakeKind::Fresh && lake.outflow_m3 > 0.0,
             has_water: lake.kind != worldgen::LakeKind::SaltFlat
                 && lake_cell_counts.get(&lake.id).copied().unwrap_or(0) > 0,
+            level_mm: add_saturating_i32(millimetres_from_metres(lake.level_m), sea_level_mm),
             cell_count: lake_cell_counts.get(&lake.id).copied().unwrap_or(0),
         })
         .collect::<Vec<_>>();
@@ -3036,6 +3069,69 @@ mod tests {
             (surface.ocean_count(), surface.sea_level_mm),
             (reference.ocean_count(), reference.sea_level_mm)
         );
+    }
+
+    fn assert_wet_lake_beds(surface: &ToolSurface) {
+        let mut wet = 0u32;
+        let mut overflowing = 0u32;
+        for lake in &surface.lakes {
+            if !lake.has_water {
+                continue;
+            }
+            wet += 1;
+            let bed = surface.elevation_mm[lake.minimum_cell as usize];
+            assert!(
+                bed < lake.level_mm,
+                "lake {} fresh={} bed {bed} level {} sea {}",
+                lake.id,
+                lake.fresh,
+                lake.level_mm,
+                surface.sea_level_mm
+            );
+            if lake.overflowing {
+                // An overflowing lake stands at its spill height, so a datum
+                // error shows up as the epoch's whole sea-level shift.
+                overflowing += 1;
+                let spill = surface.elevation_mm[lake.spill_cell as usize];
+                assert!(
+                    (i64::from(lake.level_mm) - i64::from(spill)).abs() <= 2_000,
+                    "lake {} level {} spill {spill} sea {}",
+                    lake.id,
+                    lake.level_mm,
+                    surface.sea_level_mm
+                );
+            }
+        }
+        assert!(wet > 0, "expected at least one wet lake");
+        assert!(overflowing > 0, "expected at least one overflowing lake");
+    }
+
+    #[test]
+    fn wet_lake_bed_is_below_reference_level_at_present_and_epoch() {
+        use crate::history::{solve_epoch, HistoricalForcingParameters};
+        let generated = generate(settings(64), &mut NoopProgress).unwrap();
+        let decoded = decode_source(generated.source()).unwrap();
+        let present = decoded
+            .derive_tool_surface_present(&mut NoopProgress)
+            .unwrap();
+        assert_wet_lake_beds(&present);
+        let forcing = HistoricalForcingParameters::default_for_seed(decoded.seed());
+        let solved = solve_epoch(&decoded, forcing, -21_000, &NoopProgress).unwrap();
+        assert_ne!(solved.normalized_epoch, 0);
+        assert!(
+            solved.sea_level_mm.abs() > 4_000,
+            "epoch sea shift {} is too small to test the datum",
+            solved.sea_level_mm
+        );
+        let epoch = decoded
+            .derive_tool_surface_epoch(
+                solved.sea_level_mm,
+                f64::from(solved.temperature_offset_centi_c) / 100.0,
+                &mut NoopProgress,
+            )
+            .unwrap();
+        assert_eq!(epoch.sea_level_mm, solved.sea_level_mm);
+        assert_wet_lake_beds(&epoch);
     }
 
     #[test]

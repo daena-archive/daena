@@ -253,6 +253,137 @@ impl CubeSphere {
         field[self.cell_at(p) as usize]
     }
 
+    /// Bilinear cell ids and weights. Weights are non-negative and sum to 1.
+    /// A corner past the face edge is the cell across that edge.
+    pub fn bilinear_stencil(&self, p: [f64; 3]) -> ([u32; 4], [f64; 4]) {
+        let (face, fx, fy) = self.face_coords(p);
+        self.bilinear_stencil_at(face, fx, fy)
+    }
+
+    /// Catmull-Rom cell ids and weights on the face coordinates.
+    ///
+    /// Weights sum to 1 and may be negative, so a cell centre reproduces that
+    /// cell. Off-face taps use the same cross-edge cell as [`Self::sample_face`].
+    /// A tap that leaves through a cube corner does not exist: inside that
+    /// corner the stencil is bilinear, and it blends across the last cell
+    /// before the corner so the value and the slope stay continuous.
+    pub fn bicubic_stencil(&self, p: [f64; 3]) -> ([u32; 16], [f64; 16]) {
+        let (face, fx, fy) = self.face_coords(p);
+        let alpha = corner_bicubic_weight(fx, fy, self.n as f64);
+        if alpha <= 0.0 {
+            return pack_bilinear(self.bilinear_stencil_at(face, fx, fy));
+        }
+        let Some((mut cells, mut weights)) = self.bicubic_stencil_at(face, fx, fy) else {
+            return pack_bilinear(self.bilinear_stencil_at(face, fx, fy));
+        };
+        if alpha >= 1.0 {
+            return (cells, weights);
+        }
+        for weight in &mut weights {
+            *weight *= alpha;
+        }
+        let (bilinear_cells, bilinear_weights) = self.bilinear_stencil_at(face, fx, fy);
+        let remain = 1.0 - alpha;
+        for (cell, weight) in bilinear_cells.into_iter().zip(bilinear_weights) {
+            let add = weight * remain;
+            if add == 0.0 {
+                continue;
+            }
+            if let Some(slot) = cells.iter().position(|id| *id == cell) {
+                weights[slot] += add;
+            } else if let Some(slot) = weights.iter().position(|value| *value == 0.0) {
+                cells[slot] = cell;
+                weights[slot] = add;
+            } else {
+                weights[0] += add;
+            }
+        }
+        (cells, weights)
+    }
+
+    fn bilinear_stencil_at(&self, face: u32, fx: f64, fy: f64) -> ([u32; 4], [f64; 4]) {
+        let u = fx - 0.5;
+        let v = fy - 0.5;
+        let i0 = floor_i32(u);
+        let j0 = floor_i32(v);
+        let tx = u - f64::from(i0);
+        let ty = v - f64::from(j0);
+        let coords = [(i0, j0), (i0 + 1, j0), (i0, j0 + 1), (i0 + 1, j0 + 1)];
+        let mut weights = [
+            (1.0 - tx) * (1.0 - ty),
+            tx * (1.0 - ty),
+            (1.0 - tx) * ty,
+            tx * ty,
+        ];
+        let n = self.n as i32;
+        let mut cells = [0u32; 4];
+        let mut missing = 0.0;
+        for (slot, (i, j)) in coords.into_iter().enumerate() {
+            let i_out = !(0..n).contains(&i);
+            let j_out = !(0..n).contains(&j);
+            if i_out && j_out {
+                // Three faces meet here. There is no fourth cell, and a
+                // diagonal ghost is not continuous with the neighbouring chart.
+                missing += weights[slot];
+                weights[slot] = 0.0;
+            } else {
+                cells[slot] = self.chart_cell(face, i, j);
+            }
+        }
+        if missing > 0.0 {
+            let keep = 1.0 - missing;
+            if keep > 0.0 {
+                for weight in &mut weights {
+                    *weight /= keep;
+                }
+            }
+        }
+        (cells, weights)
+    }
+
+    fn bicubic_stencil_at(&self, face: u32, fx: f64, fy: f64) -> Option<([u32; 16], [f64; 16])> {
+        let u = fx - 0.5;
+        let v = fy - 0.5;
+        let iu = floor_i32(u);
+        let iv = floor_i32(v);
+        let tx = u - f64::from(iu);
+        let ty = v - f64::from(iv);
+        let wx = catmull_rom_weights(tx);
+        let wy = catmull_rom_weights(ty);
+        let mut cells = [0u32; 16];
+        let mut weights = [0.0; 16];
+        for jj in 0..4i32 {
+            for ii in 0..4i32 {
+                let id = self.bicubic_cell(face, iu - 1 + ii, iv - 1 + jj)?;
+                let slot = (jj * 4 + ii) as usize;
+                cells[slot] = id;
+                weights[slot] = wx[ii as usize] * wy[jj as usize];
+            }
+        }
+        Some((cells, weights))
+    }
+
+    fn chart_cell(&self, face: u32, i: i32, j: i32) -> u32 {
+        let n = self.n as i32;
+        if (0..n).contains(&i) && (0..n).contains(&j) {
+            self.id(face, i as u32, j as u32)
+        } else {
+            extrapolated_cell(self.n, face, i, j)
+        }
+    }
+
+    /// `None` when `(i, j)` leaves the face through a cube corner.
+    fn bicubic_cell(&self, face: u32, i: i32, j: i32) -> Option<u32> {
+        let n = self.n as i32;
+        let i_out = !(0..n).contains(&i);
+        let j_out = !(0..n).contains(&j);
+        if i_out && j_out {
+            None
+        } else {
+            Some(self.chart_cell(face, i, j))
+        }
+    }
+
     /// Bilinear sample that ignores parents where `mask` is `0`.
     /// `None` when every contributing parent is masked out.
     pub fn sample_face_masked(
@@ -941,6 +1072,61 @@ fn build_tables(n: u32) -> GridTables {
         border_dist,
         tan_centre,
     }
+}
+
+fn floor_i32(value: f64) -> i32 {
+    let floored = value.floor();
+    if floored >= f64::from(i32::MAX) {
+        i32::MAX
+    } else if floored <= f64::from(i32::MIN) {
+        i32::MIN
+    } else {
+        floored as i32
+    }
+}
+
+fn catmull_rom_weights(t: f64) -> [f64; 4] {
+    let t2 = t * t;
+    let t3 = t2 * t;
+    [
+        -0.5 * t3 + t2 - 0.5 * t,
+        1.5 * t3 - 2.5 * t2 + 1.0,
+        -1.5 * t3 + 2.0 * t2 + 0.5 * t,
+        0.5 * t3 - 0.5 * t2,
+    ]
+}
+
+fn smoothstep_unit(edge0: f64, edge1: f64, x: f64) -> f64 {
+    let t = ((x - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// 0 inside the cube-corner square where a 4×4 tap is missing, 1 one cell
+/// clear of that square. Flat at both ends.
+fn corner_bicubic_weight(fx: f64, fy: f64, n: f64) -> f64 {
+    let dx = fx.min(n - fx);
+    let dy = fy.min(n - fy);
+    let dist = if dx <= 1.5 && dy <= 1.5 {
+        0.0
+    } else if dx <= 1.5 {
+        dy - 1.5
+    } else if dy <= 1.5 {
+        dx - 1.5
+    } else {
+        let ex = dx - 1.5;
+        let ey = dy - 1.5;
+        ex.hypot(ey)
+    };
+    smoothstep_unit(0.0, 1.0, dist)
+}
+
+fn pack_bilinear(stencil: ([u32; 4], [f64; 4])) -> ([u32; 16], [f64; 16]) {
+    let (cells4, weights4) = stencil;
+    let mut cells = [cells4[0]; 16];
+    let mut weights = [0.0; 16];
+    cells[..4].copy_from_slice(&cells4);
+    weights[..4].copy_from_slice(&weights4);
+    (cells, weights)
 }
 
 fn virtual_centre(n: u32, face: u32, i: i32, j: i32) -> [f64; 3] {

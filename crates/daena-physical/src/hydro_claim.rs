@@ -251,6 +251,7 @@ mod canonical_tests {
             fresh: true,
             overflowing,
             has_water: true,
+            level_mm: 1_000,
             cell_count: 2,
         }
     }

@@ -22,6 +22,7 @@ pub mod render;
 pub mod request;
 pub mod studio;
 pub mod style;
+pub mod terrain;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 

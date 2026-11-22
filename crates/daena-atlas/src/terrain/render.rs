@@ -212,22 +212,22 @@ fn combined_shade(dzdx: f64, dzdy: f64, exaggeration: f64, suns: &[[f64; 3]; 4])
     shade
 }
 
-fn mercator_world_px(z: u32) -> f64 {
+pub(super) fn mercator_world_px(z: u32) -> f64 {
     256.0 * (1u64 << z.min(30)) as f64
 }
 
-fn mercator_longitude(gx: f64, world: f64) -> f64 {
+pub(super) fn mercator_longitude(gx: f64, world: f64) -> f64 {
     let wrapped = gx.rem_euclid(world);
     std::f64::consts::PI * (2.0 * wrapped / world - 1.0)
 }
 
-fn mercator_latitude(gy: f64, world: f64) -> f64 {
+pub(super) fn mercator_latitude(gy: f64, world: f64) -> f64 {
     let clamped = gy.clamp(0.0, world);
     let y = std::f64::consts::PI * (1.0 - 2.0 * clamped / world);
     y.sinh().atan()
 }
 
-fn direction_from_lon_lat(lon: f64, lat: f64) -> [f64; 3] {
+pub(super) fn direction_from_lon_lat(lon: f64, lat: f64) -> [f64; 3] {
     let cos_lat = lat.cos();
     [cos_lat * lon.cos(), cos_lat * lon.sin(), lat.sin()]
 }

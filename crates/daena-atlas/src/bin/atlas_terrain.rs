@@ -6,8 +6,11 @@ use std::io::BufWriter;
 use std::path::Path;
 use std::time::Instant;
 
-use daena_atlas::style::{self, load_style};
-use daena_atlas::terrain::{ground_metres_per_pixel, lon_lat_to_tile, render_pixels, AtlasTerrain};
+use daena_atlas::style::{self, load_style, AtlasStyle};
+use daena_atlas::terrain::{
+    ground_metres_per_pixel, lon_lat_to_tile, render_imagery_pixels, render_pixels, AtlasTerrain,
+};
+use daena_physical::products::Biome;
 
 fn main() -> Result<(), String> {
     let args = env::args().skip(1).collect::<Vec<_>>();
@@ -40,12 +43,22 @@ fn main() -> Result<(), String> {
         ),
     };
     let zooms = parse_zooms(&zooms_text)?;
+    let style_name = option("--style").unwrap_or_else(|| "imagery".to_string());
+    if style_name != "relief" && style_name != "imagery" {
+        return Err("--style must be relief or imagery".to_string());
+    }
     let source = fs::read(&source_path).map_err(|error| error.to_string())?;
     let terrain = AtlasTerrain::from_source(&source, offset).map_err(|error| error.to_string())?;
     let (lon, lat) = site(&terrain, &option)?;
-    let style = load_style(style::RELIEF_STYLE_ID)
-        .map_err(|error| error.to_string())?
-        .0;
+    let relief = if style_name == "relief" {
+        Some(
+            load_style(style::RELIEF_STYLE_ID)
+                .map_err(|error| error.to_string())?
+                .0,
+        )
+    } else {
+        None
+    };
     fs::create_dir_all(&out_dir).map_err(|error| error.to_string())?;
 
     for z in zooms {
@@ -60,7 +73,16 @@ fn main() -> Result<(), String> {
                 let x = (tile_x as i32 + dx).rem_euclid(n as i32) as u32;
                 let y = (tile_y as i32 + dy).clamp(0, n as i32 - 1) as u32;
                 let started = Instant::now();
-                let tile = render_pixels(&terrain, &style, z, x * 256, y * 256, 256, 256, scale);
+                let tile = render_view(
+                    &terrain,
+                    relief.as_ref(),
+                    z,
+                    x * 256,
+                    y * 256,
+                    256,
+                    256,
+                    scale,
+                );
                 times.push(started.elapsed().as_secs_f64() * 1000.0);
                 blit(
                     &mut image,
@@ -96,7 +118,7 @@ fn main() -> Result<(), String> {
     }
 
     let world_px = 1024 * scale;
-    let world = render_pixels(&terrain, &style, 2, 0, 0, 1024, 1024, scale);
+    let world = render_view(&terrain, relief.as_ref(), 2, 0, 0, 1024, 1024, scale);
     write_png(
         &Path::new(&out_dir).join("whole.png"),
         world_px,
@@ -104,6 +126,23 @@ fn main() -> Result<(), String> {
         &world,
     )?;
     Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_view(
+    terrain: &AtlasTerrain,
+    relief: Option<&AtlasStyle>,
+    z: u32,
+    gx: u32,
+    gy: u32,
+    width: u32,
+    height: u32,
+    scale: u32,
+) -> Vec<u8> {
+    match relief {
+        Some(style) => render_pixels(terrain, style, z, gx, gy, width, height, scale),
+        None => render_imagery_pixels(terrain, z, gx, gy, width, height, scale),
+    }
 }
 
 fn site(
@@ -121,8 +160,22 @@ fn site(
         let (lat, lon) = terrain.surface().cell_lat_lon_degrees(cell);
         return Ok((lon, lat));
     }
-    if site.is_some() {
-        return Err("--site must be auto".to_string());
+    if let Some(name) = site.as_deref() {
+        let biome_name = name
+            .strip_prefix("biome:")
+            .ok_or("--site must be auto, biome:<name>, or omit it for --lon/--lat")?;
+        let biome = Biome::ALL
+            .into_iter()
+            .find(|biome| biome.name() == biome_name)
+            .ok_or_else(|| format!("unknown biome {biome_name}"))?;
+        if lon.is_some() || lat.is_some() {
+            return Err("--site biome does not take --lon or --lat".to_string());
+        }
+        let cell = terrain
+            .biome_site_cell(biome as u8)
+            .ok_or_else(|| format!("world has no land cell of biome {biome_name}"))?;
+        let (lat, lon) = terrain.surface().cell_lat_lon_degrees(cell);
+        return Ok((lon, lat));
     }
     let lon = lon.ok_or_else(|| "pass --site auto or both --lon and --lat".to_string())?;
     let lat = lat.ok_or_else(|| "pass --site auto or both --lon and --lat".to_string())?;

@@ -96,6 +96,37 @@ pub(super) fn sample_octave(octave: &Octave, direction: [f64; 3], frequency: f64
     )
 }
 
+/// Value and its tangent gradient in per-metre units.
+///
+/// The analytic gradient is taken in noise space, rotated back, divided by
+/// `lambda_m`, then projected onto the plane normal to `direction`. `direction`
+/// is a unit vector. Fade does not enter: the caller scales the value.
+#[inline]
+pub(super) fn sample_octave_with_gradient(
+    octave: &Octave,
+    direction: [f64; 3],
+    frequency: f64,
+    lambda_m: f64,
+) -> (f64, [f64; 3]) {
+    let rotated = mul_mat(octave.rot, direction);
+    let (value, gq) = perlin_with_gradient(
+        octave.seed,
+        rotated[0] * frequency + octave.offset[0],
+        rotated[1] * frequency + octave.offset[1],
+        rotated[2] * frequency + octave.offset[2],
+    );
+    let mut g = mul_mat_transpose(octave.rot, gq);
+    let inv_lambda = 1.0 / lambda_m;
+    g[0] *= inv_lambda;
+    g[1] *= inv_lambda;
+    g[2] *= inv_lambda;
+    let radial = g[0] * direction[0] + g[1] * direction[1] + g[2] * direction[2];
+    g[0] -= radial * direction[0];
+    g[1] -= radial * direction[1];
+    g[2] -= radial * direction[2];
+    (value, g)
+}
+
 #[inline]
 pub(super) fn splitmix64(mut x: u64) -> u64 {
     x = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
@@ -138,6 +169,14 @@ fn mul_mat(rot: [[f64; 3]; 3], p: [f64; 3]) -> [f64; 3] {
     ]
 }
 
+fn mul_mat_transpose(rot: [[f64; 3]; 3], p: [f64; 3]) -> [f64; 3] {
+    [
+        rot[0][0] * p[0] + rot[1][0] * p[1] + rot[2][0] * p[2],
+        rot[0][1] * p[0] + rot[1][1] * p[1] + rot[2][1] * p[2],
+        rot[0][2] * p[0] + rot[1][2] * p[1] + rot[2][2] * p[2],
+    ]
+}
+
 #[inline]
 fn lattice_hash(seed: u64, x: i32, y: i32, z: i32) -> u64 {
     let mut h = seed;
@@ -155,6 +194,13 @@ fn grad_dot(hash: u64, x: f64, y: f64, z: f64) -> f64 {
 #[inline]
 fn fade(t: f64) -> f64 {
     t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
+}
+
+/// Derivative of [`fade`]. `30 t² (t − 1)²`.
+#[inline]
+fn fade_deriv(t: f64) -> f64 {
+    let t2 = t * t;
+    30.0 * t2 * (t - 1.0) * (t - 1.0)
 }
 
 #[inline]
@@ -211,6 +257,81 @@ pub(super) fn perlin(seed: u64, x: f64, y: f64, z: f64) -> f64 {
     (lerp(y0, y1, w) * PERLIN_SCALE).clamp(-1.0, 1.0)
 }
 
+/// [`perlin`] plus the analytic gradient of the scaled, clamped value.
+#[inline]
+pub(super) fn perlin_with_gradient(seed: u64, x: f64, y: f64, z: f64) -> (f64, [f64; 3]) {
+    let x0 = x.floor() as i32;
+    let y0 = y.floor() as i32;
+    let z0 = z.floor() as i32;
+    let xf = x - f64::from(x0);
+    let yf = y - f64::from(y0);
+    let zf = z - f64::from(z0);
+    let u = fade(xf);
+    let v = fade(yf);
+    let w = fade(zf);
+    let du = fade_deriv(xf);
+    let dv = fade_deriv(yf);
+    let dw = fade_deriv(zf);
+
+    let g000 = GRADIENTS[(lattice_hash(seed, x0, y0, z0) % 12) as usize];
+    let g100 = GRADIENTS[(lattice_hash(seed, x0 + 1, y0, z0) % 12) as usize];
+    let g010 = GRADIENTS[(lattice_hash(seed, x0, y0 + 1, z0) % 12) as usize];
+    let g110 = GRADIENTS[(lattice_hash(seed, x0 + 1, y0 + 1, z0) % 12) as usize];
+    let g001 = GRADIENTS[(lattice_hash(seed, x0, y0, z0 + 1) % 12) as usize];
+    let g101 = GRADIENTS[(lattice_hash(seed, x0 + 1, y0, z0 + 1) % 12) as usize];
+    let g011 = GRADIENTS[(lattice_hash(seed, x0, y0 + 1, z0 + 1) % 12) as usize];
+    let g111 = GRADIENTS[(lattice_hash(seed, x0 + 1, y0 + 1, z0 + 1) % 12) as usize];
+
+    let n000 = g000[0] * xf + g000[1] * yf + g000[2] * zf;
+    let n100 = g100[0] * (xf - 1.0) + g100[1] * yf + g100[2] * zf;
+    let n010 = g010[0] * xf + g010[1] * (yf - 1.0) + g010[2] * zf;
+    let n110 = g110[0] * (xf - 1.0) + g110[1] * (yf - 1.0) + g110[2] * zf;
+    let n001 = g001[0] * xf + g001[1] * yf + g001[2] * (zf - 1.0);
+    let n101 = g101[0] * (xf - 1.0) + g101[1] * yf + g101[2] * (zf - 1.0);
+    let n011 = g011[0] * xf + g011[1] * (yf - 1.0) + g011[2] * (zf - 1.0);
+    let n111 = g111[0] * (xf - 1.0) + g111[1] * (yf - 1.0) + g111[2] * (zf - 1.0);
+
+    let x00 = lerp(n000, n100, u);
+    let x10 = lerp(n010, n110, u);
+    let x01 = lerp(n001, n101, u);
+    let x11 = lerp(n011, n111, u);
+    let y0 = lerp(x00, x10, v);
+    let y1 = lerp(x01, x11, v);
+    let raw = lerp(y0, y1, w);
+    let scaled = raw * PERLIN_SCALE;
+
+    let dx00 = lerp(g000[0], g100[0], u) + (n100 - n000) * du;
+    let dy00 = lerp(g000[1], g100[1], u);
+    let dz00 = lerp(g000[2], g100[2], u);
+    let dx10 = lerp(g010[0], g110[0], u) + (n110 - n010) * du;
+    let dy10 = lerp(g010[1], g110[1], u);
+    let dz10 = lerp(g010[2], g110[2], u);
+    let dx01 = lerp(g001[0], g101[0], u) + (n101 - n001) * du;
+    let dy01 = lerp(g001[1], g101[1], u);
+    let dz01 = lerp(g001[2], g101[2], u);
+    let dx11 = lerp(g011[0], g111[0], u) + (n111 - n011) * du;
+    let dy11 = lerp(g011[1], g111[1], u);
+    let dz11 = lerp(g011[2], g111[2], u);
+
+    let dx_y0 = lerp(dx00, dx10, v);
+    let dy_y0 = lerp(dy00, dy10, v) + (x10 - x00) * dv;
+    let dz_y0 = lerp(dz00, dz10, v);
+    let dx_y1 = lerp(dx01, dx11, v);
+    let dy_y1 = lerp(dy01, dy11, v) + (x11 - x01) * dv;
+    let dz_y1 = lerp(dz01, dz11, v);
+
+    let dx = lerp(dx_y0, dx_y1, w) * PERLIN_SCALE;
+    let dy = lerp(dy_y0, dy_y1, w) * PERLIN_SCALE;
+    let dz = (lerp(dz_y0, dz_y1, w) + (y1 - y0) * dw) * PERLIN_SCALE;
+    let value = scaled.clamp(-1.0, 1.0);
+    let grad = if scaled.abs() > 1.0 {
+        [0.0, 0.0, 0.0]
+    } else {
+        [dx, dy, dz]
+    };
+    (value, grad)
+}
+
 /// Mean of `1 - 2·|n|` and the max `|n|` over a 100³ lattice (10⁶ samples).
 #[cfg(test)]
 pub(super) fn measure_ridged_mean() -> (f64, f64) {
@@ -252,5 +373,33 @@ mod tests {
         assert_ne!(terrain_seed(b"a"), terrain_seed(b"b"));
         assert_ne!(domain_seed(1, "terrain"), domain_seed(1, "water"));
         assert_ne!(octave_seed(7, 0), octave_seed(7, 1));
+    }
+
+    #[test]
+    fn perlin_gradient_matches_the_value_and_finite_differences() {
+        let seed = 0x1234_5678_9abc_def0;
+        let points = [
+            (0.2, 0.4, 0.6),
+            (1.3, -2.7, 0.4),
+            (-4.2, 3.1, -0.8),
+            (8.5, 8.5, 0.15),
+        ];
+        let eps = 1e-5;
+        for (x, y, z) in points {
+            let (value, grad) = perlin_with_gradient(seed, x, y, z);
+            let expected = perlin(seed, x, y, z);
+            assert!(
+                (value - expected).abs() < 1e-12,
+                "value {value} perlin {expected}"
+            );
+            if expected.abs() > 0.95 {
+                continue;
+            }
+            let dx = (perlin(seed, x + eps, y, z) - perlin(seed, x - eps, y, z)) / (2.0 * eps);
+            let dy = (perlin(seed, x, y + eps, z) - perlin(seed, x, y - eps, z)) / (2.0 * eps);
+            let dz = (perlin(seed, x, y, z + eps) - perlin(seed, x, y, z - eps)) / (2.0 * eps);
+            let err = (grad[0] - dx).abs() + (grad[1] - dy).abs() + (grad[2] - dz).abs();
+            assert!(err < 1e-3, "grad {grad:?} finite [{dx}, {dy}, {dz}]");
+        }
     }
 }

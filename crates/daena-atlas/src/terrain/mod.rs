@@ -2,18 +2,26 @@
 //!
 //! Elevations stay on the reference datum. Detail is hash-addressed gradient
 //! noise in the `"terrain"` domain and fades with the scale-1 ground pixel.
+//! Imagery adds per-cell climate (9 bytes: `f32` temperature, `f32` moisture, `u8` biome).
 
+mod imagery;
 mod noise;
+mod palette;
 mod render;
 
 use std::sync::Arc;
 
 use daena_physical::engine::{decode_source, ToolSurface, TOOL_SURFACE_NONE};
 use daena_physical::PhysicalError;
+use rayon::prelude::*;
 
+pub use imagery::render_imagery_pixels;
 pub use render::{ground_metres_per_pixel, lon_lat_to_tile, render_pixels};
 
-use noise::{build_octaves, domain_seed, sample_octave, terrain_seed, Octave, RIDGED_NOISE_MEAN};
+use noise::{
+    build_octaves, domain_seed, sample_octave, sample_octave_with_gradient, terrain_seed, Octave,
+    RIDGED_NOISE_MEAN,
+};
 
 /// Pixel cover. Ice is a paint tint, not a cover.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,6 +43,15 @@ pub struct AtlasTerrain {
     wet: Vec<u8>,
     lake_id: Vec<u32>,
     lake_level_m: Vec<f32>,
+    /// Annual temperature, °C. Four bytes per cell.
+    temp_c: Vec<f32>,
+    /// `P / PET`, clamped to `0..4`. Four bytes per cell.
+    moisture: Vec<f32>,
+    /// Biome id. One byte per cell. With the two floats above, 9 bytes.
+    biome: Vec<u8>,
+    /// Uphill canonical slope at the cell centre, quantized by [`SLOPE_Q`].
+    /// Three `i16`s, six bytes. Bilinear of this is the gully direction.
+    slope_q: Vec<[i16; 3]>,
     cell_size_m: f64,
     radius_m: f64,
     sea_m: f64,
@@ -43,6 +60,22 @@ pub struct AtlasTerrain {
     octaves: Vec<Octave>,
     /// Two octaves in the `"ice"` domain that roughen the ice edge.
     ice_octaves: Vec<Octave>,
+    /// Anisotropic downhill octaves in the `"gully"` domain.
+    gully_octaves: Vec<Octave>,
+    /// Six octaves in `"cover-warp"`: east 0..3, north 3..6.
+    cover_warp: Vec<Octave>,
+    /// Three octaves in `"cover"` that break up vegetation edges.
+    cover_octaves: Vec<Octave>,
+    /// Brightness grain from `cell/4` down toward the 50 m floor.
+    grain_octaves: Vec<Octave>,
+    /// Three octaves in `"greenness-hue"`.
+    green_hue_octaves: Vec<Octave>,
+    /// Two octaves in `"lithology"`.
+    lithology_octaves: Vec<Octave>,
+    /// Two octaves in `"snow"`.
+    snow_octaves: Vec<Octave>,
+    /// One octave in `"beach"`.
+    beach_octaves: Vec<Octave>,
     half: Vec<f64>,
 }
 
@@ -58,6 +91,9 @@ impl AtlasTerrain {
         let mut wet = Vec::with_capacity(count);
         let mut lake_id = Vec::with_capacity(count);
         let mut lake_level_m = Vec::with_capacity(count);
+        let mut temp_c = Vec::with_capacity(count);
+        let mut moisture = Vec::with_capacity(count);
+        let mut biome = Vec::with_capacity(count);
         for cell in 0..count as u32 {
             let mm = surface.elevation_mm[cell as usize];
             elevation_m.push(mm as f32 / 1000.0);
@@ -84,6 +120,21 @@ impl AtlasTerrain {
                 lake_id.push(TOOL_SURFACE_NONE);
                 lake_level_m.push(0.0);
             }
+            let index = cell as usize;
+            temp_c.push(surface.temperature_centi_c[index] as f32 / 100.0);
+            let precip = f64::from(surface.precipitation_mm[index]);
+            let pet = f64::from(surface.pet_mm[index]);
+            let moist = if pet == 0.0 {
+                if precip == 0.0 {
+                    0.0
+                } else {
+                    4.0
+                }
+            } else {
+                (precip / pet).clamp(0.0, 4.0)
+            };
+            moisture.push(moist as f32);
+            biome.push(surface.biome_class[index]);
         }
         let sea_m = f64::from(surface.sea_level_mm) / 1000.0;
         let amplitude_m = (0..count)
@@ -101,11 +152,35 @@ impl AtlasTerrain {
         let seed = terrain_seed(identity);
         let octaves = build_octaves(domain_seed(seed, "terrain"), octave_count);
         let ice_octaves = build_octaves(domain_seed(seed, "ice"), 2);
+        let gully_octaves = build_octaves(domain_seed(seed, "gully"), octave_count);
+        let cover_warp = build_octaves(domain_seed(seed, "cover-warp"), 6);
+        let cover_octaves = build_octaves(domain_seed(seed, "cover"), 3);
+        let grain_octaves =
+            build_octaves(domain_seed(seed, "grain"), grain_octave_count(cell_size_m));
+        let green_hue_octaves = build_octaves(domain_seed(seed, "greenness-hue"), 3);
+        let lithology_octaves = build_octaves(domain_seed(seed, "lithology"), 2);
+        let snow_octaves = build_octaves(domain_seed(seed, "snow"), 2);
+        let beach_octaves = build_octaves(domain_seed(seed, "beach"), 1);
         let half = (0..octave_count).map(|k| 0.5f64.powi(k as i32)).collect();
+        let radius_m = surface.radius_metres();
+        let slope_q: Vec<[i16; 3]> = (0..count as u32)
+            .into_par_iter()
+            .map(|cell| {
+                quantized_uphill(
+                    &surface,
+                    &elevation_m,
+                    &ocean,
+                    &wet,
+                    cell,
+                    cell_size_m,
+                    radius_m,
+                )
+            })
+            .collect();
         Self {
             sea_m,
             sea_level_mm: surface.sea_level_mm,
-            radius_m: surface.radius_metres(),
+            radius_m,
             surface,
             elevation_m,
             relief_m,
@@ -115,10 +190,22 @@ impl AtlasTerrain {
             wet,
             lake_id,
             lake_level_m,
+            temp_c,
+            moisture,
+            biome,
+            slope_q,
             cell_size_m,
             seed,
             octaves,
             ice_octaves,
+            gully_octaves,
+            cover_warp,
+            cover_octaves,
+            grain_octaves,
+            green_hue_octaves,
+            lithology_octaves,
+            snow_octaves,
+            beach_octaves,
             half,
         }
     }
@@ -223,7 +310,8 @@ impl AtlasTerrain {
             relief += weights[slot] * f64::from(self.relief_m[cells[slot] as usize]);
         }
         let amplitude = self.amplitude_from(bicubic_cells, bicubic_weights);
-        let mut height = canon + amplitude * self.detail(p, ground_m, relief, cells, weights);
+        let mut height =
+            canon + amplitude * self.detail(p, ground_m, relief, cells, weights, amplitude);
         self.apply_class_pull(&mut height, p, cells, weights);
         let (cover, ice) = self.classify_weights(p, height, cells, weights);
         (height, cover, ice)
@@ -378,6 +466,79 @@ impl AtlasTerrain {
         best.map(|(cell, _)| cell).unwrap_or(0)
     }
 
+    /// Land cell of `biome` with the most same-biome cells within graph
+    /// distance 2. Ties take the lowest cell id. `None` when no land cell has
+    /// that biome.
+    #[must_use]
+    pub fn biome_site_cell(&self, biome: u8) -> Option<u32> {
+        let count = self.biome.len();
+        let mut stamp = vec![0u32; count];
+        let mut mark = 1u32;
+        let mut best: Option<(u32, u32)> = None;
+        let mut nodes = Vec::with_capacity(96);
+        let mut dist = Vec::with_capacity(96);
+        for cell in 0..count as u32 {
+            let index = cell as usize;
+            if self.biome[index] != biome || self.ocean[index] != 0 || self.wet[index] != 0 {
+                continue;
+            }
+            let score = self.count_biome_disk(cell, biome, &mut stamp, mark, &mut nodes, &mut dist);
+            mark = mark.wrapping_add(1);
+            if mark == 0 {
+                stamp.fill(0);
+                mark = 1;
+            }
+            let replace = match best {
+                None => true,
+                Some((best_score, best_id)) => {
+                    score > best_score || (score == best_score && cell < best_id)
+                }
+            };
+            if replace {
+                best = Some((score, cell));
+            }
+        }
+        best.map(|(_, cell)| cell)
+    }
+
+    fn count_biome_disk(
+        &self,
+        origin: u32,
+        biome: u8,
+        stamp: &mut [u32],
+        mark: u32,
+        nodes: &mut Vec<u32>,
+        dist: &mut Vec<u8>,
+    ) -> u32 {
+        nodes.clear();
+        dist.clear();
+        nodes.push(origin);
+        dist.push(0);
+        stamp[origin as usize] = mark;
+        let mut score = 0u32;
+        let mut cursor = 0usize;
+        while cursor < nodes.len() {
+            let cell = nodes[cursor];
+            let depth = dist[cursor];
+            cursor += 1;
+            if self.biome[cell as usize] == biome {
+                score += 1;
+            }
+            if depth == 2 {
+                continue;
+            }
+            for neighbor in self.surface.neighbors(cell) {
+                if neighbor == TOOL_SURFACE_NONE || stamp[neighbor as usize] == mark {
+                    continue;
+                }
+                stamp[neighbor as usize] = mark;
+                nodes.push(neighbor);
+                dist.push(depth + 1);
+            }
+        }
+        score
+    }
+
     fn canon_and_relief(&self, p: [f64; 3]) -> (f64, f64) {
         let (cells, weights) = self.surface.bicubic_stencil(p);
         let mut canon = 0.0;
@@ -418,8 +579,26 @@ impl AtlasTerrain {
         relief: f64,
         cells: [u32; 4],
         weights: [f64; 4],
+        amplitude: f64,
     ) -> f64 {
         let mountains = smoothstep(400.0, 1500.0, relief);
+        let land = land_fraction(self, cells, weights);
+        let (slope, down) = if land > WEIGHT_EPS {
+            self.bilinear_slope(p, cells, weights)
+        } else {
+            (0.0, [0.0, 0.0, 0.0])
+        };
+        let gully_w = if slope > 0.0 {
+            GULLY_MIX * smoothstep(GULLY_SLOPE_LO, GULLY_SLOPE_HI, slope) * land
+        } else {
+            0.0
+        };
+        let use_gully = gully_w > WEIGHT_EPS;
+        // `g_acc` is the gradient of the height detail, in m/m:
+        // Σ amplitude · 0.5^j · ∇n_j. The sum is unfaded and undamped, and it
+        // uses the isotropic gradient, not the gully term. A rise/run of 0.5
+        // halves the next octave. Damping stays ≤ 1, so the octave cap holds.
+        let mut g_acc = [0.0; 3];
         let mut sum = 0.0;
         let mut lambda = self.cell_size_m;
         for (index, octave) in self.octaves.iter().enumerate() {
@@ -428,11 +607,25 @@ impl AtlasTerrain {
                 break;
             }
             let frequency = self.radius_m / lambda;
-            let mut mixed = mix_noise(sample_octave(octave, p, frequency), mountains);
+            let (noise, grad) = sample_octave_with_gradient(octave, p, frequency, lambda);
+            let (mut mixed, mixed_grad) = mix_noise_grad(noise, grad, mountains);
+            // Cell-scale octaves are low-passed, so a gully there is mostly
+            // removed. Keep gullies on the shorter wavelengths, where they read
+            // as downhill rills and need no extra centre samples.
+            let coarse = lambda * 4.0 >= self.cell_size_m;
+            let mut gully_mixed = 0.0;
+            if use_gully && !coarse {
+                let warped = stretch_along(p, down, GULLY_STRETCH);
+                gully_mixed = mix_noise(
+                    sample_octave(&self.gully_octaves[index], warped, frequency),
+                    mountains,
+                );
+            }
             // Wavelengths near the cell size are almost constant across a cell.
             // Subtract the bilinear of that octave at the stencil centres so the
-            // cell mean stays on the canonical elevation.
-            if lambda * 4.0 >= self.cell_size_m {
+            // cell mean stays on the canonical elevation. Gradients stay unfaded
+            // and undamped: fade scales only the contribution below.
+            if coarse {
                 let mut low = 0.0;
                 for slot in 0..4 {
                     if weights[slot] == 0.0 {
@@ -444,10 +637,47 @@ impl AtlasTerrain {
                 }
                 mixed -= low;
             }
+            let g2 = g_acc[0] * g_acc[0] + g_acc[1] * g_acc[1] + g_acc[2] * g_acc[2];
+            let damp = 1.0 / (1.0 + EROSION_K * g2);
+            mixed *= damp;
+            if use_gully && !coarse {
+                mixed = (1.0 - gully_w) * mixed + gully_w * gully_mixed;
+            }
             sum += fade * self.half[index] * mixed;
+            let weight = amplitude * self.half[index];
+            g_acc[0] += weight * mixed_grad[0];
+            g_acc[1] += weight * mixed_grad[1];
+            g_acc[2] += weight * mixed_grad[2];
             lambda *= 0.5;
         }
         sum
+    }
+
+    /// Bilinear of the cell-centre uphill vectors. Each centre was finite-
+    /// differenced at ±0.25 cell, so a pixel does not repeat those bicubics.
+    fn bilinear_slope(&self, p: [f64; 3], cells: [u32; 4], weights: [f64; 4]) -> (f64, [f64; 3]) {
+        let mut up = [0.0; 3];
+        for slot in 0..4 {
+            let q = self.slope_q[cells[slot] as usize];
+            let weight = weights[slot];
+            up[0] += weight * f64::from(q[0]);
+            up[1] += weight * f64::from(q[1]);
+            up[2] += weight * f64::from(q[2]);
+        }
+        let scale = 1.0 / SLOPE_Q;
+        up[0] *= scale;
+        up[1] *= scale;
+        up[2] *= scale;
+        let radial = up[0] * p[0] + up[1] * p[1] + up[2] * p[2];
+        up[0] -= radial * p[0];
+        up[1] -= radial * p[1];
+        up[2] -= radial * p[2];
+        let slope = (up[0] * up[0] + up[1] * up[1] + up[2] * up[2]).sqrt();
+        if slope < 1e-8 {
+            return (0.0, [0.0, 0.0, 0.0]);
+        }
+        let inv = 1.0 / slope;
+        (slope, [-up[0] * inv, -up[1] * inv, -up[2] * inv])
     }
 
     /// Near a canonical cell centre, keep the detailed height on that cell's
@@ -533,6 +763,110 @@ fn mix_noise(noise: f64, mountains: f64) -> f64 {
     (1.0 - mountains) * noise + mountains * ridged
 }
 
+/// [`mix_noise`] and the gradient of that mix. `grad` is the noise gradient.
+fn mix_noise_grad(noise: f64, grad: [f64; 3], mountains: f64) -> (f64, [f64; 3]) {
+    let sign = if noise > 0.0 {
+        1.0
+    } else if noise < 0.0 {
+        -1.0
+    } else {
+        0.0
+    };
+    let mixed = mix_noise(noise, mountains);
+    let scale = (1.0 - mountains) + mountains * (-2.0 * sign);
+    (mixed, [grad[0] * scale, grad[1] * scale, grad[2] * scale])
+}
+
+fn quantized_uphill(
+    surface: &ToolSurface,
+    elevation_m: &[f32],
+    ocean: &[u8],
+    wet: &[u8],
+    cell: u32,
+    cell_size_m: f64,
+    radius_m: f64,
+) -> [i16; 3] {
+    let index = cell as usize;
+    if ocean[index] != 0 || wet[index] != 0 {
+        return [0; 3];
+    }
+    let p = surface.direction_of(cell);
+    let (east, north) = tangent_axes(p);
+    let ang = 0.25 * cell_size_m / radius_m;
+    let step_m = 0.5 * cell_size_m;
+    let height = |direction: [f64; 3]| canonical_height(surface, elevation_m, direction);
+    let dzdx =
+        (height(offset_direction(p, east, ang)) - height(offset_direction(p, east, -ang))) / step_m;
+    let dzdy = (height(offset_direction(p, north, ang)) - height(offset_direction(p, north, -ang)))
+        / step_m;
+    let mut q = [0i16; 3];
+    for axis in 0..3 {
+        let component = (dzdx * [east[0], east[1], east[2]][axis]
+            + dzdy * [north[0], north[1], north[2]][axis])
+            * SLOPE_Q;
+        q[axis] = component.round().clamp(-32_767.0, 32_767.0) as i16;
+    }
+    q
+}
+
+fn canonical_height(surface: &ToolSurface, elevation_m: &[f32], p: [f64; 3]) -> f64 {
+    let (cells, weights) = surface.bicubic_stencil(p);
+    let mut canon = 0.0;
+    for slot in 0..16 {
+        canon += weights[slot] * f64::from(elevation_m[cells[slot] as usize]);
+    }
+    canon
+}
+
+fn land_fraction(terrain: &AtlasTerrain, cells: [u32; 4], weights: [f64; 4]) -> f64 {
+    let mut land = 0.0;
+    for slot in 0..4 {
+        let cell = cells[slot] as usize;
+        if terrain.ocean[cell] == 0 && terrain.wet[cell] == 0 {
+            land += weights[slot];
+        }
+    }
+    land
+}
+
+/// Stretch features along `along` by `stretch` (4 lengthens gullies 4:1).
+fn stretch_along(p: [f64; 3], along: [f64; 3], stretch: f64) -> [f64; 3] {
+    let k = 1.0 - 1.0 / stretch;
+    let d = p[0] * along[0] + p[1] * along[1] + p[2] * along[2];
+    unit([
+        p[0] - along[0] * d * k,
+        p[1] - along[1] * d * k,
+        p[2] - along[2] * d * k,
+    ])
+}
+
+fn offset_direction(p: [f64; 3], axis: [f64; 3], ang: f64) -> [f64; 3] {
+    unit([
+        p[0] + axis[0] * ang,
+        p[1] + axis[1] * ang,
+        p[2] + axis[2] * ang,
+    ])
+}
+
+fn tangent_axes(up: [f64; 3]) -> ([f64; 3], [f64; 3]) {
+    let reference = if up[2].abs() < 0.9 {
+        [0.0, 0.0, 1.0]
+    } else {
+        [1.0, 0.0, 0.0]
+    };
+    let east = unit([
+        reference[1] * up[2] - reference[2] * up[1],
+        reference[2] * up[0] - reference[0] * up[2],
+        reference[0] * up[1] - reference[1] * up[0],
+    ]);
+    let north = [
+        up[1] * east[2] - up[2] * east[1],
+        up[2] * east[0] - up[0] * east[2],
+        up[0] * east[1] - up[1] * east[0],
+    ];
+    (east, north)
+}
+
 /// `|mixed|` for a raw octave, or `|mixed − bilinear(mixed)|` once the
 /// cell-scale low-pass is removed.
 #[cfg(test)]
@@ -543,6 +877,22 @@ fn octave_cap(lambda: f64, cell_size_m: f64) -> f64 {
         1.0 + RIDGED_NOISE_MEAN.abs()
     }
 }
+
+/// Erosion damper, per (m/m)². A detail slope of 0.5 halves the next octave.
+const EROSION_K: f64 = 4.0;
+
+/// Quantization of the uphill slope vector. One unit is `1/SLOPE_Q` rise/run.
+const SLOPE_Q: f64 = 8_000.0;
+
+/// Along-slope to across-slope wavelength of the gully octaves.
+const GULLY_STRETCH: f64 = 4.0;
+
+/// Greatest share of an octave replaced by the gully term on a steep slope.
+const GULLY_MIX: f64 = 0.7;
+
+/// Canonical rise/run where gullies start, and where they reach [`GULLY_MIX`].
+const GULLY_SLOPE_LO: f64 = 0.02;
+const GULLY_SLOPE_HI: f64 = 0.18;
 
 /// Smallest detail amplitude, metres. A shelf keeps this much texture.
 const MIN_AMPLITUDE_M: f64 = 4.0;
@@ -578,6 +928,16 @@ fn smooth_min(a: f64, b: f64, k: f64) -> f64 {
 /// Polynomial smooth maximum. It is never below `max(a, b)` and is C1.
 fn smooth_max(a: f64, b: f64, k: f64) -> f64 {
     -smooth_min(-a, -b, k)
+}
+
+fn grain_octave_count(cell_size_m: f64) -> usize {
+    let mut count = 0usize;
+    let mut lambda = cell_size_m * 0.25;
+    while lambda >= 50.0 && count < 16 {
+        count += 1;
+        lambda *= 0.5;
+    }
+    count
 }
 
 fn octave_count_for(cell_size_m: f64) -> usize {
@@ -914,25 +1274,6 @@ mod tests {
         }
     }
 
-    fn tangent_axes(up: [f64; 3]) -> ([f64; 3], [f64; 3]) {
-        let reference = if up[2].abs() < 0.9 {
-            [0.0, 0.0, 1.0]
-        } else {
-            [1.0, 0.0, 0.0]
-        };
-        let east = unit([
-            reference[1] * up[2] - reference[2] * up[1],
-            reference[2] * up[0] - reference[0] * up[2],
-            reference[0] * up[1] - reference[1] * up[0],
-        ]);
-        let north = [
-            up[1] * east[2] - up[2] * east[1],
-            up[2] * east[0] - up[0] * east[2],
-            up[0] * east[1] - up[1] * east[0],
-        ];
-        (east, north)
-    }
-
     #[test]
     fn auto_site_is_the_highest_coastal_land_cell() {
         let terrain = fixture();
@@ -978,6 +1319,210 @@ mod tests {
     }
 
     #[test]
+    fn render_imagery_pixels_do_not_depend_on_the_thread_count() {
+        let terrain = fixture();
+        let once = render_imagery_pixels(terrain, 4, 256, 512, 128, 128, 1);
+        let twice = render_imagery_pixels(terrain, 4, 256, 512, 128, 128, 1);
+        assert_rgba_eq(&once, &twice);
+        let pool = ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .expect("pool");
+        let serial = pool.install(|| render_imagery_pixels(terrain, 4, 256, 512, 128, 128, 1));
+        assert_rgba_eq(&once, &serial);
+    }
+
+    #[test]
+    fn imagery_scale_two_downsample_stays_near_scale_one() {
+        let terrain = fixture();
+        let width = 128u32;
+        let height = 96u32;
+        let coarse = render_imagery_pixels(terrain, 6, 1_024, 768, width, height, 1);
+        let fine = render_imagery_pixels(terrain, 6, 1_024, 768, width, height, 2);
+        let mut acc = 0.0;
+        let mut count = 0.0;
+        let fine_w = (width * 2) as usize;
+        for y in 0..height as usize {
+            for x in 0..width as usize {
+                let mut average = [0.0; 3];
+                for dy in 0..2usize {
+                    for dx in 0..2usize {
+                        let pixel = ((y * 2 + dy) * fine_w + (x * 2 + dx)) * 4;
+                        for channel in 0..3 {
+                            average[channel] += f64::from(fine[pixel + channel]);
+                        }
+                    }
+                }
+                let coarse_pixel = (y * width as usize + x) * 4;
+                for channel in 0..3 {
+                    average[channel] /= 4.0;
+                    acc += (average[channel] - f64::from(coarse[coarse_pixel + channel])).abs();
+                    count += 1.0;
+                }
+            }
+        }
+        let mean = acc / count;
+        assert!(mean <= 3.0, "mean absolute RGB difference {mean}");
+    }
+
+    #[test]
+    fn imagery_rectangles_match_adjacent_tiles() {
+        let terrain = fixture();
+        for z in [5u32, 11] {
+            assert_imagery_seam(terrain, z, 256, 256, 512, 256, false);
+            assert_imagery_seam(terrain, z, 256, 512, 256, 512, true);
+            let world = 256u32 << z;
+            assert_imagery_seam(terrain, z, world - 256, 256, 512, 256, false);
+        }
+    }
+
+    fn assert_imagery_seam(
+        terrain: &AtlasTerrain,
+        z: u32,
+        gx0: u32,
+        gy0: u32,
+        width: u32,
+        height: u32,
+        vertical: bool,
+    ) {
+        let wide = render_imagery_pixels(terrain, z, gx0, gy0, width, height, 1);
+        let (tile_w, tile_h, gx1, gy1) = if vertical {
+            (width, height / 2, gx0, gy0 + height / 2)
+        } else {
+            (width / 2, height, gx0 + width / 2, gy0)
+        };
+        let first = render_imagery_pixels(terrain, z, gx0, gy0, tile_w, tile_h, 1);
+        let second = render_imagery_pixels(terrain, z, gx1, gy1, tile_w, tile_h, 1);
+        let mut stitched = vec![0u8; wide.len()];
+        let tile_bytes_w = tile_w as usize * 4;
+        if vertical {
+            let row_bytes = width as usize * 4;
+            let split = (height / 2) as usize * row_bytes;
+            stitched[..split].copy_from_slice(&first);
+            stitched[split..].copy_from_slice(&second);
+        } else {
+            for row in 0..height as usize {
+                let wide_row = row * width as usize * 4;
+                let tile_row = row * tile_bytes_w;
+                stitched[wide_row..wide_row + tile_bytes_w]
+                    .copy_from_slice(&first[tile_row..tile_row + tile_bytes_w]);
+                stitched[wide_row + tile_bytes_w..wide_row + 2 * tile_bytes_w]
+                    .copy_from_slice(&second[tile_row..tile_row + tile_bytes_w]);
+            }
+        }
+        assert_rgba_eq(&wide, &stitched);
+    }
+
+    #[test]
+    fn imagery_cell_centres_keep_canonical_class() {
+        let terrain = fixture();
+        let surface = terrain.surface();
+        for z in [6u32, 9, 12] {
+            for cell in 0..surface.cell_count() as u32 {
+                let direction = surface.direction_of(cell);
+                let (lat, _) = surface.cell_lat_lon_degrees(cell);
+                let ground = ground_metres_per_pixel(z, lat.to_radians(), terrain.radius_m());
+                let height = terrain.detailed_elevation(direction, ground);
+                let (cover, _) = terrain.classify(direction, height);
+                let index = cell as usize;
+                let expected = if terrain.ocean[index] != 0 {
+                    TerrainCover::Ocean
+                } else if terrain.wet[index] != 0 {
+                    TerrainCover::Lake
+                } else {
+                    TerrainCover::Land
+                };
+                assert_eq!(cover, expected, "cell {cell} zoom {z} h {height}");
+            }
+        }
+    }
+
+    #[test]
+    fn imagery_vegetated_land_has_luminance_grain() {
+        use super::palette::srgb_to_linear;
+
+        let terrain = fixture();
+        let surface = terrain.surface();
+        let mut best: Option<(u32, f64)> = None;
+        let mut max_moisture = 0.0f64;
+        for cell in 0..surface.cell_count() as u32 {
+            let index = cell as usize;
+            if terrain.ocean[index] != 0 || terrain.wet[index] != 0 || terrain.ice[index] != 0 {
+                continue;
+            }
+            let moisture = f64::from(terrain.moisture[index]);
+            max_moisture = max_moisture.max(moisture);
+            let (lat_deg, lon_deg) = surface.cell_lat_lon_degrees(cell);
+            if !(-150.0..150.0).contains(&lon_deg) || !(-50.0..50.0).contains(&lat_deg) {
+                continue;
+            }
+            let summer = super::imagery::summer_temperature(
+                f64::from(terrain.temp_c[index]),
+                lat_deg.to_radians(),
+                f64::from(terrain.elevation_m[index]),
+                f64::from(terrain.elevation_m[index]),
+            );
+            if moisture < 1.1 || summer < 14.0 {
+                continue;
+            }
+            if best.map(|(_, score)| moisture > score).unwrap_or(true) {
+                best = Some((cell, moisture));
+            }
+        }
+        let (cell, moisture) =
+            best.unwrap_or_else(|| panic!("no vegetated land cell, max moisture {max_moisture}"));
+        let (lat_deg, lon_deg) = surface.cell_lat_lon_degrees(cell);
+        let z = 12u32;
+        let world = 256.0 * f64::from(1u32 << z);
+        let gx = (lon_deg + 180.0) / 360.0 * world;
+        let lat = lat_deg.clamp(-85.051_128_78, 85.051_128_78).to_radians();
+        let gy = (std::f64::consts::PI - lat.tan().asinh()) / std::f64::consts::TAU * world;
+        let size = 96u32;
+        let gx0 = (gx as u32).saturating_sub(size / 2);
+        let gy0 = (gy as u32).saturating_sub(size / 2);
+        let rgba = render_imagery_pixels(terrain, z, gx0, gy0, size, size, 1);
+        let width = size as usize;
+        let win = 32usize;
+        let mut ratios = Vec::new();
+        let mut y = 0;
+        while y + win <= width {
+            let mut x = 0;
+            while x + win <= width {
+                let mut sum = 0.0;
+                let mut count = 0.0;
+                for row in y..y + win {
+                    for col in x..x + win {
+                        let pixel = (row * width + col) * 4;
+                        let lin = srgb_to_linear([rgba[pixel], rgba[pixel + 1], rgba[pixel + 2]]);
+                        sum += 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2];
+                        count += 1.0;
+                    }
+                }
+                let mean = sum / count;
+                let mut var = 0.0;
+                for row in y..y + win {
+                    for col in x..x + win {
+                        let pixel = (row * width + col) * 4;
+                        let lin = srgb_to_linear([rgba[pixel], rgba[pixel + 1], rgba[pixel + 2]]);
+                        let lum = 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2];
+                        let delta = lum - mean;
+                        var += delta * delta;
+                    }
+                }
+                ratios.push(var.sqrt() / count.sqrt() / mean.max(1e-6));
+                x += win;
+            }
+            y += win;
+        }
+        ratios.sort_by(f64::total_cmp);
+        let median = ratios[ratios.len() / 2];
+        assert!(
+            median >= 0.03,
+            "cell {cell} moisture {moisture} median luminance std/mean {median}"
+        );
+    }
+
+    #[test]
     #[ignore]
     fn terrain_tile_timing_n512_scale2() {
         let settings = Settings::from_parts(
@@ -1016,7 +1561,30 @@ mod tests {
             times.sort_by(f64::total_cmp);
             let median = times[4];
             let worst = times[8];
-            println!("zoom {z} median {median:.3} ms worst {worst:.3} ms target 50");
+            println!("relief zoom {z} median {median:.3} ms worst {worst:.3} ms");
+            let mut imagery_times = Vec::with_capacity(9);
+            for dy in -1i32..=1 {
+                for dx in -1i32..=1 {
+                    let tile_x = (x as i32 + dx).rem_euclid(n as i32) as u32;
+                    let tile_y = (y as i32 + dy).clamp(0, n as i32 - 1) as u32;
+                    let started = std::time::Instant::now();
+                    let _pixels =
+                        render_imagery_pixels(&terrain, z, tile_x * 256, tile_y * 256, 256, 256, 2);
+                    imagery_times.push(started.elapsed().as_secs_f64() * 1000.0);
+                }
+            }
+            imagery_times.sort_by(f64::total_cmp);
+            let imagery_median = imagery_times[4];
+            let imagery_worst = imagery_times[8];
+            println!(
+                "imagery zoom {z} median {imagery_median:.3} ms worst {imagery_worst:.3} ms target 50"
+            );
+            if z == 12 {
+                assert!(
+                    imagery_median <= 50.0 && imagery_worst <= 80.0,
+                    "imagery z12 median {imagery_median:.3} ms worst {imagery_worst:.3} ms"
+                );
+            }
         }
     }
 }

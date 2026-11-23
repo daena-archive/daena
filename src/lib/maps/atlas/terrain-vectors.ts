@@ -1,4 +1,5 @@
-import type { FeatureLike } from "ol/Feature.js";
+import Feature, { type FeatureLike } from "ol/Feature.js";
+import { toLonLat } from "ol/proj.js";
 import Fill from "ol/style/Fill.js";
 import Stroke from "ol/style/Stroke.js";
 import Style from "ol/style/Style.js";
@@ -23,6 +24,48 @@ export function riverWidthPx(order: number, zoom: number): number {
   const at = (major: number) => 0.35 + t * (major - 0.35);
   const u = Math.min(1, Math.max(0, (zoom - 5) / 7));
   return at(1) + (at(3) - at(1)) * u;
+}
+
+/** Channel width in pixels. `resolution` is Web Mercator metres per pixel at the equator. */
+function channelWidthPx(feature: FeatureLike, resolution: number): number {
+  const raw = feature.get("channel_width_m");
+  const metres = typeof raw === "number" ? raw : Number(raw);
+  if (!Number.isFinite(metres) || metres <= 0 || !(resolution > 0)) {
+    return 0;
+  }
+  const coordinate = firstCoordinate(feature);
+  if (!coordinate) {
+    return 0;
+  }
+  const latitude = toLonLat(coordinate)[1];
+  const cosLat = Math.cos((latitude * Math.PI) / 180);
+  if (!(cosLat > 1e-6)) {
+    return 0;
+  }
+  return metres / (resolution * cosLat);
+}
+
+function firstCoordinate(feature: FeatureLike): [number, number] | null {
+  if (feature instanceof Feature) {
+    const geometry = feature.getGeometry();
+    if (!geometry || !("getFirstCoordinate" in geometry)) {
+      return null;
+    }
+    const read = geometry.getFirstCoordinate;
+    if (typeof read !== "function") {
+      return null;
+    }
+    const coordinate = read.call(geometry) as number[];
+    if (coordinate.length >= 2) {
+      return [coordinate[0], coordinate[1]];
+    }
+    return null;
+  }
+  const flat = feature.getFlatCoordinates();
+  if (flat.length < 2 || feature.getStride() < 2) {
+    return null;
+  }
+  return [flat[0], flat[1]];
 }
 
 const coastStroke = new Stroke({ color: "#1c242a", width: 1 });
@@ -73,10 +116,11 @@ export function riverVectorStyle(
     const zoom = zoomFor(resolution);
     const id = String(feature.get("id") ?? "");
     const label = zoom >= 7 ? labelFor(id) : "";
+    const zoomWidth = riverWidthPx(Number.isFinite(order) ? order : 1, zoom);
     return new Style({
       stroke: new Stroke({
         color: relief ? "#3b6ea5" : "#2e5868",
-        width: riverWidthPx(Number.isFinite(order) ? order : 1, zoom),
+        width: Math.max(zoomWidth, channelWidthPx(feature, resolution)),
       }),
       text: label
         ? new Text({

@@ -10,7 +10,7 @@ Read this whole file before you start. Where it disagrees with an older plan
 document, this file wins. Update the older document to match what you build.
 
 **Progress:** keep-alive slices 3 and 4 and side-by-side sub-steps 5.1a to
-5.1c are done and merged into `main`. Resume at 5.1d. The "Branch report" at
+5.1e (so all of step 5.1) are done and merged into `main`. Resume at 5.2. The "Branch report" at
 the end of this file says what was built, what changed from this plan, and
 what to watch for.
 
@@ -707,6 +707,8 @@ suite re-run. Nothing on this branch has been run in the desktop app yet.
 | `eb4c1a5` | 5.1a | `LocationStore` created: selection, document, fields, revisions, dirty tracking, autosave, save queue, conflicts, selection dialogs, mutation controller. |
 | `30ca781` | 5.1b | Collection, paging, scroll, panes, manuscript outline and houses summaries in the store, with five effects. |
 | `e60f503` | 5.1c | Section, view flags, surfaces, home and settings flags, Houses tree location, `currentShellLocation` / `restoreShellLocation`, the view switches, seven more effects. |
+| `0320b52` | 5.1d | Writing and Language bridge state, functions and six Writing effects in the store; four context bridges removed. Done by grok, reviewed. |
+| `df8474a` | 5.1e | Map editor session, map listener bodies, rewrite dialog, AI field fill and `writingEditable` in the store; last seven bridges removed; step 5.1 complete. Done by grok, reviewed. Merged into `main` with the merge after it. |
 
 `30ca781` fails `test:unit` (`houses-management.test.mjs` still looked for
 moved code on the page). The suite used then did not run `test:unit`;
@@ -715,9 +717,10 @@ moved code on the page). The suite used then did not run `test:unit`;
 
 ### Where to resume
 
-Next is **5.1d**, then **5.1e**, then 5.2 to 5.6 as written above.
+Next is **5.2** (Location view), then 5.3 to 5.6 as written above. Step 5.1
+is complete.
 
-- **5.1d, Writing and Language bridges.** Move `languagePaneRequest`,
+- **5.1d, Writing and Language bridges (done).** Moved `languagePaneRequest`,
   `languageWebview`, `languageLeave`, `writingWebview`, `writingReadyCount`,
   `writingFullscreen`, `writingFullscreenInstance`, `writingLoadKey`,
   `writingLoad`, `writingFlush`, `writingDraftQueue`,
@@ -734,11 +737,41 @@ Next is **5.1d**, then **5.1e**, then 5.2 to 5.6 as written above.
   `languageCreatedState`, the prune effect) is shell-global: in 5.5 it keeps
   every store's shown instance, so it stays on the page.
   `shownWebviewInstance` stays on the page until 5.4 makes it per store.
-- **5.1e, map editor session and selection AI.** Move the inventory's "Map
-  editor session" and "AI dialog bound to the selection" state and
-  functions. Then delete the temporary context bridges listed below.
-- **5.1 exit check.** `rg` the page for per-location `$state` and list what
-  stays, with the reason (see "Left on the page").
+  As built: the pool wrappers (`beginPooledWritingMount`, `writingMounted`
+  and the Language pair) stay on the page and write the moved fields as
+  `loc.*`; `writingEditable` stays a page `$derived` (it reads the AI
+  dialog state) and the store reads it through the context. The bridges'
+  calls out to the shell go through new context callbacks:
+  `markShownWebviewReady`, `openExternal`, `openEntityFromWebview`,
+  `runShellShortcut`, `openEntityEditDialog`, `confirmWritingArchive`.
+  Ordering found: when Writing reports ready, the load and AI-state posts
+  now start before the visibility effect shows the webview; both are
+  independent IPC calls, so the end state is the same.
+- **5.1e, map editor session and selection AI (done).** Moved the map
+  session state (editor mode and key, focus, pick, save states, recovery,
+  notices) with its functions, the bodies of the `maps-navigation`,
+  `maps-state` and `maps-selection` listeners (`handleMapsNavigation`,
+  `handleMapsState`, `handleMapsSelection`; the listeners and their
+  foreign-instance checks stay on the page), the rewrite dialog and the AI
+  field fill with their functions, `aiUsage` (only the rewrite dialog uses
+  it, although the inventory filed it under settings), and `writingEditable`
+  (now a store `$derived`). `resetProjectSessionState` calls
+  `loc.resetMapEditorSession()`. The store reaches the Tauri event API and
+  the native vector map session through `ctx.listenAiStream` and
+  `ctx.nativeVectorSession`, so it still loads in the Node tests. The
+  settings-side AI and the saved-maps cache stay on the page. Two behaviours
+  kept as they were, worth knowing: closing the rewrite dialog while its
+  stream subscription is still being set up cancels the request but leaves
+  that subscription in place until the next one replaces it; and
+  `handleAiEvent` does not check the request id, because each subscription
+  is already per request (`ai-stream:<id>`).
+- **5.1 exit check (done).** No per-location `$state` or plain `let` is left
+  at the top level of `+page.svelte`. Per-location `$derived` values that
+  also read shell state stay there: `languagePaneShown`,
+  `writingWebviewShown`, `writingFullscreenShown`, `workspaceViewNavShown`,
+  `embeddedPluginWebviewIds`, and `modalOverlayOpen` (which spans shell and
+  location dialogs). `savedMapsCache` and `savedMapsRequest` stay on
+  purpose: one project-wide map list.
 
 How the sub-steps were checked, worth keeping:
 
@@ -818,10 +851,16 @@ Side-by-side 5.1:
 
 Temporary context bridges, to remove when their state moves:
 
-- 5.1d: `canLeaveLanguageSection`, `flushWritingWebview`,
+- 5.1d (removed in 5.1d): `canLeaveLanguageSection`, `flushWritingWebview`,
   `requestLanguagePane`, `notifyWritingSaved`.
-- 5.1e: `resolveDirtyMapSession`, `currentMapId`, `setMapsEditorMode`,
-  `setMapsEditorKey`, `clearMapFocus`, `closeAiRewrite`, `closeAiFieldFill`.
+- 5.1e (removed in 5.1e): `resolveDirtyMapSession`, `currentMapId`,
+  `setMapsEditorMode`, `setMapsEditorKey`, `clearMapFocus`,
+  `closeAiRewrite`, `closeAiFieldFill`, and the `writingEditable` getter.
+
+No temporary bridges are left. The context still carries real shell
+dependencies (project client, entity cache, settings AI, dialogs, tabs and
+history callbacks, the webview pool's ready mark); 5.4 has to decide, for
+each one that acts on "the" location, which store it targets.
 
 Left on the page on purpose (they mix location and shell state, and read
 or write `loc.*`):
@@ -880,6 +919,11 @@ unused-import warnings), and 288 Rust tests.
 Merged into `main` at `fc76d0d` (World engine, Maps E2 to E8, Atlas 1 to
 3b) without conflicts. The merged tree passed the same commands before the
 merge was committed, with 295 Rust tests passed and 3 ignored.
+
+5.1d and 5.1e were merged into `main` on 2026-11-22. `main` had no new
+commits since the first merge, so the merged code is exactly `df8474a`,
+which passed every command in section 0 (295 Rust tests passed, 3
+ignored; svelte-check 0 errors and 0 warnings).
 
 ### Open questions for the owner
 

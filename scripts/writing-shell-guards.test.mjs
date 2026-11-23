@@ -26,12 +26,15 @@ function functionBody(name) {
 }
 
 /** The source between two markers, for blocks that are not top-level functions. */
-function between(from, to) {
-  const start = page.indexOf(from);
+function betweenIn(source, from, to) {
+  const start = source.indexOf(from);
   assert.ok(start >= 0, `${from} exists`);
-  const end = page.indexOf(to, start + from.length);
+  const end = source.indexOf(to, start + from.length);
   assert.ok(end > start, `${to} follows ${from}`);
-  return page.slice(start, end);
+  return source.slice(start, end);
+}
+function between(from, to) {
+  return betweenIn(page, from, to);
 }
 
 // Every path that hides or unmounts the Writing webview, or changes its entry, saves through flushAutoSave first.
@@ -65,8 +68,8 @@ const flushesBeforeNavigating = [
   ["closeProjectionView", /sandboxView = null/, "store"],
   ["closePluginView", /leavePluginView\(\)/, "store"],
   ["openProjection", /leavePluginView\(\)/, "store"],
-  ["createMap", /leavePluginView\(\)/],
-  ["ensureMapEditorOpen", /loc\.selected = map;/],
+  ["createMap", /leavePluginView\(\)/, "store"],
+  ["ensureMapEditorOpen", /this\.selected = map;/, "store"],
   ["archiveEntity", /clearSelection\(\)|entities\.delete\(/],
   ["openExternalImport", /showExternalImport = true/],
   ["seedExample", /clearSelection\(\)/],
@@ -99,21 +102,19 @@ const navigatesThroughGuardedPath = [
   ["openEntityById", /selectSearchResult\(target\)[\s\S]*selectEntity\(target\)/],
   ["selectQuickOpenItem", /selectSearchResult\(matchedEntity\)[\s\S]*openProjectHome\(\)/],
   ["archiveSelected", /archiveEntity\(loc\.selected/],
-  ["openSelectedMapEditor", /openPluginView\(mapsView\)/],
+  ["openSelectedMapEditor", /openPluginView\(mapsView\)/, "store"],
   ["confirmWritingArchive", /archiveSelected\(\)/],
 ];
-for (const [name, through] of navigatesThroughGuardedPath) {
-  assert.match(functionBody(name), through, `${name} goes through a path that saves first`);
+for (const [name, through, owner] of navigatesThroughGuardedPath) {
+  const body = owner === "store" ? storeMethodBody(name) : functionBody(name);
+  assert.match(body, through, `${name} goes through a path that saves first`);
 }
 
 // The maps navigation listener and the window close handshake save before they leave.
 {
-  const mapsListener = between(
-    'listen<{ mapEntityId: string; linkId?: string }>("maps-navigation"',
-    "let unlistenMapsState",
-  );
+  const mapsNavigation = storeMethodBody("handleMapsNavigation");
   assert.ok(
-    mapsListener.indexOf("flushAutoSave()") < mapsListener.indexOf("leavePluginView()"),
+    mapsNavigation.indexOf("flushAutoSave()") < mapsNavigation.indexOf("leavePluginView()"),
     "maps navigation saves first",
   );
   const closeRequested = between(".onCloseRequested(async (event) => {", ".then((cleanup) => {");
@@ -135,8 +136,8 @@ assert.match(
   const modal = between("const modalOverlayOpen = $derived(", "\n);");
   assert.doesNotMatch(modal, /writingFullscreen/, "the webview's full screen does not hide the webviews");
   assert.match(modal, /editorFullscreen \|\|/, "the shell editor's full screen still does");
-  assert.match(page, /let writingFullscreen = \$state\(false\);/);
-  assert.match(page, /const writingFullscreenShown = \$derived\(writingWebviewShown && writingFullscreen\);/);
+  assert.match(store, /writingFullscreen = \$state\(false\);/);
+  assert.match(page, /const writingFullscreenShown = \$derived\(writingWebviewShown && loc\.writingFullscreen\);/);
   assert.match(page, /class:writing-fullscreen=\{writingFullscreenShown\}/);
   assert.match(workspaceStyle(), /writingFullscreenShown\) return "grid-template-columns: minmax\(0, 1fr\)"/);
 }
@@ -147,38 +148,38 @@ function workspaceStyle() {
 
 // The full screen ends with the selection, with navigation out of the pane, and with Escape in the shell.
 {
-  const reset = between("$effect(() => {\n  void loc.selected?.id;", "/**\n * Runs a shell shortcut.");
-  assert.match(reset, /void writingWebviewShown;/, "leaving the Writing pane ends the full screen");
-  assert.match(reset, /untrack\(\(\) => exitWritingFullscreen\(\)\)/);
-  assert.match(functionBody("exitWritingFullscreen"), /endWritingFullscreen\(\)/, "the shell ends the full screen");
+  const reset = betweenIn(store, "void this.selected?.id;", "untrack(() => this.exitWritingFullscreen())");
+  assert.match(reset, /void this\.ctx\.writingWebviewShown;/, "leaving the Writing pane ends the full screen");
+  assert.match(store, /untrack\(\(\) => this\.exitWritingFullscreen\(\)\)/);
+  assert.match(storeMethodBody("exitWritingFullscreen"), /endWritingFullscreen\(\)/, "the shell ends the full screen");
   assert.match(
-    functionBody("endWritingFullscreen"),
+    storeMethodBody("endWritingFullscreen"),
     /writingFullscreenMessage\(false\), instance\)/,
     "the instance that was fullscreen is told, not the tab that is shown by then",
   );
   const escape = between("const handleWritingFullscreenKey", 'window.addEventListener("resize"');
-  assert.match(escape, /event\.key === "Escape"\)\s*exitWritingFullscreen\(\)/);
-  const mount = between("function trackWritingMount()", "async function postWritingMessage(");
+  assert.match(escape, /event\.key === "Escape"\)\s*loc\.exitWritingFullscreen\(\)/);
+  const mount = betweenIn(store, "trackWritingMount = () => {", "return () => {");
   assert.match(mount, /endWritingFullscreen\(\);/, "unmounting and switching instances end the full screen");
-  const ready = between('    case "ready":\n      if (!writingWebview.mounted) return;', '    case "draft":');
+  const ready = betweenIn(store, 'case "ready":\n        if (!this.writingWebview.mounted) return;', 'case "draft":');
   assert.match(ready, /writingFullscreen = false;/, "a restarted webview starts out of full screen");
-  const stateEvent = functionBody("handleWritingStateEvent");
+  const stateEvent = storeMethodBody("handleWritingStateEvent");
   assert.match(
     stateEvent,
-    /case "fullscreen":[\s\S]*event\.entityId === loc\.selected\?\.id\) \{\s*writingFullscreen = event\.on;\s*writingFullscreenInstance = event\.on \? shownWebviewInstance : null;/,
+    /case "fullscreen":[\s\S]*event\.entityId === this\.selected\?\.id\) \{\s*this\.writingFullscreen = event\.on;\s*this\.writingFullscreenInstance = event\.on \? this\.ctx\.shownWebviewInstance : null;/,
   );
 }
 
 // Rename and archive from the webview: the shell checks the entry is the selection before it acts.
 {
-  const stateEvent = functionBody("handleWritingStateEvent");
+  const stateEvent = storeMethodBody("handleWritingStateEvent");
   assert.match(
     stateEvent,
-    /case "request-rename":\s*if \(writingWebview\.mounted && loc\.selected && event\.entityId === loc\.selected\.id\)\s*void openEntityEditDialog\(loc\.selected\);/,
+    /case "request-rename":\s*if \(this\.writingWebview\.mounted && this\.selected && event\.entityId === this\.selected\.id\)\s*void this\.ctx\.openEntityEditDialog\(this\.selected\);/,
   );
   assert.match(
     stateEvent,
-    /case "request-archive":\s*if \(writingWebview\.mounted\) void confirmWritingArchive\(event\.entityId\);/,
+    /case "request-archive":\s*if \(this\.writingWebview\.mounted\) void this\.ctx\.confirmWritingArchive\(event\.entityId\);/,
   );
   const archive = functionBody("confirmWritingArchive");
   assert.match(archive, /target\.id !== entityId/, "archive needs the entry to be the selection");
@@ -192,8 +193,11 @@ function workspaceStyle() {
 
 // Shortcuts from the webview run the shell's own handlers, and the window listeners share them.
 {
-  const stateEvent = functionBody("handleWritingStateEvent");
-  assert.match(stateEvent, /case "shortcut":\s*if \(writingWebview\.mounted\) runShellShortcut\(event\.shortcut\);/);
+  const stateEvent = storeMethodBody("handleWritingStateEvent");
+  assert.match(
+    stateEvent,
+    /case "shortcut":\s*if \(this\.writingWebview\.mounted\) this\.ctx\.runShellShortcut\(event\.shortcut\);/,
+  );
   const run = functionBody("runShellShortcut");
   // Create is the fall-through: every other shortcut is named, and anything else opens the gallery.
   for (const shortcut of ["history-back", "history-forward", "quick-open"]) {
@@ -222,7 +226,7 @@ function workspaceStyle() {
   assert.match(slot, /class="writing-content"/);
   assert.match(
     slot,
-    /\{#if !writingFullscreen && \(error \|\| projectDiagnostics\.length > 0\)\}/,
+    /\{#if !loc\.writingFullscreen && \(error \|\| projectDiagnostics\.length > 0\)\}/,
     "hidden in full screen",
   );
   assert.ok(slot.indexOf("writing-notices") < slot.indexOf("writing-mount"), "the notices are above the slot");
@@ -337,8 +341,8 @@ function workspaceStyle() {
 
 // A rename refreshes the header in place when the editor keeps its text.
 {
-  const load = between("async function postWritingLoad", "$effect(() => {");
-  assert.match(load, /writingTitleMessage\(entityId, loc\.selected\.name\)/, "the header follows the rename");
+  const load = storeMethodBody("postWritingLoad");
+  assert.match(load, /writingTitleMessage\(entityId, this\.selected\.name\)/, "the header follows the rename");
 }
 
 console.log("writing shell guard checks passed");

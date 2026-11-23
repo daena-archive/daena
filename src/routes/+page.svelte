@@ -166,7 +166,6 @@ import ProjectHome from "$lib/shell/ProjectHome.svelte";
 import ProjectCenter from "$lib/ProjectCenter.svelte";
 import ProjectAiSettingsPanel from "$lib/ai/ProjectAiSettingsPanel.svelte";
 import {
-  aiActionRequest,
   emptyAiProvider,
   instructionFor,
   mergePromptTemplates,
@@ -282,34 +281,11 @@ import {
   CalendarRange,
   Network,
 } from "@lucide/svelte";
-import {
-  LANGUAGE_PLUGIN_ID,
-  LanguageLeaveTracker,
-  languageResumeMessage,
-  openableLinkHref,
-  parseLanguageStateEvent,
-  type LanguageStateEvent,
-} from "$lib/modules/language-bridge";
-import {
-  WRITING_PLUGIN_ID,
-  createWritingFlushBroker,
-  parseWritingStateEvent,
-  writingAiStateMessage,
-  writingConflictMessage,
-  writingFullscreenMessage,
-  writingLoadMessage,
-  writingMessageCurrent,
-  writingTitleMessage,
-  type WritingBridgeDraft,
-  type WritingBridgeShortcut,
-  type WritingLoad,
-  type WritingStateEvent,
-} from "$lib/modules/writing-bridge";
+import { LANGUAGE_PLUGIN_ID, languageResumeMessage, parseLanguageStateEvent } from "$lib/modules/language-bridge";
+import { WRITING_PLUGIN_ID, parseWritingStateEvent, type WritingBridgeShortcut } from "$lib/modules/writing-bridge";
 import RichTextEditor from "$lib/editor/RichTextEditor.svelte";
 import MarkdownArticle from "$lib/markdown/MarkdownArticle.svelte";
 import AiProposalPreview from "$lib/ai/AiProposalPreview.svelte";
-import { validateAiProposal } from "$lib/ai/proposal";
-import { reduceTextGenerationEvent } from "$lib/ai/stream";
 import { htmlToMarkdown } from "$lib/markdown";
 import {
   applyThemePreference,
@@ -341,9 +317,6 @@ import {
 } from "$lib/date";
 import { isEmptyFieldValue } from "$lib/fields/persistence";
 import {
-  aiJsonValueSchema,
-  aiScalarValue,
-  coerceAiFieldValue,
   fieldDisplayValue,
   fieldInputValue,
   suggestionConfidenceLabel,
@@ -422,36 +395,12 @@ $effect(() => {
 });
 let shellNavigationBusy = $state(false);
 let shellNavigationRestoring = false;
-/** Mount state of the Language webview: `mounted` while its content pane element exists, `ready` after it reports ready. */
-let languageWebview = $state({ mounted: false, ready: false });
-/** Can-leave requests to the Language webview, resolved by its leave-pending/leave-reply/ready messages. */
-const languageLeave = new LanguageLeaveTracker();
-/** A pane the shell asked the mounted Language webview to show and has not yet seen confirmed. */
-let languagePaneRequest: LanguagePane | null = null;
-/** Mount state of the Writing webview: `mounted` while its content pane element exists, `ready` after it reports ready. */
-let writingWebview = $state({ mounted: false, ready: false });
-/** Counts the webview's `ready` reports, so the AI state is posted again to a webview that restarted. */
-let writingReadyCount = $state(0);
 /**
- * The Writing webview's full screen, as the webview reports it. Kept apart from `editorFullscreen`: that one hides
- * every embedded webview, and this one needs the webview visible so it can fill the window.
- */
-let writingFullscreen = $state(false);
-/** The instance that reported `writingFullscreen`, so ending it reaches that instance even after the tab changed. */
-let writingFullscreenInstance: string | null = null;
-/**
- * Embedded webviews the shell keeps alive (Writing only). The host owns what exists; this record decides which
- * instances the next mount keeps (`retainSet`) and which are unmounted when their tab or plugin goes.
+ * Embedded webviews the shell keeps alive (Writing and Language). The host owns what exists; this record decides which
+ * instances the next mount keeps (`retainSet`) and which are unmounted when their tab or plugin goes. Shell-global:
+ * one pool for every location. The per-location mount hooks live on the location store.
  */
 let webviewPool = $state<WebviewPool>(emptyWebviewPool);
-/** The Writing instance whose host mount finished. The visibility effect shows no other Writing instance. */
-let writingHostedInstance = $state<string | null>(null);
-/** The same for Language: the instance whose host mount finished. */
-let languageHostedInstance = $state<string | null>(null);
-/** Whether the mounting Language instance was ready before its mount began. See `beginPooledMount`. */
-let languageMountPriorReady = false;
-/** What the Language mount in progress keeps, so only those the host actually closed leave the pool. */
-let languageMountRetained: WebviewInstanceRef[] = [];
 /**
  * The pane each Language instance was created with, and for which language. The mount key contains it (it is the
  * mount's `state` param), so the pane the user moved to since would make every later mount look like a different
@@ -459,28 +408,6 @@ let languageMountRetained: WebviewInstanceRef[] = [];
  * carries the current pane. Used only while the pool still knows the instance (see `languageMountState`).
  */
 const languageCreatedState = new Map<string, { entityId: string | undefined; pane: LanguagePane }>();
-/** Whether the mounting instance was ready before its mount began. See `beginPooledWritingMount`. */
-let writingMountPriorReady = false;
-/** What the mount in progress keeps, so only those the host actually closed leave the pool. */
-let writingMountRetained: WebviewInstanceRef[] = [];
-/**
- * What the last `writing.load` was for (entity id and the shell's load counter), so an unchanged selection is
- * not reposted. Saving does not change it; a new entity or a reload from disk does.
- */
-let writingLoadKey: string | null = null;
-/** The `writing.load` the shell last posted. Only its entity and token are accepted on drafts and conflict actions. */
-let writingLoad: WritingLoad | null = null;
-/** Asks the mounted Writing webview for text it has not published yet. */
-const writingFlush = createWritingFlushBroker({
-  post: (message) => postWritingMessage(message),
-  newRequestId: () => crypto.randomUUID(),
-  onTimeout: (requestId) =>
-    console.warn(`The Writing webview did not answer flush ${requestId}; continuing without its unsent text.`),
-});
-/** Drafts are applied one at a time, in arrival order, so a slow chunked draft cannot land after a newer one. */
-let writingDraftQueue: Promise<unknown> = Promise.resolve();
-/** The last `writing.editable` value the webview was told, so only changes are posted. */
-let writingEditablePosted: boolean | null = null;
 let calendarDefinitions = $state<Record<string, CalendarDefinition>>({});
 /** Bounded calendar entity list from paged queries — avoids scanning the full entity cache. */
 let calendarEntities = $state<Entity[]>([]);
@@ -527,29 +454,14 @@ const loc: LocationStore = new LocationStore({
     projectDiagnostics = [];
     showCreateForm = false;
   },
-  canLeaveLanguageSection: () => canLeaveLanguageSection(),
-  flushWritingWebview: () => flushWritingWebview(),
   recordShellDeparture: (location) => recordShellDeparture(location),
   setShellNavigationRestoring: (restoring) => {
     shellNavigationRestoring = restoring;
   },
   closeNativePluginWebviews: () => closeNativePluginWebviews(),
-  resolveDirtyMapSession: () => resolveDirtyMapSession(),
-  currentMapId: () => currentMapId(),
-  setMapsEditorMode: (mode) => {
-    mapsEditorMode = mode;
-  },
-  setMapsEditorKey: (key) => {
-    mapsEditorKey = key;
-  },
-  clearMapFocus: () => {
-    mapFocusLinkId = null;
-    mapFocusFeatureId = null;
-  },
   dismissSettings: () => dismissSettings(),
   openSettings: (nextSection) => openSettings(nextSection),
   openProjectCenter: (nextSection) => openProjectCenter(nextSection),
-  requestLanguagePane: (pane) => requestLanguagePane(pane),
   clearGlobalQuery: () => {
     globalQuery = "";
   },
@@ -558,8 +470,6 @@ const loc: LocationStore = new LocationStore({
   appendEntityToCache: (entity) => {
     entities = [...entities, entity];
   },
-  closeAiFieldFill: () => closeAiFieldFill(),
-  closeAiRewrite: () => closeAiRewrite(),
   contextFor: (target) => contextFor(target),
   contextOwningRelationshipType: (relationshipType) => contextOwningRelationshipType(relationshipType),
   activeManifest: () => activeManifest(),
@@ -584,9 +494,43 @@ const loc: LocationStore = new LocationStore({
   upsertEntityInCache: (entity) => upsertEntityInCache(entity),
   refreshAfterEntityMutation: (options) => refreshAfterEntityMutation(options),
   loadEraContexts: (eraIds) => loadEraContexts(eraIds),
-  notifyWritingSaved: (entityId) => notifyWritingSaved(entityId),
   notifyProfileTimelineChanged: (eventId) => notifyProfileTimelineChanged(eventId),
   loadProjectStatus: (includeGit) => loadProjectStatus(includeGit),
+  get shownWebviewInstance() {
+    return shownWebviewInstance;
+  },
+  get writingWebviewShown() {
+    return writingWebviewShown;
+  },
+  get aiProvider() {
+    return aiProvider;
+  },
+  get aiPromptTemplates() {
+    return aiPromptTemplates;
+  },
+  markShownWebviewReady: (pluginId) => {
+    webviewPool = markReady(webviewPool, { pluginId, instanceId: shownWebviewInstance }, true);
+  },
+  openExternal: (href) => {
+    void shellEditorHost.openExternal(href);
+  },
+  openEntityFromWebview: (entityId, newTab) => {
+    if (newTab) void openInNewTab(() => openEntityById(entityId));
+    else void openEntityById(entityId);
+  },
+  runShellShortcut: (shortcut) => runShellShortcut(shortcut),
+  openEntityEditDialog: (entity) => {
+    void openEntityEditDialog(entity);
+  },
+  confirmWritingArchive: (entityId) => {
+    void confirmWritingArchive(entityId);
+  },
+  mapsNavigationItem: () => mapsNavigationItem(),
+  emptyInspectorDefinitions: () => emptyInspectorDefinitions(),
+  selectedRelationshipIds: (definition) => selectedRelationshipIds(definition),
+  listenAiStream: (requestId, handler) =>
+    listen<AiStreamEvent>(`ai-stream:${requestId}`, (event) => handler(event.payload)),
+  nativeVectorSession: () => nativeVectorSession(),
 });
 type LifecycleToast = { message: string; actionLabel?: string; onAction?: () => void };
 let lifecycleToast = $state<LifecycleToast | null>(null);
@@ -605,20 +549,6 @@ let createDateCalendarByField = $state<Record<string, string>>({});
 let createDocumentBody = $state("");
 let showDiscardPrompt = $state(false);
 let pendingCreateDiscard = $state<(() => void) | null>(null);
-let mapSaveStates = $state<Record<string, { status: string; detail: unknown }>>({});
-let mapReloadCounter = $state(0);
-let mapsEditorKey = $state("welcome");
-let mapRecoveryBusy = $state(false);
-let mapFocusLinkId = $state<string | null>(null);
-let mapFocusFeatureId = $state<string | null>(null);
-let mapSelection = $state<unknown | null>(null);
-let mapPickPending = $state<
-  | null
-  | { kind: "link"; entityId: string; role: string; mapEntityId: string }
-  | { kind: "rebind"; entityId: string; location: MapLocation; mapEntityId: string }
->(null);
-let mapReconcileNotice = $state("");
-let mapPickNotice = $state("");
 let projectDiagnostics = $state<string[]>([]);
 let archivedCount = $state(0);
 let statusCenterOpen = $state(false);
@@ -761,34 +691,6 @@ let aiIndexMessage = $state("");
 let aiIndexMessageTimer: number | null = null;
 let aiIndexStatusMessageTimer: number | null = null;
 let remoteCredential = $state<{ provider: string; configured: boolean } | null>(null);
-let aiUsage = $state<{ inputTokens: number; outputTokens: number; totalTokens: number } | null>(null);
-let aiRewriteOpen = $state(false);
-let aiBusy = $state(false);
-let aiCancelPending = $state(false);
-let aiMode = $state<"rewrite" | "generate">("rewrite");
-let aiRequestId = $state<string | null>(null);
-let aiInstruction = $state("Rewrite this to be more vivid while preserving the meaning.");
-let aiStreamText = $state("");
-let aiPreviewOutput = $state("");
-let aiProgressMessage = $state("Preparing model…");
-let aiSourceSelection = $state("");
-let aiSourceSelectionPlain = $state("");
-let aiGenerationContext = $state("");
-let aiSourceBody = $state("");
-let aiSourceRevision = $state("");
-let aiLastSequence = $state(-1);
-let aiUnlisten: (() => void) | null = null;
-let aiFieldFillBusy = $state(false);
-let aiFieldFillOpen = $state(false);
-let aiFieldFillRequestId = $state<string | null>(null);
-let aiFieldFillStream = $state("");
-let aiFieldSuggestions = $state<Record<string, AiFieldSuggestion>>({});
-let aiFieldUnlisten: (() => void) | null = null;
-let aiStartCancelled = $state(false);
-let aiFieldFillStartCancelled = $state(false);
-let aiSourceEntityId = $state<string | null>(null);
-let aiFieldFillEntityId = $state<string | null>(null);
-let aiFieldFillLastSequence = $state(-1);
 let adminPlugins = $state<PluginAdminEntry[] | null>(null);
 let adminBusy = $state(false);
 let pluginActionId = $state<string | null>(null);
@@ -861,7 +763,7 @@ $effect(() => {
   const modalOpen =
     quickOpenOpen ||
     showCreateForm ||
-    aiRewriteOpen ||
+    loc.aiRewriteOpen ||
     loc.editorFullscreen ||
     upgradePreview !== null ||
     confirmAction !== null ||
@@ -909,9 +811,9 @@ $effect(() => {
     } else if (confirmAction) {
       event.preventDefault();
       confirmAction = null;
-    } else if (aiRewriteOpen) {
+    } else if (loc.aiRewriteOpen) {
       event.preventDefault();
-      closeAiRewrite();
+      loc.closeAiRewrite();
     } else if (loc.metadataDialog) {
       event.preventDefault();
       loc.metadataDialog = null;
@@ -1403,33 +1305,6 @@ async function closeNativePluginWebviews() {
   }
 }
 
-async function resolveDirtyMapSession(): Promise<boolean> {
-  const mapId = currentMapId();
-  if (!mapId || loc.sandboxView?.renderer !== "maps" || mapSaveStates[mapId]?.status !== "dirty") return true;
-  if (mapsEditorMode === "physical") return true;
-  if (
-    await confirmDialog({
-      title: "Save changes to this map before leaving?",
-      message: "Your map has unsaved edits.",
-      confirmLabel: "Save",
-    })
-  ) {
-    try {
-      await nativeVectorSession()?.save();
-      return nativeVectorSession()?.isDirty() !== true && mapSaveStates[mapId]?.status !== "dirty";
-    } catch (cause) {
-      error = friendlyError(cause);
-      return false;
-    }
-  }
-  return confirmDialog({
-    title: "Discard unsaved map edits?",
-    message: "Choose Cancel to remain in the editor.",
-    confirmLabel: "Discard",
-    danger: true,
-  });
-}
-
 /** The Language workspace is an isolated webview drawn in the content column of the Languages section. */
 const languagePaneShown = $derived(
   ready &&
@@ -1459,7 +1334,7 @@ const writingWebviewShown = $derived(
     enabledWorkspaceSections().includes("writing"),
 );
 /** The content column fills the window while the Writing webview is in full screen (see `writingFullscreen`). */
-const writingFullscreenShown = $derived(writingWebviewShown && writingFullscreen);
+const writingFullscreenShown = $derived(writingWebviewShown && loc.writingFullscreen);
 /** Same gate the standalone view row used: Lore, Timeline, Writing, and Houses, not a full plugin sandbox. */
 const workspaceViewNavShown = $derived(
   ready &&
@@ -1484,7 +1359,7 @@ const modalOverlayOpen = $derived(
     showDiscardPrompt ||
     projectTransitionBusy ||
     loc.editorFullscreen ||
-    aiRewriteOpen ||
+    loc.aiRewriteOpen ||
     upgradePreview !== null ||
     confirmAction !== null ||
     deleteTarget !== null ||
@@ -1527,8 +1402,8 @@ function foreignWebviewInstance(payload: unknown): boolean {
 /** Embedded plugin webviews the shell is currently drawing (the Language or Writing pane, or a webview sandbox view). */
 const embeddedPluginWebviewIds = $derived.by(() => {
   const ids = new Set<string>();
-  if (languageWebview.mounted) ids.add(LANGUAGE_PLUGIN_ID);
-  if (writingWebview.mounted) ids.add(WRITING_PLUGIN_ID);
+  if (loc.languageWebview.mounted) ids.add(LANGUAGE_PLUGIN_ID);
+  if (loc.writingWebview.mounted) ids.add(WRITING_PLUGIN_ID);
   const sandboxShown = ready && !loc.showSettings && !loc.projectHomeOpen && !loc.hostView && !loc.loreWikiOpen;
   if (sandboxShown && loc.sandboxView?.renderer === "webview") ids.add(loc.sandboxView.plugin.id);
   return [...ids];
@@ -1577,19 +1452,19 @@ $effect(() => {
 $effect(() => {
   // Re-applied when an embedded webview reports ready, in case an overlay opened during its mount,
   // and when the shown tab changes, so visibility addresses that tab's instance.
-  void languageWebview.ready;
-  void writingWebview.ready;
+  void loc.languageWebview.ready;
+  void loc.writingWebview.ready;
   void shownWebviewInstance;
-  void writingHostedInstance;
-  void languageHostedInstance;
+  void loc.writingHostedInstance;
+  void loc.languageHostedInstance;
   const visible = !modalOverlayOpen && !popoverOverlapsWebview;
   for (const pluginId of embeddedPluginWebviewIds) {
     // A pooled Writing instance that a tab switch just made current may still be suspended. Its own mount sets
     // its bounds and shows it; showing it earlier would draw its old rectangle over the tab being restored.
     // Hiding is always allowed.
-    if (visible && pluginId === WRITING_PLUGIN_ID && writingHostedInstance !== shownWebviewInstance) continue;
+    if (visible && pluginId === WRITING_PLUGIN_ID && loc.writingHostedInstance !== shownWebviewInstance) continue;
     // The same for a pooled Language instance, whose old rectangle would show over the tab being restored.
-    if (visible && pluginId === LANGUAGE_PLUGIN_ID && languageHostedInstance !== shownWebviewInstance) continue;
+    if (visible && pluginId === LANGUAGE_PLUGIN_ID && loc.languageHostedInstance !== shownWebviewInstance) continue;
     void setPluginWebviewVisibleQuietly(pluginId, visible);
   }
 });
@@ -1619,158 +1494,6 @@ $effect(() => {
   });
 });
 
-/**
- * `{#key}` creates the next attachment before it destroys the previous one
- * (`BranchManager.ensure` mounts the new branch, then `#commit` destroys the
- * old). A stale cleanup must not clear state the new instance just set.
- */
-let languageMountGeneration = 0;
-
-/** Attachment for the Language content pane: tracks whether the pane element is in the document. */
-function trackLanguageMount() {
-  const generation = ++languageMountGeneration;
-  languageWebview.mounted = true;
-  languageWebview.ready = false;
-  languageHostedInstance = null;
-  languagePaneRequest = null;
-  languageLeave.releaseAll();
-  return () => {
-    if (generation !== languageMountGeneration) return;
-    languageWebview.mounted = false;
-    languageWebview.ready = false;
-    languageHostedInstance = null;
-    languagePaneRequest = null;
-    languageLeave.releaseAll();
-  };
-}
-
-async function postLanguageMessage(message: unknown, instanceId = shownWebviewInstance): Promise<boolean> {
-  try {
-    await project.postPluginWebviewMessage(LANGUAGE_PLUGIN_ID, instanceId, message);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Moves the Language workspace to a pane. A mounted, ready webview is told through the host so
- * its leave guards run; the webview may answer with a different pane. Otherwise the next mount
- * reads `languagePane`.
- */
-function requestLanguagePane(next: LanguagePane) {
-  if (loc.languagePane === next) return;
-  loc.languagePane = next;
-  if (!languageWebview.mounted || !languageWebview.ready) {
-    languagePaneRequest = null;
-    return;
-  }
-  languagePaneRequest = next;
-  void postLanguageMessage({ type: "language.pane", pane: next }).then((sent) => {
-    if (!sent && languagePaneRequest === next) languagePaneRequest = null;
-  });
-}
-
-/** Asks the Language webview whether it may be torn down. Resolves true when it is not mounted or ready. */
-async function canLeaveLanguageSection(): Promise<boolean> {
-  if (loc.section !== "language" || !languageWebview.mounted || !languageWebview.ready) return true;
-  // Captured before the await. `switchToTab` and `applyTabsChange` call this
-  // before they change `shellTabs`, so this is the outgoing tab.
-  const instanceId = shownWebviewInstance;
-  const requestId = crypto.randomUUID();
-  const decision = languageLeave.begin(requestId);
-  const sent = await postLanguageMessage({ type: "language.can-leave", requestId }, instanceId);
-  if (!sent) languageLeave.reply(requestId, true);
-  return decision;
-}
-
-function handleLanguageStateEvent(event: LanguageStateEvent) {
-  switch (event.kind) {
-    case "ready": {
-      if (!languageWebview.mounted) return;
-      languageWebview.ready = true;
-      webviewPool = markReady(webviewPool, languageRef(shownWebviewInstance), true);
-      languagePaneRequest = null;
-      languageLeave.releaseAll();
-      // The webview mounted with the pane it was given; if the shell moved on meanwhile, the shell wins.
-      if (event.pane !== null && event.pane !== loc.languagePane)
-        void postLanguageMessage({ type: "language.pane", pane: loc.languagePane });
-      return;
-    }
-    case "pane": {
-      if (!languageWebview.mounted) return;
-      if (event.pane === loc.languagePane) {
-        languagePaneRequest = null;
-        return;
-      }
-      if (languagePaneRequest !== null) {
-        // Answer to a shell request that the webview refused: revert without a history entry.
-        languagePaneRequest = null;
-        loc.languagePane = event.pane;
-        return;
-      }
-      recordShellDeparture(loc.currentShellLocation());
-      loc.languagePane = event.pane;
-      return;
-    }
-    case "leave-pending":
-      languageLeave.pending(event.requestId);
-      return;
-    case "leave-reply":
-      languageLeave.reply(event.requestId, event.allowed);
-      return;
-    case "entity-changed":
-      if (event.deleted) {
-        if (loc.selected?.id === event.entityId) loc.clearSelection();
-        void refreshAfterEntityMutation({ entityId: event.entityId, removed: true });
-      } else {
-        void refreshAfterEntityMutation({ entityId: event.entityId });
-      }
-      return;
-    case "open-link": {
-      const href = openableLinkHref(event.href);
-      if (href) void shellEditorHost.openExternal(href);
-      return;
-    }
-    case "open-entity":
-      if (event.newTab) void openInNewTab(() => openEntityById(event.entityId));
-      else void openEntityById(event.entityId);
-      return;
-    case "shortcut":
-      if (languageWebview.mounted) runShellShortcut(event.shortcut);
-      return;
-  }
-}
-
-/** See `languageMountGeneration`. Same `{#key}` setup-before-cleanup order. */
-let writingMountGeneration = 0;
-
-/** Attachment for the Writing content pane: tracks whether the pane element is in the document. */
-function trackWritingMount() {
-  const generation = ++writingMountGeneration;
-  // The outgoing instance may be fullscreen inside its own webview: end that before the state resets.
-  endWritingFullscreen();
-  writingWebview.mounted = true;
-  writingWebview.ready = false;
-  writingHostedInstance = null;
-  writingLoadKey = null;
-  writingLoad = null;
-  writingEditablePosted = null;
-  writingFlush.releaseAll();
-  return () => {
-    if (generation !== writingMountGeneration) return;
-    endWritingFullscreen();
-    writingWebview.mounted = false;
-    writingWebview.ready = false;
-    writingHostedInstance = null;
-    writingLoadKey = null;
-    writingLoad = null;
-    writingEditablePosted = null;
-    writingFlush.releaseAll();
-  };
-}
-
-const writingRef = (instanceId: string): WebviewInstanceRef => ({ pluginId: WRITING_PLUGIN_ID, instanceId });
 const languageRef = (instanceId: string): WebviewInstanceRef => ({ pluginId: LANGUAGE_PLUGIN_ID, instanceId });
 
 /**
@@ -1823,8 +1546,8 @@ function beginPooledWritingMount(
   mountKey: string,
 ): { retain: WebviewInstanceRef[]; reuse: boolean } {
   const plan = beginPooledMount(self, mountKey);
-  writingMountPriorReady = plan.priorReady;
-  writingMountRetained = plan.retain;
+  loc.writingMountPriorReady = plan.priorReady;
+  loc.writingMountRetained = plan.retain;
   return { retain: plan.retain, reuse: plan.reuse };
 }
 
@@ -1841,16 +1564,16 @@ function prepareUnpooledMount(self: WebviewInstanceRef): { retain: WebviewInstan
 
 /** The host finished mounting the pooled Writing instance (`self` is the one on screen). */
 function writingMounted(outcome: "reused" | "created", self: WebviewInstanceRef) {
-  const settled = settlePooledMount(outcome, self, writingMountRetained, writingMountPriorReady);
+  const settled = settlePooledMount(outcome, self, loc.writingMountRetained, loc.writingMountPriorReady);
   if (!settled.shown) return;
-  writingMountPriorReady = false;
-  writingHostedInstance = self.instanceId;
+  loc.writingMountPriorReady = false;
+  loc.writingHostedInstance = self.instanceId;
   // A reused webview already loaded its document and will not report ready again. A webview that is still
   // loading reports it later, through the state event. `writing.load` is posted by the load effect, as for a
   // new webview: the tracker above left `writingLoad` and `writingLoadKey` empty.
   if (settled.ready) {
-    writingWebview.ready = true;
-    writingReadyCount += 1;
+    loc.writingWebview.ready = true;
+    loc.writingReadyCount += 1;
   }
 }
 
@@ -1874,8 +1597,8 @@ function beginPooledLanguageMount(
   // Read before the pool learns the instance: this is the state the mount key was built from.
   const state = languageMountState(self.instanceId);
   const plan = beginPooledMount(self, mountKey);
-  languageMountPriorReady = plan.priorReady;
-  languageMountRetained = plan.retain;
+  loc.languageMountPriorReady = plan.priorReady;
+  loc.languageMountRetained = plan.retain;
   if (!plan.reuse) languageCreatedState.set(self.instanceId, { entityId: loc.selected?.id, pane: state.pane });
   return { retain: plan.retain, reuse: plan.reuse };
 }
@@ -1887,16 +1610,16 @@ function beginPooledLanguageMount(
  * still loading, reports ready itself, and the ready handler corrects its pane.
  */
 function languageMounted(outcome: "reused" | "created", self: WebviewInstanceRef) {
-  const settled = settlePooledMount(outcome, self, languageMountRetained, languageMountPriorReady);
+  const settled = settlePooledMount(outcome, self, loc.languageMountRetained, loc.languageMountPriorReady);
   if (!settled.shown) return;
-  languageMountPriorReady = false;
-  languageHostedInstance = self.instanceId;
+  loc.languageMountPriorReady = false;
+  loc.languageHostedInstance = self.instanceId;
   if (!settled.ready) return;
-  languageWebview.ready = true;
-  languagePaneRequest = null;
-  languageLeave.releaseAll();
+  loc.languageWebview.ready = true;
+  loc.languagePaneRequest = null;
+  loc.languageLeave.releaseAll();
   const entityId = loc.selected?.id;
-  if (entityId) void postLanguageMessage(languageResumeMessage(entityId, loc.languagePane), self.instanceId);
+  if (entityId) void loc.postLanguageMessage(languageResumeMessage(entityId, loc.languagePane), self.instanceId);
 }
 
 /**
@@ -1909,198 +1632,6 @@ function noteHiddenWebviewReady(pluginId: string, payload: unknown) {
   const event = pluginId === LANGUAGE_PLUGIN_ID ? parseLanguageStateEvent(payload) : parseWritingStateEvent(payload);
   if (event?.kind === "ready") webviewPool = markReady(webviewPool, { pluginId, instanceId }, true);
 }
-
-async function postWritingMessage(message: unknown, instanceId = shownWebviewInstance): Promise<boolean> {
-  try {
-    await project.postPluginWebviewMessage(WRITING_PLUGIN_ID, instanceId, message);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/** Whether the webview may edit: not while an entry loads or fails to load, diagnostics block saving, AI works or a conflict waits. */
-const writingEditable = $derived(
-  !loc.selectedLoading &&
-    !loc.selectedLoadError &&
-    projectDiagnostics.length === 0 &&
-    !aiBusy &&
-    !aiRewriteOpen &&
-    !loc.documentConflict,
-);
-
-function writingPlaceholder() {
-  return loc.selected?.entity_type === "daena.writing:reference-page"
-    ? "Write this reference page…"
-    : "Write your manuscript…";
-}
-
-/**
- * Applies a draft the way typing in the shell editor would: `updateDocumentBody` marks the entry dirty, the
- * autosave timer saves the document and field edits in one `saveEntry`, and conflicts stay in the shell. The
- * webview cannot write anything itself. Resolves true when the text was taken.
- */
-async function applyWritingDraft(draft: WritingBridgeDraft): Promise<boolean> {
-  // A transfer is claimed first so a rejected draft does not leave its text waiting.
-  const text = "text" in draft ? draft.text : await project.takePluginTextTransfer(WRITING_PLUGIN_ID, draft.transfer);
-  if (!writingMessageCurrent(draft, loc.selected?.id, writingLoad)) return false;
-  if (loc.selectedLoading || loc.selectedLoadError || projectDiagnostics.length > 0) return false;
-  if (text === loc.documentBody) return false;
-  loc.updateDocumentBody(text);
-  return true;
-}
-
-function enqueueWritingDraft(draft: WritingBridgeDraft): Promise<boolean> {
-  const applied = writingDraftQueue
-    .then(() => applyWritingDraft(draft))
-    .catch((cause) => {
-      console.warn("A Writing draft could not be applied", cause);
-      return false;
-    });
-  writingDraftQueue = applied;
-  return applied;
-}
-
-/**
- * Collects the Writing webview's unsent text before the shell saves, leaves or reloads: asks for it, waits
- * (a little) for the answer and applies it. Anything published before the answer is applied first. Resolves
- * true when it handed the shell text that changed the document.
- */
-async function flushWritingWebview(): Promise<boolean> {
-  if (!writingWebview.mounted || !writingWebview.ready || writingLoad === null) return false;
-  // The flush post runs before this function awaits. Callers (`flushAutoSave`
-  // via `switchToTab` / `applyTabsChange`) run that before `shellTabs` changes,
-  // so the post addresses the outgoing tab. The default instance is read then.
-  const draft = await writingFlush.request();
-  const applied = draft ? await enqueueWritingDraft(draft) : false;
-  await writingDraftQueue;
-  return applied;
-}
-
-async function postWritingLoad(entityId: string, key: string) {
-  const instanceId = shownWebviewInstance;
-  // Reloading the entry the webview already shows: its unsent text reaches the shell before the editor is
-  // replaced, and if there was any it wins, so the webview keeps its editor and the shell saves that text.
-  if (writingLoad?.entityId === entityId && (await flushWritingWebview())) {
-    // The editor stays, but a rename may have changed the header, which a load would otherwise have refreshed.
-    if (loc.selected?.id === entityId)
-      void postWritingMessage(writingTitleMessage(entityId, loc.selected.name), instanceId);
-    return;
-  }
-  if (writingLoadKey !== key) return;
-  const load: WritingLoad = { entityId, token: crypto.randomUUID() };
-  writingLoad = load;
-  writingEditablePosted = writingEditable;
-  const sent = await postWritingMessage(
-    writingLoadMessage(entityId, load.token, loc.loadedDocumentRevision, {
-      editable: writingEditable,
-      placeholder: writingPlaceholder(),
-      mode: loc.documentMode,
-    }),
-    instanceId,
-  );
-  if (sent) return;
-  if (writingLoadKey === key) writingLoadKey = null;
-  if (writingLoad === load) writingLoad = null;
-}
-
-$effect(() => {
-  // The webview stays mounted across entities, so the shell tells it which one to show: once it is ready, and
-  // again whenever the selection or a reload from disk replaces what the shell holds.
-  if (!writingWebviewShown || !writingWebview.ready) return;
-  const entityId = loc.selected?.id;
-  if (!entityId || loc.selectedLoading) return;
-  const key = `${entityId}:${loc.selectedLoadToken}`;
-  if (key === writingLoadKey) return;
-  writingLoadKey = key;
-  // Only the selection and the load counter decide when to post; what the message reads is not tracked.
-  void untrack(() => postWritingLoad(entityId, key));
-});
-
-$effect(() => {
-  // The webview runs the AI rewrite flow itself, so it is told whether AI is on, the provider's name and the
-  // editor prompt templates: after it reports ready, and again whenever any of them changes. It asks the broker
-  // for nothing of this. The shell's own AI dialog stays off for it: the shell editor is not rendered here.
-  void writingReadyCount;
-  if (!writingWebview.mounted || !writingWebview.ready) return;
-  const message = writingAiStateMessage({
-    enabled: projectInfo?.aiEnabled ?? false,
-    providerName: aiProvider.name,
-    templates: aiPromptTemplates,
-  });
-  void untrack(() => postWritingMessage(message));
-});
-
-$effect(() => {
-  // Editability follows the shell's state (loading, conflict, AI). The load message carries the value at its
-  // posting time; this posts the changes after it.
-  const editable = writingEditable;
-  if (!writingWebview.ready || writingLoad === null || writingLoad.entityId !== loc.selected?.id) return;
-  if (editable === writingEditablePosted) return;
-  writingEditablePosted = editable;
-  void postWritingMessage({ type: "writing.editable", editable });
-});
-
-$effect(() => {
-  // A revision conflict found by the shell's own save path is shown in the webview's banner.
-  const conflict = loc.documentConflict;
-  if (!conflict || !writingWebview.ready || writingLoad === null || writingLoad.entityId !== loc.selected?.id) return;
-  void postWritingMessage(writingConflictMessage(writingLoad.entityId, conflict));
-});
-
-$effect(() => {
-  // The status area that showed save errors is hidden while the webview is shown, so the webview reports them.
-  const message = loc.saveError;
-  if (!message || !writingWebview.ready || writingLoad === null || writingLoad.entityId !== loc.selected?.id) return;
-  void postWritingMessage({ type: "writing.save-error", entityId: writingLoad.entityId, message });
-});
-
-/** Tells the webview its entry was saved; the revision is informational and does not change its token. */
-function notifyWritingSaved(entityId: string) {
-  if (!writingWebview.ready || writingLoad?.entityId !== entityId) return;
-  void postWritingMessage({ type: "writing.saved", entityId, revision: loc.loadedDocumentRevision });
-}
-
-/** Runs the shell's own conflict action the user picked in the webview banner. */
-function handleWritingConflictAction(event: Extract<WritingStateEvent, { kind: "conflict-action" }>) {
-  if (!writingMessageCurrent(event, loc.selected?.id, writingLoad) || !loc.documentConflict) return;
-  switch (event.action) {
-    case "reload":
-      void loc.reloadConflict();
-      return;
-    case "overwrite":
-      // The shell's own button is disabled while the canonical source needs attention.
-      if (loc.documentConflict.diagnostics.length === 0) void loc.overwriteConflict();
-      return;
-    case "recovery":
-      void loc.saveConflictRecoveryCopy();
-      return;
-  }
-}
-
-/** Ends the Writing webview's full screen from the shell's side, and tells the webview to leave its own. */
-function exitWritingFullscreen() {
-  if (!writingFullscreen) return;
-  endWritingFullscreen();
-}
-
-/**
- * Ends the full screen and tells the instance that reported it, which is not always the one on screen: the effect
- * below runs after a tab switch has already changed `shownWebviewInstance`.
- */
-function endWritingFullscreen() {
-  const instance = writingFullscreenInstance;
-  writingFullscreen = false;
-  writingFullscreenInstance = null;
-  if (instance) void postWritingMessage(writingFullscreenMessage(false), instance);
-}
-
-// The full screen belongs to the entry on screen: choosing another entry, or leaving the Writing pane, ends it.
-$effect(() => {
-  void loc.selected?.id;
-  void writingWebviewShown;
-  untrack(() => exitWritingFullscreen());
-});
 
 /** Moves among the tabs of the active group. A missing index does nothing. One tab does not cycle. */
 function runTabShortcut(shortcut: TabShortcut) {
@@ -2168,68 +1699,6 @@ async function confirmWritingArchive(entityId: string) {
   // The confirmation is modal, but archiving acts on whatever is selected, so the entry is checked again.
   if (loc.selected?.id !== entityId) return;
   await archiveSelected();
-}
-
-/**
- * Writing state from the webview. Each entry-scoped message is checked against the selection, the way the shell's
- * own actions are; drafts and conflict actions also carry the load token (see writingMessageCurrent).
- */
-function handleWritingStateEvent(event: WritingStateEvent) {
-  switch (event.kind) {
-    case "ready":
-      if (!writingWebview.mounted) return;
-      // A webview that (re)started has shown nothing yet, so the effect above posts the selection again.
-      writingLoadKey = null;
-      writingLoad = null;
-      writingEditablePosted = null;
-      writingFullscreen = false;
-      writingFullscreenInstance = null;
-      writingFlush.releaseAll();
-      writingWebview.ready = true;
-      webviewPool = markReady(webviewPool, writingRef(shownWebviewInstance), true);
-      writingReadyCount += 1;
-      return;
-    case "draft":
-      if (writingWebview.mounted) void enqueueWritingDraft(event.draft);
-      return;
-    case "flush-reply":
-      // A reply nobody waits for any more (it came after the timeout) still carries text, which goes
-      // through the same checks as any other draft.
-      if (!writingFlush.reply(event.requestId, event.draft) && event.draft && writingWebview.mounted)
-        void enqueueWritingDraft(event.draft);
-      return;
-    case "conflict-action":
-      if (writingWebview.mounted) handleWritingConflictAction(event);
-      return;
-    case "open-link": {
-      const href = openableLinkHref(event.href);
-      if (href) void shellEditorHost.openExternal(href);
-      return;
-    }
-    case "open-entity":
-      if (event.newTab) void openInNewTab(() => openEntityById(event.entityId));
-      else void openEntityById(event.entityId);
-      return;
-    case "fullscreen":
-      // Only the entry on screen can change the full screen; a message for any other entry is stale.
-      if (writingWebview.mounted && event.entityId === loc.selected?.id) {
-        writingFullscreen = event.on;
-        writingFullscreenInstance = event.on ? shownWebviewInstance : null;
-      }
-      return;
-    case "shortcut":
-      if (writingWebview.mounted) runShellShortcut(event.shortcut);
-      return;
-    case "request-rename":
-      if (writingWebview.mounted && loc.selected && event.entityId === loc.selected.id)
-        void openEntityEditDialog(loc.selected);
-      return;
-    case "request-archive":
-      if (writingWebview.mounted) void confirmWritingArchive(event.entityId);
-      return;
-    default:
-      return;
-  }
 }
 
 function pluginViewLabel(item: PluginNavigationItem) {
@@ -2422,50 +1891,12 @@ function updateRailCollapsed(collapsed: boolean) {
   localStorage.setItem("daena:rail-collapsed", String(collapsed));
 }
 
-let mapsEditorMode = $state<"vector" | "physical">("vector");
-let mapsVectorStart = $state<"import" | "geojson">("geojson");
-let mapProviderMenuOpen = $state<"header" | "empty" | null>(null);
-async function createMap(provider: "image" | "vector" | "physical" = "physical") {
-  if (projectDiagnostics.length > 0) return;
-  try {
-    if (!(await loc.flushAutoSave())) return;
-    const departure = loc.currentShellLocation();
-    mapProviderMenuOpen = null;
-    const mapView = mapsNavigationItem();
-    if (!mapView) throw new Error("The Maps plugin view is not available");
-    if (!(await dismissSettings())) return;
-    if (!(await loc.leavePluginView())) return;
-    recordShellDeparture(departure);
-    loc.selected = null;
-    loc.fields = {};
-    loc.relationships = [];
-    loc.assets = [];
-    loc.mapLocations = [];
-    mapFocusLinkId = null;
-    mapFocusFeatureId = null;
-    loc.projectHomeOpen = false;
-    loc.loreWikiOpen = false;
-    loc.section = "maps";
-    // Draft editor: no map entity until the native editor accepts/creates one.
-    mapsEditorMode = provider === "physical" ? "physical" : "vector";
-    mapsVectorStart = provider === "image" ? "import" : "geojson";
-    mapsEditorKey = `draft-${Date.now()}`;
-    loc.sandboxView = { plugin: mapView.plugin, view: mapView.view, renderer: "maps" };
-  } catch (cause) {
-    error = friendlyError(cause);
-  }
-}
-
-function currentMapId() {
-  return loc.selected?.entity_type === "daena.maps:world-map" ? loc.selected.id : null;
-}
-
 $effect(() => {
-  if (!mapProviderMenuOpen) return;
+  if (!loc.mapProviderMenuOpen) return;
   const handlePointerDown = (event: PointerEvent) => {
     const target = event.target as Element | null;
     if (target?.closest(".map-provider-menu") || target?.closest('[aria-haspopup="menu"]')) return;
-    mapProviderMenuOpen = null;
+    loc.mapProviderMenuOpen = null;
   };
   document.addEventListener("pointerdown", handlePointerDown, true);
   return () => document.removeEventListener("pointerdown", handlePointerDown, true);
@@ -2539,39 +1970,17 @@ function savedMaps() {
 
 async function saveCurrentMap() {
   try {
-    if (mapsEditorMode === "physical") return;
+    if (loc.mapsEditorMode === "physical") return;
     await nativeVectorSession()?.save();
   } catch (cause) {
     error = friendlyError(cause);
   }
 }
 
-function reloadMapOriginal() {
-  if (!currentMapId()) return;
-  mapReloadCounter += 1;
-}
-
-async function restoreMapDraft() {
-  const mapId = currentMapId();
-  if (!mapId || mapRecoveryBusy) return;
-  mapRecoveryBusy = true;
-  try {
-    const copies = await project.mapsRecoveryList(mapId);
-    if (copies.length === 0) throw new Error("No recovery copy was found for this map.");
-    await project.mapsRecoveryRestore(mapId, copies[0].fileName);
-    mapSaveStates[mapId] = { status: "restoring", detail: null };
-    mapReloadCounter += 1;
-  } catch (cause) {
-    error = friendlyError(cause);
-  } finally {
-    mapRecoveryBusy = false;
-  }
-}
-
 function dismissMapConflict() {
-  const mapId = currentMapId();
+  const mapId = loc.currentMapId();
   if (!mapId) return;
-  mapSaveStates[mapId] = { status: "clean", detail: null };
+  loc.mapSaveStates[mapId] = { status: "clean", detail: null };
 }
 
 function mapConflictDetail(detail: unknown): { path?: string } {
@@ -2901,7 +2310,7 @@ async function navigateShellHistory(direction: "back" | "forward") {
   }
   if (!transition) return;
   if (!(await loc.flushAutoSave())) return;
-  if (current.kind === "workspace" && current.section === "language" && !(await canLeaveLanguageSection())) return;
+  if (current.kind === "workspace" && current.section === "language" && !(await loc.canLeaveLanguageSection())) return;
   shellNavigationBusy = true;
   try {
     if (await loc.restoreShellLocation(transition.target)) setShellNavigationHistory(transition.history);
@@ -2957,7 +2366,7 @@ async function switchToTab(tabId: string): Promise<boolean> {
   dismissTransientMenus();
   if (!(await loc.flushAutoSave())) return false;
   const current = loc.currentShellLocation();
-  if (current.kind === "workspace" && current.section === "language" && !(await canLeaveLanguageSection()))
+  if (current.kind === "workspace" && current.section === "language" && !(await loc.canLeaveLanguageSection()))
     return false;
   if (!shellLocationAvailable(found.tab.location)) {
     shellTabs = closeTab(shellTabs, tabId, Date.now(), homeNewTab());
@@ -2991,7 +2400,7 @@ async function openInNewTab(
   dismissTransientMenus();
   if (!(await loc.flushAutoSave())) return;
   const current = loc.currentShellLocation();
-  if (current.kind === "workspace" && current.section === "language" && !(await canLeaveLanguageSection())) return;
+  if (current.kind === "workspace" && current.section === "language" && !(await loc.canLeaveLanguageSection())) return;
   const id = crypto.randomUUID();
   // Where the tab this was opened from stands. Opening that same place in a new tab is a deliberate copy, so
   // the duplicate check below is skipped for it, however many tabs already show it; any other place that is
@@ -3050,7 +2459,7 @@ async function applyTabsChange(change: (state: ShellTabsState) => ShellTabsState
   dismissTransientMenus();
   if (!(await loc.flushAutoSave())) return false;
   const current = loc.currentShellLocation();
-  if (current.kind === "workspace" && current.section === "language" && !(await canLeaveLanguageSection()))
+  if (current.kind === "workspace" && current.section === "language" && !(await loc.canLeaveLanguageSection()))
     return false;
   shellTabs = change(snapshotActiveTab());
   shellNavigationBusy = true;
@@ -3388,22 +2797,6 @@ async function cancelAiIndex() {
     showAiIndexMessage(friendlyError(cause));
   }
 }
-function setAiSelection(markdown: string, plainText: string) {
-  if (aiRewriteOpen || aiBusy || aiPreviewOutput) return;
-  aiSourceSelection = markdown;
-  aiSourceSelectionPlain = plainText;
-}
-function openAiAction(action: string, markdown: string, plainText: string, context: string) {
-  if (!projectInfo?.aiEnabled) return;
-  const request = aiActionRequest(aiPromptTemplates, action, markdown, plainText, context);
-  if (!request) return;
-  aiSourceSelection = request.selectionMarkdown;
-  aiSourceSelectionPlain = request.selectionPlain;
-  aiGenerationContext = request.generationContext;
-  aiMode = request.mode;
-  aiInstruction = instructionFor(aiPromptTemplates, action);
-  aiRewriteOpen = true;
-}
 function emptyInspectorDefinitions() {
   return definitions().filter((definition) => {
     if (isMapsProviderField(definition)) return false;
@@ -3411,392 +2804,6 @@ function emptyInspectorDefinitions() {
       ? selectedRelationshipIds(definition).length === 0
       : isEmptyFieldValue(loc.fields[definition.key]);
   });
-}
-function clearAiFieldListener() {
-  aiFieldUnlisten?.();
-  aiFieldUnlisten = null;
-}
-function closeAiFieldFill() {
-  if (aiFieldFillRequestId) void project.aiCancelText(aiFieldFillRequestId).catch(() => {});
-  aiFieldFillStartCancelled = true;
-  clearAiFieldListener();
-  aiFieldFillOpen = false;
-  aiFieldFillBusy = false;
-  aiFieldFillRequestId = null;
-  aiFieldFillEntityId = null;
-  aiFieldFillLastSequence = -1;
-  aiFieldFillStream = "";
-  aiFieldSuggestions = {};
-}
-function handleAiFieldFillEvent(payload: AiStreamEvent) {
-  if (aiFieldFillEntityId !== null && loc.selected?.id !== aiFieldFillEntityId) return;
-  if (payload.sequence <= aiFieldFillLastSequence) return;
-  aiFieldFillLastSequence = payload.sequence;
-  if (payload.phase === "delta" && payload.delta) aiFieldFillStream += payload.delta;
-  if (payload.phase === "failed") {
-    clearAiFieldListener();
-    aiFieldFillBusy = false;
-    aiFieldFillRequestId = null;
-    error = payload.error ?? "AI field suggestions failed";
-  } else if (payload.phase === "cancelled" || payload.phase === "deadline_exceeded") {
-    clearAiFieldListener();
-    aiFieldFillBusy = false;
-    aiFieldFillRequestId = null;
-    if (payload.phase === "deadline_exceeded") {
-      error = "AI field generation reached its time limit before returning complete suggestions.";
-    }
-  } else if (payload.phase === "completed") {
-    clearAiFieldListener();
-    aiFieldFillBusy = false;
-    aiFieldFillRequestId = null;
-    try {
-      const parsed = JSON.parse(payload.output ?? aiFieldFillStream) as {
-        suggestions?: Record<string, { value?: unknown; values?: unknown; rationale?: unknown; confidence?: unknown }>;
-      };
-      const allowed = new Set(emptyInspectorDefinitions().map((definition) => definition.key));
-      const suggestions: Record<string, AiFieldSuggestion> = {};
-      for (const [key, value] of Object.entries(parsed.suggestions ?? {})) {
-        const definition = definitions().find((candidate) => candidate.key === key);
-        if (!definition || !allowed.has(key)) continue;
-        const rawValue = definition.multiple || definition.type === "relationship" ? value?.values : value?.value;
-        const normalizedValue = coerceAiFieldValue(definition, rawValue);
-        if (normalizedValue === null) continue;
-        if (definition?.type === "relationship") {
-          const allowedIds = new Set(
-            entities
-              .filter(
-                (entity) =>
-                  !entity.deleted &&
-                  (!definition.targetEntityTypes?.length ||
-                    definition.targetEntityTypes.includes(entity.entity_type ?? "")),
-              )
-              .map((entity) => entity.id),
-          );
-          if (!(normalizedValue as string[]).every((id) => allowedIds.has(id))) continue;
-        }
-        suggestions[key] = {
-          value: normalizedValue,
-          rationale: typeof value.rationale === "string" ? value.rationale.trim() : "",
-          confidence: String(value.confidence ?? "unknown"),
-        };
-      }
-      aiFieldSuggestions = suggestions;
-      if (Object.keys(suggestions).length === 0) {
-        aiFieldFillOpen = false;
-        error = "AI found no supported suggestions for the empty fields.";
-      }
-    } catch {
-      aiFieldFillOpen = false;
-      error = "AI returned invalid field suggestions.";
-    }
-  }
-}
-async function fillAiFields() {
-  if (!loc.selected || aiFieldFillBusy) return;
-  if (!projectInfo?.aiEnabled) return;
-  const empty = emptyInspectorDefinitions();
-  if (empty.length === 0) return;
-  const endpoint = aiProvider.endpoint.trim();
-  const model = aiProvider.model.trim();
-  if (!endpoint || !model) {
-    error = "Configure the active provider endpoint and model before filling fields.";
-    return;
-  }
-  aiFieldFillOpen = true;
-  aiFieldFillBusy = true;
-  aiFieldFillStream = "";
-  aiFieldSuggestions = {};
-  aiFieldFillLastSequence = -1;
-  aiFieldFillStartCancelled = false;
-  aiFieldFillEntityId = loc.selected.id;
-  const fieldKeys = empty.map((definition) => definition.key);
-  const context = JSON.stringify({
-    entity: { name: loc.selected.name, type: loc.selected.entity_type },
-    document: loc.documentBody,
-    populatedFields: Object.fromEntries(Object.entries(loc.fields).filter(([, value]) => !isEmptyFieldValue(value))),
-    emptyFields: empty.map((definition) => ({
-      key: definition.key,
-      label: definition.label,
-      type: definition.type,
-      multiple: definition.multiple ?? definition.type === "relationship",
-      options: definition.options ?? [],
-      allowedEntities:
-        definition.type === "relationship"
-          ? entities
-              .filter(
-                (entity) =>
-                  !entity.deleted &&
-                  (!definition.targetEntityTypes?.length ||
-                    definition.targetEntityTypes.includes(entity.entity_type ?? "")),
-              )
-              .map((entity) => ({ id: entity.id, name: entity.name, type: entity.entity_type }))
-          : [],
-    })),
-  });
-  const suggestionProperties = Object.fromEntries(
-    empty.map((definition) => [
-      definition.key,
-      {
-        type: "object",
-        properties: {
-          ...(definition.multiple || definition.type === "relationship"
-            ? { values: aiJsonValueSchema(definition) }
-            : { value: aiJsonValueSchema(definition) }),
-          rationale: { type: "string", maxLength: 1000 },
-          confidence: { type: "string", maxLength: 32 },
-        },
-        required: [definition.multiple || definition.type === "relationship" ? "values" : "value"],
-        additionalProperties: false,
-      },
-    ]),
-  );
-  const outputContract = {
-    type: "object",
-    properties: {
-      suggestions: {
-        type: "object",
-        properties: suggestionProperties,
-        additionalProperties: false,
-      },
-    },
-    required: ["suggestions"],
-    additionalProperties: false,
-  };
-  const retrievalQuery =
-    `${loc.selected.name} ${loc.selected.entity_type ?? ""} ${empty.map((definition) => definition.label).join(" ")}`.slice(
-      0,
-      4000,
-    );
-  let startedRequestId: string | null = null;
-  try {
-    const requestId = await project.aiGenerateStructured(
-      projectInfo!.root,
-      `Fill only these empty fields: ${fieldKeys.join(", ")}. For multi-select and relationship fields, return up to five distinct values in the values array. For relationship fields, use only allowed entity IDs from the context. Use only configured options when options are provided. Return evidence-backed suggestions. Do not invent facts.`,
-      context,
-      outputContract,
-      aiFieldFillEntityId!,
-      retrievalQuery,
-      2,
-    );
-    startedRequestId = requestId;
-    if (aiFieldFillStartCancelled || loc.selected?.id !== aiFieldFillEntityId) {
-      void project.aiCancelText(requestId).catch(() => {});
-      return;
-    }
-    aiFieldFillRequestId = requestId;
-    aiFieldUnlisten = await listen<AiStreamEvent>(`ai-stream:${requestId}`, (event) =>
-      handleAiFieldFillEvent(event.payload),
-    );
-    const buffered = await project.aiPollText(requestId);
-    for (const event of buffered) handleAiFieldFillEvent(event);
-  } catch (cause) {
-    if (startedRequestId) void project.aiCancelText(startedRequestId).catch(() => {});
-    clearAiFieldListener();
-    aiFieldFillBusy = false;
-    aiFieldFillRequestId = null;
-    if (aiFieldFillStartCancelled || loc.selected?.id !== aiFieldFillEntityId) return;
-    error = friendlyError(cause);
-  }
-}
-async function acceptAiFieldSuggestion(key: string) {
-  if (loc.selected?.id !== aiFieldFillEntityId) return;
-  const suggestion = aiFieldSuggestions[key];
-  const definition = definitions().find((candidate) => candidate.key === key);
-  if (
-    !suggestion ||
-    (definition?.type === "relationship"
-      ? selectedRelationshipIds(definition).length > 0
-      : !isEmptyFieldValue(loc.fields[key]))
-  )
-    return;
-  if (definition?.type === "relationship") await loc.updateRelationshipField(definition, suggestion.value as string[]);
-  else loc.fields = { ...loc.fields, [key]: suggestion.value };
-  const remaining = { ...aiFieldSuggestions };
-  delete remaining[key];
-  aiFieldSuggestions = remaining;
-  loc.markEntryDirty({ fieldKey: key });
-}
-async function acceptAllAiFieldSuggestions() {
-  for (const key of Object.keys(aiFieldSuggestions)) await acceptAiFieldSuggestion(key);
-  if (Object.keys(aiFieldSuggestions).length === 0) closeAiFieldFill();
-}
-function discardAiFieldSuggestion(key: string) {
-  const remaining = { ...aiFieldSuggestions };
-  delete remaining[key];
-  aiFieldSuggestions = remaining;
-}
-function clearAiStreamListener() {
-  aiUnlisten?.();
-  aiUnlisten = null;
-}
-function closeAiRewrite() {
-  if (aiRequestId) void project.aiCancelText(aiRequestId).catch(() => {});
-  aiStartCancelled = true;
-  clearAiStreamListener();
-  aiRewriteOpen = false;
-  aiBusy = false;
-  aiCancelPending = false;
-  aiRequestId = null;
-  aiSourceEntityId = null;
-  aiStreamText = "";
-  aiPreviewOutput = "";
-  aiProgressMessage = "Preparing model…";
-  aiUsage = null;
-  aiSourceSelection = "";
-  aiSourceSelectionPlain = "";
-  aiGenerationContext = "";
-  aiLastSequence = -1;
-  aiMode = "rewrite";
-}
-async function cancelAiRewrite() {
-  if (!aiBusy || aiCancelPending) return;
-  if (!aiRequestId) {
-    closeAiRewrite();
-    return;
-  }
-  aiCancelPending = true;
-  try {
-    await project.aiCancelText(aiRequestId);
-  } catch (cause) {
-    aiCancelPending = false;
-    error = friendlyError(cause);
-  }
-}
-function handleAiEvent(payload: AiStreamEvent) {
-  if (aiSourceEntityId !== null && loc.selected?.id !== aiSourceEntityId) return;
-  if (payload.sequence <= aiLastSequence) return;
-  aiLastSequence = payload.sequence;
-  const nextStreamState = reduceTextGenerationEvent(
-    {
-      streamText: aiStreamText,
-      proposal: aiPreviewOutput,
-      progressMessage: aiProgressMessage,
-    },
-    payload,
-  );
-  aiStreamText = nextStreamState.streamText;
-  aiPreviewOutput = nextStreamState.proposal;
-  aiProgressMessage = nextStreamState.progressMessage;
-  if (payload.phase === "usage" && payload.output) {
-    try {
-      aiUsage = JSON.parse(payload.output);
-    } catch (_) {
-      aiUsage = null;
-    }
-  }
-  if (payload.phase === "completed") {
-    aiBusy = false;
-    aiCancelPending = false;
-    aiRequestId = null;
-    clearAiStreamListener();
-  } else if (payload.phase === "cancelled" || payload.phase === "deadline_exceeded") {
-    aiBusy = false;
-    aiCancelPending = false;
-    aiRequestId = null;
-    clearAiStreamListener();
-    if (payload.phase === "deadline_exceeded") {
-      error = aiPreviewOutput
-        ? "AI generation reached its time limit. The partial proposal is preserved below."
-        : "AI generation reached its time limit before producing a proposal.";
-    }
-  } else if (payload.phase === "failed") {
-    aiBusy = false;
-    aiCancelPending = false;
-    aiRequestId = null;
-    clearAiStreamListener();
-    error = payload.error ?? "The AI provider could not generate a proposal";
-  }
-}
-async function startAiRewrite() {
-  if (!loc.selected || (aiMode === "rewrite" && !aiSourceSelection.trim()) || !aiInstruction.trim() || aiBusy) return;
-  const sourceSelection = aiSourceSelection;
-  const sourcePlain = aiSourceSelectionPlain;
-  const generationContext = aiGenerationContext;
-  if (!(await loc.flushAutoSave())) return;
-  if (aiMode === "rewrite" && !sourceSelection.trim()) return;
-  aiSourceEntityId = loc.selected.id;
-  aiSourceBody = loc.documentBody;
-  aiSourceRevision = loc.loadedDocumentRevision;
-  aiStreamText = "";
-  aiPreviewOutput = "";
-  aiProgressMessage = "Preparing model…";
-  aiLastSequence = -1;
-  aiStartCancelled = false;
-  aiBusy = true;
-  aiCancelPending = false;
-  let startedRequestId: string | null = null;
-  try {
-    const sourceText =
-      aiMode === "generate" ? generationContext.trim() || loc.documentBody.trim() || "[CURSOR]" : sourceSelection;
-    const retrievalQuery = [loc.selected?.name, aiInstruction, sourcePlain].filter(Boolean).join(" ").slice(0, 4000);
-    const requestId = await project.aiGenerateText(
-      projectInfo!.root,
-      aiInstruction,
-      sourceText,
-      aiSourceEntityId,
-      retrievalQuery,
-      2,
-    );
-    startedRequestId = requestId;
-    if (aiStartCancelled || loc.selected?.id !== aiSourceEntityId) {
-      void project.aiCancelText(requestId).catch(() => {});
-      return;
-    }
-    aiRequestId = requestId;
-    aiUnlisten = await listen<AiStreamEvent>(`ai-stream:${requestId}`, (event) => {
-      handleAiEvent(event.payload);
-    });
-    const buffered = await project.aiPollText(requestId);
-    for (const event of buffered) handleAiEvent(event);
-  } catch (cause) {
-    if (startedRequestId) void project.aiCancelText(startedRequestId).catch(() => {});
-    clearAiStreamListener();
-    aiBusy = false;
-    aiCancelPending = false;
-    aiRequestId = null;
-    if (aiStartCancelled || loc.selected?.id !== aiSourceEntityId) return;
-    error = friendlyError(cause);
-  }
-}
-async function acceptAiRewrite() {
-  if (!loc.selected || !aiPreviewOutput || aiBusy) return;
-  if (
-    loc.selected.id !== aiSourceEntityId ||
-    loc.documentBody !== aiSourceBody ||
-    loc.loadedDocumentRevision !== aiSourceRevision
-  ) {
-    error = "The entity or document changed while the rewrite was being prepared. Discard it and try again.";
-    return;
-  }
-  const validationError = validateAiProposal(aiPreviewOutput);
-  if (validationError) {
-    error = validationError;
-    return;
-  }
-  if (aiMode === "generate") {
-    const nextMarkdown = loc.editorRef?.insertAiTextAtRequest(aiPreviewOutput);
-    if (nextMarkdown == null) {
-      error = "The editor position is no longer available. Discard it and try again.";
-      return;
-    }
-    loc.documentBody = nextMarkdown;
-    loc.markEntryDirty({ document: true });
-    if (await loc.saveDocument()) closeAiRewrite();
-    return;
-  }
-  const nextMarkdown = loc.editorRef?.replaceAiTextWithMarkdown(aiPreviewOutput);
-  if (nextMarkdown === null || nextMarkdown === undefined) {
-    error = "The selected text is no longer at the original position. Discard it and try again.";
-    return;
-  }
-  const bodyBefore = loc.documentBody;
-  loc.documentBody = nextMarkdown;
-  loc.markEntryDirty({ document: true });
-  if (await loc.saveDocument()) {
-    closeAiRewrite();
-  } else {
-    loc.documentBody = bodyBefore;
-  }
 }
 async function persistRecentProjects(next: RecentProject[]) {
   recentProjects = next;
@@ -4231,7 +3238,7 @@ function statusCenterItems(): StatusCenterItem[] {
     onAction: () => openStatusDestination("snapshots"),
   });
 
-  const mapStates = Object.values(mapSaveStates).map((state) => state.status);
+  const mapStates = Object.values(loc.mapSaveStates).map((state) => state.status);
   const backgroundBusy =
     projectTransitionBusy ||
     aiIndexBusy ||
@@ -4358,7 +3365,7 @@ async function pickAndOpenProject(intent: "create" | "open") {
     const path = typeof selection === "string" ? selection : null;
     if (!path) return;
     // Asked before the transition overlay opens, because the overlay hides the Language webview.
-    if (!(await canLeaveLanguageSection())) return;
+    if (!(await loc.canLeaveLanguageSection())) return;
     await runProjectTransition(intent === "create" ? "Creating project…" : "Opening project…", async () => {
       if (!(await loc.flushAutoSave())) return;
       if (!(await loc.leavePluginView({ closeWebviews: true }))) return;
@@ -4383,7 +3390,7 @@ async function openProjectDirectory() {
 async function openRecentProject(path: string) {
   if (projectTransitionBusy) return;
   showProjectMenu = false;
-  if (!(await canLeaveLanguageSection())) return;
+  if (!(await loc.canLeaveLanguageSection())) return;
   await runProjectTransition("Opening project…", async () => {
     if (!(await loc.flushAutoSave())) return;
     if (!(await loc.leavePluginView({ closeWebviews: true }))) return;
@@ -4397,7 +3404,7 @@ async function openRecentProject(path: string) {
 async function closeProject() {
   if (projectTransitionBusy) return;
   showProjectMenu = false;
-  if (!(await canLeaveLanguageSection())) return;
+  if (!(await loc.canLeaveLanguageSection())) return;
   await runProjectTransition("Closing project…", async () => {
     if (!(await loc.flushAutoSave())) return;
     if (!(await loc.leavePluginView({ closeWebviews: true }))) return;
@@ -4405,127 +3412,6 @@ async function closeProject() {
     resetProjectSessionState();
     await project.close();
   });
-}
-
-async function openMapLocation(location: MapLocation) {
-  try {
-    const mapEntityId = location.mapEntityId;
-    if (!mapEntityId) throw new Error("map-unavailable: this location is missing its map id");
-    await project.mapsNavigation("openMap", { mapEntityId, linkId: location.id });
-  } catch (cause) {
-    const message = friendlyError(cause);
-    if (message.includes("link-unresolved")) {
-      mapReconcileNotice = `This link is unresolved — the map feature it pointed to was removed or renumbered.`;
-      return;
-    }
-    error = message;
-  }
-}
-
-async function ensureMapEditorOpen(mapEntityId: string) {
-  const departure = loc.currentShellLocation();
-  const map = entities.find((entity) => entity.id === mapEntityId) ?? (await project.getEntity(mapEntityId));
-  if (!map) throw new Error("map-unavailable: choose a saved map first");
-  if (!(await loc.flushAutoSave())) throw new Error("Save the current draft before opening the map editor.");
-  const mapsView = mapsNavigationItem();
-  loc.selected = map;
-  mapsEditorKey = map.id;
-  await loc.loadSelectedState(map);
-  if (mapsView) await loc.openPluginView(mapsView, departure);
-}
-
-async function beginMapPick(pending: NonNullable<typeof mapPickPending>) {
-  mapPickPending = pending;
-  mapPickNotice =
-    pending.kind === "rebind"
-      ? "Click the map to rebind this location."
-      : "Click for a point, or use Path/Area to draw a route or region.";
-  await ensureMapEditorOpen(pending.mapEntityId);
-  if (mapsEditorMode === "vector") return;
-}
-
-async function applyMapPick(anchor: unknown) {
-  const pending = mapPickPending;
-  mapPickPending = null;
-  mapPickNotice = "";
-  if (!pending || !anchor) return;
-  try {
-    if (pending.kind === "link") {
-      const entity =
-        entities.find((candidate) => candidate.id === pending.entityId) ?? (await project.getEntity(pending.entityId));
-      if (!entity) throw new Error("Choose an entity to link.");
-      const location: MapLocation = {
-        id: crypto.randomUUID(),
-        mapEntityId: pending.mapEntityId,
-        role: pending.role,
-        label: entity.name,
-        anchor,
-        validity: { from: null, to: null },
-      };
-      await project.upsertMapLocation(entity.id, location);
-      const departure = loc.currentShellLocation();
-      if (!(await loc.leavePluginView())) return;
-      recordShellDeparture(departure);
-      loc.section =
-        entity.entity_type === "daena.timeline:event" ||
-        entity.entity_type === "daena.timeline:encounter" ||
-        entity.entity_type === "daena.timeline:era" ||
-        entity.entity_type === "daena.timeline:calendar"
-          ? "timeline"
-          : "lore";
-      await loc.selectEntity(entity, false);
-      loc.mapLocations = await project.listMapLocations(entity.id);
-    } else {
-      await project.upsertMapLocation(pending.entityId, { ...pending.location, anchor });
-      const entity =
-        entities.find((candidate) => candidate.id === pending.entityId) ?? (await project.getEntity(pending.entityId));
-      if (entity) {
-        const departure = loc.currentShellLocation();
-        if (!(await loc.leavePluginView())) return;
-        recordShellDeparture(departure);
-        loc.section =
-          entity.entity_type === "daena.timeline:event" ||
-          entity.entity_type === "daena.timeline:encounter" ||
-          entity.entity_type === "daena.timeline:era" ||
-          entity.entity_type === "daena.timeline:calendar"
-            ? "timeline"
-            : "lore";
-        await loc.selectEntity(entity, false);
-        loc.mapLocations = await project.listMapLocations(entity.id);
-      }
-    }
-  } catch (cause) {
-    error = friendlyError(cause);
-  }
-}
-
-async function openMapEntityFromLink(entityId: string) {
-  try {
-    const entity = await project.getEntity(entityId);
-    if (!entity) throw new Error("Linked entity was not found.");
-    if (!entities.some((candidate) => candidate.id === entity.id)) entities = [...entities, entity];
-    const target =
-      entity.entity_type === "daena.lore:person" ||
-      entity.entity_type === "daena.lore:place" ||
-      entity.entity_type === "daena.lore:faction" ||
-      entity.entity_type === "daena.lore:artifact" ||
-      entity.entity_type === "daena.lore:culture"
-        ? "lore"
-        : entity.entity_type?.startsWith("timeline") ||
-            entity.entity_type === "daena.timeline:event" ||
-            entity.entity_type === "daena.timeline:encounter" ||
-            entity.entity_type === "daena.timeline:era" ||
-            entity.entity_type === "daena.timeline:calendar"
-          ? "timeline"
-          : "lore";
-    const departure = loc.currentShellLocation();
-    if (!(await loc.leavePluginView())) return;
-    recordShellDeparture(departure);
-    loc.section = target;
-    await loc.selectEntity(entity, false);
-  } catch (cause) {
-    error = friendlyError(cause);
-  }
 }
 
 async function unlinkMapLocation(location: MapLocation) {
@@ -4570,7 +3456,7 @@ async function editMapLocation(location: MapLocation) {
 async function rebindMapLocation(location: MapLocation) {
   if (!loc.selected) return;
   try {
-    await beginMapPick({ kind: "rebind", entityId: loc.selected.id, location, mapEntityId: location.mapEntityId });
+    await loc.beginMapPick({ kind: "rebind", entityId: loc.selected.id, location, mapEntityId: location.mapEntityId });
   } catch (cause) {
     error = friendlyError(cause);
   }
@@ -4604,23 +3490,6 @@ async function openEntityById(entityId: string) {
     return;
   }
   await loc.selectEntity(target);
-}
-
-async function openSelectedMapEditor() {
-  if (!loc.selected || loc.selected.entity_type !== "daena.maps:world-map") return;
-  const mapsView = mapsNavigationItem();
-  if (!mapsView) {
-    error = "The Maps integration is not available.";
-    return;
-  }
-  try {
-    mapsEditorKey = loc.selected.id;
-    mapFocusLinkId = null;
-    mapFocusFeatureId = null;
-    await loc.openPluginView(mapsView);
-  } catch (cause) {
-    error = friendlyError(cause);
-  }
 }
 
 function handlePortableFilesChanged(paths: string[]) {
@@ -5059,11 +3928,11 @@ async function selectQuickOpenItem(item: QuickOpenItem, intent: OpenIntent = "cu
       return;
     }
     if (action.kind === "map-feature") {
-      await ensureMapEditorOpen(action.mapEntityId);
-      mapFocusLinkId = null;
-      mapFocusFeatureId = null;
+      await loc.ensureMapEditorOpen(action.mapEntityId);
+      loc.mapFocusLinkId = null;
+      loc.mapFocusFeatureId = null;
       await tick();
-      mapFocusFeatureId = action.featureId;
+      loc.mapFocusFeatureId = action.featureId;
       return;
     }
     if (action.kind === "destination") {
@@ -5523,7 +4392,7 @@ async function toggleModule(id: ModuleId) {
     return;
   }
   try {
-    if (id === "daena.maps" && !(await resolveDirtyMapSession())) return;
+    if (id === "daena.maps" && !(await loc.resolveDirtyMapSession())) return;
     await project.disableModule(id);
     modules = await project.listModuleManifests();
     await loc.refreshSelectedMapLocations();
@@ -5575,7 +4444,7 @@ function setAdminPluginEnabled(id: string, enabled: boolean) {
 async function openSettings(nextSection: SettingsSection = "general") {
   if (!(await loc.flushAutoSave())) return;
   if (loc.showSettings && loc.settingsSurface === "application" && loc.settingsSection === nextSection) return;
-  if (!loc.showSettings && loc.section === "language" && !(await canLeaveLanguageSection())) return;
+  if (!loc.showSettings && loc.section === "language" && !(await loc.canLeaveLanguageSection())) return;
   const departure = loc.currentShellLocation();
   if (loc.showSettings && !(await beforeAdministrationNavigate())) return;
   if (!(await loc.leavePluginView())) return;
@@ -5590,7 +4459,7 @@ async function openSettings(nextSection: SettingsSection = "general") {
 async function openProjectCenter(nextSection: ProjectSection = "overview") {
   if (!ready || !(await loc.flushAutoSave())) return;
   if (loc.showSettings && loc.settingsSurface === "project" && loc.projectSection === nextSection) return;
-  if (!loc.showSettings && loc.section === "language" && !(await canLeaveLanguageSection())) return;
+  if (!loc.showSettings && loc.section === "language" && !(await loc.canLeaveLanguageSection())) return;
   const departure = loc.currentShellLocation();
   const wasEditingFields =
     loc.showSettings && loc.settingsSurface === "project" && loc.projectSection === "fields" && !!schemaPluginId;
@@ -6083,7 +4952,7 @@ async function togglePluginEnabled(plugin: PluginAdminEntry) {
   }
   pluginActionId = plugin.id;
   try {
-    if (plugin.id === "daena.maps" && !(await resolveDirtyMapSession())) return;
+    if (plugin.id === "daena.maps" && !(await loc.resolveDirtyMapSession())) return;
     await project.disableModule(plugin.id);
     modules = await project.listModuleManifests();
     await loc.refreshSelectedMapLocations();
@@ -6125,14 +4994,14 @@ function resetProjectSessionState() {
   calendarCache.invalidate();
   eraContextCache.clear();
   loc.selectedLoadToken += 1;
-  closeAiFieldFill();
-  closeAiRewrite();
+  loc.closeAiFieldFill();
+  loc.closeAiRewrite();
   loc.clearSelection();
   shellTabs = freshShellTabs();
   // Callers close every plugin webview (`leavePluginView({ closeWebviews: true })`) before this runs.
   webviewPool = emptyWebviewPool;
-  writingMountRetained = [];
-  languageMountRetained = [];
+  loc.writingMountRetained = [];
+  loc.languageMountRetained = [];
   languageCreatedState.clear();
   shellNavigationBusy = false;
   loc.collectionScrollBySection = {};
@@ -6148,16 +5017,7 @@ function resetProjectSessionState() {
   loc.hostView = null;
   loc.sandboxView = null;
   gitStatus = null;
-  mapSaveStates = {};
-  mapsEditorKey = "welcome";
-  mapReloadCounter = 0;
-  mapRecoveryBusy = false;
-  mapFocusLinkId = null;
-  mapFocusFeatureId = null;
-  mapSelection = null;
-  mapPickPending = null;
-  mapReconcileNotice = "";
-  mapPickNotice = "";
+  loc.resetMapEditorSession();
   searchMatches = null;
   globalQuery = "";
   quickOpenOpen = false;
@@ -6219,7 +5079,7 @@ async function rebuildSearchIndex() {
   }
 }
 async function importPortableCheckpoint() {
-  if (!(await canLeaveLanguageSection())) return;
+  if (!(await loc.canLeaveLanguageSection())) return;
   await runProjectTransition("Importing checkpoint…", async () => {
     if (!(await loc.flushAutoSave())) return;
     if (!(await loc.leavePluginView({ closeWebviews: true }))) return;
@@ -6256,7 +5116,7 @@ async function createRecoveryBackup() {
   return project.recoveryBackup();
 }
 async function restoreRecoveryBackup(path: string) {
-  if (!(await canLeaveLanguageSection())) return;
+  if (!(await loc.canLeaveLanguageSection())) return;
   await runProjectTransition("Restoring recovery backup…", async () => {
     if (!(await loc.flushAutoSave())) return;
     if (!(await loc.leavePluginView({ closeWebviews: true }))) return;
@@ -6338,7 +5198,7 @@ onMount(() => {
   };
   const handleWritingFullscreenKey = (event: KeyboardEvent) => {
     // Escape with focus in the shell. Inside the webview, its editor reports the change itself.
-    if (event.key === "Escape") exitWritingFullscreen();
+    if (event.key === "Escape") loc.exitWritingFullscreen();
   };
   const handleWorkbenchResize = () => {
     workbenchViewportWidth = window.innerWidth;
@@ -6389,7 +5249,7 @@ onMount(() => {
           await keepWindowOpen();
           return;
         }
-        if (!(await canLeaveLanguageSection())) {
+        if (!(await loc.canLeaveLanguageSection())) {
           await keepWindowOpen();
           return;
         }
@@ -6426,36 +5286,8 @@ onMount(() => {
     })
     .catch(() => {});
   let unlistenMaps: (() => void) | undefined;
-  void listen<{ mapEntityId: string; linkId?: string }>("maps-navigation", async (event) => {
-    try {
-      let map = entities.find((entity) => entity.id === event.payload.mapEntityId && !entity.deleted) ?? null;
-      if (!map) {
-        const loaded = await project.getEntity(event.payload.mapEntityId);
-        if (loaded && !loaded.deleted) {
-          upsertEntityInCache(loaded);
-          map = loaded;
-        }
-      }
-      const item = mapsNavigationItem();
-      if (!map || !item) throw new Error("map-unavailable: enable the Maps module to open this location");
-      if (!(await loc.flushAutoSave())) return;
-      if (!(await canLeaveLanguageSection())) return;
-      const departure = loc.currentShellLocation();
-      if (!(await loc.leavePluginView())) return;
-      loc.selected = map;
-      mapsEditorKey = map.id;
-      await loc.loadSelectedState(map);
-      await loc.openPluginView(item, departure);
-      const linkId = event.payload.linkId ?? null;
-      // openPluginView clears focus; also re-assert when already on the same map so
-      // the vector editor retries focus after pins load.
-      mapFocusLinkId = null;
-      mapFocusFeatureId = null;
-      await tick();
-      mapFocusLinkId = linkId;
-    } catch (cause) {
-      error = friendlyError(cause);
-    }
+  void listen<{ mapEntityId: string; linkId?: string }>("maps-navigation", (event) => {
+    void loc.handleMapsNavigation(event.payload);
   })
     .then((cleanup) => {
       unlistenMaps = cleanup;
@@ -6464,64 +5296,7 @@ onMount(() => {
   let unlistenMapsState: (() => void) | undefined;
   void listen<{ mapEntityId: string; status: string; detail: unknown; instanceId?: unknown }>("maps-state", (event) => {
     if (foreignWebviewInstance(event.payload)) return;
-    const { mapEntityId, status, detail } = event.payload;
-    if (status === "fullscreen") {
-      const enabled = typeof detail === "object" && detail !== null && "enabled" in detail && detail.enabled === true;
-      loc.editorFullscreen = enabled;
-      return;
-    }
-    if (status === "back") {
-      loc.editorFullscreen = false;
-      void loc.closePluginView();
-      return;
-    }
-    if (mapEntityId) mapSaveStates[mapEntityId] = { status, detail };
-    if (status === "saved" && mapEntityId) {
-      void refreshAfterEntityMutation({ entityId: mapEntityId }).then(() => {
-        const map = entities.find((entity) => entity.id === mapEntityId && !entity.deleted);
-        if (map) {
-          loc.selected = map;
-          void loc.loadSelectedState(map).catch(() => {});
-        }
-      });
-    }
-    if (status === "reconcile") {
-      const reconcileDetail = detail as { unresolved?: unknown } | null;
-      const unresolved = Array.isArray(reconcileDetail?.unresolved) ? reconcileDetail.unresolved.length : 0;
-      mapReconcileNotice =
-        unresolved > 0
-          ? `${unresolved} link${unresolved === 1 ? "" : "s"} on this map are unresolved — the features they pointed to were removed or renumbered.`
-          : "";
-      if (loc.selected && loc.mapLocations.length > 0)
-        void project
-          .listMapLocations(loc.selected.id)
-          .then((locations) => {
-            loc.mapLocations = locations;
-          })
-          .catch(() => {});
-    }
-    if (status === "pick-complete") {
-      const pickDetail = detail as { anchor?: unknown } | null;
-      void applyMapPick(pickDetail?.anchor ?? null);
-    }
-    if (status === "pick-cancelled") {
-      mapPickPending = null;
-      mapPickNotice = "";
-    }
-    if (status === "open-entity") {
-      const openDetail = detail as { entityId?: string } | null;
-      if (openDetail?.entityId) void openMapEntityFromLink(openDetail.entityId);
-    }
-    if (status === "linked") {
-      void refreshAfterEntityMutation(mapEntityId ? { entityId: mapEntityId } : undefined);
-      if (loc.selected)
-        void project
-          .listMapLocations(loc.selected.id)
-          .then((locations) => {
-            loc.mapLocations = locations;
-          })
-          .catch(() => {});
-    }
+    loc.handleMapsState(event.payload);
   })
     .then((cleanup) => {
       unlistenMapsState = cleanup;
@@ -6530,7 +5305,7 @@ onMount(() => {
   let unlistenMapsSelection: (() => void) | undefined;
   void listen<{ mapEntityId: string; anchor: unknown; instanceId?: unknown }>("maps-selection", (event) => {
     if (foreignWebviewInstance(event.payload)) return;
-    if (event.payload.mapEntityId === currentMapId()) mapSelection = event.payload.anchor;
+    loc.handleMapsSelection(event.payload);
   })
     .then((cleanup) => {
       unlistenMapsSelection = cleanup;
@@ -6543,7 +5318,7 @@ onMount(() => {
       return;
     }
     const message = parseLanguageStateEvent(event.payload);
-    if (message) handleLanguageStateEvent(message);
+    if (message) loc.handleLanguageStateEvent(message);
   })
     .then((cleanup) => {
       unlistenLanguageState = cleanup;
@@ -6564,7 +5339,7 @@ onMount(() => {
       return;
     }
     const message = parseWritingStateEvent(event.payload);
-    if (message) handleWritingStateEvent(message);
+    if (message) loc.handleWritingStateEvent(message);
   })
     .then((cleanup) => {
       unlistenWritingState = cleanup;
@@ -6585,10 +5360,10 @@ onMount(() => {
     if (aiModelsMessageTimer !== null) window.clearTimeout(aiModelsMessageTimer);
     unlisten?.();
     unlistenCheckpointExport?.();
-    if (aiRequestId) void project.aiCancelText(aiRequestId).catch(() => {});
-    if (aiFieldFillRequestId) void project.aiCancelText(aiFieldFillRequestId).catch(() => {});
-    clearAiStreamListener();
-    clearAiFieldListener();
+    if (loc.aiRequestId) void project.aiCancelText(loc.aiRequestId).catch(() => {});
+    if (loc.aiFieldFillRequestId) void project.aiCancelText(loc.aiFieldFillRequestId).catch(() => {});
+    loc.clearAiStreamListener();
+    loc.clearAiFieldListener();
     unlistenMaps?.();
     unlistenMapsState?.();
     unlistenMapsSelection?.();
@@ -7726,12 +6501,12 @@ onMount(() => {
                 class="primary-button"
                 type="button"
                 aria-haspopup="menu"
-                aria-expanded={mapProviderMenuOpen === "header"}
-                onclick={() => (mapProviderMenuOpen = mapProviderMenuOpen === "header" ? null : "header")}
+                aria-expanded={loc.mapProviderMenuOpen === "header"}
+                onclick={() => (loc.mapProviderMenuOpen = loc.mapProviderMenuOpen === "header" ? null : "header")}
                 >Create map</button>
-              {#if mapProviderMenuOpen === "header"}<div class="map-provider-menu" role="menu">
+              {#if loc.mapProviderMenuOpen === "header"}<div class="map-provider-menu" role="menu">
                   <div class="map-provider-row">
-                    <button type="button" role="menuitem" onclick={() => void createMap("physical")}
+                    <button type="button" role="menuitem" onclick={() => void loc.createMap("physical")}
                       >Generate physical world</button
                     ><span class="map-help-wrapper"
                       ><button type="button" class="map-help" aria-label="Help for Generate physical world">?</button
@@ -7741,7 +6516,7 @@ onMount(() => {
                       ></span>
                   </div>
                   <div class="map-provider-row">
-                    <button type="button" role="menuitem" onclick={() => void createMap("vector")}
+                    <button type="button" role="menuitem" onclick={() => void loc.createMap("vector")}
                       >Import vector map</button
                     ><span class="map-help-wrapper"
                       ><button type="button" class="map-help" aria-label="Help for Import vector map">?</button><span
@@ -7751,7 +6526,7 @@ onMount(() => {
                       ></span>
                   </div>
                   <div class="map-provider-row">
-                    <button type="button" role="menuitem" onclick={() => void createMap("image")}
+                    <button type="button" role="menuitem" onclick={() => void loc.createMap("image")}
                       >Import image map</button
                     ><span class="map-help-wrapper"
                       ><button type="button" class="map-help" aria-label="Help for Import image map">?</button><span
@@ -7951,15 +6726,15 @@ onMount(() => {
                       class="empty-create"
                       type="button"
                       aria-haspopup="menu"
-                      aria-expanded={mapProviderMenuOpen === "empty"}
-                      onclick={() => (mapProviderMenuOpen = mapProviderMenuOpen === "empty" ? null : "empty")}
+                      aria-expanded={loc.mapProviderMenuOpen === "empty"}
+                      onclick={() => (loc.mapProviderMenuOpen = loc.mapProviderMenuOpen === "empty" ? null : "empty")}
                       ><span style="display:inline-flex;vertical-align:middle" aria-hidden="true"
                         ><Plus size={16} strokeWidth={1.8} aria-hidden="true" /></span> Create map</button>
-                    {#if mapProviderMenuOpen === "empty"}<div
+                    {#if loc.mapProviderMenuOpen === "empty"}<div
                         class="map-provider-menu empty-map-provider-menu"
                         role="menu">
                         <div class="map-provider-row">
-                          <button type="button" role="menuitem" onclick={() => void createMap("physical")}
+                          <button type="button" role="menuitem" onclick={() => void loc.createMap("physical")}
                             >Generate physical world</button
                           ><span class="map-help-wrapper"
                             ><button type="button" class="map-help" aria-label="Help for Generate physical world"
@@ -7971,7 +6746,7 @@ onMount(() => {
                             ></span>
                         </div>
                         <div class="map-provider-row">
-                          <button type="button" role="menuitem" onclick={() => void createMap("vector")}
+                          <button type="button" role="menuitem" onclick={() => void loc.createMap("vector")}
                             >Import vector map</button
                           ><span class="map-help-wrapper"
                             ><button type="button" class="map-help" aria-label="Help for Import vector map">?</button
@@ -7980,7 +6755,7 @@ onMount(() => {
                             ></span>
                         </div>
                         <div class="map-provider-row">
-                          <button type="button" role="menuitem" onclick={() => void createMap("image")}
+                          <button type="button" role="menuitem" onclick={() => void loc.createMap("image")}
                             >Import image map</button
                           ><span class="map-help-wrapper"
                             ><button type="button" class="map-help" aria-label="Help for Import image map">?</button
@@ -8206,7 +6981,7 @@ onMount(() => {
         {#if languagePaneShown}
           {#key loc.selected?.id ?? "language"}
             {#key shownWebviewInstance}
-              <div class="language-mount" {@attach trackLanguageMount}>
+              <div class="language-mount" {@attach loc.trackLanguageMount}>
                 <SandboxView
                   pluginId="daena.language"
                   instanceId={shownWebviewInstance}
@@ -8224,7 +6999,7 @@ onMount(() => {
         {:else if writingWebviewShown}
           <div class="writing-content">
             <!-- The webview draws over the content column, so the shell's messages sit above its slot, in flow. -->
-            {#if !writingFullscreen && (error || projectDiagnostics.length > 0)}
+            {#if !loc.writingFullscreen && (error || projectDiagnostics.length > 0)}
               <div class="writing-notices">
                 {#if projectDiagnostics.length > 0}<div class="project-diagnostics" role="alert">
                     <span>{projectDiagnostics[0]}</span><button
@@ -8238,7 +7013,7 @@ onMount(() => {
               </div>
             {/if}
             {#key shownWebviewInstance}
-              <div class="writing-mount" {@attach trackWritingMount}>
+              <div class="writing-mount" {@attach loc.trackWritingMount}>
                 <SandboxView
                   pluginId="daena.writing"
                   instanceId={shownWebviewInstance}
@@ -8256,13 +7031,13 @@ onMount(() => {
           {#snippet contentPaneBody()}
             {#if loc.section === "maps" && loc.sandboxView?.renderer === "maps" && loc.sandboxView.view}
               {@const mapId = loc.selected?.entity_type === "daena.maps:world-map" ? loc.selected.id : null}
-              {@const mapState = mapId ? (mapSaveStates[mapId] ?? null) : null}
+              {@const mapState = mapId ? (loc.mapSaveStates[mapId] ?? null) : null}
               {@const mapDetail = mapConflictDetail(mapState?.detail)}
               <div class="map-editor-shell">
-                {#if mapReconcileNotice || mapPickNotice}
+                {#if loc.mapReconcileNotice || loc.mapPickNotice}
                   <div class="map-editor-notices">
-                    {#if mapReconcileNotice}<span class="map-reconcile-notice">{mapReconcileNotice}</span>{/if}
-                    {#if mapPickNotice}<span class="map-reconcile-notice">{mapPickNotice}</span>{/if}
+                    {#if loc.mapReconcileNotice}<span class="map-reconcile-notice">{loc.mapReconcileNotice}</span>{/if}
+                    {#if loc.mapPickNotice}<span class="map-reconcile-notice">{loc.mapPickNotice}</span>{/if}
                   </div>
                 {/if}
                 {#if mapState?.status === "conflict"}
@@ -8273,44 +7048,48 @@ onMount(() => {
                       {#if mapDetail.path}<code>{mapDetail.path}</code>{/if}
                     </div>
                     <div class="map-conflict-actions">
-                      <button class="primary-button" type="button" disabled={mapRecoveryBusy} onclick={restoreMapDraft}
-                        >{mapRecoveryBusy ? "Restoring…" : "Restore draft"}</button
-                      ><button class="quiet-button" type="button" onclick={reloadMapOriginal}>Reload original</button
+                      <button
+                        class="primary-button"
+                        type="button"
+                        disabled={loc.mapRecoveryBusy}
+                        onclick={loc.restoreMapDraft}>{loc.mapRecoveryBusy ? "Restoring…" : "Restore draft"}</button
+                      ><button class="quiet-button" type="button" onclick={loc.reloadMapOriginal}
+                        >Reload original</button
                       ><button class="quiet-button" type="button" onclick={dismissMapConflict}>Keep editing</button>
                     </div>
                   </div>
                 {/if}
                 <div class="map-surface">
-                  {#if mapsEditorMode === "physical"}
-                    {#key `${mapsEditorKey}:${mapReloadCounter}`}
+                  {#if loc.mapsEditorMode === "physical"}
+                    {#key `${loc.mapsEditorKey}:${loc.mapReloadCounter}`}
                       <PhysicalMapEditor
-                        mapId={mapsEditorKey.startsWith("draft-") ? undefined : (mapId ?? undefined)}
+                        mapId={loc.mapsEditorKey.startsWith("draft-") ? undefined : (mapId ?? undefined)}
                         onstate={(status, detail) => {
                           if (!mapId) return;
-                          mapSaveStates[mapId] = { status, detail };
+                          loc.mapSaveStates[mapId] = { status, detail };
                         }}
                         oncreated={async (map) => {
                           entities = [...entities.filter((entity) => entity.id !== map.id), map];
                           savedMapsCache = null;
                           loc.selected = map;
-                          mapsEditorKey = map.id;
-                          mapsEditorMode = "vector";
+                          loc.mapsEditorKey = map.id;
+                          loc.mapsEditorMode = "vector";
                           await loc.loadSelectedState(map);
                         }}
                         oncancel={() => {
                           void loc.leavePluginView();
                         }} />
                     {/key}
-                  {:else if mapsEditorMode === "vector"}
-                    {#key `${mapsEditorKey}:${mapReloadCounter}`}
+                  {:else if loc.mapsEditorMode === "vector"}
+                    {#key `${loc.mapsEditorKey}:${loc.mapReloadCounter}`}
                       <NativeVectorMapEditor
-                        mapId={mapsEditorKey.startsWith("draft-") ? undefined : (mapId ?? undefined)}
-                        picking={Boolean(mapPickPending)}
-                        start={mapsEditorKey.startsWith("draft-") ? mapsVectorStart : "geojson"}
-                        focusLinkId={mapFocusLinkId ?? undefined}
-                        focusFeatureId={mapFocusFeatureId ?? undefined}
-                        onpick={(anchor) => void applyMapPick(anchor)}
-                        onopen={(entityId) => void openMapEntityFromLink(entityId)}
+                        mapId={loc.mapsEditorKey.startsWith("draft-") ? undefined : (mapId ?? undefined)}
+                        picking={Boolean(loc.mapPickPending)}
+                        start={loc.mapsEditorKey.startsWith("draft-") ? loc.mapsVectorStart : "geojson"}
+                        focusLinkId={loc.mapFocusLinkId ?? undefined}
+                        focusFeatureId={loc.mapFocusFeatureId ?? undefined}
+                        onpick={(anchor) => void loc.applyMapPick(anchor)}
+                        onopen={(entityId) => void loc.openMapEntityFromLink(entityId)}
                         onstate={(status, detail) => {
                           if (status === "fullscreen") {
                             loc.editorFullscreen =
@@ -8325,14 +7104,14 @@ onMount(() => {
                             return;
                           }
                           if (!mapId) return;
-                          mapSaveStates[mapId] = { status, detail };
+                          loc.mapSaveStates[mapId] = { status, detail };
                         }}
                         oncreated={async (map) => {
                           entities = [...entities.filter((entity) => entity.id !== map.id), map];
                           savedMapsCache = null;
                           loc.selected = map;
-                          mapsEditorKey = map.id;
-                          mapsEditorMode = "vector";
+                          loc.mapsEditorKey = map.id;
+                          loc.mapsEditorMode = "vector";
                           await loc.loadSelectedState(map);
                         }}
                         oncancel={() => {
@@ -8385,7 +7164,7 @@ onMount(() => {
                   {#if loc.section === "maps"}<button
                       class="quiet-button"
                       type="button"
-                      onclick={() => void openSelectedMapEditor()}>Open map editor</button
+                      onclick={() => void loc.openSelectedMapEditor()}>Open map editor</button
                     >{/if}
                 {/snippet}
                 <div class="editor-header-controls">
@@ -8463,7 +7242,7 @@ onMount(() => {
                         : "Your unsaved document and details are preserved. Choose how to reconcile them before saving."}
                       actions={conflictResolutionActions} />
                   {/if}
-                  {#if aiRewriteOpen}
+                  {#if loc.aiRewriteOpen}
                     <div class="ai-rewrite-modal-backdrop">
                       <div
                         class="ai-rewrite-panel"
@@ -8472,67 +7251,68 @@ onMount(() => {
                         aria-labelledby="ai-rewrite-title"
                         tabindex="-1"
                         onkeydown={(event) => {
-                          if (event.key === "Escape" && !aiBusy) closeAiRewrite();
+                          if (event.key === "Escape" && !loc.aiBusy) loc.closeAiRewrite();
                         }}>
                         <div class="ai-rewrite-heading">
                           <div>
                             <span class="panel-kicker">{aiProvider.name || "AI provider"}</span><strong
                               id="ai-rewrite-title"
-                              >{aiCancelPending
+                              >{loc.aiCancelPending
                                 ? "Cancelling request…"
-                                : aiBusy
-                                  ? aiMode === "generate"
+                                : loc.aiBusy
+                                  ? loc.aiMode === "generate"
                                     ? "Generating text…"
                                     : "Rewriting selection…"
-                                  : aiPreviewOutput
-                                    ? aiMode === "generate"
+                                  : loc.aiPreviewOutput
+                                    ? loc.aiMode === "generate"
                                       ? "Review generated text"
                                       : "Review rewrite"
-                                    : aiMode === "generate"
+                                    : loc.aiMode === "generate"
                                       ? "Generate text"
                                       : "Rewrite selection"}</strong>
                           </div>
                         </div>
-                        {#if !aiBusy}<label class="ai-instruction"
+                        {#if !loc.aiBusy}<label class="ai-instruction"
                             >Instruction<textarea
                               rows="2"
-                              bind:value={aiInstruction}
-                              disabled={aiBusy}
-                              placeholder={`Tell ${aiProvider.name || "the AI provider"} ${aiMode === "generate" ? "what to write at the cursor" : "how to rewrite the selection"}`}
+                              bind:value={loc.aiInstruction}
+                              disabled={loc.aiBusy}
+                              placeholder={`Tell ${aiProvider.name || "the AI provider"} ${loc.aiMode === "generate" ? "what to write at the cursor" : "how to rewrite the selection"}`}
                             ></textarea
                             ></label
                           >{/if}
                         <AiProposalPreview
-                          original={aiSourceSelectionPlain}
-                          bind:proposal={aiPreviewOutput}
-                          streamText={aiStreamText}
-                          progressMessage={aiProgressMessage}
-                          busy={aiBusy}
-                          cancelling={aiCancelPending}
-                          onCancel={() => void cancelAiRewrite()}
-                          onDiscard={closeAiRewrite}
-                          onAccept={() => void acceptAiRewrite()} />
-                        {#if aiUsage}<p class="muted-note">
-                            Provider usage: {aiUsage.inputTokens} input + {aiUsage.outputTokens} output tokens.
+                          original={loc.aiSourceSelectionPlain}
+                          bind:proposal={loc.aiPreviewOutput}
+                          streamText={loc.aiStreamText}
+                          progressMessage={loc.aiProgressMessage}
+                          busy={loc.aiBusy}
+                          cancelling={loc.aiCancelPending}
+                          onCancel={() => void loc.cancelAiRewrite()}
+                          onDiscard={loc.closeAiRewrite}
+                          onAccept={() => void loc.acceptAiRewrite()} />
+                        {#if loc.aiUsage}<p class="muted-note">
+                            Provider usage: {loc.aiUsage.inputTokens} input + {loc.aiUsage.outputTokens} output tokens.
                           </p>{/if}
-                        {#if !aiBusy && aiPreviewOutput}<div class="ai-rewrite-actions">
-                            <button class="primary-button" type="button" onclick={() => void acceptAiRewrite()}
+                        {#if !loc.aiBusy && loc.aiPreviewOutput}<div class="ai-rewrite-actions">
+                            <button class="primary-button" type="button" onclick={() => void loc.acceptAiRewrite()}
                               >Accept proposal</button>
                             <button
                               class="quiet-button ai-retry-button"
                               type="button"
-                              onclick={() => void startAiRewrite()}>Retry</button>
-                            <button class="quiet-button ai-discard-button" type="button" onclick={closeAiRewrite}
+                              onclick={() => void loc.startAiRewrite()}>Retry</button>
+                            <button class="quiet-button ai-discard-button" type="button" onclick={loc.closeAiRewrite}
                               >Discard</button>
                           </div>
-                        {:else if !aiBusy}<div class="ai-rewrite-actions">
+                        {:else if !loc.aiBusy}<div class="ai-rewrite-actions">
                             <button
                               class="primary-button"
                               type="button"
-                              disabled={(aiMode === "rewrite" && !aiSourceSelection.trim()) || !aiInstruction.trim()}
-                              onclick={() => void startAiRewrite()}
-                              >{aiMode === "generate" ? "Generate text" : "Generate rewrite"}</button>
-                            <button class="quiet-button" type="button" onclick={closeAiRewrite}>Cancel</button>
+                              disabled={(loc.aiMode === "rewrite" && !loc.aiSourceSelection.trim()) ||
+                                !loc.aiInstruction.trim()}
+                              onclick={() => void loc.startAiRewrite()}
+                              >{loc.aiMode === "generate" ? "Generate text" : "Generate rewrite"}</button>
+                            <button class="quiet-button" type="button" onclick={loc.closeAiRewrite}>Cancel</button>
                           </div>{/if}
                       </div>
                     </div>
@@ -8560,14 +7340,14 @@ onMount(() => {
                         editable={!loc.selectedLoading &&
                           !loc.selectedLoadError &&
                           projectDiagnostics.length === 0 &&
-                          !aiBusy &&
-                          !aiRewriteOpen}
+                          !loc.aiBusy &&
+                          !loc.aiRewriteOpen}
                         fullscreen={loc.editorFullscreen}
                         aiEnabled={projectInfo?.aiEnabled ?? false}
                         aiTemplates={aiPromptTemplates.filter((template) => template.kind === "editor")}
                         onChange={loc.updateDocumentBody}
-                        onSelectionChange={setAiSelection}
-                        onAiRequest={openAiAction}
+                        onSelectionChange={loc.setAiSelection}
+                        onAiRequest={loc.openAiAction}
                         onSaveRequest={() => void loc.flushAutoSave()}
                         onFullscreenChange={loc.setEditorFullscreen}
                         placeholder={loc.section === "writing"
@@ -8642,25 +7422,24 @@ onMount(() => {
               entityName={inspectedEntity.name}
               chips={entityFieldsTabs()}
               aiEnabled={Boolean(projectInfo?.aiEnabled && emptyInspectorDefinitions().length)}
-              aiBusy={aiFieldFillBusy}
-              onFillAi={() => void fillAiFields()}
+              aiBusy={loc.aiFieldFillBusy}
+              onFillAi={() => void loc.fillAiFields()}
               onOpenTab={openFieldsDialog}
               notice={fieldsNotice}
               details={inspectorDetails} />
           {/snippet}
           {#snippet fieldsNotice()}
-            {#if aiFieldFillOpen}<section class="inspector-ai-fill">
+            {#if loc.aiFieldFillOpen}<section class="inspector-ai-fill">
                 <div class="inspector-ai-fill-heading">
-                  <strong>{aiFieldFillBusy ? "Finding field suggestions…" : "Review field suggestions"}</strong><button
-                    class="quiet-button"
-                    type="button"
-                    onclick={closeAiFieldFill}>{aiFieldFillBusy ? "Cancel" : "Close"}</button>
+                  <strong>{loc.aiFieldFillBusy ? "Finding field suggestions…" : "Review field suggestions"}</strong
+                  ><button class="quiet-button" type="button" onclick={loc.closeAiFieldFill}
+                    >{loc.aiFieldFillBusy ? "Cancel" : "Close"}</button>
                 </div>
-                {#if aiFieldFillBusy}<p>
+                {#if loc.aiFieldFillBusy}<p>
                     Using this entry and related project context.
-                  </p>{:else if Object.keys(aiFieldSuggestions).length === 0}<p>
+                  </p>{:else if Object.keys(loc.aiFieldSuggestions).length === 0}<p>
                     No suggestions are available.
-                  </p>{:else}{#each Object.entries(aiFieldSuggestions) as [key, suggestion]}{@const definition =
+                  </p>{:else}{#each Object.entries(loc.aiFieldSuggestions) as [key, suggestion]}{@const definition =
                       definitions().find((candidate) => candidate.key === key)}
                     <div class="inspector-ai-suggestion">
                       <div class="inspector-ai-suggestion-heading">
@@ -8675,19 +7454,20 @@ onMount(() => {
                       </div>
                       <span>{suggestionDisplayValue(key, suggestion)}</span>
                       <div>
-                        <button class="quiet-button" type="button" onclick={() => acceptAiFieldSuggestion(key)}
+                        <button class="quiet-button" type="button" onclick={() => loc.acceptAiFieldSuggestion(key)}
                           >Accept</button
-                        ><button class="quiet-button" type="button" onclick={() => discardAiFieldSuggestion(key)}
+                        ><button class="quiet-button" type="button" onclick={() => loc.discardAiFieldSuggestion(key)}
                           >Discard</button>
                       </div>
                     </div>{/each}{/if}
-                {#if !aiFieldFillBusy}<div class="inspector-ai-fill-actions">
-                    {#if Object.keys(aiFieldSuggestions).length > 0}<button
+                {#if !loc.aiFieldFillBusy}<div class="inspector-ai-fill-actions">
+                    {#if Object.keys(loc.aiFieldSuggestions).length > 0}<button
                         class="primary-button"
                         type="button"
-                        onclick={() => void acceptAllAiFieldSuggestions()}>Accept all</button
-                      >{/if}<button class="quiet-button" type="button" onclick={() => void fillAiFields()}>Retry</button
-                    ><button class="quiet-button" type="button" onclick={closeAiFieldFill}>Close</button>
+                        onclick={() => void loc.acceptAllAiFieldSuggestions()}>Accept all</button
+                      >{/if}<button class="quiet-button" type="button" onclick={() => void loc.fillAiFields()}
+                      >Retry</button
+                    ><button class="quiet-button" type="button" onclick={loc.closeAiFieldFill}>Close</button>
                   </div>{/if}
               </section>{/if}
           {/snippet}
@@ -8999,7 +7779,7 @@ onMount(() => {
                           >{:else}<button
                             class="quiet-button"
                             type="button"
-                            onclick={() => void openMapLocation(location)}>Show on map</button
+                            onclick={() => void loc.openMapLocation(location)}>Show on map</button
                           >{/if}<button
                           class="quiet-button"
                           type="button"

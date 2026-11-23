@@ -170,6 +170,11 @@ function createFixture(overrides = {}) {
       state.storedDocuments[payload.document.entity_id] = payload.document.body;
     },
     saveRecoveryCopy: async (id, body) => `/recovery/${id}.md`,
+    postPluginWebviewMessage: async () => true,
+    takePluginTextTransfer: async () => "",
+    aiCancelText: async () => {},
+    aiGenerateText: async () => "request",
+    aiPollText: async () => [],
     ...overrides.project,
   };
   const ctx = {
@@ -199,27 +204,11 @@ function createFixture(overrides = {}) {
     confirmDialog: async () => true,
     setError: record("setError"),
     resetSelectionShellState: record("resetSelectionShellState"),
-    canLeaveLanguageSection: async () => {
-      calls.push(["canLeaveLanguageSection"]);
-      return true;
-    },
-    flushWritingWebview: async () => {
-      calls.push(["flushWritingWebview"]);
-      return true;
-    },
     recordShellDeparture: record("recordShellDeparture"),
     setShellNavigationRestoring: record("setShellNavigationRestoring"),
     closeNativePluginWebviews: async () => {
       calls.push(["closeNativePluginWebviews"]);
     },
-    resolveDirtyMapSession: async () => {
-      calls.push(["resolveDirtyMapSession"]);
-      return true;
-    },
-    currentMapId: () => null,
-    setMapsEditorMode: record("setMapsEditorMode"),
-    setMapsEditorKey: record("setMapsEditorKey"),
-    clearMapFocus: record("clearMapFocus"),
     dismissSettings: async () => {
       calls.push(["dismissSettings"]);
       store.showSettings = false;
@@ -237,10 +226,6 @@ function createFixture(overrides = {}) {
       store.settingsSurface = "project";
       store.projectSection = section;
     },
-    requestLanguagePane: (pane) => {
-      calls.push(["requestLanguagePane", pane]);
-      store.languagePane = pane;
-    },
     clearGlobalQuery: record("clearGlobalQuery"),
     refreshAdmin: async () => {
       calls.push(["refreshAdmin"]);
@@ -257,8 +242,11 @@ function createFixture(overrides = {}) {
     sectionForEntityType: (entityType) => state.sectionByType[entityType] ?? null,
     collectionResult: () => ({ entities: state.collectionEntities }),
     housesModuleContext: () => ({}),
-    closeAiFieldFill: record("closeAiFieldFill"),
-    closeAiRewrite: record("closeAiRewrite"),
+    mapsNavigationItem: () => null,
+    emptyInspectorDefinitions: () => [],
+    selectedRelationshipIds: () => [],
+    listenAiStream: async () => () => {},
+    nativeVectorSession: () => null,
     contextFor: () => ({
       module: { capabilities: [] },
       relationships: { list: async () => [] },
@@ -277,12 +265,38 @@ function createFixture(overrides = {}) {
     upsertEntityInCache: record("upsertEntityInCache"),
     refreshAfterEntityMutation: async () => {},
     loadEraContexts: async () => [],
-    notifyWritingSaved: record("notifyWritingSaved"),
     notifyProfileTimelineChanged: record("notifyProfileTimelineChanged"),
     loadProjectStatus: async () => {},
+    shownWebviewInstance: "shown",
+    writingWebviewShown: false,
+    aiProvider: { name: "" },
+    aiPromptTemplates: [],
+    markShownWebviewReady: record("markShownWebviewReady"),
+    openExternal: record("openExternal"),
+    openEntityFromWebview: record("openEntityFromWebview"),
+    runShellShortcut: record("runShellShortcut"),
+    openEntityEditDialog: record("openEntityEditDialog"),
+    confirmWritingArchive: record("confirmWritingArchive"),
     ...overrides.ctx,
   };
   const store = new LocationStore(ctx);
+  // The leave bridges used to be context callbacks. They are store methods now; record them the same way, in front
+  // of the real method, so the leave-sequence checks still see the order.
+  for (const name of [
+    "flushWritingWebview",
+    "canLeaveLanguageSection",
+    "requestLanguagePane",
+    "notifyWritingSaved",
+    "resolveDirtyMapSession",
+    "closeAiRewrite",
+    "closeAiFieldFill",
+  ]) {
+    const original = store[name].bind(store);
+    store[name] = (...args) => {
+      calls.push([name, ...args]);
+      return original(...args);
+    };
+  }
   // The section and the Writing tab belong to the store now; tests set them through the state like the page did.
   for (const name of ["section", "writingView"]) {
     Object.defineProperty(state, name, {
@@ -1069,12 +1083,12 @@ async function openEntry(fixture, id = "a") {
 
   // Hiding the content column saves first and asks the Language pane, which can refuse.
   store.editorFullscreen = true;
-  ctx.canLeaveLanguageSection = async () => false;
+  store.canLeaveLanguageSection = async () => false;
   await store.toggleWorkbenchPane("content");
   assert.equal(store.workbenchPaneVisibility.content, true, "a refusing Language pane keeps the column");
   assert.equal(store.editorFullscreen, true);
   assert.equal(calls.filter(([name]) => name === "flushWritingWebview").length, 1);
-  ctx.canLeaveLanguageSection = async () => true;
+  store.canLeaveLanguageSection = async () => true;
   await store.toggleWorkbenchPane("content");
   assert.equal(store.workbenchPaneVisibility.content, false);
   assert.equal(store.editorFullscreen, false, "hiding the content column leaves editor full screen");
@@ -1821,7 +1835,7 @@ async function openEntry(fixture, id = "a") {
     [
       "the Language guard",
       async (fixture) => {
-        fixture.ctx.canLeaveLanguageSection = async () => {
+        fixture.store.canLeaveLanguageSection = async () => {
           fixture.calls.push(["canLeaveLanguageSection"]);
           return false;
         };
@@ -1841,7 +1855,7 @@ async function openEntry(fixture, id = "a") {
     [
       "the map session guard",
       async (fixture) => {
-        fixture.ctx.resolveDirtyMapSession = async () => {
+        fixture.store.resolveDirtyMapSession = async () => {
           fixture.calls.push(["resolveDirtyMapSession"]);
           return false;
         };
@@ -1880,6 +1894,273 @@ async function openEntry(fixture, id = "a") {
     assert.deepEqual(names(fixture.calls), ["flushWritingWebview"], "the same section only flushes");
     assert.equal(fixture.store.selected?.id, "a");
     fixture.store.destroy();
+  }
+}
+
+// ---- Writing and Language bridges -------------------------------------------------------------------------------
+{
+  const fixture = createFixture();
+  const { store } = fixture;
+  assert.equal(await store.flushWritingWebview(), false, "a webview that is not mounted has nothing to flush");
+  store.writingWebview.mounted = true;
+  assert.equal(await store.flushWritingWebview(), false, "a webview that is not ready has nothing to flush");
+  store.writingWebview.ready = true;
+  assert.equal(store.writingLoad, null);
+  assert.equal(await store.flushWritingWebview(), false, "a ready webview with no load has nothing to flush");
+  store.destroy();
+}
+{
+  const fixture = createFixture();
+  const { store } = fixture;
+  const posts = [];
+  fixture.project.postPluginWebviewMessage = async () => {
+    posts.push("post");
+    throw new Error("gone");
+  };
+  store.languageWebview.mounted = true;
+  store.languageWebview.ready = true;
+  store.section = "lore";
+  assert.equal(await store.canLeaveLanguageSection(), true, "outside Language the guard allows the leave");
+  assert.equal(posts.length, 0, "outside Language the guard does not post");
+  store.section = "language";
+  assert.equal(await store.canLeaveLanguageSection(), true, "a post that fails resolves as may-leave");
+  assert.equal(posts.length, 1);
+  store.destroy();
+}
+{
+  const fixture = createFixture();
+  const { store } = fixture;
+  const firstWriting = store.trackWritingMount();
+  const secondWriting = store.trackWritingMount();
+  assert.equal(store.writingWebview.mounted, true);
+  assert.equal(store.writingWebview.ready, false);
+  assert.equal(store.writingHostedInstance, null);
+  firstWriting();
+  assert.equal(store.writingWebview.mounted, true, "a stale Writing cleanup leaves the new mount mounted");
+  assert.equal(store.writingWebview.ready, false, "a stale Writing cleanup leaves the new mount's ready flag");
+  assert.equal(store.writingLoad, null, "a stale Writing cleanup leaves the new mount's load");
+  secondWriting();
+  assert.equal(store.writingWebview.mounted, false, "the current Writing cleanup still clears the mount");
+
+  const firstLanguage = store.trackLanguageMount();
+  const secondLanguage = store.trackLanguageMount();
+  assert.equal(store.languageWebview.mounted, true);
+  assert.equal(store.languageWebview.ready, false);
+  assert.equal(store.languagePaneRequest, null);
+  firstLanguage();
+  assert.equal(store.languageWebview.mounted, true, "a stale Language cleanup leaves the new mount mounted");
+  assert.equal(store.languageWebview.ready, false, "a stale Language cleanup leaves the new mount's ready flag");
+  assert.equal(store.languageHostedInstance, null);
+  secondLanguage();
+  assert.equal(store.languageWebview.mounted, false, "the current Language cleanup still clears the mount");
+  store.destroy();
+}
+{
+  const fixture = createFixture();
+  const { store } = fixture;
+  await openEntry(fixture);
+  store.writingLoad = { entityId: "a", token: "current" };
+  store.documentBody = "body a";
+  assert.equal(
+    await store.applyWritingDraft({ entityId: "a", token: "stale", text: "from before the reload" }),
+    false,
+    "a draft with a stale token is ignored",
+  );
+  assert.equal(store.documentBody, "body a");
+  assert.equal(store.hasUnsavedChanges, false);
+  assert.equal(
+    await store.applyWritingDraft({ entityId: "b", token: "current", text: "another entry" }),
+    false,
+    "a draft for another entry is ignored",
+  );
+  assert.equal(store.documentBody, "body a");
+  store.destroy();
+}
+{
+  // The default instance is the tab on screen at the call, not the tab that was current when the store was built.
+  const fixture = createFixture();
+  const posts = [];
+  fixture.project.postPluginWebviewMessage = async (_pluginId, instanceId) => {
+    posts.push(instanceId);
+  };
+  fixture.ctx.shownWebviewInstance = "later-tab";
+  await fixture.store.postWritingMessage({ type: "writing.editable", editable: false });
+  assert.deepEqual(posts, ["later-tab"]);
+  fixture.store.destroy();
+}
+
+// ---- Map session and selection AI --------------------------------------------------------------------------------
+{
+  const worldMap = () => entity("m", { entity_type: "daena.maps:world-map" });
+  const openMap = (store) => {
+    store.selected = worldMap();
+    store.sandboxView = { renderer: "maps" };
+    store.mapsEditorMode = "vector";
+    store.mapSaveStates = { m: { status: "dirty", detail: null } };
+  };
+
+  // No map open: allow the leave, and do not ask.
+  {
+    const fixture = createFixture();
+    const asked = [];
+    fixture.ctx.confirmDialog = async (dialog) => {
+      asked.push(dialog.title);
+      return false;
+    };
+    assert.equal(await fixture.store.resolveDirtyMapSession(), true);
+    assert.deepEqual(asked, []);
+    fixture.store.destroy();
+  }
+
+  // Dirty map, and the user declines the save and the discard.
+  {
+    const fixture = createFixture();
+    const { store } = fixture;
+    openMap(store);
+    const asked = [];
+    fixture.ctx.confirmDialog = async (dialog) => {
+      asked.push(dialog.title);
+      return false;
+    };
+    assert.equal(await store.resolveDirtyMapSession(), false);
+    assert.deepEqual(asked, ["Save changes to this map before leaving?", "Discard unsaved map edits?"]);
+    store.destroy();
+  }
+
+  // Dirty map, and the user saves. save() clears the dirty flag the way the editor's maps-state event does
+  // while the native session saves. This function itself does not clear mapSaveStates.
+  {
+    const fixture = createFixture();
+    const { store } = fixture;
+    openMap(store);
+    const saves = [];
+    let dirty = true;
+    fixture.ctx.confirmDialog = async () => true;
+    fixture.ctx.nativeVectorSession = () => ({
+      save: async () => {
+        saves.push("save");
+        dirty = false;
+        store.mapSaveStates = { m: { status: "saved", detail: null } };
+      },
+      isDirty: () => dirty,
+    });
+    assert.equal(await store.resolveDirtyMapSession(), true);
+    assert.deepEqual(saves, ["save"]);
+    store.destroy();
+  }
+
+  // A selection event for another map does not change the selection.
+  {
+    const fixture = createFixture();
+    const { store } = fixture;
+    store.selected = worldMap();
+    store.handleMapsSelection({ mapEntityId: "other", anchor: { kind: "point" } });
+    assert.equal(store.mapSelection, null);
+    store.handleMapsSelection({ mapEntityId: "m", anchor: { kind: "point" } });
+    assert.deepEqual(store.mapSelection, { kind: "point" });
+    store.destroy();
+  }
+
+  // closeAiRewrite while listenAiStream is still pending sets the start-cancelled flag.
+  // The unlisten does not exist yet, so it is not called. When listen later resolves, the
+  // function is stored and the poll still runs. The source does not call that unlisten.
+  {
+    const fixture = createFixture();
+    const { store } = fixture;
+    fixture.state.projectInfo = { root: "/project" };
+    store.selected = entity("a");
+    store.aiSourceSelection = "selected prose";
+    store.aiInstruction = "Rewrite it.";
+    const cancelled = [];
+    fixture.project.aiCancelText = async (id) => {
+      cancelled.push(id);
+    };
+    fixture.project.aiGenerateText = async () => "req-1";
+    const polls = [];
+    fixture.project.aiPollText = async (id) => {
+      polls.push(id);
+      return [];
+    };
+    let releaseListen;
+    let markListening;
+    const listening = new Promise((resolve) => {
+      markListening = resolve;
+    });
+    let unlistenCalls = 0;
+    const unlisten = () => {
+      unlistenCalls += 1;
+    };
+    const heard = [];
+    fixture.ctx.listenAiStream = (requestId) => {
+      heard.push(requestId);
+      markListening();
+      return new Promise((resolve) => {
+        releaseListen = () => resolve(unlisten);
+      });
+    };
+    const pending = store.startAiRewrite();
+    const reached = await Promise.race([listening.then(() => "listen"), pending.then(() => "done")]);
+    assert.equal(reached, "listen");
+    assert.equal(store.aiRequestId, "req-1");
+    assert.equal(store.aiStartCancelled, false);
+    store.closeAiRewrite();
+    assert.equal(store.aiStartCancelled, true);
+    assert.equal(unlistenCalls, 0);
+    releaseListen();
+    await pending;
+    assert.equal(unlistenCalls, 0, "the resolved unlisten is stored, not called");
+    assert.equal(store.aiUnlisten, unlisten);
+    assert.deepEqual(heard, ["req-1"]);
+    assert.deepEqual(cancelled, ["req-1"]);
+    assert.deepEqual(polls, ["req-1"], "the poll still runs after the late listen");
+    store.destroy();
+  }
+
+  // Drops an out-of-order sequence, and an event whose entity is no longer selected.
+  // A stale request id is a different `ai-stream:<requestId>` channel: listenAiStream receives the
+  // id, and the handler does not compare payload.requestId.
+  {
+    const fixture = createFixture();
+    const { store } = fixture;
+    store.selected = entity("a");
+    store.aiSourceEntityId = "a";
+    const event = (sequence, delta, requestId = "req-1") => ({
+      sequence,
+      requestId,
+      phase: "delta",
+      delta,
+      output: null,
+      error: null,
+    });
+    store.handleAiEvent(event(1, "hi"));
+    assert.equal(store.aiStreamText, "hi");
+    assert.equal(store.aiLastSequence, 1);
+    store.handleAiEvent(event(1, "NO"));
+    store.handleAiEvent(event(0, "NO"));
+    assert.equal(store.aiStreamText, "hi", "an old or equal sequence is dropped");
+    assert.equal(store.aiLastSequence, 1);
+    store.selected = entity("b");
+    store.handleAiEvent(event(2, "NO"));
+    assert.equal(store.aiStreamText, "hi", "an event for an entity that is no longer selected is dropped");
+    assert.equal(store.aiLastSequence, 1);
+    store.destroy();
+  }
+
+  // The rewrite dialog and a running generation both block Writing edits.
+  {
+    const { store } = createFixture();
+    assert.equal(store.writingEditable, true);
+    store.aiRewriteOpen = true;
+    flushSync();
+    assert.equal(store.writingEditable, false);
+    store.aiRewriteOpen = false;
+    store.aiBusy = true;
+    flushSync();
+    assert.equal(store.writingEditable, false);
+    store.aiBusy = false;
+    flushSync();
+    assert.equal(store.writingEditable, true);
+    store.destroy();
   }
 }
 

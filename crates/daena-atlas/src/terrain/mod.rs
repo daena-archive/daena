@@ -10,10 +10,11 @@ mod noise;
 mod palette;
 mod render;
 mod rivers;
+mod streams;
 mod tile;
 mod vectors;
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use daena_physical::engine::{decode_source, ToolSurface, TOOL_SURFACE_NONE};
 use daena_physical::PhysicalError;
@@ -103,6 +104,9 @@ pub struct AtlasTerrain {
     half: Vec<f64>,
     /// Engine rivers: one centre-line for the carve and the vector tiles.
     rivers: rivers::RiverGeometry,
+    /// Per-cell tributary trees. Zoom, cache state, and thread count do not
+    /// change a tree.
+    stream_cache: Mutex<streams::StreamCache>,
 }
 
 impl AtlasTerrain {
@@ -257,6 +261,7 @@ impl AtlasTerrain {
             beach_octaves,
             half,
             rivers,
+            stream_cache: Mutex::new(streams::StreamCache::new()),
         }
     }
 
@@ -1418,6 +1423,33 @@ mod tests {
 
     fn relief() -> AtlasStyle {
         load_style(style::RELIEF_STYLE_ID).expect("relief style").0
+    }
+
+    const IMAGERY_RASTER_SHA256: &str =
+        "60b486971d302f382e8f97f2362781c715a5f9f912058c35018531d061ddbbc2";
+    const RELIEF_RASTER_SHA256: &str =
+        "1f17b494080d0f29534241f5d946aa4787536b4a0543d74c25c4910fb8435809";
+
+    fn sha256_hex(bytes: &[u8]) -> String {
+        use sha2::{Digest, Sha256};
+        Sha256::digest(bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
+    }
+
+    #[test]
+    fn raster_tiles_match_the_pre_stream_bytes() {
+        let terrain = fixture();
+        let relief_style = relief();
+        let imagery = render_imagery_pixels(terrain, 4, 8 * 256, 8 * 256, 16, 16, 1);
+        let shaded = render_pixels(terrain, &relief_style, 4, 8 * 256, 8 * 256, 16, 16, 1);
+        let imagery_hash = sha256_hex(&imagery);
+        let relief_hash = sha256_hex(&shaded);
+        assert_eq!(
+            (imagery_hash.as_str(), relief_hash.as_str()),
+            (IMAGERY_RASTER_SHA256, RELIEF_RASTER_SHA256)
+        );
     }
 
     fn assert_rgba_eq(left: &[u8], right: &[u8]) {

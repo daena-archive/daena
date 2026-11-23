@@ -734,6 +734,7 @@ fn tile_cache_kind(layer: Option<TerrainVectorLayer>) -> u8 {
         Some(TerrainVectorLayer::Lakes) => 2,
         Some(TerrainVectorLayer::Rivers) => 3,
         Some(TerrainVectorLayer::Contours) => 4,
+        Some(TerrainVectorLayer::Streams) => 5,
     }
 }
 

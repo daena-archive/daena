@@ -1,4 +1,4 @@
-//! Per-tile GeoJSON for coastline, lakes, rivers, and contours.
+//! Per-tile GeoJSON for coastline, lakes, rivers, streams, and contours.
 //!
 //! The lattice sits on the zoom's scale-1 pixel grid, one node every two
 //! pixels, with one node of halo. Shared tile edges therefore sample `h(p)`
@@ -13,6 +13,7 @@ use super::render::{
     direction_from_lon_lat, ground_metres_per_pixel, mercator_latitude, mercator_longitude,
     mercator_world_px,
 };
+use super::streams::{self, StreamLine};
 use super::{AtlasTerrain, TerrainCover};
 use crate::AtlasError;
 
@@ -33,10 +34,11 @@ pub enum TerrainVectorLayer {
     Lakes,
     Rivers,
     Contours,
+    Streams,
 }
 
 impl TerrainVectorLayer {
-    /// Parse a tile suffix: `coastline`, `lakes`, `rivers`, or `contours`.
+    /// Parse a tile suffix: `coastline`, `lakes`, `rivers`, `streams`, or `contours`.
     #[must_use]
     pub fn from_id(id: &str) -> Option<Self> {
         match id {
@@ -44,6 +46,7 @@ impl TerrainVectorLayer {
             "lakes" => Some(Self::Lakes),
             "rivers" => Some(Self::Rivers),
             "contours" => Some(Self::Contours),
+            "streams" => Some(Self::Streams),
             _ => None,
         }
     }
@@ -56,6 +59,7 @@ impl TerrainVectorLayer {
             Self::Lakes => "lakes",
             Self::Rivers => "rivers",
             Self::Contours => "contours",
+            Self::Streams => "streams",
         }
     }
 }
@@ -155,6 +159,11 @@ enum Props {
         elevation_m: i32,
         index: bool,
     },
+    Stream {
+        id: String,
+        order: u16,
+        accumulation: u32,
+    },
 }
 
 struct Drawn {
@@ -180,6 +189,7 @@ pub fn render_terrain_vector_tile(
         TerrainVectorLayer::Lakes => lakes(terrain, z, x, y),
         TerrainVectorLayer::Rivers => rivers(terrain, vectors, z, x, y),
         TerrainVectorLayer::Contours => contours(terrain, z, x, y),
+        TerrainVectorLayer::Streams => streams(terrain, z, x, y),
     };
     Ok(encode_collection(&drawn))
 }
@@ -469,6 +479,93 @@ fn rivers(terrain: &AtlasTerrain, vectors: &TerrainVectors, z: u32, x: u32, y: u
     drawn
 }
 
+/// Land cells whose region can meet the tile. Below zoom 8 the tile is empty.
+///
+/// Streams are clipped to the strict tile rectangle, the same way a shared
+/// coastline edge is, so both tiles cut a crossing at the same point.
+fn streams(terrain: &AtlasTerrain, z: u32, x: u32, y: u32) -> Vec<Drawn> {
+    if streams::stream_threshold(z, 1, false).is_none() {
+        return Vec::new();
+    }
+    let cells = cells_touching(terrain, z, x, y);
+    let trees: Vec<_> = cells
+        .par_iter()
+        .map(|cell| streams::tree(terrain, *cell).map(|tree| (*cell, tree)))
+        .collect();
+    let strict = strict_rect(x, y);
+    let mut drawn = Vec::new();
+    for entry in trees.into_iter().flatten() {
+        let (cell, tree) = entry;
+        for line in tree.lines(cell, z) {
+            drawn.extend(draw_stream(z, x, &line, strict));
+        }
+    }
+    drawn
+}
+
+fn cells_touching(terrain: &AtlasTerrain, z: u32, x: u32, y: u32) -> Vec<u32> {
+    let (lon0, lat0, lon1, lat1) = tile_lonlat_bounds(z, x, y, HALO_PX);
+    let cell_deg = (terrain.cell_size_m() / terrain.radius_m()).to_degrees();
+    let margin = cell_deg * 0.75;
+    let step = (cell_deg * 0.45).max(1e-4);
+    let lat_start = (lat0 - margin).max(-85.0);
+    let lat_end = (lat1 + margin).min(85.0);
+    let lon_start = lon0 - margin;
+    let lon_end = lon1 + margin;
+    let mut cells = Vec::new();
+    let mut lat = lat_start;
+    while lat <= lat_end + step * 0.1 {
+        let mut lon = lon_start;
+        while lon <= lon_end + step * 0.1 {
+            let dir = direction_from_lon_lat(lon.to_radians(), lat.to_radians());
+            let cell = terrain.surface().cell_at_direction(dir);
+            cells.push(cell);
+            for neighbor in terrain.surface().neighbors(cell) {
+                if neighbor != daena_physical::engine::TOOL_SURFACE_NONE {
+                    cells.push(neighbor);
+                }
+            }
+            lon += step;
+        }
+        lat += step;
+    }
+    cells.sort_unstable();
+    cells.dedup();
+    cells
+}
+
+fn draw_stream(z: u32, x: u32, line: &StreamLine, rect: [f64; 4]) -> Vec<Drawn> {
+    let mut drawn = Vec::new();
+    for part in split_dateline(&line.lonlat) {
+        let pixels = part
+            .iter()
+            .map(|point| lonlat_to_px(point[0], point[1], z, x))
+            .collect::<Vec<_>>();
+        for clipped in clip_polyline(&pixels, rect) {
+            let simplified = douglas_peucker(&clipped, RIVER_SIMPLIFY_PX);
+            let lonlat = simplified
+                .iter()
+                .map(|px| px_to_lonlat(z, px[0], px[1]))
+                .collect::<Vec<_>>();
+            for ring in split_dateline(&lonlat) {
+                let ring = round_ring(&ring);
+                if ring.len() < 2 {
+                    continue;
+                }
+                drawn.push(Drawn {
+                    props: Props::Stream {
+                        id: line.id.clone(),
+                        order: line.order,
+                        accumulation: line.accumulation,
+                    },
+                    ring,
+                });
+            }
+        }
+    }
+    drawn
+}
+
 fn merge_run_spans(spans: &[(u32, f64, f64)]) -> Vec<(u32, f64, f64)> {
     let mut spans = spans.to_vec();
     spans.sort_by(|left, right| left.0.cmp(&right.0).then(left.1.total_cmp(&right.1)));
@@ -532,6 +629,15 @@ fn clone_props(props: &Props) -> Props {
         Props::Contour { elevation_m, index } => Props::Contour {
             elevation_m: *elevation_m,
             index: *index,
+        },
+        Props::Stream {
+            id,
+            order,
+            accumulation,
+        } => Props::Stream {
+            id: id.clone(),
+            order: *order,
+            accumulation: *accumulation,
         },
     }
 }
@@ -1186,6 +1292,19 @@ fn encode_collection(features: &[Drawn]) -> Vec<u8> {
                 out.push_str(if *index { "true" } else { "false" });
                 out.push('}');
             }
+            Props::Stream {
+                id,
+                order,
+                accumulation,
+            } => {
+                out.push_str("{\"id\":");
+                push_json_string(&mut out, id);
+                out.push_str(",\"order\":");
+                out.push_str(&order.to_string());
+                out.push_str(",\"accumulation\":");
+                out.push_str(&accumulation.to_string());
+                out.push('}');
+            }
         }
         out.push_str(",\"geometry\":{\"type\":\"LineString\",\"coordinates\":[");
         for (coord_index, point) in feature.ring.iter().enumerate() {
@@ -1283,6 +1402,7 @@ mod tests {
             TerrainVectorLayer::Lakes,
             TerrainVectorLayer::Rivers,
             TerrainVectorLayer::Contours,
+            TerrainVectorLayer::Streams,
         ] {
             let once = render_terrain_vector_tile(terrain, &vectors, layer, z, x, y).unwrap();
             let twice = render_terrain_vector_tile(terrain, &vectors, layer, z, x, y).unwrap();
@@ -1704,10 +1824,151 @@ mod tests {
             TerrainVectorLayer::Lakes,
             TerrainVectorLayer::Rivers,
             TerrainVectorLayer::Contours,
+            TerrainVectorLayer::Streams,
         ] {
             assert_eq!(TerrainVectorLayer::from_id(layer.id()), Some(layer));
         }
         assert_eq!(TerrainVectorLayer::from_id("foo"), None);
+    }
+
+    #[test]
+    fn streams_are_empty_below_zoom_8() {
+        let terrain = fixture();
+        let vectors = vectors();
+        let (lat, lon) = terrain
+            .surface()
+            .cell_lat_lon_degrees(highest_land(terrain));
+        let (x, y) = super::super::lon_lat_to_tile(lon, lat, 7);
+        let bytes =
+            render_terrain_vector_tile(terrain, &vectors, TerrainVectorLayer::Streams, 7, x, y)
+                .unwrap();
+        assert_eq!(bytes, br#"{"type":"FeatureCollection","features":[]}"#,);
+    }
+
+    #[test]
+    fn stream_endpoints_meet_across_a_shared_edge() {
+        let terrain = fixture();
+        let vectors = vectors();
+        let surface = terrain.surface();
+        let z = 11u32;
+        let n = 1u32 << z;
+        let mut matched = 0usize;
+        let mut tried = 0usize;
+        for cell in 0..surface.cell_count() as u32 {
+            if !streams::is_stream_cell(terrain, cell)
+                || f64::from(terrain.moisture[cell as usize]) < 0.3
+            {
+                continue;
+            }
+            tried += 1;
+            if tried > 24 {
+                break;
+            }
+            let (lat, lon) = surface.cell_lat_lon_degrees(cell);
+            let (x, y) = super::super::lon_lat_to_tile(lon, lat, z);
+            let before = matched;
+            for (dx, dy) in [(1i32, 0), (0, 1)] {
+                let east = (x as i32 + dx).rem_euclid(n as i32) as u32;
+                let north = (y as i32 + dy).clamp(0, n as i32 - 1) as u32;
+                if dy != 0 && north == y {
+                    continue;
+                }
+                let left = render_terrain_vector_tile(
+                    terrain,
+                    &vectors,
+                    TerrainVectorLayer::Streams,
+                    z,
+                    x,
+                    y,
+                )
+                .unwrap();
+                let right = render_terrain_vector_tile(
+                    terrain,
+                    &vectors,
+                    TerrainVectorLayer::Streams,
+                    z,
+                    east,
+                    north,
+                )
+                .unwrap();
+                if dx != 0 {
+                    let edge = shared_edge_lon(z, x);
+                    let left_ends = endpoints_on_edge(&left, edge);
+                    let right_ends = endpoints_on_edge(&right, edge);
+                    for end in &left_ends {
+                        assert!(
+                            right_ends.iter().any(|other| lon_close(end[0], other[0])
+                                && (end[1] - other[1]).abs() <= 1e-6),
+                            "stream endpoint {end:?} missing across {x}/{y}"
+                        );
+                        matched += 1;
+                    }
+                    for end in &right_ends {
+                        assert!(
+                            left_ends.iter().any(|other| lon_close(end[0], other[0])
+                                && (end[1] - other[1]).abs() <= 1e-6),
+                            "stream endpoint {end:?} missing from the western tile"
+                        );
+                    }
+                }
+                if dy != 0 {
+                    let edge_lat = shared_edge_lat(z, y);
+                    let left_ends = endpoints_on_lat(&left, edge_lat);
+                    let right_ends = endpoints_on_lat(&right, edge_lat);
+                    for end in &left_ends {
+                        assert!(
+                            right_ends
+                                .iter()
+                                .any(|other| (end[0] - other[0]).abs() <= 1e-6
+                                    && (end[1] - other[1]).abs() <= 1e-6),
+                            "stream endpoint {end:?} missing across the southern edge"
+                        );
+                        matched += 1;
+                    }
+                    for end in &right_ends {
+                        assert!(
+                            left_ends
+                                .iter()
+                                .any(|other| (end[0] - other[0]).abs() <= 1e-6
+                                    && (end[1] - other[1]).abs() <= 1e-6),
+                            "stream endpoint {end:?} missing from the northern tile"
+                        );
+                    }
+                }
+            }
+            if matched > before {
+                break;
+            }
+        }
+        assert!(
+            matched > 0,
+            "no stream endpoint landed on a shared edge in {tried} cells"
+        );
+    }
+
+    fn shared_edge_lat(z: u32, y: u32) -> f64 {
+        let world = mercator_world_px(z);
+        mercator_latitude((f64::from(y) + 1.0) * TILE_PX, world).to_degrees()
+    }
+
+    fn endpoints_on_lat(bytes: &[u8], edge_lat: f64) -> Vec<[f64; 2]> {
+        let mut found = Vec::new();
+        for feature in feature_list(bytes) {
+            let coords = feature["geometry"]["coordinates"]
+                .as_array()
+                .expect("coordinates");
+            if coords.len() < 2 {
+                continue;
+            }
+            for index in [0, coords.len() - 1] {
+                let lon = coords[index][0].as_f64().unwrap();
+                let lat = coords[index][1].as_f64().unwrap();
+                if (lat - edge_lat).abs() <= 1e-6 {
+                    found.push([lon, lat]);
+                }
+            }
+        }
+        found
     }
 
     #[test]
@@ -1802,6 +2063,39 @@ mod tests {
                     median <= 15.0,
                     "{site} {} z12 median {median:.3} ms worst {worst:.3} ms",
                     layer.id()
+                );
+            }
+            for z in [8u32, 12] {
+                let n_z = 1u32 << z;
+                let (x, y) = super::super::lon_lat_to_tile(lon, lat, z);
+                let mut times = Vec::with_capacity(9);
+                for dy in -1i32..=1 {
+                    for dx in -1i32..=1 {
+                        let tile_x = (x as i32 + dx).rem_euclid(n_z as i32) as u32;
+                        let tile_y = (y as i32 + dy).clamp(0, n_z as i32 - 1) as u32;
+                        streams::clear_cache(&terrain);
+                        let started = Instant::now();
+                        let _bytes = render_terrain_vector_tile(
+                            &terrain,
+                            &vectors,
+                            TerrainVectorLayer::Streams,
+                            z,
+                            tile_x,
+                            tile_y,
+                        )
+                        .unwrap();
+                        times.push(started.elapsed().as_secs_f64() * 1000.0);
+                    }
+                }
+                times.sort_by(f64::total_cmp);
+                let median = times[4];
+                let worst = times[8];
+                println!(
+                    "vector {site} streams z{z} cold median {median:.3} ms worst {worst:.3} ms"
+                );
+                assert!(
+                    median <= 15.0,
+                    "{site} streams z{z} cold median {median:.3} ms worst {worst:.3} ms"
                 );
             }
         }

@@ -8,7 +8,7 @@ import Text from "ol/style/Text.js";
 export const TERRAIN_IMAGERY_STYLE_ID = "daena-atlas-imagery";
 export const TERRAIN_RELIEF_STYLE_ID = "daena-atlas-relief";
 
-export const TERRAIN_VECTOR_LAYERS = ["rivers", "coastline", "lakes", "contours"] as const;
+export const TERRAIN_VECTOR_LAYERS = ["rivers", "streams", "coastline", "lakes", "contours"] as const;
 export type TerrainVectorLayerId = (typeof TERRAIN_VECTOR_LAYERS)[number];
 
 export function isTerrainStyle(styleId: string): boolean {
@@ -17,6 +17,14 @@ export function isTerrainStyle(styleId: string): boolean {
 
 /** Highest Strahler order the engine produces on Earthlike worlds. */
 const MAX_RIVER_ORDER = 5;
+
+/** Order 1 is 0.5 px. Order 5 is 1.2 px. Width grows 6% per zoom above 8. */
+export function streamWidthPx(order: number, zoom: number): number {
+  const t = Math.min(1, Math.max(0, (order - 1) / (MAX_RIVER_ORDER - 1)));
+  const base = 0.5 + t * 0.7;
+  const clamped = Math.min(12, Math.max(8, zoom));
+  return base * (1 + 0.06 * (clamped - 8));
+}
 
 /** Order 1 is a hairline at z12. The largest rivers are about 3 px at z12 and 1 px at z5. */
 export function riverWidthPx(order: number, zoom: number): number {
@@ -101,6 +109,24 @@ export function contourVectorStyle(
             stroke: new Stroke({ color: "rgba(255, 250, 240, 0.8)", width: 2 }),
           })
         : undefined,
+    });
+  };
+}
+
+export function streamVectorStyle(
+  relief: boolean,
+  zoomFor: (resolution: number) => number,
+): (feature: FeatureLike, resolution: number) => Style {
+  const rgb = relief ? "59, 110, 165" : "46, 88, 104";
+  return (feature, resolution) => {
+    const raw = feature.get("order");
+    const order = typeof raw === "number" ? raw : Number(raw);
+    const zoom = zoomFor(resolution);
+    return new Style({
+      stroke: new Stroke({
+        color: `rgba(${rgb}, 0.7)`,
+        width: streamWidthPx(Number.isFinite(order) ? order : 1, zoom),
+      }),
     });
   };
 }

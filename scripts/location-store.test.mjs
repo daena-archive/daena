@@ -170,6 +170,8 @@ function createFixture(overrides = {}) {
       state.storedDocuments[payload.document.entity_id] = payload.document.body;
     },
     saveRecoveryCopy: async (id, body) => `/recovery/${id}.md`,
+    postPluginWebviewMessage: async () => true,
+    takePluginTextTransfer: async () => "",
     ...overrides.project,
   };
   const ctx = {
@@ -199,14 +201,6 @@ function createFixture(overrides = {}) {
     confirmDialog: async () => true,
     setError: record("setError"),
     resetSelectionShellState: record("resetSelectionShellState"),
-    canLeaveLanguageSection: async () => {
-      calls.push(["canLeaveLanguageSection"]);
-      return true;
-    },
-    flushWritingWebview: async () => {
-      calls.push(["flushWritingWebview"]);
-      return true;
-    },
     recordShellDeparture: record("recordShellDeparture"),
     setShellNavigationRestoring: record("setShellNavigationRestoring"),
     closeNativePluginWebviews: async () => {
@@ -236,10 +230,6 @@ function createFixture(overrides = {}) {
       store.showSettings = true;
       store.settingsSurface = "project";
       store.projectSection = section;
-    },
-    requestLanguagePane: (pane) => {
-      calls.push(["requestLanguagePane", pane]);
-      store.languagePane = pane;
     },
     clearGlobalQuery: record("clearGlobalQuery"),
     refreshAdmin: async () => {
@@ -277,12 +267,31 @@ function createFixture(overrides = {}) {
     upsertEntityInCache: record("upsertEntityInCache"),
     refreshAfterEntityMutation: async () => {},
     loadEraContexts: async () => [],
-    notifyWritingSaved: record("notifyWritingSaved"),
     notifyProfileTimelineChanged: record("notifyProfileTimelineChanged"),
     loadProjectStatus: async () => {},
+    shownWebviewInstance: "shown",
+    writingWebviewShown: false,
+    writingEditable: true,
+    aiProvider: { name: "" },
+    aiPromptTemplates: [],
+    markShownWebviewReady: record("markShownWebviewReady"),
+    openExternal: record("openExternal"),
+    openEntityFromWebview: record("openEntityFromWebview"),
+    runShellShortcut: record("runShellShortcut"),
+    openEntityEditDialog: record("openEntityEditDialog"),
+    confirmWritingArchive: record("confirmWritingArchive"),
     ...overrides.ctx,
   };
   const store = new LocationStore(ctx);
+  // The leave bridges used to be context callbacks. They are store methods now; record them the same way, in front
+  // of the real method, so the leave-sequence checks still see the order.
+  for (const name of ["flushWritingWebview", "canLeaveLanguageSection", "requestLanguagePane", "notifyWritingSaved"]) {
+    const original = store[name].bind(store);
+    store[name] = (...args) => {
+      calls.push([name, ...args]);
+      return original(...args);
+    };
+  }
   // The section and the Writing tab belong to the store now; tests set them through the state like the page did.
   for (const name of ["section", "writingView"]) {
     Object.defineProperty(state, name, {
@@ -1069,12 +1078,12 @@ async function openEntry(fixture, id = "a") {
 
   // Hiding the content column saves first and asks the Language pane, which can refuse.
   store.editorFullscreen = true;
-  ctx.canLeaveLanguageSection = async () => false;
+  store.canLeaveLanguageSection = async () => false;
   await store.toggleWorkbenchPane("content");
   assert.equal(store.workbenchPaneVisibility.content, true, "a refusing Language pane keeps the column");
   assert.equal(store.editorFullscreen, true);
   assert.equal(calls.filter(([name]) => name === "flushWritingWebview").length, 1);
-  ctx.canLeaveLanguageSection = async () => true;
+  store.canLeaveLanguageSection = async () => true;
   await store.toggleWorkbenchPane("content");
   assert.equal(store.workbenchPaneVisibility.content, false);
   assert.equal(store.editorFullscreen, false, "hiding the content column leaves editor full screen");
@@ -1821,7 +1830,7 @@ async function openEntry(fixture, id = "a") {
     [
       "the Language guard",
       async (fixture) => {
-        fixture.ctx.canLeaveLanguageSection = async () => {
+        fixture.store.canLeaveLanguageSection = async () => {
           fixture.calls.push(["canLeaveLanguageSection"]);
           return false;
         };
@@ -1881,6 +1890,98 @@ async function openEntry(fixture, id = "a") {
     assert.equal(fixture.store.selected?.id, "a");
     fixture.store.destroy();
   }
+}
+
+// ---- Writing and Language bridges -------------------------------------------------------------------------------
+{
+  const fixture = createFixture();
+  const { store } = fixture;
+  assert.equal(await store.flushWritingWebview(), false, "a webview that is not mounted has nothing to flush");
+  store.writingWebview.mounted = true;
+  assert.equal(await store.flushWritingWebview(), false, "a webview that is not ready has nothing to flush");
+  store.writingWebview.ready = true;
+  assert.equal(store.writingLoad, null);
+  assert.equal(await store.flushWritingWebview(), false, "a ready webview with no load has nothing to flush");
+  store.destroy();
+}
+{
+  const fixture = createFixture();
+  const { store } = fixture;
+  const posts = [];
+  fixture.project.postPluginWebviewMessage = async () => {
+    posts.push("post");
+    throw new Error("gone");
+  };
+  store.languageWebview.mounted = true;
+  store.languageWebview.ready = true;
+  store.section = "lore";
+  assert.equal(await store.canLeaveLanguageSection(), true, "outside Language the guard allows the leave");
+  assert.equal(posts.length, 0, "outside Language the guard does not post");
+  store.section = "language";
+  assert.equal(await store.canLeaveLanguageSection(), true, "a post that fails resolves as may-leave");
+  assert.equal(posts.length, 1);
+  store.destroy();
+}
+{
+  const fixture = createFixture();
+  const { store } = fixture;
+  const firstWriting = store.trackWritingMount();
+  const secondWriting = store.trackWritingMount();
+  assert.equal(store.writingWebview.mounted, true);
+  assert.equal(store.writingWebview.ready, false);
+  assert.equal(store.writingHostedInstance, null);
+  firstWriting();
+  assert.equal(store.writingWebview.mounted, true, "a stale Writing cleanup leaves the new mount mounted");
+  assert.equal(store.writingWebview.ready, false, "a stale Writing cleanup leaves the new mount's ready flag");
+  assert.equal(store.writingLoad, null, "a stale Writing cleanup leaves the new mount's load");
+  secondWriting();
+  assert.equal(store.writingWebview.mounted, false, "the current Writing cleanup still clears the mount");
+
+  const firstLanguage = store.trackLanguageMount();
+  const secondLanguage = store.trackLanguageMount();
+  assert.equal(store.languageWebview.mounted, true);
+  assert.equal(store.languageWebview.ready, false);
+  assert.equal(store.languagePaneRequest, null);
+  firstLanguage();
+  assert.equal(store.languageWebview.mounted, true, "a stale Language cleanup leaves the new mount mounted");
+  assert.equal(store.languageWebview.ready, false, "a stale Language cleanup leaves the new mount's ready flag");
+  assert.equal(store.languageHostedInstance, null);
+  secondLanguage();
+  assert.equal(store.languageWebview.mounted, false, "the current Language cleanup still clears the mount");
+  store.destroy();
+}
+{
+  const fixture = createFixture();
+  const { store } = fixture;
+  await openEntry(fixture);
+  store.writingLoad = { entityId: "a", token: "current" };
+  store.documentBody = "body a";
+  assert.equal(
+    await store.applyWritingDraft({ entityId: "a", token: "stale", text: "from before the reload" }),
+    false,
+    "a draft with a stale token is ignored",
+  );
+  assert.equal(store.documentBody, "body a");
+  assert.equal(store.hasUnsavedChanges, false);
+  assert.equal(
+    await store.applyWritingDraft({ entityId: "b", token: "current", text: "another entry" }),
+    false,
+    "a draft for another entry is ignored",
+  );
+  assert.equal(store.documentBody, "body a");
+  store.destroy();
+}
+{
+  // The default instance is the tab on screen at the call, not the tab that was current when the store was built.
+  const fixture = createFixture();
+  const posts = [];
+  fixture.project.postPluginWebviewMessage = async (_pluginId, instanceId) => {
+    posts.push(instanceId);
+  };
+  fixture.ctx.shownWebviewInstance = "later-tab";
+  await fixture.store.postWritingMessage({ type: "writing.editable", editable: false });
+  assert.deepEqual(posts, ["later-tab"]);
+  fixture.store.destroy();
 }
 
 // ---- Teardown ---------------------------------------------------------------------------------------------------

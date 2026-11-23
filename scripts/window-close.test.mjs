@@ -46,7 +46,7 @@ const branches = [
   ["draft could not be saved", /could not be saved\.";\s*await keepWindowOpen\(\);\s*return;/],
   [
     "language guard refuses",
-    /if \(!\(await canLeaveLanguageSection\(\)\)\) \{\s*await keepWindowOpen\(\);\s*return;\s*\}/,
+    /if \(!\(await loc\.canLeaveLanguageSection\(\)\)\) \{\s*await keepWindowOpen\(\);\s*return;\s*\}/,
   ],
   [
     "plugin view guard refuses",

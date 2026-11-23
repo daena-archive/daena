@@ -18,6 +18,7 @@ const between = (source, start, end) => {
 };
 
 const page = await read("src/routes/+page.svelte");
+const store = await read("src/lib/location/location-store.svelte.ts");
 const sandbox = await read("src/lib/plugins/SandboxView.svelte");
 const client = await read("src/lib/project/client.ts");
 const lib = await read("src-tauri/src/lib.rs");
@@ -118,7 +119,7 @@ assert.match(
 assert.doesNotMatch(sandbox, /closePluginWebview/, "teardown never closes every instance of the plugin");
 
 // The shell prunes the pool on one effect over the live tab ids, and clears it with the project session.
-const prune = between(page, "$effect(() => {\n  // One place covers every way", "/**\n * `{#key}` creates");
+const prune = between(page, "$effect(() => {\n  // One place covers every way", "const languageRef");
 assert.match(prune, /pruneWebviewPoolTabs\(webviewPool, live\)/, "the pool is pruned to the live tab ids");
 assert.match(prune, /prunePlugins\(next, enabled\)/, "the pool is pruned to the enabled plugins");
 assert.match(
@@ -132,24 +133,24 @@ assert.match(reset, /webviewPool = emptyWebviewPool;/, "a project switch clears 
 
 // Only the shown instance is ever shown by the visibility effect, and a suspended Writing or Language one waits
 // for its own mount.
-const visibility = between(page, "void writingHostedInstance;", "});\n\n");
+const visibility = between(page, "void loc.writingHostedInstance;", "});\n\n");
 assert.match(
   visibility,
-  /visible && pluginId === WRITING_PLUGIN_ID && writingHostedInstance !== shownWebviewInstance/,
+  /visible && pluginId === WRITING_PLUGIN_ID && loc\.writingHostedInstance !== shownWebviewInstance/,
   "the visibility effect does not show a Writing instance that is not mounted yet",
 );
-assert.match(visibility, /void languageHostedInstance;/, "the effect reruns when a Language mount finishes");
+assert.match(visibility, /void loc\.languageHostedInstance;/, "the effect reruns when a Language mount finishes");
 assert.match(
   visibility,
-  /visible && pluginId === LANGUAGE_PLUGIN_ID && languageHostedInstance !== shownWebviewInstance/,
+  /visible && pluginId === LANGUAGE_PLUGIN_ID && loc\.languageHostedInstance !== shownWebviewInstance/,
   "the visibility effect does not show a Language instance that is not mounted yet",
 );
 assert.match(page, /async function setPluginWebviewVisibleQuietly[\s\S]*?const instanceId = shownWebviewInstance;/);
 
 // Full screen ends on the instance that reported it, not on whichever tab is current by then.
-const fullscreen = between(page, "function endWritingFullscreen() {", "\n}\n");
+const fullscreen = between(store, "endWritingFullscreen() {", "\n  }\n");
 assert.match(fullscreen, /postWritingMessage\(writingFullscreenMessage\(false\), instance\)/);
-assert.match(page, /writingFullscreenInstance = event\.on \? shownWebviewInstance : null/);
+assert.match(store, /writingFullscreenInstance = event\.on \? this\.ctx\.shownWebviewInstance : null/);
 
 // A ready report from a hidden instance still reaches the pool, and is read before the parser of the shown path.
 const writingState = between(page, 'listen<unknown>("writing-state"', "return () => {");
@@ -168,8 +169,14 @@ assert.ok(
 );
 // The shown instance's own ready report reaches the pool too, for either plugin.
 assert.match(
-  between(page, "function handleLanguageStateEvent(", 'case "pane":'),
-  /markReady\(webviewPool, languageRef\(shownWebviewInstance\), true\)/,
+  between(store, "handleLanguageStateEvent(", 'case "pane":'),
+  /markShownWebviewReady\(LANGUAGE_PLUGIN_ID\)/,
+  "a shown Language ready report reaches the shell pool",
+);
+assert.match(
+  page,
+  /markShownWebviewReady: \(pluginId\) => \{\s*webviewPool = markReady\(webviewPool, \{ pluginId, instanceId: shownWebviewInstance \}, true\);/,
+  "the pool records the shown instance",
 );
 
 // Language: a reused, ready instance is marked ready from the pool and resumed; it does not wait for an event that
@@ -186,8 +193,8 @@ assert.match(
 );
 assert.match(languageMountedSource, /languageHostedInstance = self\.instanceId;/);
 // The mount generation guard: the old placeholder's cleanup must not clear what the new one set.
-const trackLanguage = between(page, "function trackLanguageMount(", "\n}\n");
-assert.match(trackLanguage, /generation !== languageMountGeneration\) return;/);
+const trackLanguage = between(store, "trackLanguageMount = () => {", "\n  };\n");
+assert.match(trackLanguage, /generation !== this\.languageMountGeneration\) return;/);
 assert.equal(trackLanguage.split("languageHostedInstance = null;").length, 3, "set on attach, cleared on cleanup");
 // The pane is not part of a pooled instance's identity, or every pane change would recreate the webview.
 const mountState = between(page, "function languageMountState(", "\n}\n");
@@ -208,12 +215,12 @@ assert.match(
 );
 // Leaving a Language tab still runs the guard first: the switch is refused when the webview says so.
 assert.match(
-  between(page, "async function canLeaveLanguageSection(", "\n}\n"),
-  /languageLeave\.begin\(requestId\);\s*const sent = await postLanguageMessage\(\{ type: "language\.can-leave", requestId \}, instanceId\);/,
+  between(store, "async canLeaveLanguageSection(", "return decision;"),
+  /languageLeave\.begin\(requestId\);\s*const sent = await this\.postLanguageMessage\(\{ type: "language\.can-leave", requestId \}, instanceId\);/,
 );
 
 // Full screen does not follow to the next tab: attaching the next Writing instance ends the outgoing one's.
-assert.match(between(page, "function trackWritingMount(", "return () => {"), /endWritingFullscreen\(\);/);
+assert.match(between(store, "trackWritingMount = () => {", "return () => {"), /endWritingFullscreen\(\);/);
 
 // Host side: suspend is a registered command, and the mount takes reuse and retain.
 assert.match(lib, /plugin_suspend_webview,/, "plugin_suspend_webview is in the invoke handler");

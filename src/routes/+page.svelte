@@ -282,29 +282,8 @@ import {
   CalendarRange,
   Network,
 } from "@lucide/svelte";
-import {
-  LANGUAGE_PLUGIN_ID,
-  LanguageLeaveTracker,
-  languageResumeMessage,
-  openableLinkHref,
-  parseLanguageStateEvent,
-  type LanguageStateEvent,
-} from "$lib/modules/language-bridge";
-import {
-  WRITING_PLUGIN_ID,
-  createWritingFlushBroker,
-  parseWritingStateEvent,
-  writingAiStateMessage,
-  writingConflictMessage,
-  writingFullscreenMessage,
-  writingLoadMessage,
-  writingMessageCurrent,
-  writingTitleMessage,
-  type WritingBridgeDraft,
-  type WritingBridgeShortcut,
-  type WritingLoad,
-  type WritingStateEvent,
-} from "$lib/modules/writing-bridge";
+import { LANGUAGE_PLUGIN_ID, languageResumeMessage, parseLanguageStateEvent } from "$lib/modules/language-bridge";
+import { WRITING_PLUGIN_ID, parseWritingStateEvent, type WritingBridgeShortcut } from "$lib/modules/writing-bridge";
 import RichTextEditor from "$lib/editor/RichTextEditor.svelte";
 import MarkdownArticle from "$lib/markdown/MarkdownArticle.svelte";
 import AiProposalPreview from "$lib/ai/AiProposalPreview.svelte";
@@ -422,36 +401,12 @@ $effect(() => {
 });
 let shellNavigationBusy = $state(false);
 let shellNavigationRestoring = false;
-/** Mount state of the Language webview: `mounted` while its content pane element exists, `ready` after it reports ready. */
-let languageWebview = $state({ mounted: false, ready: false });
-/** Can-leave requests to the Language webview, resolved by its leave-pending/leave-reply/ready messages. */
-const languageLeave = new LanguageLeaveTracker();
-/** A pane the shell asked the mounted Language webview to show and has not yet seen confirmed. */
-let languagePaneRequest: LanguagePane | null = null;
-/** Mount state of the Writing webview: `mounted` while its content pane element exists, `ready` after it reports ready. */
-let writingWebview = $state({ mounted: false, ready: false });
-/** Counts the webview's `ready` reports, so the AI state is posted again to a webview that restarted. */
-let writingReadyCount = $state(0);
 /**
- * The Writing webview's full screen, as the webview reports it. Kept apart from `editorFullscreen`: that one hides
- * every embedded webview, and this one needs the webview visible so it can fill the window.
- */
-let writingFullscreen = $state(false);
-/** The instance that reported `writingFullscreen`, so ending it reaches that instance even after the tab changed. */
-let writingFullscreenInstance: string | null = null;
-/**
- * Embedded webviews the shell keeps alive (Writing only). The host owns what exists; this record decides which
- * instances the next mount keeps (`retainSet`) and which are unmounted when their tab or plugin goes.
+ * Embedded webviews the shell keeps alive (Writing and Language). The host owns what exists; this record decides which
+ * instances the next mount keeps (`retainSet`) and which are unmounted when their tab or plugin goes. Shell-global:
+ * one pool for every location. The per-location mount hooks live on the location store.
  */
 let webviewPool = $state<WebviewPool>(emptyWebviewPool);
-/** The Writing instance whose host mount finished. The visibility effect shows no other Writing instance. */
-let writingHostedInstance = $state<string | null>(null);
-/** The same for Language: the instance whose host mount finished. */
-let languageHostedInstance = $state<string | null>(null);
-/** Whether the mounting Language instance was ready before its mount began. See `beginPooledMount`. */
-let languageMountPriorReady = false;
-/** What the Language mount in progress keeps, so only those the host actually closed leave the pool. */
-let languageMountRetained: WebviewInstanceRef[] = [];
 /**
  * The pane each Language instance was created with, and for which language. The mount key contains it (it is the
  * mount's `state` param), so the pane the user moved to since would make every later mount look like a different
@@ -459,28 +414,6 @@ let languageMountRetained: WebviewInstanceRef[] = [];
  * carries the current pane. Used only while the pool still knows the instance (see `languageMountState`).
  */
 const languageCreatedState = new Map<string, { entityId: string | undefined; pane: LanguagePane }>();
-/** Whether the mounting instance was ready before its mount began. See `beginPooledWritingMount`. */
-let writingMountPriorReady = false;
-/** What the mount in progress keeps, so only those the host actually closed leave the pool. */
-let writingMountRetained: WebviewInstanceRef[] = [];
-/**
- * What the last `writing.load` was for (entity id and the shell's load counter), so an unchanged selection is
- * not reposted. Saving does not change it; a new entity or a reload from disk does.
- */
-let writingLoadKey: string | null = null;
-/** The `writing.load` the shell last posted. Only its entity and token are accepted on drafts and conflict actions. */
-let writingLoad: WritingLoad | null = null;
-/** Asks the mounted Writing webview for text it has not published yet. */
-const writingFlush = createWritingFlushBroker({
-  post: (message) => postWritingMessage(message),
-  newRequestId: () => crypto.randomUUID(),
-  onTimeout: (requestId) =>
-    console.warn(`The Writing webview did not answer flush ${requestId}; continuing without its unsent text.`),
-});
-/** Drafts are applied one at a time, in arrival order, so a slow chunked draft cannot land after a newer one. */
-let writingDraftQueue: Promise<unknown> = Promise.resolve();
-/** The last `writing.editable` value the webview was told, so only changes are posted. */
-let writingEditablePosted: boolean | null = null;
 let calendarDefinitions = $state<Record<string, CalendarDefinition>>({});
 /** Bounded calendar entity list from paged queries — avoids scanning the full entity cache. */
 let calendarEntities = $state<Entity[]>([]);
@@ -527,8 +460,6 @@ const loc: LocationStore = new LocationStore({
     projectDiagnostics = [];
     showCreateForm = false;
   },
-  canLeaveLanguageSection: () => canLeaveLanguageSection(),
-  flushWritingWebview: () => flushWritingWebview(),
   recordShellDeparture: (location) => recordShellDeparture(location),
   setShellNavigationRestoring: (restoring) => {
     shellNavigationRestoring = restoring;
@@ -549,7 +480,6 @@ const loc: LocationStore = new LocationStore({
   dismissSettings: () => dismissSettings(),
   openSettings: (nextSection) => openSettings(nextSection),
   openProjectCenter: (nextSection) => openProjectCenter(nextSection),
-  requestLanguagePane: (pane) => requestLanguagePane(pane),
   clearGlobalQuery: () => {
     globalQuery = "";
   },
@@ -584,9 +514,40 @@ const loc: LocationStore = new LocationStore({
   upsertEntityInCache: (entity) => upsertEntityInCache(entity),
   refreshAfterEntityMutation: (options) => refreshAfterEntityMutation(options),
   loadEraContexts: (eraIds) => loadEraContexts(eraIds),
-  notifyWritingSaved: (entityId) => notifyWritingSaved(entityId),
   notifyProfileTimelineChanged: (eventId) => notifyProfileTimelineChanged(eventId),
   loadProjectStatus: (includeGit) => loadProjectStatus(includeGit),
+  get shownWebviewInstance() {
+    return shownWebviewInstance;
+  },
+  get writingWebviewShown() {
+    return writingWebviewShown;
+  },
+  get writingEditable() {
+    return writingEditable;
+  },
+  get aiProvider() {
+    return aiProvider;
+  },
+  get aiPromptTemplates() {
+    return aiPromptTemplates;
+  },
+  markShownWebviewReady: (pluginId) => {
+    webviewPool = markReady(webviewPool, { pluginId, instanceId: shownWebviewInstance }, true);
+  },
+  openExternal: (href) => {
+    void shellEditorHost.openExternal(href);
+  },
+  openEntityFromWebview: (entityId, newTab) => {
+    if (newTab) void openInNewTab(() => openEntityById(entityId));
+    else void openEntityById(entityId);
+  },
+  runShellShortcut: (shortcut) => runShellShortcut(shortcut),
+  openEntityEditDialog: (entity) => {
+    void openEntityEditDialog(entity);
+  },
+  confirmWritingArchive: (entityId) => {
+    void confirmWritingArchive(entityId);
+  },
 });
 type LifecycleToast = { message: string; actionLabel?: string; onAction?: () => void };
 let lifecycleToast = $state<LifecycleToast | null>(null);
@@ -1459,7 +1420,7 @@ const writingWebviewShown = $derived(
     enabledWorkspaceSections().includes("writing"),
 );
 /** The content column fills the window while the Writing webview is in full screen (see `writingFullscreen`). */
-const writingFullscreenShown = $derived(writingWebviewShown && writingFullscreen);
+const writingFullscreenShown = $derived(writingWebviewShown && loc.writingFullscreen);
 /** Same gate the standalone view row used: Lore, Timeline, Writing, and Houses, not a full plugin sandbox. */
 const workspaceViewNavShown = $derived(
   ready &&
@@ -1527,8 +1488,8 @@ function foreignWebviewInstance(payload: unknown): boolean {
 /** Embedded plugin webviews the shell is currently drawing (the Language or Writing pane, or a webview sandbox view). */
 const embeddedPluginWebviewIds = $derived.by(() => {
   const ids = new Set<string>();
-  if (languageWebview.mounted) ids.add(LANGUAGE_PLUGIN_ID);
-  if (writingWebview.mounted) ids.add(WRITING_PLUGIN_ID);
+  if (loc.languageWebview.mounted) ids.add(LANGUAGE_PLUGIN_ID);
+  if (loc.writingWebview.mounted) ids.add(WRITING_PLUGIN_ID);
   const sandboxShown = ready && !loc.showSettings && !loc.projectHomeOpen && !loc.hostView && !loc.loreWikiOpen;
   if (sandboxShown && loc.sandboxView?.renderer === "webview") ids.add(loc.sandboxView.plugin.id);
   return [...ids];
@@ -1577,19 +1538,19 @@ $effect(() => {
 $effect(() => {
   // Re-applied when an embedded webview reports ready, in case an overlay opened during its mount,
   // and when the shown tab changes, so visibility addresses that tab's instance.
-  void languageWebview.ready;
-  void writingWebview.ready;
+  void loc.languageWebview.ready;
+  void loc.writingWebview.ready;
   void shownWebviewInstance;
-  void writingHostedInstance;
-  void languageHostedInstance;
+  void loc.writingHostedInstance;
+  void loc.languageHostedInstance;
   const visible = !modalOverlayOpen && !popoverOverlapsWebview;
   for (const pluginId of embeddedPluginWebviewIds) {
     // A pooled Writing instance that a tab switch just made current may still be suspended. Its own mount sets
     // its bounds and shows it; showing it earlier would draw its old rectangle over the tab being restored.
     // Hiding is always allowed.
-    if (visible && pluginId === WRITING_PLUGIN_ID && writingHostedInstance !== shownWebviewInstance) continue;
+    if (visible && pluginId === WRITING_PLUGIN_ID && loc.writingHostedInstance !== shownWebviewInstance) continue;
     // The same for a pooled Language instance, whose old rectangle would show over the tab being restored.
-    if (visible && pluginId === LANGUAGE_PLUGIN_ID && languageHostedInstance !== shownWebviewInstance) continue;
+    if (visible && pluginId === LANGUAGE_PLUGIN_ID && loc.languageHostedInstance !== shownWebviewInstance) continue;
     void setPluginWebviewVisibleQuietly(pluginId, visible);
   }
 });
@@ -1619,158 +1580,6 @@ $effect(() => {
   });
 });
 
-/**
- * `{#key}` creates the next attachment before it destroys the previous one
- * (`BranchManager.ensure` mounts the new branch, then `#commit` destroys the
- * old). A stale cleanup must not clear state the new instance just set.
- */
-let languageMountGeneration = 0;
-
-/** Attachment for the Language content pane: tracks whether the pane element is in the document. */
-function trackLanguageMount() {
-  const generation = ++languageMountGeneration;
-  languageWebview.mounted = true;
-  languageWebview.ready = false;
-  languageHostedInstance = null;
-  languagePaneRequest = null;
-  languageLeave.releaseAll();
-  return () => {
-    if (generation !== languageMountGeneration) return;
-    languageWebview.mounted = false;
-    languageWebview.ready = false;
-    languageHostedInstance = null;
-    languagePaneRequest = null;
-    languageLeave.releaseAll();
-  };
-}
-
-async function postLanguageMessage(message: unknown, instanceId = shownWebviewInstance): Promise<boolean> {
-  try {
-    await project.postPluginWebviewMessage(LANGUAGE_PLUGIN_ID, instanceId, message);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Moves the Language workspace to a pane. A mounted, ready webview is told through the host so
- * its leave guards run; the webview may answer with a different pane. Otherwise the next mount
- * reads `languagePane`.
- */
-function requestLanguagePane(next: LanguagePane) {
-  if (loc.languagePane === next) return;
-  loc.languagePane = next;
-  if (!languageWebview.mounted || !languageWebview.ready) {
-    languagePaneRequest = null;
-    return;
-  }
-  languagePaneRequest = next;
-  void postLanguageMessage({ type: "language.pane", pane: next }).then((sent) => {
-    if (!sent && languagePaneRequest === next) languagePaneRequest = null;
-  });
-}
-
-/** Asks the Language webview whether it may be torn down. Resolves true when it is not mounted or ready. */
-async function canLeaveLanguageSection(): Promise<boolean> {
-  if (loc.section !== "language" || !languageWebview.mounted || !languageWebview.ready) return true;
-  // Captured before the await. `switchToTab` and `applyTabsChange` call this
-  // before they change `shellTabs`, so this is the outgoing tab.
-  const instanceId = shownWebviewInstance;
-  const requestId = crypto.randomUUID();
-  const decision = languageLeave.begin(requestId);
-  const sent = await postLanguageMessage({ type: "language.can-leave", requestId }, instanceId);
-  if (!sent) languageLeave.reply(requestId, true);
-  return decision;
-}
-
-function handleLanguageStateEvent(event: LanguageStateEvent) {
-  switch (event.kind) {
-    case "ready": {
-      if (!languageWebview.mounted) return;
-      languageWebview.ready = true;
-      webviewPool = markReady(webviewPool, languageRef(shownWebviewInstance), true);
-      languagePaneRequest = null;
-      languageLeave.releaseAll();
-      // The webview mounted with the pane it was given; if the shell moved on meanwhile, the shell wins.
-      if (event.pane !== null && event.pane !== loc.languagePane)
-        void postLanguageMessage({ type: "language.pane", pane: loc.languagePane });
-      return;
-    }
-    case "pane": {
-      if (!languageWebview.mounted) return;
-      if (event.pane === loc.languagePane) {
-        languagePaneRequest = null;
-        return;
-      }
-      if (languagePaneRequest !== null) {
-        // Answer to a shell request that the webview refused: revert without a history entry.
-        languagePaneRequest = null;
-        loc.languagePane = event.pane;
-        return;
-      }
-      recordShellDeparture(loc.currentShellLocation());
-      loc.languagePane = event.pane;
-      return;
-    }
-    case "leave-pending":
-      languageLeave.pending(event.requestId);
-      return;
-    case "leave-reply":
-      languageLeave.reply(event.requestId, event.allowed);
-      return;
-    case "entity-changed":
-      if (event.deleted) {
-        if (loc.selected?.id === event.entityId) loc.clearSelection();
-        void refreshAfterEntityMutation({ entityId: event.entityId, removed: true });
-      } else {
-        void refreshAfterEntityMutation({ entityId: event.entityId });
-      }
-      return;
-    case "open-link": {
-      const href = openableLinkHref(event.href);
-      if (href) void shellEditorHost.openExternal(href);
-      return;
-    }
-    case "open-entity":
-      if (event.newTab) void openInNewTab(() => openEntityById(event.entityId));
-      else void openEntityById(event.entityId);
-      return;
-    case "shortcut":
-      if (languageWebview.mounted) runShellShortcut(event.shortcut);
-      return;
-  }
-}
-
-/** See `languageMountGeneration`. Same `{#key}` setup-before-cleanup order. */
-let writingMountGeneration = 0;
-
-/** Attachment for the Writing content pane: tracks whether the pane element is in the document. */
-function trackWritingMount() {
-  const generation = ++writingMountGeneration;
-  // The outgoing instance may be fullscreen inside its own webview: end that before the state resets.
-  endWritingFullscreen();
-  writingWebview.mounted = true;
-  writingWebview.ready = false;
-  writingHostedInstance = null;
-  writingLoadKey = null;
-  writingLoad = null;
-  writingEditablePosted = null;
-  writingFlush.releaseAll();
-  return () => {
-    if (generation !== writingMountGeneration) return;
-    endWritingFullscreen();
-    writingWebview.mounted = false;
-    writingWebview.ready = false;
-    writingHostedInstance = null;
-    writingLoadKey = null;
-    writingLoad = null;
-    writingEditablePosted = null;
-    writingFlush.releaseAll();
-  };
-}
-
-const writingRef = (instanceId: string): WebviewInstanceRef => ({ pluginId: WRITING_PLUGIN_ID, instanceId });
 const languageRef = (instanceId: string): WebviewInstanceRef => ({ pluginId: LANGUAGE_PLUGIN_ID, instanceId });
 
 /**
@@ -1823,8 +1632,8 @@ function beginPooledWritingMount(
   mountKey: string,
 ): { retain: WebviewInstanceRef[]; reuse: boolean } {
   const plan = beginPooledMount(self, mountKey);
-  writingMountPriorReady = plan.priorReady;
-  writingMountRetained = plan.retain;
+  loc.writingMountPriorReady = plan.priorReady;
+  loc.writingMountRetained = plan.retain;
   return { retain: plan.retain, reuse: plan.reuse };
 }
 
@@ -1841,16 +1650,16 @@ function prepareUnpooledMount(self: WebviewInstanceRef): { retain: WebviewInstan
 
 /** The host finished mounting the pooled Writing instance (`self` is the one on screen). */
 function writingMounted(outcome: "reused" | "created", self: WebviewInstanceRef) {
-  const settled = settlePooledMount(outcome, self, writingMountRetained, writingMountPriorReady);
+  const settled = settlePooledMount(outcome, self, loc.writingMountRetained, loc.writingMountPriorReady);
   if (!settled.shown) return;
-  writingMountPriorReady = false;
-  writingHostedInstance = self.instanceId;
+  loc.writingMountPriorReady = false;
+  loc.writingHostedInstance = self.instanceId;
   // A reused webview already loaded its document and will not report ready again. A webview that is still
   // loading reports it later, through the state event. `writing.load` is posted by the load effect, as for a
   // new webview: the tracker above left `writingLoad` and `writingLoadKey` empty.
   if (settled.ready) {
-    writingWebview.ready = true;
-    writingReadyCount += 1;
+    loc.writingWebview.ready = true;
+    loc.writingReadyCount += 1;
   }
 }
 
@@ -1874,8 +1683,8 @@ function beginPooledLanguageMount(
   // Read before the pool learns the instance: this is the state the mount key was built from.
   const state = languageMountState(self.instanceId);
   const plan = beginPooledMount(self, mountKey);
-  languageMountPriorReady = plan.priorReady;
-  languageMountRetained = plan.retain;
+  loc.languageMountPriorReady = plan.priorReady;
+  loc.languageMountRetained = plan.retain;
   if (!plan.reuse) languageCreatedState.set(self.instanceId, { entityId: loc.selected?.id, pane: state.pane });
   return { retain: plan.retain, reuse: plan.reuse };
 }
@@ -1887,16 +1696,16 @@ function beginPooledLanguageMount(
  * still loading, reports ready itself, and the ready handler corrects its pane.
  */
 function languageMounted(outcome: "reused" | "created", self: WebviewInstanceRef) {
-  const settled = settlePooledMount(outcome, self, languageMountRetained, languageMountPriorReady);
+  const settled = settlePooledMount(outcome, self, loc.languageMountRetained, loc.languageMountPriorReady);
   if (!settled.shown) return;
-  languageMountPriorReady = false;
-  languageHostedInstance = self.instanceId;
+  loc.languageMountPriorReady = false;
+  loc.languageHostedInstance = self.instanceId;
   if (!settled.ready) return;
-  languageWebview.ready = true;
-  languagePaneRequest = null;
-  languageLeave.releaseAll();
+  loc.languageWebview.ready = true;
+  loc.languagePaneRequest = null;
+  loc.languageLeave.releaseAll();
   const entityId = loc.selected?.id;
-  if (entityId) void postLanguageMessage(languageResumeMessage(entityId, loc.languagePane), self.instanceId);
+  if (entityId) void loc.postLanguageMessage(languageResumeMessage(entityId, loc.languagePane), self.instanceId);
 }
 
 /**
@@ -1910,15 +1719,6 @@ function noteHiddenWebviewReady(pluginId: string, payload: unknown) {
   if (event?.kind === "ready") webviewPool = markReady(webviewPool, { pluginId, instanceId }, true);
 }
 
-async function postWritingMessage(message: unknown, instanceId = shownWebviewInstance): Promise<boolean> {
-  try {
-    await project.postPluginWebviewMessage(WRITING_PLUGIN_ID, instanceId, message);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 /** Whether the webview may edit: not while an entry loads or fails to load, diagnostics block saving, AI works or a conflict waits. */
 const writingEditable = $derived(
   !loc.selectedLoading &&
@@ -1928,179 +1728,6 @@ const writingEditable = $derived(
     !aiRewriteOpen &&
     !loc.documentConflict,
 );
-
-function writingPlaceholder() {
-  return loc.selected?.entity_type === "daena.writing:reference-page"
-    ? "Write this reference page…"
-    : "Write your manuscript…";
-}
-
-/**
- * Applies a draft the way typing in the shell editor would: `updateDocumentBody` marks the entry dirty, the
- * autosave timer saves the document and field edits in one `saveEntry`, and conflicts stay in the shell. The
- * webview cannot write anything itself. Resolves true when the text was taken.
- */
-async function applyWritingDraft(draft: WritingBridgeDraft): Promise<boolean> {
-  // A transfer is claimed first so a rejected draft does not leave its text waiting.
-  const text = "text" in draft ? draft.text : await project.takePluginTextTransfer(WRITING_PLUGIN_ID, draft.transfer);
-  if (!writingMessageCurrent(draft, loc.selected?.id, writingLoad)) return false;
-  if (loc.selectedLoading || loc.selectedLoadError || projectDiagnostics.length > 0) return false;
-  if (text === loc.documentBody) return false;
-  loc.updateDocumentBody(text);
-  return true;
-}
-
-function enqueueWritingDraft(draft: WritingBridgeDraft): Promise<boolean> {
-  const applied = writingDraftQueue
-    .then(() => applyWritingDraft(draft))
-    .catch((cause) => {
-      console.warn("A Writing draft could not be applied", cause);
-      return false;
-    });
-  writingDraftQueue = applied;
-  return applied;
-}
-
-/**
- * Collects the Writing webview's unsent text before the shell saves, leaves or reloads: asks for it, waits
- * (a little) for the answer and applies it. Anything published before the answer is applied first. Resolves
- * true when it handed the shell text that changed the document.
- */
-async function flushWritingWebview(): Promise<boolean> {
-  if (!writingWebview.mounted || !writingWebview.ready || writingLoad === null) return false;
-  // The flush post runs before this function awaits. Callers (`flushAutoSave`
-  // via `switchToTab` / `applyTabsChange`) run that before `shellTabs` changes,
-  // so the post addresses the outgoing tab. The default instance is read then.
-  const draft = await writingFlush.request();
-  const applied = draft ? await enqueueWritingDraft(draft) : false;
-  await writingDraftQueue;
-  return applied;
-}
-
-async function postWritingLoad(entityId: string, key: string) {
-  const instanceId = shownWebviewInstance;
-  // Reloading the entry the webview already shows: its unsent text reaches the shell before the editor is
-  // replaced, and if there was any it wins, so the webview keeps its editor and the shell saves that text.
-  if (writingLoad?.entityId === entityId && (await flushWritingWebview())) {
-    // The editor stays, but a rename may have changed the header, which a load would otherwise have refreshed.
-    if (loc.selected?.id === entityId)
-      void postWritingMessage(writingTitleMessage(entityId, loc.selected.name), instanceId);
-    return;
-  }
-  if (writingLoadKey !== key) return;
-  const load: WritingLoad = { entityId, token: crypto.randomUUID() };
-  writingLoad = load;
-  writingEditablePosted = writingEditable;
-  const sent = await postWritingMessage(
-    writingLoadMessage(entityId, load.token, loc.loadedDocumentRevision, {
-      editable: writingEditable,
-      placeholder: writingPlaceholder(),
-      mode: loc.documentMode,
-    }),
-    instanceId,
-  );
-  if (sent) return;
-  if (writingLoadKey === key) writingLoadKey = null;
-  if (writingLoad === load) writingLoad = null;
-}
-
-$effect(() => {
-  // The webview stays mounted across entities, so the shell tells it which one to show: once it is ready, and
-  // again whenever the selection or a reload from disk replaces what the shell holds.
-  if (!writingWebviewShown || !writingWebview.ready) return;
-  const entityId = loc.selected?.id;
-  if (!entityId || loc.selectedLoading) return;
-  const key = `${entityId}:${loc.selectedLoadToken}`;
-  if (key === writingLoadKey) return;
-  writingLoadKey = key;
-  // Only the selection and the load counter decide when to post; what the message reads is not tracked.
-  void untrack(() => postWritingLoad(entityId, key));
-});
-
-$effect(() => {
-  // The webview runs the AI rewrite flow itself, so it is told whether AI is on, the provider's name and the
-  // editor prompt templates: after it reports ready, and again whenever any of them changes. It asks the broker
-  // for nothing of this. The shell's own AI dialog stays off for it: the shell editor is not rendered here.
-  void writingReadyCount;
-  if (!writingWebview.mounted || !writingWebview.ready) return;
-  const message = writingAiStateMessage({
-    enabled: projectInfo?.aiEnabled ?? false,
-    providerName: aiProvider.name,
-    templates: aiPromptTemplates,
-  });
-  void untrack(() => postWritingMessage(message));
-});
-
-$effect(() => {
-  // Editability follows the shell's state (loading, conflict, AI). The load message carries the value at its
-  // posting time; this posts the changes after it.
-  const editable = writingEditable;
-  if (!writingWebview.ready || writingLoad === null || writingLoad.entityId !== loc.selected?.id) return;
-  if (editable === writingEditablePosted) return;
-  writingEditablePosted = editable;
-  void postWritingMessage({ type: "writing.editable", editable });
-});
-
-$effect(() => {
-  // A revision conflict found by the shell's own save path is shown in the webview's banner.
-  const conflict = loc.documentConflict;
-  if (!conflict || !writingWebview.ready || writingLoad === null || writingLoad.entityId !== loc.selected?.id) return;
-  void postWritingMessage(writingConflictMessage(writingLoad.entityId, conflict));
-});
-
-$effect(() => {
-  // The status area that showed save errors is hidden while the webview is shown, so the webview reports them.
-  const message = loc.saveError;
-  if (!message || !writingWebview.ready || writingLoad === null || writingLoad.entityId !== loc.selected?.id) return;
-  void postWritingMessage({ type: "writing.save-error", entityId: writingLoad.entityId, message });
-});
-
-/** Tells the webview its entry was saved; the revision is informational and does not change its token. */
-function notifyWritingSaved(entityId: string) {
-  if (!writingWebview.ready || writingLoad?.entityId !== entityId) return;
-  void postWritingMessage({ type: "writing.saved", entityId, revision: loc.loadedDocumentRevision });
-}
-
-/** Runs the shell's own conflict action the user picked in the webview banner. */
-function handleWritingConflictAction(event: Extract<WritingStateEvent, { kind: "conflict-action" }>) {
-  if (!writingMessageCurrent(event, loc.selected?.id, writingLoad) || !loc.documentConflict) return;
-  switch (event.action) {
-    case "reload":
-      void loc.reloadConflict();
-      return;
-    case "overwrite":
-      // The shell's own button is disabled while the canonical source needs attention.
-      if (loc.documentConflict.diagnostics.length === 0) void loc.overwriteConflict();
-      return;
-    case "recovery":
-      void loc.saveConflictRecoveryCopy();
-      return;
-  }
-}
-
-/** Ends the Writing webview's full screen from the shell's side, and tells the webview to leave its own. */
-function exitWritingFullscreen() {
-  if (!writingFullscreen) return;
-  endWritingFullscreen();
-}
-
-/**
- * Ends the full screen and tells the instance that reported it, which is not always the one on screen: the effect
- * below runs after a tab switch has already changed `shownWebviewInstance`.
- */
-function endWritingFullscreen() {
-  const instance = writingFullscreenInstance;
-  writingFullscreen = false;
-  writingFullscreenInstance = null;
-  if (instance) void postWritingMessage(writingFullscreenMessage(false), instance);
-}
-
-// The full screen belongs to the entry on screen: choosing another entry, or leaving the Writing pane, ends it.
-$effect(() => {
-  void loc.selected?.id;
-  void writingWebviewShown;
-  untrack(() => exitWritingFullscreen());
-});
 
 /** Moves among the tabs of the active group. A missing index does nothing. One tab does not cycle. */
 function runTabShortcut(shortcut: TabShortcut) {
@@ -2168,68 +1795,6 @@ async function confirmWritingArchive(entityId: string) {
   // The confirmation is modal, but archiving acts on whatever is selected, so the entry is checked again.
   if (loc.selected?.id !== entityId) return;
   await archiveSelected();
-}
-
-/**
- * Writing state from the webview. Each entry-scoped message is checked against the selection, the way the shell's
- * own actions are; drafts and conflict actions also carry the load token (see writingMessageCurrent).
- */
-function handleWritingStateEvent(event: WritingStateEvent) {
-  switch (event.kind) {
-    case "ready":
-      if (!writingWebview.mounted) return;
-      // A webview that (re)started has shown nothing yet, so the effect above posts the selection again.
-      writingLoadKey = null;
-      writingLoad = null;
-      writingEditablePosted = null;
-      writingFullscreen = false;
-      writingFullscreenInstance = null;
-      writingFlush.releaseAll();
-      writingWebview.ready = true;
-      webviewPool = markReady(webviewPool, writingRef(shownWebviewInstance), true);
-      writingReadyCount += 1;
-      return;
-    case "draft":
-      if (writingWebview.mounted) void enqueueWritingDraft(event.draft);
-      return;
-    case "flush-reply":
-      // A reply nobody waits for any more (it came after the timeout) still carries text, which goes
-      // through the same checks as any other draft.
-      if (!writingFlush.reply(event.requestId, event.draft) && event.draft && writingWebview.mounted)
-        void enqueueWritingDraft(event.draft);
-      return;
-    case "conflict-action":
-      if (writingWebview.mounted) handleWritingConflictAction(event);
-      return;
-    case "open-link": {
-      const href = openableLinkHref(event.href);
-      if (href) void shellEditorHost.openExternal(href);
-      return;
-    }
-    case "open-entity":
-      if (event.newTab) void openInNewTab(() => openEntityById(event.entityId));
-      else void openEntityById(event.entityId);
-      return;
-    case "fullscreen":
-      // Only the entry on screen can change the full screen; a message for any other entry is stale.
-      if (writingWebview.mounted && event.entityId === loc.selected?.id) {
-        writingFullscreen = event.on;
-        writingFullscreenInstance = event.on ? shownWebviewInstance : null;
-      }
-      return;
-    case "shortcut":
-      if (writingWebview.mounted) runShellShortcut(event.shortcut);
-      return;
-    case "request-rename":
-      if (writingWebview.mounted && loc.selected && event.entityId === loc.selected.id)
-        void openEntityEditDialog(loc.selected);
-      return;
-    case "request-archive":
-      if (writingWebview.mounted) void confirmWritingArchive(event.entityId);
-      return;
-    default:
-      return;
-  }
 }
 
 function pluginViewLabel(item: PluginNavigationItem) {
@@ -2901,7 +2466,7 @@ async function navigateShellHistory(direction: "back" | "forward") {
   }
   if (!transition) return;
   if (!(await loc.flushAutoSave())) return;
-  if (current.kind === "workspace" && current.section === "language" && !(await canLeaveLanguageSection())) return;
+  if (current.kind === "workspace" && current.section === "language" && !(await loc.canLeaveLanguageSection())) return;
   shellNavigationBusy = true;
   try {
     if (await loc.restoreShellLocation(transition.target)) setShellNavigationHistory(transition.history);
@@ -2957,7 +2522,7 @@ async function switchToTab(tabId: string): Promise<boolean> {
   dismissTransientMenus();
   if (!(await loc.flushAutoSave())) return false;
   const current = loc.currentShellLocation();
-  if (current.kind === "workspace" && current.section === "language" && !(await canLeaveLanguageSection()))
+  if (current.kind === "workspace" && current.section === "language" && !(await loc.canLeaveLanguageSection()))
     return false;
   if (!shellLocationAvailable(found.tab.location)) {
     shellTabs = closeTab(shellTabs, tabId, Date.now(), homeNewTab());
@@ -2991,7 +2556,7 @@ async function openInNewTab(
   dismissTransientMenus();
   if (!(await loc.flushAutoSave())) return;
   const current = loc.currentShellLocation();
-  if (current.kind === "workspace" && current.section === "language" && !(await canLeaveLanguageSection())) return;
+  if (current.kind === "workspace" && current.section === "language" && !(await loc.canLeaveLanguageSection())) return;
   const id = crypto.randomUUID();
   // Where the tab this was opened from stands. Opening that same place in a new tab is a deliberate copy, so
   // the duplicate check below is skipped for it, however many tabs already show it; any other place that is
@@ -3050,7 +2615,7 @@ async function applyTabsChange(change: (state: ShellTabsState) => ShellTabsState
   dismissTransientMenus();
   if (!(await loc.flushAutoSave())) return false;
   const current = loc.currentShellLocation();
-  if (current.kind === "workspace" && current.section === "language" && !(await canLeaveLanguageSection()))
+  if (current.kind === "workspace" && current.section === "language" && !(await loc.canLeaveLanguageSection()))
     return false;
   shellTabs = change(snapshotActiveTab());
   shellNavigationBusy = true;
@@ -4358,7 +3923,7 @@ async function pickAndOpenProject(intent: "create" | "open") {
     const path = typeof selection === "string" ? selection : null;
     if (!path) return;
     // Asked before the transition overlay opens, because the overlay hides the Language webview.
-    if (!(await canLeaveLanguageSection())) return;
+    if (!(await loc.canLeaveLanguageSection())) return;
     await runProjectTransition(intent === "create" ? "Creating project…" : "Opening project…", async () => {
       if (!(await loc.flushAutoSave())) return;
       if (!(await loc.leavePluginView({ closeWebviews: true }))) return;
@@ -4383,7 +3948,7 @@ async function openProjectDirectory() {
 async function openRecentProject(path: string) {
   if (projectTransitionBusy) return;
   showProjectMenu = false;
-  if (!(await canLeaveLanguageSection())) return;
+  if (!(await loc.canLeaveLanguageSection())) return;
   await runProjectTransition("Opening project…", async () => {
     if (!(await loc.flushAutoSave())) return;
     if (!(await loc.leavePluginView({ closeWebviews: true }))) return;
@@ -4397,7 +3962,7 @@ async function openRecentProject(path: string) {
 async function closeProject() {
   if (projectTransitionBusy) return;
   showProjectMenu = false;
-  if (!(await canLeaveLanguageSection())) return;
+  if (!(await loc.canLeaveLanguageSection())) return;
   await runProjectTransition("Closing project…", async () => {
     if (!(await loc.flushAutoSave())) return;
     if (!(await loc.leavePluginView({ closeWebviews: true }))) return;
@@ -5575,7 +5140,7 @@ function setAdminPluginEnabled(id: string, enabled: boolean) {
 async function openSettings(nextSection: SettingsSection = "general") {
   if (!(await loc.flushAutoSave())) return;
   if (loc.showSettings && loc.settingsSurface === "application" && loc.settingsSection === nextSection) return;
-  if (!loc.showSettings && loc.section === "language" && !(await canLeaveLanguageSection())) return;
+  if (!loc.showSettings && loc.section === "language" && !(await loc.canLeaveLanguageSection())) return;
   const departure = loc.currentShellLocation();
   if (loc.showSettings && !(await beforeAdministrationNavigate())) return;
   if (!(await loc.leavePluginView())) return;
@@ -5590,7 +5155,7 @@ async function openSettings(nextSection: SettingsSection = "general") {
 async function openProjectCenter(nextSection: ProjectSection = "overview") {
   if (!ready || !(await loc.flushAutoSave())) return;
   if (loc.showSettings && loc.settingsSurface === "project" && loc.projectSection === nextSection) return;
-  if (!loc.showSettings && loc.section === "language" && !(await canLeaveLanguageSection())) return;
+  if (!loc.showSettings && loc.section === "language" && !(await loc.canLeaveLanguageSection())) return;
   const departure = loc.currentShellLocation();
   const wasEditingFields =
     loc.showSettings && loc.settingsSurface === "project" && loc.projectSection === "fields" && !!schemaPluginId;
@@ -6131,8 +5696,8 @@ function resetProjectSessionState() {
   shellTabs = freshShellTabs();
   // Callers close every plugin webview (`leavePluginView({ closeWebviews: true })`) before this runs.
   webviewPool = emptyWebviewPool;
-  writingMountRetained = [];
-  languageMountRetained = [];
+  loc.writingMountRetained = [];
+  loc.languageMountRetained = [];
   languageCreatedState.clear();
   shellNavigationBusy = false;
   loc.collectionScrollBySection = {};
@@ -6219,7 +5784,7 @@ async function rebuildSearchIndex() {
   }
 }
 async function importPortableCheckpoint() {
-  if (!(await canLeaveLanguageSection())) return;
+  if (!(await loc.canLeaveLanguageSection())) return;
   await runProjectTransition("Importing checkpoint…", async () => {
     if (!(await loc.flushAutoSave())) return;
     if (!(await loc.leavePluginView({ closeWebviews: true }))) return;
@@ -6256,7 +5821,7 @@ async function createRecoveryBackup() {
   return project.recoveryBackup();
 }
 async function restoreRecoveryBackup(path: string) {
-  if (!(await canLeaveLanguageSection())) return;
+  if (!(await loc.canLeaveLanguageSection())) return;
   await runProjectTransition("Restoring recovery backup…", async () => {
     if (!(await loc.flushAutoSave())) return;
     if (!(await loc.leavePluginView({ closeWebviews: true }))) return;
@@ -6338,7 +5903,7 @@ onMount(() => {
   };
   const handleWritingFullscreenKey = (event: KeyboardEvent) => {
     // Escape with focus in the shell. Inside the webview, its editor reports the change itself.
-    if (event.key === "Escape") exitWritingFullscreen();
+    if (event.key === "Escape") loc.exitWritingFullscreen();
   };
   const handleWorkbenchResize = () => {
     workbenchViewportWidth = window.innerWidth;
@@ -6389,7 +5954,7 @@ onMount(() => {
           await keepWindowOpen();
           return;
         }
-        if (!(await canLeaveLanguageSection())) {
+        if (!(await loc.canLeaveLanguageSection())) {
           await keepWindowOpen();
           return;
         }
@@ -6439,7 +6004,7 @@ onMount(() => {
       const item = mapsNavigationItem();
       if (!map || !item) throw new Error("map-unavailable: enable the Maps module to open this location");
       if (!(await loc.flushAutoSave())) return;
-      if (!(await canLeaveLanguageSection())) return;
+      if (!(await loc.canLeaveLanguageSection())) return;
       const departure = loc.currentShellLocation();
       if (!(await loc.leavePluginView())) return;
       loc.selected = map;
@@ -6543,7 +6108,7 @@ onMount(() => {
       return;
     }
     const message = parseLanguageStateEvent(event.payload);
-    if (message) handleLanguageStateEvent(message);
+    if (message) loc.handleLanguageStateEvent(message);
   })
     .then((cleanup) => {
       unlistenLanguageState = cleanup;
@@ -6564,7 +6129,7 @@ onMount(() => {
       return;
     }
     const message = parseWritingStateEvent(event.payload);
-    if (message) handleWritingStateEvent(message);
+    if (message) loc.handleWritingStateEvent(message);
   })
     .then((cleanup) => {
       unlistenWritingState = cleanup;
@@ -8206,7 +7771,7 @@ onMount(() => {
         {#if languagePaneShown}
           {#key loc.selected?.id ?? "language"}
             {#key shownWebviewInstance}
-              <div class="language-mount" {@attach trackLanguageMount}>
+              <div class="language-mount" {@attach loc.trackLanguageMount}>
                 <SandboxView
                   pluginId="daena.language"
                   instanceId={shownWebviewInstance}
@@ -8224,7 +7789,7 @@ onMount(() => {
         {:else if writingWebviewShown}
           <div class="writing-content">
             <!-- The webview draws over the content column, so the shell's messages sit above its slot, in flow. -->
-            {#if !writingFullscreen && (error || projectDiagnostics.length > 0)}
+            {#if !loc.writingFullscreen && (error || projectDiagnostics.length > 0)}
               <div class="writing-notices">
                 {#if projectDiagnostics.length > 0}<div class="project-diagnostics" role="alert">
                     <span>{projectDiagnostics[0]}</span><button
@@ -8238,7 +7803,7 @@ onMount(() => {
               </div>
             {/if}
             {#key shownWebviewInstance}
-              <div class="writing-mount" {@attach trackWritingMount}>
+              <div class="writing-mount" {@attach loc.trackWritingMount}>
                 <SandboxView
                   pluginId="daena.writing"
                   instanceId={shownWebviewInstance}

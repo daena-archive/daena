@@ -371,7 +371,7 @@ assert.deepEqual(
 assert.match(route, /listen<unknown>\("writing-state"/, "the shell must listen for the Writing webview state");
 assert.match(
   route,
-  /if \(writingWebview\.mounted\) ids\.add\(WRITING_PLUGIN_ID\)/,
+  /if \(loc\.writingWebview\.mounted\) ids\.add\(WRITING_PLUGIN_ID\)/,
   "overlays must hide the Writing webview",
 );
 

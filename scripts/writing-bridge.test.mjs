@@ -521,42 +521,39 @@ assert.deepEqual(writingConflictMessage("e1", { diagnostics: ["Portable files ch
   const flush = betweenIn(store, "flushAutoSave = async () => {", "// ---- Saving");
   assert.match(
     flush,
-    /await this\.ctx\.flushWritingWebview\(\);\s*this\.editorRef\?\.flushPendingChanges\(\)/,
+    /await this\.flushWritingWebview\(\);\s*this\.editorRef\?\.flushPendingChanges\(\)/,
     "the webview is asked first",
   );
-  const apply = between("async function applyWritingDraft", "function enqueueWritingDraft");
+  const apply = betweenIn(store, "async applyWritingDraft", "enqueueWritingDraft");
   assert.match(apply, /updateDocumentBody\(text\)/, "a draft is applied like typing in the shell editor");
   assert.match(apply, /project\.takePluginTextTransfer\(WRITING_PLUGIN_ID, draft\.transfer\)/);
   assert.match(
     apply,
-    /writingMessageCurrent\(draft, loc\.selected\?\.id, writingLoad\)/,
+    /writingMessageCurrent\(draft, this\.selected\?\.id, this\.writingLoad\)/,
     "entity and token are checked",
   );
   const writingRegion = between("/** Whether the webview may edit", "function pluginViewLabel");
   assert.doesNotMatch(writingRegion, /project\.save\w*\(|persistDocumentSnapshot\(/, "no second save path");
-  const conflict = between("function handleWritingConflictAction", "/**\n * Writing state from the webview");
-  assert.match(conflict, /writingMessageCurrent\(event, loc\.selected\?\.id, writingLoad\)/);
+  const conflict = betweenIn(store, "handleWritingConflictAction(", "Writing state from the webview");
+  assert.match(conflict, /writingMessageCurrent\(event, this\.selected\?\.id, this\.writingLoad\)/);
   assert.match(conflict, /reloadConflict\(\)/);
   assert.match(conflict, /overwriteConflict\(\)/);
   assert.match(conflict, /saveConflictRecoveryCopy\(\)/);
   const save = betweenIn(store, "async persistDocumentSnapshot()", "async saveDocument()");
   assert.match(save, /notifyWritingSaved\(entityId\)/, "a successful save is reported to the webview");
-  const load = between("async function postWritingLoad", "$effect(() => {");
+  const load = betweenIn(store, "async postWritingLoad", "notifyWritingSaved");
   assert.match(
     load,
-    /writingLoad\?\.entityId === entityId && \(await flushWritingWebview\(\)\)/,
+    /writingLoad\?\.entityId === entityId && \(await this\.flushWritingWebview\(\)\)/,
     "a reload of the same entry flushes the webview first",
   );
   // AI: the webview runs the flow, so the shell tells it the AI state instead of opening its own dialog.
-  const aiStateEffect = between(
-    "// The webview runs the AI rewrite flow itself",
-    "$effect(() => {\n  // Editability follows",
-  );
-  assert.match(aiStateEffect, /void writingReadyCount;/, "a restarted webview is told again");
-  assert.match(aiStateEffect, /if \(!writingWebview\.mounted \|\| !writingWebview\.ready\) return;/);
-  assert.match(aiStateEffect, /enabled: projectInfo\?\.aiEnabled \?\? false/);
-  assert.match(aiStateEffect, /providerName: aiProvider\.name/);
-  assert.match(aiStateEffect, /templates: aiPromptTemplates/);
+  const aiStateEffect = betweenIn(store, "// The webview runs the AI rewrite flow itself", "// Editability follows");
+  assert.match(aiStateEffect, /void this\.writingReadyCount;/, "a restarted webview is told again");
+  assert.match(aiStateEffect, /if \(!this\.writingWebview\.mounted \|\| !this\.writingWebview\.ready\) return;/);
+  assert.match(aiStateEffect, /enabled: this\.ctx\.projectInfo\?\.aiEnabled \?\? false/);
+  assert.match(aiStateEffect, /providerName: this\.ctx\.aiProvider\.name/);
+  assert.match(aiStateEffect, /templates: this\.ctx\.aiPromptTemplates/);
   assert.match(aiStateEffect, /postWritingMessage\(message\)/);
   assert.match(page, /writingReadyCount \+= 1;/, "every ready report counts");
   // The webview's dialog is its own: nothing in the overlay logic reads it, and the shell's dialog stays for the old editor.

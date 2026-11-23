@@ -216,7 +216,10 @@ assert.doesNotMatch(shell, /status === "linked"[\s\S]{0,200}listEntities\(\)/);
 assert.doesNotMatch(shell, /maps-navigation[\s\S]{0,250}loadEntities\(\)/);
 assert.doesNotMatch(shell, /section !== "language"[\s\S]{0,200}listEntities\(\)/);
 assert.doesNotMatch(shell, /onEntityDeleted:\s*loadEntities/);
-assert.match(shell, /function handleLanguageStateEvent[\s\S]*refreshAfterEntityMutation/);
+assert.match(
+  await read("src/lib/location/location-store.svelte.ts"),
+  /handleLanguageStateEvent[\s\S]*refreshAfterEntityMutation/,
+);
 
 // searchEntitiesPaged forwards sort + excluded types into queryEntities.
 const searchFn = shell.slice(

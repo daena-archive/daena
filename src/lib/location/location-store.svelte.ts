@@ -3,14 +3,15 @@
  * tracking, the autosave timer and the save queue, and the conflict state; and the collection beside it: its query,
  * fetched page, open groups, manuscript outline, scroll positions and pane layout, with the effects that reload and
  * fetch them, and which surface the location shows (section, views, wiki, projection or plugin surface, home,
- * settings) with the functions that switch, capture and restore it. The effects run in the store's own
+ * settings) with the functions that switch, capture and restore it, and the Writing and Language webview bridges.
+ * The effects run in the store's own
  * `$effect.root` and key off `section`.
  *
  * `+page.svelte` builds exactly one store today (side-by-side will build one per visible group). The store never
  * imports the page. Shell-global state (the project, the entity cache, modules, dialogs, toasts) and page functions
  * that have not moved yet reach it through the `LocationContext` the page passes in.
  */
-import { tick } from "svelte";
+import { tick, untrack } from "svelte";
 import type {
   Asset,
   Entity,
@@ -50,8 +51,31 @@ import {
   type WritingView,
 } from "$lib/modules/workspace";
 import type { NavigationRenderer } from "$lib/modules/workspace-presentation";
-import { isLanguagePane } from "$lib/modules/language-bridge";
-import { writingWebviewHandles } from "$lib/modules/writing-bridge";
+import {
+  LANGUAGE_PLUGIN_ID,
+  LanguageLeaveTracker,
+  isLanguagePane,
+  openableLinkHref,
+  type LanguageStateEvent,
+} from "$lib/modules/language-bridge";
+import {
+  WRITING_PLUGIN_ID,
+  createWritingFlushBroker,
+  writingAiStateMessage,
+  writingConflictMessage,
+  writingFullscreenMessage,
+  writingLoadMessage,
+  writingMessageCurrent,
+  writingTitleMessage,
+  writingWebviewHandles,
+  type WritingAiStateSource,
+  type WritingBridgeDraft,
+  type WritingBridgeShortcut,
+  type WritingLoad,
+  type WritingStateEvent,
+} from "$lib/modules/writing-bridge";
+import type { TabShortcut } from "$lib/navigation/tab-shortcuts";
+import type { WebviewInstanceRef } from "$lib/plugins/webview-pool";
 import { PROJECTION_SANDBOXES, type ProjectionSandboxKey } from "$lib/location/projection-sandboxes";
 import {
   collectionPaneDefault,
@@ -151,9 +175,7 @@ export interface LocationContext {
   /** Clears the shell-global state that follows the selection (create dialog era contexts, diagnostics, create form). */
   resetSelectionShellState(): void;
 
-  // Leave guards and shell navigation.
-  canLeaveLanguageSection(): Promise<boolean>;
-  flushWritingWebview(): Promise<boolean>;
+  // Shell navigation around a leave. The Language and Writing leave guards live on the store.
   recordShellDeparture(location: ShellLocation): void;
   /** The tab and history work around a restore: `restoreShellLocation` marks it so no departure is recorded. */
   setShellNavigationRestoring(restoring: boolean): void;
@@ -170,8 +192,6 @@ export interface LocationContext {
   dismissSettings(): Promise<boolean>;
   openSettings(section: SettingsSection): Promise<void>;
   openProjectCenter(section: ProjectSection): Promise<void>;
-  /** The Language webview bridge: asks the mounted Language webview to show a pane. */
-  requestLanguagePane(pane: LanguagePane): void;
   /** Clears the shell's global search box. */
   clearGlobalQuery(): void;
   refreshAdmin(): Promise<void>;
@@ -215,9 +235,34 @@ export interface LocationContext {
   upsertEntityInCache(entity: Entity): void;
   refreshAfterEntityMutation(options?: { entityId?: string; removed?: boolean }): Promise<void>;
   loadEraContexts(eraIds: string[]): Promise<EraContext[]>;
-  notifyWritingSaved(entityId: string): void;
   notifyProfileTimelineChanged(eventId: string): void;
   loadProjectStatus(includeGit: boolean): Promise<void>;
+
+  // What the Writing and Language bridges read from the shell. The values mix location and shell state, so they
+  // stay on the page; the store reads them at call time.
+  /** Tab id of the webview on screen. Message defaults read this when the call runs, not when the method was built. */
+  readonly shownWebviewInstance: string;
+  /** The Writing webview is the content column's editor. */
+  readonly writingWebviewShown: boolean;
+  /** Whether the Writing webview may edit. Reads diagnostics and the shell's AI state, so it stays on the page. */
+  readonly writingEditable: boolean;
+  /** The AI provider the Writing webview is told about. The bridge reads `name`. */
+  readonly aiProvider: { readonly name: string };
+  /** The editor prompt templates the Writing webview is told about. */
+  readonly aiPromptTemplates: WritingAiStateSource["templates"];
+
+  /** Marks the shown instance ready in the shell-global webview pool. */
+  markShownWebviewReady(pluginId: string): void;
+  /** Opens a link a Writing or Language webview named. */
+  openExternal(href: string): void;
+  /** Opens an entity a Writing or Language webview named, in this tab or a new one. */
+  openEntityFromWebview(entityId: string, newTab: boolean): void;
+  /** Runs a shell shortcut a Writing or Language webview forwarded. */
+  runShellShortcut(shortcut: WritingBridgeShortcut | TabShortcut): void;
+  /** Opens the rename dialog for the entry the Writing webview named. */
+  openEntityEditDialog(entity: Entity): void;
+  /** Confirms and archives the entry the Writing webview named. */
+  confirmWritingArchive(entityId: string): void;
 }
 
 export function isRevisionConflict(cause: unknown) {
@@ -426,6 +471,63 @@ export class LocationStore {
   readonly mapSurfaceOpen = $derived(
     this.section === "maps" && this.sandboxView?.renderer === "maps" && Boolean(this.sandboxView?.view),
   );
+
+  // Writing and Language bridges. The shell-global pool stays on the page; this is the per-location half.
+  /** Mount state of the Language webview: `mounted` while its content pane element exists, `ready` after it reports ready. */
+  languageWebview = $state({ mounted: false, ready: false });
+  /** Can-leave requests to the Language webview, resolved by its leave-pending/leave-reply/ready messages. */
+  readonly languageLeave = new LanguageLeaveTracker();
+  /** A pane the shell asked the mounted Language webview to show and has not yet seen confirmed. */
+  languagePaneRequest: LanguagePane | null = null;
+  /** Mount state of the Writing webview: `mounted` while its content pane element exists, `ready` after it reports ready. */
+  writingWebview = $state({ mounted: false, ready: false });
+  /** Counts the webview's `ready` reports, so the AI state is posted again to a webview that restarted. */
+  writingReadyCount = $state(0);
+  /**
+   * The Writing webview's full screen, as the webview reports it. Kept apart from `editorFullscreen`: that one hides
+   * every embedded webview, and this one needs the webview visible so it can fill the window.
+   */
+  writingFullscreen = $state(false);
+  /** The instance that reported `writingFullscreen`, so ending it reaches that instance even after the tab changed. */
+  writingFullscreenInstance: string | null = null;
+  /** The Writing instance whose host mount finished. The visibility effect shows no other Writing instance. */
+  writingHostedInstance = $state<string | null>(null);
+  /** The same for Language: the instance whose host mount finished. */
+  languageHostedInstance = $state<string | null>(null);
+  /** Whether the mounting Language instance was ready before its mount began. See `beginPooledMount` on the page. */
+  languageMountPriorReady = false;
+  /** What the Language mount in progress keeps, so only those the host actually closed leave the pool. */
+  languageMountRetained: WebviewInstanceRef[] = [];
+  /**
+   * `{#key}` creates the next attachment before it destroys the previous one
+   * (`BranchManager.ensure` mounts the new branch, then `#commit` destroys the
+   * old). A stale cleanup must not clear state the new instance just set.
+   */
+  languageMountGeneration = 0;
+  /** See `languageMountGeneration`. Same `{#key}` setup-before-cleanup order. */
+  writingMountGeneration = 0;
+  /** Whether the mounting instance was ready before its mount began. See `beginPooledWritingMount` on the page. */
+  writingMountPriorReady = false;
+  /** What the mount in progress keeps, so only those the host actually closed leave the pool. */
+  writingMountRetained: WebviewInstanceRef[] = [];
+  /**
+   * What the last `writing.load` was for (entity id and the shell's load counter), so an unchanged selection is
+   * not reposted. Saving does not change it; a new entity or a reload from disk does.
+   */
+  writingLoadKey: string | null = null;
+  /** The `writing.load` the shell last posted. Only its entity and token are accepted on drafts and conflict actions. */
+  writingLoad: WritingLoad | null = null;
+  /** Asks the mounted Writing webview for text it has not published yet. */
+  readonly writingFlush = createWritingFlushBroker({
+    post: (message) => this.postWritingMessage(message),
+    newRequestId: () => crypto.randomUUID(),
+    onTimeout: (requestId) =>
+      console.warn(`The Writing webview did not answer flush ${requestId}; continuing without its unsent text.`),
+  });
+  /** Drafts are applied one at a time, in arrival order, so a slow chunked draft cannot land after a newer one. */
+  writingDraftQueue: Promise<unknown> = Promise.resolve();
+  /** The last `writing.editable` value the webview was told, so only changes are posted. */
+  writingEditablePosted: boolean | null = null;
 
   constructor(ctx: LocationContext) {
     this.ctx = ctx;
@@ -766,6 +868,77 @@ export class LocationStore {
           this.loreWikiEntityId = null;
         }
       });
+
+      $effect(() => {
+        // The webview stays mounted across entities, so the shell tells it which one to show: once it is ready, and
+        // again whenever the selection or a reload from disk replaces what the shell holds.
+        if (!this.ctx.writingWebviewShown || !this.writingWebview.ready) return;
+        const entityId = this.selected?.id;
+        if (!entityId || this.selectedLoading) return;
+        const key = `${entityId}:${this.selectedLoadToken}`;
+        if (key === this.writingLoadKey) return;
+        this.writingLoadKey = key;
+        // Only the selection and the load counter decide when to post; what the message reads is not tracked.
+        void untrack(() => this.postWritingLoad(entityId, key));
+      });
+
+      $effect(() => {
+        // The webview runs the AI rewrite flow itself, so it is told whether AI is on, the provider's name and the
+        // editor prompt templates: after it reports ready, and again whenever any of them changes. It asks the broker
+        // for nothing of this. The shell's own AI dialog stays off for it: the shell editor is not rendered here.
+        void this.writingReadyCount;
+        if (!this.writingWebview.mounted || !this.writingWebview.ready) return;
+        const message = writingAiStateMessage({
+          enabled: this.ctx.projectInfo?.aiEnabled ?? false,
+          providerName: this.ctx.aiProvider.name,
+          templates: this.ctx.aiPromptTemplates,
+        });
+        void untrack(() => this.postWritingMessage(message));
+      });
+
+      $effect(() => {
+        // Editability follows the shell's state (loading, conflict, AI). The load message carries the value at its
+        // posting time; this posts the changes after it.
+        const editable = this.ctx.writingEditable;
+        if (!this.writingWebview.ready || this.writingLoad === null || this.writingLoad.entityId !== this.selected?.id)
+          return;
+        if (editable === this.writingEditablePosted) return;
+        this.writingEditablePosted = editable;
+        void this.postWritingMessage({ type: "writing.editable", editable });
+      });
+
+      $effect(() => {
+        // A revision conflict found by the shell's own save path is shown in the webview's banner.
+        const conflict = this.documentConflict;
+        if (
+          !conflict ||
+          !this.writingWebview.ready ||
+          this.writingLoad === null ||
+          this.writingLoad.entityId !== this.selected?.id
+        )
+          return;
+        void this.postWritingMessage(writingConflictMessage(this.writingLoad.entityId, conflict));
+      });
+
+      $effect(() => {
+        // The status area that showed save errors is hidden while the webview is shown, so the webview reports them.
+        const message = this.saveError;
+        if (
+          !message ||
+          !this.writingWebview.ready ||
+          this.writingLoad === null ||
+          this.writingLoad.entityId !== this.selected?.id
+        )
+          return;
+        void this.postWritingMessage({ type: "writing.save-error", entityId: this.writingLoad.entityId, message });
+      });
+
+      // The full screen belongs to the entry on screen: choosing another entry, or leaving the Writing pane, ends it.
+      $effect(() => {
+        void this.selected?.id;
+        void this.ctx.writingWebviewShown;
+        untrack(() => this.exitWritingFullscreen());
+      });
     });
   }
 
@@ -930,7 +1103,7 @@ export class LocationStore {
 
   flushAutoSave = async () => {
     // The Writing webview holds the editor while it is shown, so its unsent text comes first.
-    await this.ctx.flushWritingWebview();
+    await this.flushWritingWebview();
     this.editorRef?.flushPendingChanges();
     this.flushDateFieldDirty();
     this.cancelAutoSave();
@@ -1014,7 +1187,7 @@ export class LocationStore {
         this.autoSaveFailureCount = 0;
         this.saveError = "";
         this.savedAt = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-        this.ctx.notifyWritingSaved(entityId);
+        this.notifyWritingSaved(entityId);
         void this.ctx.loadProjectStatus(false);
         try {
           const loaded = await project.getEntity(entityId);
@@ -1086,7 +1259,7 @@ export class LocationStore {
   async selectEntity(entity: Entity, recordHistory = true) {
     if (this.selected?.id === entity.id) return;
     if (!(await this.flushAutoSave())) return;
-    if (this.section === "language" && !(await this.ctx.canLeaveLanguageSection())) return;
+    if (this.section === "language" && !(await this.canLeaveLanguageSection())) return;
     const departure = this.currentShellLocation();
     if (this.section === "maps" && this.sandboxView?.renderer === "maps" && !(await this.leavePluginView())) return;
     if (recordHistory) this.ctx.recordShellDeparture(departure);
@@ -1642,7 +1815,7 @@ export class LocationStore {
     // Hiding the content column tears down the Language and Writing webviews, so save and ask them first.
     if (pane === "content" && this.workbenchPaneVisibility.content) {
       if (!(await this.flushAutoSave())) return;
-      if (!(await this.ctx.canLeaveLanguageSection())) return;
+      if (!(await this.canLeaveLanguageSection())) return;
     }
     const visible = !this.workbenchPaneVisibility[pane];
     this.workbenchPaneVisibility = { ...this.workbenchPaneVisibility, [pane]: visible };
@@ -1882,7 +2055,7 @@ export class LocationStore {
 
   restoreModuleState(section: WorkspaceSection, state: Record<string, unknown> | null | undefined) {
     if (section === "language") {
-      this.ctx.requestLanguagePane(state && isLanguagePane(state.pane) ? state.pane : "overview");
+      this.requestLanguagePane(state && isLanguagePane(state.pane) ? state.pane : "overview");
       return;
     }
     if (section === "houses") {
@@ -1954,7 +2127,7 @@ export class LocationStore {
 
   async openPluginView(item: PluginNavigationItem, departure = this.currentShellLocation()) {
     if (!(await this.flushAutoSave())) return;
-    if (this.section === "language" && !(await this.ctx.canLeaveLanguageSection())) return;
+    if (this.section === "language" && !(await this.canLeaveLanguageSection())) return;
     if (item.renderer === "maps") {
       if (!(await this.ctx.dismissSettings())) return;
       const mapId = this.ctx.currentMapId();
@@ -2001,8 +2174,7 @@ export class LocationStore {
         ?.schemas.some((schema) => schemaEntityTypeIds(schema).includes(entity.entity_type ?? "")),
     );
     const nextSection: WorkspaceSection = owner && owner !== "maps" ? owner : "lore";
-    if (this.section === "language" && nextSection !== "language" && !(await this.ctx.canLeaveLanguageSection()))
-      return;
+    if (this.section === "language" && nextSection !== "language" && !(await this.canLeaveLanguageSection())) return;
     const departure = this.currentShellLocation();
     if (!(await this.leavePluginView())) return;
     this.ctx.recordShellDeparture(departure);
@@ -2023,7 +2195,7 @@ export class LocationStore {
       !this.showSettings
     )
       return;
-    if (this.section === "language" && next !== "language" && !(await this.ctx.canLeaveLanguageSection())) return;
+    if (this.section === "language" && next !== "language" && !(await this.canLeaveLanguageSection())) return;
     const departure = this.currentShellLocation();
     if (!(await this.ctx.dismissSettings())) return;
     if (!(await this.leavePluginView())) return;
@@ -2041,7 +2213,7 @@ export class LocationStore {
   openProjectHome = async () => {
     if (!this.ctx.ready || (this.projectHomeOpen && !this.showSettings && !this.hostView && !this.sandboxView)) return;
     if (!(await this.flushAutoSave())) return;
-    if (this.section === "language" && !(await this.ctx.canLeaveLanguageSection())) return;
+    if (this.section === "language" && !(await this.canLeaveLanguageSection())) return;
     const departure = this.currentShellLocation();
     if (!(await this.ctx.dismissSettings())) return;
     if (!(await this.leavePluginView())) return;
@@ -2118,7 +2290,7 @@ export class LocationStore {
     }
     this.ctx.recordShellDeparture(departure);
     this.projectHomeOpen = false;
-    this.ctx.requestLanguagePane(next);
+    this.requestLanguagePane(next);
   }
 
   /** Opens the projection for the current section: Chronology in Timeline, otherwise the Lore World graph. */
@@ -2316,5 +2488,343 @@ export class LocationStore {
       this.savedMutationTimer = null;
       if (this.entityMutation.phase === "saved") this.entityMutation.reset();
     }, 1800);
+  }
+
+  // ---- Language webview --------------------------------------------------------------------------------------
+
+  /**
+   * Attachment for the Language content pane: tracks whether the pane element is in the document.
+   * Passed bare to `{@attach}`, so it is an arrow: Svelte calls it without the store as `this`.
+   */
+  trackLanguageMount = () => {
+    const generation = ++this.languageMountGeneration;
+    this.languageWebview.mounted = true;
+    this.languageWebview.ready = false;
+    this.languageHostedInstance = null;
+    this.languagePaneRequest = null;
+    this.languageLeave.releaseAll();
+    return () => {
+      if (generation !== this.languageMountGeneration) return;
+      this.languageWebview.mounted = false;
+      this.languageWebview.ready = false;
+      this.languageHostedInstance = null;
+      this.languagePaneRequest = null;
+      this.languageLeave.releaseAll();
+    };
+  };
+
+  async postLanguageMessage(message: unknown, instanceId = this.ctx.shownWebviewInstance): Promise<boolean> {
+    try {
+      await this.ctx.project.postPluginWebviewMessage(LANGUAGE_PLUGIN_ID, instanceId, message);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Moves the Language workspace to a pane. A mounted, ready webview is told through the host so
+   * its leave guards run; the webview may answer with a different pane. Otherwise the next mount
+   * reads `languagePane`.
+   */
+  requestLanguagePane(next: LanguagePane) {
+    if (this.languagePane === next) return;
+    this.languagePane = next;
+    if (!this.languageWebview.mounted || !this.languageWebview.ready) {
+      this.languagePaneRequest = null;
+      return;
+    }
+    this.languagePaneRequest = next;
+    void this.postLanguageMessage({ type: "language.pane", pane: next }).then((sent) => {
+      if (!sent && this.languagePaneRequest === next) this.languagePaneRequest = null;
+    });
+  }
+
+  /** Asks the Language webview whether it may be torn down. Resolves true when it is not mounted or ready. */
+  async canLeaveLanguageSection(): Promise<boolean> {
+    if (this.section !== "language" || !this.languageWebview.mounted || !this.languageWebview.ready) return true;
+    // Captured before the await. `switchToTab` and `applyTabsChange` call this
+    // before they change `shellTabs`, so this is the outgoing tab.
+    const instanceId = this.ctx.shownWebviewInstance;
+    const requestId = crypto.randomUUID();
+    const decision = this.languageLeave.begin(requestId);
+    const sent = await this.postLanguageMessage({ type: "language.can-leave", requestId }, instanceId);
+    if (!sent) this.languageLeave.reply(requestId, true);
+    return decision;
+  }
+
+  handleLanguageStateEvent(event: LanguageStateEvent) {
+    switch (event.kind) {
+      case "ready": {
+        if (!this.languageWebview.mounted) return;
+        this.languageWebview.ready = true;
+        this.ctx.markShownWebviewReady(LANGUAGE_PLUGIN_ID);
+        this.languagePaneRequest = null;
+        this.languageLeave.releaseAll();
+        // The webview mounted with the pane it was given; if the shell moved on meanwhile, the shell wins.
+        if (event.pane !== null && event.pane !== this.languagePane)
+          void this.postLanguageMessage({ type: "language.pane", pane: this.languagePane });
+        return;
+      }
+      case "pane": {
+        if (!this.languageWebview.mounted) return;
+        if (event.pane === this.languagePane) {
+          this.languagePaneRequest = null;
+          return;
+        }
+        if (this.languagePaneRequest !== null) {
+          // Answer to a shell request that the webview refused: revert without a history entry.
+          this.languagePaneRequest = null;
+          this.languagePane = event.pane;
+          return;
+        }
+        this.ctx.recordShellDeparture(this.currentShellLocation());
+        this.languagePane = event.pane;
+        return;
+      }
+      case "leave-pending":
+        this.languageLeave.pending(event.requestId);
+        return;
+      case "leave-reply":
+        this.languageLeave.reply(event.requestId, event.allowed);
+        return;
+      case "entity-changed":
+        if (event.deleted) {
+          if (this.selected?.id === event.entityId) this.clearSelection();
+          void this.ctx.refreshAfterEntityMutation({ entityId: event.entityId, removed: true });
+        } else {
+          void this.ctx.refreshAfterEntityMutation({ entityId: event.entityId });
+        }
+        return;
+      case "open-link": {
+        const href = openableLinkHref(event.href);
+        if (href) void this.ctx.openExternal(href);
+        return;
+      }
+      case "open-entity":
+        if (event.newTab) void this.ctx.openEntityFromWebview(event.entityId, true);
+        else void this.ctx.openEntityFromWebview(event.entityId, false);
+        return;
+      case "shortcut":
+        if (this.languageWebview.mounted) this.ctx.runShellShortcut(event.shortcut);
+        return;
+    }
+  }
+
+  // ---- Writing webview ---------------------------------------------------------------------------------------
+
+  /**
+   * Attachment for the Writing content pane: tracks whether the pane element is in the document.
+   * Passed bare to `{@attach}`, so it is an arrow: Svelte calls it without the store as `this`.
+   */
+  trackWritingMount = () => {
+    const generation = ++this.writingMountGeneration;
+    // The outgoing instance may be fullscreen inside its own webview: end that before the state resets.
+    this.endWritingFullscreen();
+    this.writingWebview.mounted = true;
+    this.writingWebview.ready = false;
+    this.writingHostedInstance = null;
+    this.writingLoadKey = null;
+    this.writingLoad = null;
+    this.writingEditablePosted = null;
+    this.writingFlush.releaseAll();
+    return () => {
+      if (generation !== this.writingMountGeneration) return;
+      this.endWritingFullscreen();
+      this.writingWebview.mounted = false;
+      this.writingWebview.ready = false;
+      this.writingHostedInstance = null;
+      this.writingLoadKey = null;
+      this.writingLoad = null;
+      this.writingEditablePosted = null;
+      this.writingFlush.releaseAll();
+    };
+  };
+
+  async postWritingMessage(message: unknown, instanceId = this.ctx.shownWebviewInstance): Promise<boolean> {
+    try {
+      await this.ctx.project.postPluginWebviewMessage(WRITING_PLUGIN_ID, instanceId, message);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  writingPlaceholder() {
+    return this.selected?.entity_type === "daena.writing:reference-page"
+      ? "Write this reference page…"
+      : "Write your manuscript…";
+  }
+
+  /**
+   * Applies a draft the way typing in the shell editor would: `updateDocumentBody` marks the entry dirty, the
+   * autosave timer saves the document and field edits in one `saveEntry`, and conflicts stay in the shell. The
+   * webview cannot write anything itself. Resolves true when the text was taken.
+   */
+  async applyWritingDraft(draft: WritingBridgeDraft): Promise<boolean> {
+    // A transfer is claimed first so a rejected draft does not leave its text waiting.
+    const text =
+      "text" in draft ? draft.text : await this.ctx.project.takePluginTextTransfer(WRITING_PLUGIN_ID, draft.transfer);
+    if (!writingMessageCurrent(draft, this.selected?.id, this.writingLoad)) return false;
+    if (this.selectedLoading || this.selectedLoadError || this.ctx.projectDiagnostics.length > 0) return false;
+    if (text === this.documentBody) return false;
+    this.updateDocumentBody(text);
+    return true;
+  }
+
+  enqueueWritingDraft(draft: WritingBridgeDraft): Promise<boolean> {
+    const applied = this.writingDraftQueue
+      .then(() => this.applyWritingDraft(draft))
+      .catch((cause) => {
+        console.warn("A Writing draft could not be applied", cause);
+        return false;
+      });
+    this.writingDraftQueue = applied;
+    return applied;
+  }
+
+  /**
+   * Collects the Writing webview's unsent text before the shell saves, leaves or reloads: asks for it, waits
+   * (a little) for the answer and applies it. Anything published before the answer is applied first. Resolves
+   * true when it handed the shell text that changed the document.
+   */
+  async flushWritingWebview(): Promise<boolean> {
+    if (!this.writingWebview.mounted || !this.writingWebview.ready || this.writingLoad === null) return false;
+    // The flush post runs before this function awaits. Callers (`flushAutoSave`
+    // via `switchToTab` / `applyTabsChange`) run that before `shellTabs` changes,
+    // so the post addresses the outgoing tab. The default instance is read then.
+    const draft = await this.writingFlush.request();
+    const applied = draft ? await this.enqueueWritingDraft(draft) : false;
+    await this.writingDraftQueue;
+    return applied;
+  }
+
+  async postWritingLoad(entityId: string, key: string) {
+    const instanceId = this.ctx.shownWebviewInstance;
+    // Reloading the entry the webview already shows: its unsent text reaches the shell before the editor is
+    // replaced, and if there was any it wins, so the webview keeps its editor and the shell saves that text.
+    if (this.writingLoad?.entityId === entityId && (await this.flushWritingWebview())) {
+      // The editor stays, but a rename may have changed the header, which a load would otherwise have refreshed.
+      if (this.selected?.id === entityId)
+        void this.postWritingMessage(writingTitleMessage(entityId, this.selected.name), instanceId);
+      return;
+    }
+    if (this.writingLoadKey !== key) return;
+    const load: WritingLoad = { entityId, token: crypto.randomUUID() };
+    this.writingLoad = load;
+    this.writingEditablePosted = this.ctx.writingEditable;
+    const sent = await this.postWritingMessage(
+      writingLoadMessage(entityId, load.token, this.loadedDocumentRevision, {
+        editable: this.ctx.writingEditable,
+        placeholder: this.writingPlaceholder(),
+        mode: this.documentMode,
+      }),
+      instanceId,
+    );
+    if (sent) return;
+    if (this.writingLoadKey === key) this.writingLoadKey = null;
+    if (this.writingLoad === load) this.writingLoad = null;
+  }
+
+  /** Tells the webview its entry was saved; the revision is informational and does not change its token. */
+  notifyWritingSaved(entityId: string) {
+    if (!this.writingWebview.ready || this.writingLoad?.entityId !== entityId) return;
+    void this.postWritingMessage({ type: "writing.saved", entityId, revision: this.loadedDocumentRevision });
+  }
+
+  /** Runs the shell's own conflict action the user picked in the webview banner. */
+  handleWritingConflictAction(event: Extract<WritingStateEvent, { kind: "conflict-action" }>) {
+    if (!writingMessageCurrent(event, this.selected?.id, this.writingLoad) || !this.documentConflict) return;
+    switch (event.action) {
+      case "reload":
+        void this.reloadConflict();
+        return;
+      case "overwrite":
+        // The shell's own button is disabled while the canonical source needs attention.
+        if (this.documentConflict.diagnostics.length === 0) void this.overwriteConflict();
+        return;
+      case "recovery":
+        void this.saveConflictRecoveryCopy();
+        return;
+    }
+  }
+
+  /** Ends the Writing webview's full screen from the shell's side, and tells the webview to leave its own. */
+  exitWritingFullscreen() {
+    if (!this.writingFullscreen) return;
+    this.endWritingFullscreen();
+  }
+
+  /**
+   * Ends the full screen and tells the instance that reported it, which is not always the one on screen: the effect
+   * below runs after a tab switch has already changed `shownWebviewInstance`.
+   */
+  endWritingFullscreen() {
+    const instance = this.writingFullscreenInstance;
+    this.writingFullscreen = false;
+    this.writingFullscreenInstance = null;
+    if (instance) void this.postWritingMessage(writingFullscreenMessage(false), instance);
+  }
+
+  /**
+   * Writing state from the webview. Each entry-scoped message is checked against the selection, the way the shell's
+   * own actions are; drafts and conflict actions also carry the load token (see writingMessageCurrent).
+   */
+  handleWritingStateEvent(event: WritingStateEvent) {
+    switch (event.kind) {
+      case "ready":
+        if (!this.writingWebview.mounted) return;
+        // A webview that (re)started has shown nothing yet, so the effect above posts the selection again.
+        this.writingLoadKey = null;
+        this.writingLoad = null;
+        this.writingEditablePosted = null;
+        this.writingFullscreen = false;
+        this.writingFullscreenInstance = null;
+        this.writingFlush.releaseAll();
+        this.writingWebview.ready = true;
+        this.ctx.markShownWebviewReady(WRITING_PLUGIN_ID);
+        this.writingReadyCount += 1;
+        return;
+      case "draft":
+        if (this.writingWebview.mounted) void this.enqueueWritingDraft(event.draft);
+        return;
+      case "flush-reply":
+        // A reply nobody waits for any more (it came after the timeout) still carries text, which goes
+        // through the same checks as any other draft.
+        if (!this.writingFlush.reply(event.requestId, event.draft) && event.draft && this.writingWebview.mounted)
+          void this.enqueueWritingDraft(event.draft);
+        return;
+      case "conflict-action":
+        if (this.writingWebview.mounted) this.handleWritingConflictAction(event);
+        return;
+      case "open-link": {
+        const href = openableLinkHref(event.href);
+        if (href) void this.ctx.openExternal(href);
+        return;
+      }
+      case "open-entity":
+        if (event.newTab) void this.ctx.openEntityFromWebview(event.entityId, true);
+        else void this.ctx.openEntityFromWebview(event.entityId, false);
+        return;
+      case "fullscreen":
+        // Only the entry on screen can change the full screen; a message for any other entry is stale.
+        if (this.writingWebview.mounted && event.entityId === this.selected?.id) {
+          this.writingFullscreen = event.on;
+          this.writingFullscreenInstance = event.on ? this.ctx.shownWebviewInstance : null;
+        }
+        return;
+      case "shortcut":
+        if (this.writingWebview.mounted) this.ctx.runShellShortcut(event.shortcut);
+        return;
+      case "request-rename":
+        if (this.writingWebview.mounted && this.selected && event.entityId === this.selected.id)
+          void this.ctx.openEntityEditDialog(this.selected);
+        return;
+      case "request-archive":
+        if (this.writingWebview.mounted) void this.ctx.confirmWritingArchive(event.entityId);
+        return;
+      default:
+        return;
+    }
   }
 }

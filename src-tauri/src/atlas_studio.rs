@@ -18,6 +18,9 @@ use daena_atlas::studio::{
     CODE_STUDIO_TILE_FAILED, CODE_STUDIO_TILE_INVALID, STUDIO_MAX_DEVICE_SCALE, STUDIO_MAX_ZOOM,
     STUDIO_TILE_SIZE,
 };
+use daena_atlas::terrain::{
+    render_terrain_tile_png, terrain_style_for, AtlasTerrain, TerrainStyle, TERRAIN_MAX_ZOOM,
+};
 use daena_atlas::{
     prepare_from_source_with_structure, AtlasError, AtlasPhase, AtlasPreparedScene, AtlasProgress,
     CancelFlag, FlagProgress,
@@ -35,6 +38,7 @@ use super::{current_info, with_read_project, SharedCore, ATLAS_STUDIO_PROGRESS_E
 const SESSION_IDLE: Duration = Duration::from_mins(15);
 const MAX_SESSIONS: usize = 4;
 const MAX_PREPARED_SCENES: usize = 4;
+const MAX_TERRAINS: usize = 2;
 const MAX_WAITING_TILES: u32 = 24;
 const MAX_PREFETCH_WAITING: u32 = 8;
 const MAX_CONCURRENT_TILE_RENDERS: u32 = 2;
@@ -93,6 +97,8 @@ pub struct AtlasStudioSessionStatus {
     pub map_entity_id: String,
     pub tile_url_template: String,
     pub max_zoom: u32,
+    /// `"terrain"` or `"legacy"`.
+    pub kind: String,
     pub tile_size: u32,
     pub device_scale: u32,
     pub captured_content_generation: i64,
@@ -163,14 +169,38 @@ struct CachedStructure {
     last_used: Instant,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct TerrainKey {
+    project_id: String,
+    map_entity_id: String,
+    physical_identity: String,
+    content_generation: i64,
+    normalized_epoch: i64,
+}
+
+struct CachedTerrain {
+    terrain: Arc<AtlasTerrain>,
+    last_used: Instant,
+}
+
+enum SessionBody {
+    Legacy {
+        prepared: Arc<AtlasPreparedScene>,
+        style: daena_atlas::style::AtlasStyle,
+        style_hash: String,
+    },
+    Terrain {
+        terrain: Arc<AtlasTerrain>,
+        style: TerrainStyle,
+    },
+}
+
 struct StudioSession {
     token: String,
     project_id: String,
     map_entity_id: String,
     scene: AtlasStudioSceneRequestV1,
-    style: daena_atlas::style::AtlasStyle,
-    style_hash: String,
-    prepared: Arc<AtlasPreparedScene>,
+    body: SessionBody,
     physical_identity: String,
     captured_content_generation: i64,
     device_scale: u32,
@@ -185,11 +215,58 @@ struct StudioSession {
     tile_cache_bytes: usize,
 }
 
+/// What inspect and region proposal read for one session.
+enum InspectScene {
+    Legacy(Arc<AtlasPreparedScene>),
+    Terrain(Arc<AtlasTerrain>),
+}
+
+impl InspectScene {
+    fn tool_surface(&self) -> &daena_physical::engine::ToolSurface {
+        match self {
+            Self::Legacy(prepared) => &prepared.surface,
+            Self::Terrain(terrain) => terrain.surface(),
+        }
+    }
+}
+
+impl SessionBody {
+    fn inspect_scene(&self) -> InspectScene {
+        match self {
+            Self::Legacy { prepared, .. } => InspectScene::Legacy(prepared.clone()),
+            Self::Terrain { terrain, .. } => InspectScene::Terrain(terrain.clone()),
+        }
+    }
+}
+
+impl StudioSession {
+    fn max_zoom(&self) -> u32 {
+        session_max_zoom(self.kind_name())
+    }
+
+    fn kind_name(&self) -> &'static str {
+        match self.body {
+            SessionBody::Legacy { .. } => "legacy",
+            SessionBody::Terrain { .. } => "terrain",
+        }
+    }
+}
+
+/// Session zoom cap: 12 for terrain, [`STUDIO_MAX_ZOOM`] for legacy.
+fn session_max_zoom(kind: &str) -> u32 {
+    if kind == "terrain" {
+        TERRAIN_MAX_ZOOM
+    } else {
+        STUDIO_MAX_ZOOM
+    }
+}
+
 #[derive(Default)]
 pub struct AtlasStudioManager {
     sessions: BTreeMap<String, StudioSession>,
     prepared_scenes: BTreeMap<PreparedSceneKey, CachedPreparedScene>,
     structures: BTreeMap<StructureKey, CachedStructure>,
+    terrains: BTreeMap<TerrainKey, CachedTerrain>,
     tile_gate: Arc<TileGate>,
 }
 
@@ -208,6 +285,8 @@ impl AtlasStudioManager {
             .retain(|_, cached| cached.last_used + SESSION_IDLE > now);
         self.structures
             .retain(|_, cached| cached.last_used + SESSION_IDLE > now);
+        self.terrains
+            .retain(|_, cached| cached.last_used + SESSION_IDLE > now);
     }
 
     pub fn cancel_all(&mut self) {
@@ -217,6 +296,7 @@ impl AtlasStudioManager {
         self.sessions.clear();
         self.prepared_scenes.clear();
         self.structures.clear();
+        self.terrains.clear();
     }
 
     fn clear_visible_tiles(&mut self) -> u32 {
@@ -234,6 +314,7 @@ impl AtlasStudioManager {
         }
         self.sessions.clear();
         self.prepared_scenes.clear();
+        self.terrains.clear();
         if drop_structures {
             self.structures.clear();
         }
@@ -318,6 +399,37 @@ impl AtlasStudioManager {
             key,
             CachedPreparedScene {
                 prepared,
+                last_used: Instant::now(),
+            },
+        );
+    }
+
+    fn terrain(&mut self, key: &TerrainKey) -> Option<Arc<AtlasTerrain>> {
+        let cached = self.terrains.get_mut(key)?;
+        cached.last_used = Instant::now();
+        Some(cached.terrain.clone())
+    }
+
+    fn remember_terrain(&mut self, key: TerrainKey, terrain: Arc<AtlasTerrain>) {
+        if let Some(cached) = self.terrains.get_mut(&key) {
+            cached.last_used = Instant::now();
+            return;
+        }
+        while self.terrains.len() >= MAX_TERRAINS {
+            let oldest = self
+                .terrains
+                .iter()
+                .min_by_key(|(_, cached)| cached.last_used)
+                .map(|(key, _)| key.clone());
+            let Some(oldest) = oldest else {
+                break;
+            };
+            self.terrains.remove(&oldest);
+        }
+        self.terrains.insert(
+            key,
+            CachedTerrain {
+                terrain,
                 last_used: Instant::now(),
             },
         );
@@ -432,7 +544,8 @@ fn status_from(
         session_token: session.token.clone(),
         map_entity_id: session.map_entity_id.clone(),
         tile_url_template: tile_url_template(&session.token, session.device_scale),
-        max_zoom: STUDIO_MAX_ZOOM,
+        max_zoom: session.max_zoom(),
+        kind: session.kind_name().to_string(),
         tile_size: STUDIO_TILE_SIZE,
         device_scale: session.device_scale,
         captured_content_generation: session.captured_content_generation,
@@ -532,7 +645,7 @@ pub fn parse_studio_tile_request(
             "atlas studio device scale must be 1 or 2",
         ));
     }
-    if z > STUDIO_MAX_ZOOM {
+    if z > TERRAIN_MAX_ZOOM {
         return Err(studio_tile_invalid(
             "atlas studio zoom exceeds the locked maximum",
         ));
@@ -614,6 +727,25 @@ pub fn protocol_response(
     }
 }
 
+fn emit_terrain_progress(
+    app: &AppHandle,
+    token: &str,
+    map_entity_id: &str,
+    completed: u32,
+    total: u32,
+) {
+    let _ = app.emit(
+        ATLAS_STUDIO_PROGRESS_EVENT,
+        serde_json::json!({
+            "sessionToken": token,
+            "mapEntityId": map_entity_id,
+            "stage": "terrain",
+            "completed": completed,
+            "total": total,
+        }),
+    );
+}
+
 fn error_response(code: &str, status: u16) -> tauri::http::Response<Vec<u8>> {
     error_response_message(code, code, status)
 }
@@ -634,6 +766,54 @@ fn error_response_message(
         .unwrap_or_else(|_| tauri::http::Response::new(format!("{code}: {message}\n").into_bytes()))
 }
 
+enum TileWork {
+    Legacy {
+        prepared: Arc<AtlasPreparedScene>,
+        scene: AtlasStudioSceneRequestV1,
+        style: Box<daena_atlas::style::AtlasStyle>,
+        style_hash: String,
+        overlays: Arc<Vec<AuthoredFeature>>,
+        cancel: Arc<CancelFlag>,
+        device_scale: u32,
+    },
+    Terrain {
+        terrain: Arc<AtlasTerrain>,
+        style: TerrainStyle,
+        cancel: Arc<CancelFlag>,
+        device_scale: u32,
+    },
+}
+
+impl TileWork {
+    fn cancel(&self) -> &CancelFlag {
+        match self {
+            Self::Legacy { cancel, .. } | Self::Terrain { cancel, .. } => cancel,
+        }
+    }
+}
+
+fn reject_session_tile(
+    session: &StudioSession,
+    parsed: &ParsedStudioTile,
+) -> Result<(), AtlasError> {
+    if parsed.z > session.max_zoom() {
+        return Err(studio_tile_invalid(
+            "atlas studio zoom exceeds the locked maximum",
+        ));
+    }
+    if !tile_index_in_range(parsed.z, parsed.x, parsed.y) {
+        return Err(studio_tile_invalid("atlas studio tile is outside the zoom"));
+    }
+    Ok(())
+}
+
+fn tile_index_in_range(z: u32, x: u32, y: u32) -> bool {
+    let Some(n) = 1u32.checked_shl(z) else {
+        return false;
+    };
+    x < n && y < n
+}
+
 fn serve_studio_tile(
     studio: &Arc<Mutex<AtlasStudioManager>>,
     core: &SharedCore,
@@ -645,6 +825,9 @@ fn serve_studio_tile(
             .lock()
             .map_err(|_| AtlasError::new(CODE_STUDIO_TILE_FAILED, "atlas studio lock poisoned"))?;
         manager.reap();
+        if let Some(session) = manager.sessions.get(&parsed.token) {
+            reject_session_tile(session, &parsed)?;
+        }
         if let Some(png) = manager.tile_from_cache(&parsed.token, parsed.z, parsed.x, parsed.y) {
             return Ok(png);
         }
@@ -684,7 +867,7 @@ fn serve_studio_tile(
         .flatten()
         .map(|info| info.root)
         .unwrap_or_default();
-    let (prepared, scene, style, style_hash, overlays, cancel, device_scale) = {
+    let job = {
         let mut manager = studio
             .lock()
             .map_err(|_| AtlasError::new(CODE_STUDIO_TILE_FAILED, "atlas studio lock poisoned"))?;
@@ -712,61 +895,125 @@ fn serve_studio_tile(
                 "atlas studio device scale does not match the session",
             ));
         }
+        reject_session_tile(session, &parsed)?;
         session.last_used = Instant::now();
-        (
-            session.prepared.clone(),
-            session.scene.clone(),
-            session.style.clone(),
-            session.style_hash.clone(),
-            session.overlays.clone(),
-            session.cancel.clone(),
-            session.device_scale,
-        )
+        match &session.body {
+            SessionBody::Legacy {
+                prepared,
+                style,
+                style_hash,
+            } => TileWork::Legacy {
+                prepared: prepared.clone(),
+                scene: session.scene.clone(),
+                style: Box::new(style.clone()),
+                style_hash: style_hash.clone(),
+                overlays: session.overlays.clone(),
+                cancel: session.cancel.clone(),
+                device_scale: session.device_scale,
+            },
+            SessionBody::Terrain { terrain, style } => TileWork::Terrain {
+                terrain: terrain.clone(),
+                style: *style,
+                cancel: session.cancel.clone(),
+                device_scale: session.device_scale,
+            },
+        }
     };
-    if cancel.is_cancelled() {
+    if job.cancel().is_cancelled() {
         return Err(AtlasError::new(
             CODE_STUDIO_CANCELLED,
             "atlas studio cancelled",
         ));
     }
-    let tile = AtlasStudioTileRequestV1 {
-        schema_version: daena_atlas::studio::ATLAS_STUDIO_TILE_SCHEMA_VERSION,
-        z: parsed.z,
-        x: parsed.x,
-        y: parsed.y,
-        tile_size: STUDIO_TILE_SIZE,
-        device_scale,
-        request_id: String::new(),
-    };
-    let mut progress = FlagProgress {
-        flag: cancel.as_ref(),
-    };
-    let rendered = render_studio_tile_with_style_overlays(
-        &prepared,
-        &scene,
-        &style,
-        &style_hash,
-        &tile,
-        overlays.as_slice(),
-        &mut progress,
-    )
-    .map_err(|error| {
-        if error.code == CODE_STUDIO_CANCELLED || error.code == daena_atlas::CODE_RENDER_CANCELLED {
-            AtlasError::new(CODE_STUDIO_CANCELLED, error.message)
-        } else if error.code == CODE_STUDIO_TILE_INVALID || error.code == CODE_STUDIO_RESOURCE_LIMIT
-        {
-            error
-        } else {
-            AtlasError::new(CODE_STUDIO_TILE_FAILED, error.message)
+    let rendered_png = match job {
+        TileWork::Legacy {
+            prepared,
+            scene,
+            style,
+            style_hash,
+            overlays,
+            cancel,
+            device_scale,
+        } => {
+            let tile = AtlasStudioTileRequestV1 {
+                schema_version: daena_atlas::studio::ATLAS_STUDIO_TILE_SCHEMA_VERSION,
+                z: parsed.z,
+                x: parsed.x,
+                y: parsed.y,
+                tile_size: STUDIO_TILE_SIZE,
+                device_scale,
+                request_id: String::new(),
+            };
+            let mut progress = FlagProgress {
+                flag: cancel.as_ref(),
+            };
+            let rendered = render_studio_tile_with_style_overlays(
+                &prepared,
+                &scene,
+                &style,
+                &style_hash,
+                &tile,
+                overlays.as_slice(),
+                &mut progress,
+            )
+            .map_err(|error| {
+                if error.code == CODE_STUDIO_CANCELLED
+                    || error.code == daena_atlas::CODE_RENDER_CANCELLED
+                {
+                    AtlasError::new(CODE_STUDIO_CANCELLED, error.message)
+                } else if error.code == CODE_STUDIO_TILE_INVALID
+                    || error.code == CODE_STUDIO_RESOURCE_LIMIT
+                {
+                    error
+                } else {
+                    AtlasError::new(CODE_STUDIO_TILE_FAILED, error.message)
+                }
+            })?;
+            if cancel.is_cancelled() {
+                return Err(AtlasError::new(
+                    CODE_STUDIO_CANCELLED,
+                    "atlas studio cancelled",
+                ));
+            }
+            rendered.png
         }
-    })?;
-    if rendered.png.len() > MAX_TILE_PNG_BYTES {
+        TileWork::Terrain {
+            terrain,
+            style,
+            cancel,
+            device_scale,
+        } => {
+            let png = render_terrain_tile_png(
+                &terrain,
+                style,
+                parsed.z,
+                parsed.x,
+                parsed.y,
+                device_scale,
+            )
+            .map_err(|error| {
+                if error.code == daena_atlas::CODE_REQUEST_INVALID {
+                    studio_tile_invalid(error.message)
+                } else {
+                    AtlasError::new(CODE_STUDIO_TILE_FAILED, error.message)
+                }
+            })?;
+            if cancel.is_cancelled() {
+                return Err(AtlasError::new(
+                    CODE_STUDIO_CANCELLED,
+                    "atlas studio cancelled",
+                ));
+            }
+            png
+        }
+    };
+    if rendered_png.len() > MAX_TILE_PNG_BYTES {
         return Err(AtlasError::new(
             CODE_STUDIO_RESOURCE_LIMIT,
             "atlas studio tile exceeded the encoded-byte budget",
         ));
     }
-    let png = rendered.png;
+    let png = rendered_png;
     if let Ok(mut manager) = studio.lock() {
         manager.remember_tile(&parsed.token, parsed.z, parsed.x, parsed.y, png.clone());
     }
@@ -812,8 +1059,17 @@ pub async fn project_atlas_studio_open(
             daena_atlas::studio::CODE_STUDIO_REQUEST_INVALID
         ));
     }
-    let capture = with_read_project(state, move |project| {
-        capture_studio_session(project, input.request)
+    let (mut capture, generation) = with_read_project(state, move |project| {
+        let capture = capture_studio_session(project, input.request)?;
+        let generation = if terrain_style_for(&capture.scene.style_id).is_some() {
+            Some(super::physical_generation_for_map(
+                project,
+                &capture.session.map_entity_id,
+            )?)
+        } else {
+            None
+        };
+        Ok((capture, generation))
     })
     .await?;
     let token = Uuid::new_v4().to_string();
@@ -833,7 +1089,6 @@ pub async fn project_atlas_studio_open(
     let style_hash = style.content_hash(style_raw);
     let cache_dir = atlas_cache_dir(Path::new(&project_id));
     let identity = capture.snapshot.identity.clone();
-    let source = capture.snapshot.source_bytes.clone();
     let forcing = capture.snapshot.forcing;
     let mut render = capture
         .scene
@@ -852,52 +1107,115 @@ pub async fn project_atlas_studio_open(
         .lock()
         .map_err(|_| "atlas studio state is unavailable".to_string())?
         .prepared_scene(&prepared_key);
-    let prepared = if let Some(prepared) = prepared {
-        prepared
-    } else {
-        let injected = studio
+    let body = if let Some(terrain_style) = terrain_style_for(&capture.scene.style_id) {
+        let generation = generation.ok_or_else(|| {
+            format!("{CODE_STUDIO_TILE_FAILED}: atlas studio terrain generation is missing")
+        })?;
+        let normalized_epoch =
+            daena_physical::history::normalize_epoch_offset(capture.session.offset_years)
+                .map_err(|error| error.to_string())?;
+        let terrain_key = TerrainKey {
+            project_id: project_id.clone(),
+            map_entity_id: capture.session.map_entity_id.clone(),
+            physical_identity: capture.snapshot.identity.clone(),
+            content_generation: capture.snapshot.content_generation,
+            normalized_epoch,
+        };
+        let cached = studio
             .lock()
             .map_err(|_| "atlas studio state is unavailable".to_string())?
-            .structure(&structure_key);
-        let injected_for_job = injected.clone();
-        let mut progress = SessionProgress {
-            app,
-            token: token.clone(),
-            map_entity_id: capture.session.map_entity_id.clone(),
+            .terrain(&terrain_key);
+        let terrain = if let Some(terrain) = cached {
+            emit_terrain_progress(&app, &token, &capture.session.map_entity_id, 1, 1);
+            terrain
+        } else {
+            emit_terrain_progress(&app, &token, &capture.session.map_entity_id, 0, 1);
+            let source_bytes = std::mem::take(&mut capture.snapshot.source_bytes);
+            let expected_identity = capture.snapshot.identity.clone();
+            let offset_years = capture.session.offset_years;
+            let built = tauri::async_runtime::spawn_blocking(move || {
+                let validated =
+                    daena_core::maps::physical::validate_source(&source_bytes, &generation)
+                        .map_err(|error| error.to_string())?;
+                if validated.identity != expected_identity {
+                    return Err("physical identity changed while opening atlas studio".to_string());
+                }
+                let surface = super::tool_surface_for_source(
+                    &validated.identity,
+                    &validated.source,
+                    &generation,
+                    offset_years,
+                )?;
+                Ok(Arc::new(AtlasTerrain::new(
+                    surface,
+                    validated.identity.as_bytes(),
+                )))
+            })
+            .await
+            .map_err(|error| format!("{CODE_STUDIO_TILE_FAILED}: {error}"))??;
+            emit_terrain_progress(&app, &token, &capture.session.map_entity_id, 1, 1);
+            let mut studio = studio
+                .lock()
+                .map_err(|_| "atlas studio state is unavailable".to_string())?;
+            studio.remember_terrain(terrain_key, built.clone());
+            built
         };
-        let prepared = tauri::async_runtime::spawn_blocking(move || {
-            let cache = AtlasDiskCache::open(&cache_dir).ok();
-            prepare_from_source_with_structure(
-                &source,
-                identity.as_bytes(),
-                &render,
-                Some(forcing),
-                cache.as_ref(),
-                injected_for_job.as_deref(),
-                &mut progress,
-            )
-        })
-        .await
-        .map_err(|error| format!("{CODE_STUDIO_TILE_FAILED}: {error}"))?
-        .map_err(|error| format!("{}: {}", error.code, error.message))?;
-        let (prepared, unbaked) = prepared;
-        let prepared = Arc::new(prepared);
-        let structure = injected.unwrap_or_else(|| Arc::new(unbaked));
-        let mut studio = studio
-            .lock()
-            .map_err(|_| "atlas studio state is unavailable".to_string())?;
-        studio.remember_prepared_scene(prepared_key, prepared.clone());
-        studio.remember_structure(structure_key, structure);
-        prepared
+        SessionBody::Terrain {
+            terrain,
+            style: terrain_style,
+        }
+    } else {
+        let prepared = if let Some(prepared) = prepared {
+            prepared
+        } else {
+            let source = capture.snapshot.source_bytes.clone();
+            let injected = studio
+                .lock()
+                .map_err(|_| "atlas studio state is unavailable".to_string())?
+                .structure(&structure_key);
+            let injected_for_job = injected.clone();
+            let mut progress = SessionProgress {
+                app,
+                token: token.clone(),
+                map_entity_id: capture.session.map_entity_id.clone(),
+            };
+            let prepared = tauri::async_runtime::spawn_blocking(move || {
+                let cache = AtlasDiskCache::open(&cache_dir).ok();
+                prepare_from_source_with_structure(
+                    &source,
+                    identity.as_bytes(),
+                    &render,
+                    Some(forcing),
+                    cache.as_ref(),
+                    injected_for_job.as_deref(),
+                    &mut progress,
+                )
+            })
+            .await
+            .map_err(|error| format!("{CODE_STUDIO_TILE_FAILED}: {error}"))?
+            .map_err(|error| format!("{}: {}", error.code, error.message))?;
+            let (prepared, unbaked) = prepared;
+            let prepared = Arc::new(prepared);
+            let structure = injected.unwrap_or_else(|| Arc::new(unbaked));
+            let mut studio = studio
+                .lock()
+                .map_err(|_| "atlas studio state is unavailable".to_string())?;
+            studio.remember_prepared_scene(prepared_key, prepared.clone());
+            studio.remember_structure(structure_key, structure);
+            prepared
+        };
+        SessionBody::Legacy {
+            prepared,
+            style,
+            style_hash,
+        }
     };
     let session = StudioSession {
         token: token.clone(),
         project_id,
         map_entity_id: capture.session.map_entity_id.clone(),
         scene: capture.scene,
-        style,
-        style_hash,
-        prepared,
+        body,
         physical_identity: capture.snapshot.identity.clone(),
         captured_content_generation: capture.snapshot.content_generation,
         device_scale,
@@ -1049,7 +1367,7 @@ pub async fn project_atlas_studio_inspect(
     studio: tauri::State<'_, Arc<Mutex<AtlasStudioManager>>>,
     input: AtlasStudioInspectInput,
 ) -> Result<AtlasInspectResult, String> {
-    let (prepared, scene, overlays) = {
+    let (inspect, scene, overlays, max_zoom) = {
         let mut manager = studio
             .lock()
             .map_err(|_| "atlas studio state is unavailable".to_string())?;
@@ -1059,20 +1377,26 @@ pub async fn project_atlas_studio_inspect(
             .get(&input.session_token)
             .ok_or_else(|| format!("{CODE_STUDIO_EXPIRED}: atlas studio session expired"))?;
         (
-            session.prepared.clone(),
+            session.body.inspect_scene(),
             session.scene.clone(),
             session.overlays.clone(),
+            session.max_zoom(),
         )
     };
-    let zoom = input.zoom.min(STUDIO_MAX_ZOOM);
+    let zoom = input.zoom.min(max_zoom);
     let n = tile_count(zoom).map_err(|error| format!("{}: {}", error.code, error.message))?;
     let radius = (360_000_000i64 * 8 / (i64::from(STUDIO_TILE_SIZE) * i64::from(n.max(1))))
         .clamp(25_000, 2_000_000) as i32;
     let include_tributaries = scene.active_layer_ids.iter().any(|id| id == "labels")
         || scene.active_layer_ids.iter().any(|id| id == "rivers");
-    let surface = prepared.sample_surface(input.lon_micro, input.lat_micro);
+    let surface = match &inspect {
+        InspectScene::Legacy(prepared) => prepared.sample_surface(input.lon_micro, input.lat_micro),
+        InspectScene::Terrain(terrain) => {
+            terrain.inspect_sample(input.lon_micro, input.lat_micro, zoom)
+        }
+    };
     let mut features = overlays.as_ref().clone();
-    if include_tributaries {
+    if let (true, InspectScene::Legacy(prepared)) = (include_tributaries, &inspect) {
         for tributary in prepared.drainage.tributaries.iter().take(32) {
             if let Some(first) = tributary.path.first() {
                 features.push(AuthoredFeature {
@@ -1088,8 +1412,9 @@ pub async fn project_atlas_studio_inspect(
         }
     }
     let mut hits = hit_test_features(&features, input.lon_micro, input.lat_micro, radius, 32);
+    let tool_surface = inspect.tool_surface();
     let claim = daena_physical::hydro_claim::claim_at_canonical(
-        &prepared.surface,
+        tool_surface,
         input.lon_micro,
         input.lat_micro,
         radius,
@@ -1097,7 +1422,7 @@ pub async fn project_atlas_studio_inspect(
     .map(|claim| (claim.id, claim.layer_id, claim.kind, claim.label))
     .or_else(|| {
         daena_physical::landmass_claim::claim_at_canonical(
-            &prepared.surface,
+            tool_surface,
             input.lon_micro,
             input.lat_micro,
         )
@@ -1123,7 +1448,7 @@ pub async fn project_atlas_studio_inspect(
     }
     let mut flood_hit = false;
     if let Some(flood) = daena_physical::hydro_claim::overflowing_at_canonical(
-        &prepared.surface,
+        tool_surface,
         input.lon_micro,
         input.lat_micro,
     ) {
@@ -1149,18 +1474,23 @@ pub async fn project_atlas_studio_inspect(
         flood_hit = true;
     }
     let orometry_at = usize::from(has_claim) + usize::from(flood_hit);
-    let orometry_hits =
-        inspect_orometry(&prepared.orometry, input.lon_micro, input.lat_micro, radius)
-            .into_iter()
-            .filter(|hit| !hits.iter().any(|existing| existing.id == hit.id))
-            .map(|hit| OverlayHit {
-                id: hit.id,
-                layer_id: OROMETRY_LAYER.into(),
-                kind: KIND_OROMETRY.into(),
-                label: Some(hit.label),
-                derived: true,
-            })
-            .collect::<Vec<_>>();
+    let orometry = match &inspect {
+        InspectScene::Legacy(prepared) => {
+            inspect_orometry(&prepared.orometry, input.lon_micro, input.lat_micro, radius)
+        }
+        InspectScene::Terrain(_) => Vec::new(),
+    };
+    let orometry_hits = orometry
+        .into_iter()
+        .filter(|hit| !hits.iter().any(|existing| existing.id == hit.id))
+        .map(|hit| OverlayHit {
+            id: hit.id,
+            layer_id: OROMETRY_LAYER.into(),
+            kind: KIND_OROMETRY.into(),
+            label: Some(hit.label),
+            derived: true,
+        })
+        .collect::<Vec<_>>();
     hits.splice(orometry_at..orometry_at, orometry_hits);
     hits.truncate(32);
     Ok(AtlasInspectResult { hits, surface })
@@ -1191,7 +1521,7 @@ pub async fn project_atlas_studio_propose_region(
     studio: tauri::State<'_, Arc<Mutex<AtlasStudioManager>>>,
     input: AtlasStudioProposeInput,
 ) -> Result<AtlasRegionProposal, String> {
-    let prepared = {
+    let inspect = {
         let mut manager = studio
             .lock()
             .map_err(|_| "atlas studio state is unavailable".to_string())?;
@@ -1200,10 +1530,10 @@ pub async fn project_atlas_studio_propose_region(
             .sessions
             .get(&input.session_token)
             .ok_or_else(|| format!("{CODE_STUDIO_EXPIRED}: atlas studio session expired"))?;
-        session.prepared.clone()
+        session.body.inspect_scene()
     };
     let proposal = daena_physical::region::propose_region_canonical(
-        &prepared.surface,
+        inspect.tool_surface(),
         input.lon_micro,
         input.lat_micro,
         &input.detector,
@@ -1231,6 +1561,24 @@ pub(crate) fn region_proposal_geometry(
         cell_count: proposal.cell_count,
         geometry,
     })
+}
+
+/// `"terrain"` when the style uses the new renderer, otherwise `"legacy"`.
+#[cfg(test)]
+#[must_use]
+pub(crate) fn studio_render_kind(style_id: &str) -> &'static str {
+    if terrain_style_for(style_id).is_some() {
+        "terrain"
+    } else {
+        "legacy"
+    }
+}
+
+/// Session zoom cap. Legacy stops at [`STUDIO_MAX_ZOOM`]. Terrain stops at 12.
+#[cfg(test)]
+#[must_use]
+pub(crate) fn studio_zoom_allowed(kind: &str, z: u32) -> bool {
+    z <= session_max_zoom(kind)
 }
 
 #[cfg(test)]
@@ -1365,9 +1713,11 @@ mod tests {
                     project_id: format!("/tmp/p{index}"),
                     map_entity_id: format!("00000000-0000-4000-8000-00000000000{index}"),
                     scene: scene.clone(),
-                    style: prepared.style.clone(),
-                    style_hash: prepared.style_hash.clone(),
-                    prepared: prepared.clone(),
+                    body: SessionBody::Legacy {
+                        prepared: prepared.clone(),
+                        style: prepared.style.clone(),
+                        style_hash: prepared.style_hash.clone(),
+                    },
                     physical_identity: String::from_utf8_lossy(&identity).into_owned(),
                     captured_content_generation: 1,
                     device_scale: 1,
@@ -1391,9 +1741,11 @@ mod tests {
                 project_id: "/tmp/p0".into(),
                 map_entity_id: "00000000-0000-4000-8000-000000000000".into(),
                 scene: scene.clone(),
-                style: prepared.style.clone(),
-                style_hash: prepared.style_hash.clone(),
-                prepared: prepared.clone(),
+                body: SessionBody::Legacy {
+                    prepared: prepared.clone(),
+                    style: prepared.style.clone(),
+                    style_hash: prepared.style_hash.clone(),
+                },
                 physical_identity: String::from_utf8_lossy(&identity).into_owned(),
                 captured_content_generation: 1,
                 device_scale: 1,
@@ -1434,10 +1786,30 @@ mod tests {
             manager.tile_from_cache(&overlay_token, 3, 1, 2).as_deref(),
             Some([9_u8, 8, 7].as_slice())
         );
+        let legacy = manager.sessions.values().next().unwrap();
+        assert_eq!(legacy.kind_name(), "legacy");
+        assert_eq!(legacy.max_zoom(), STUDIO_MAX_ZOOM);
+        assert_eq!(
+            reject_session_tile(
+                legacy,
+                &ParsedStudioTile {
+                    token: legacy.token.clone(),
+                    z: 9,
+                    x: 0,
+                    y: 0,
+                    device_scale: 1,
+                    prefetch: false,
+                },
+            )
+            .unwrap_err()
+            .code,
+            CODE_STUDIO_TILE_INVALID
+        );
         manager.cancel_all();
         assert!(manager.sessions.is_empty());
         assert!(manager.prepared_scenes.is_empty());
         assert!(manager.structures.is_empty());
+        assert!(manager.terrains.is_empty());
     }
 
     #[test]

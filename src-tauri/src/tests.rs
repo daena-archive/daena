@@ -6254,3 +6254,52 @@ fn physical_event_materialization_uses_engine_events_and_survives_rebuild() {
     drop(reopened);
     std::fs::remove_dir_all(root).unwrap();
 }
+
+fn atlas_studio_get(uri: &str) -> tauri::http::Request<Vec<u8>> {
+    tauri::http::Request::builder()
+        .method("GET")
+        .uri(uri)
+        .body(Vec::new())
+        .unwrap()
+}
+
+#[test]
+fn atlas_studio_protocol_accepts_zoom_12_and_rejects_13() {
+    let token = "00000000-0000-4000-8000-0000000000ab";
+    let parsed = crate::atlas_studio::parse_studio_tile_request(&atlas_studio_get(&format!(
+        "atlas-studio://localhost/{token}/12/15/20.png?scale=1"
+    )))
+    .unwrap();
+    assert_eq!(parsed.z, 12);
+    assert_eq!(parsed.x, 15);
+    assert_eq!(parsed.y, 20);
+    let rejected = crate::atlas_studio::parse_studio_tile_request(&atlas_studio_get(&format!(
+        "atlas-studio://localhost/{token}/13/0/0.png"
+    )))
+    .unwrap_err();
+    assert_eq!(rejected.code, daena_atlas::studio::CODE_STUDIO_TILE_INVALID);
+}
+
+#[test]
+fn atlas_studio_legacy_zoom_stops_at_eight_and_terrain_styles_select_terrain() {
+    assert_eq!(
+        crate::atlas_studio::studio_render_kind("daena-atlas-imagery"),
+        "terrain"
+    );
+    assert_eq!(
+        crate::atlas_studio::studio_render_kind("daena-atlas-relief"),
+        "terrain"
+    );
+    assert_eq!(
+        crate::atlas_studio::studio_render_kind("daena-atlas-biome"),
+        "legacy"
+    );
+    assert_eq!(
+        crate::atlas_studio::studio_render_kind("daena-atlas-antique"),
+        "legacy"
+    );
+    assert!(crate::atlas_studio::studio_zoom_allowed("legacy", 8));
+    assert!(!crate::atlas_studio::studio_zoom_allowed("legacy", 9));
+    assert!(crate::atlas_studio::studio_zoom_allowed("terrain", 12));
+    assert!(!crate::atlas_studio::studio_zoom_allowed("terrain", 13));
+}

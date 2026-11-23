@@ -5,6 +5,7 @@ export const ATLAS_DETAIL_ALGORITHM_VERSION = 3;
 export const ATLAS_DEFAULT_VISIBLE_LAYER_IDS = ["ocean", "relief", "ice", "lakes", "graticule"] as const;
 
 const ATLAS_STYLE_LABELS: Record<string, string> = {
+  "daena-atlas-imagery": "Imagery",
   "daena-atlas-relief": "Elevation",
   "daena-atlas-biome": "Biome groups",
   "daena-atlas-temperature": "Annual temperature",

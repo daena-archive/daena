@@ -5,9 +5,11 @@
 //! Imagery adds per-cell climate (9 bytes: `f32` temperature, `f32` moisture, `u8` biome).
 
 mod imagery;
+mod inspect;
 mod noise;
 mod palette;
 mod render;
+mod tile;
 
 use std::sync::Arc;
 
@@ -17,6 +19,7 @@ use rayon::prelude::*;
 
 pub use imagery::render_imagery_pixels;
 pub use render::{ground_metres_per_pixel, lon_lat_to_tile, render_pixels};
+pub use tile::{render_terrain_tile_png, terrain_style_for, TerrainStyle, TERRAIN_MAX_ZOOM};
 
 use noise::{
     build_octaves, domain_seed, sample_octave, sample_octave_with_gradient, terrain_seed, Octave,
@@ -49,6 +52,10 @@ pub struct AtlasTerrain {
     moisture: Vec<f32>,
     /// Biome id. One byte per cell. With the two floats above, 9 bytes.
     biome: Vec<u8>,
+    /// Vegetation fraction and forest share the biome stands for, averaged
+    /// with the cell's neighbours and quantized to `/255`. Single odd cells in
+    /// the biome map would otherwise paint as cell-sized blocks at low zoom.
+    veg_smooth: Vec<[u8; 2]>,
     /// Uphill canonical slope at the cell centre, quantized by [`SLOPE_Q`].
     /// Three `i16`s, six bytes. Bilinear of this is the gully direction.
     slope_q: Vec<[i16; 3]>,
@@ -58,11 +65,25 @@ pub struct AtlasTerrain {
     sea_level_mm: i32,
     seed: u64,
     octaves: Vec<Octave>,
-    /// Two octaves in the `"ice"` domain that roughen the ice edge.
+    /// Land-ice cell whose every neighbour is also land ice. Smoothing uses this
+    /// so the rough band stays about one cell wide at the margin.
+    ice_interior: Vec<u8>,
+    /// Three octaves in the `"ice"` domain. The first two roughen the classified
+    /// edge; imagery uses all three for the lobed margin.
     ice_octaves: Vec<Octave>,
+    /// One octave in `"ice-sheet"` for the long interior undulation.
+    ice_sheet_octaves: Vec<Octave>,
+    /// Two octaves in `"ice-surface"`: equilibrium-line dither, then ablation patches.
+    ice_surface_octaves: Vec<Octave>,
+    /// Three octaves in `"sea-ice"`: margin, floes, leads.
+    sea_ice_octaves: Vec<Octave>,
+    /// Two octaves in `"patch"`: broad moisture, then tree clumps.
+    patch_octaves: Vec<Octave>,
+    /// Three octaves in `"micro"` for a few metres of flat-land relief.
+    micro_octaves: Vec<Octave>,
     /// Anisotropic downhill octaves in the `"gully"` domain.
     gully_octaves: Vec<Octave>,
-    /// Six octaves in `"cover-warp"`: east 0..3, north 3..6.
+    /// `"cover-warp"` octaves: east first, then north, [`COVER_WARP_OCTAVES`] each.
     cover_warp: Vec<Octave>,
     /// Three octaves in `"cover"` that break up vegetation edges.
     cover_octaves: Vec<Octave>,
@@ -151,9 +172,16 @@ impl AtlasTerrain {
         let octave_count = octave_count_for(cell_size_m);
         let seed = terrain_seed(identity);
         let octaves = build_octaves(domain_seed(seed, "terrain"), octave_count);
-        let ice_octaves = build_octaves(domain_seed(seed, "ice"), 2);
+        let ice_octaves = build_octaves(domain_seed(seed, "ice"), 3);
+        let ice_sheet_octaves = build_octaves(domain_seed(seed, "ice-sheet"), 1);
+        let ice_surface_octaves = build_octaves(domain_seed(seed, "ice-surface"), 2);
+        let sea_ice_octaves = build_octaves(domain_seed(seed, "sea-ice"), 3);
+        let patch_octaves = build_octaves(domain_seed(seed, "patch"), 2);
+        let micro_octaves = build_octaves(domain_seed(seed, "micro"), 3);
+        let ice_interior = ice_interior_mask(&surface, &ice, &ocean, &wet);
+        let veg_smooth = smoothed_vegetation(&surface, &biome, &ocean, &wet);
         let gully_octaves = build_octaves(domain_seed(seed, "gully"), octave_count);
-        let cover_warp = build_octaves(domain_seed(seed, "cover-warp"), 6);
+        let cover_warp = build_octaves(domain_seed(seed, "cover-warp"), 2 * COVER_WARP_OCTAVES);
         let cover_octaves = build_octaves(domain_seed(seed, "cover"), 3);
         let grain_octaves =
             build_octaves(domain_seed(seed, "grain"), grain_octave_count(cell_size_m));
@@ -193,11 +221,18 @@ impl AtlasTerrain {
             temp_c,
             moisture,
             biome,
+            veg_smooth,
             slope_q,
             cell_size_m,
             seed,
             octaves,
+            ice_interior,
             ice_octaves,
+            ice_sheet_octaves,
+            ice_surface_octaves,
+            sea_ice_octaves,
+            patch_octaves,
+            micro_octaves,
             gully_octaves,
             cover_warp,
             cover_octaves,
@@ -313,7 +348,7 @@ impl AtlasTerrain {
         let mut height =
             canon + amplitude * self.detail(p, ground_m, relief, cells, weights, amplitude);
         self.apply_class_pull(&mut height, p, cells, weights);
-        let (cover, ice) = self.classify_weights(p, height, cells, weights);
+        let (cover, ice) = self.classify_weights(p, height, cells, weights, ground_m);
         (height, cover, ice)
     }
 
@@ -328,7 +363,7 @@ impl AtlasTerrain {
     pub fn classify(&self, direction: [f64; 3], height: f64) -> (TerrainCover, bool) {
         let p = unit(direction);
         let (cells, weights) = self.surface.bilinear_stencil(p);
-        self.classify_weights(p, height, cells, weights)
+        self.classify_weights(p, height, cells, weights, 0.0)
     }
 
     fn classify_weights(
@@ -337,6 +372,7 @@ impl AtlasTerrain {
         height: f64,
         cells: [u32; 4],
         weights: [f64; 4],
+        ground_m: f64,
     ) -> (TerrainCover, bool) {
         let nearest = self.surface.cell_at_direction(p) as usize;
         let nearest_lake = if self.wet[nearest] != 0 {
@@ -386,17 +422,27 @@ impl AtlasTerrain {
         } else {
             TerrainCover::Land
         };
-        (cover, ice_weight >= self.ice_threshold(p))
+        (cover, ice_weight >= self.ice_threshold(p, ground_m))
     }
 
     /// Ice paints where the bilinear ice weight passes this threshold. Noise
     /// keeps it within `0.5 ± 0.3`, so a cell centre (weight 0 or 1) keeps its
     /// canonical ice, and the edge stops tracing the cell grid.
-    fn ice_threshold(&self, p: [f64; 3]) -> f64 {
-        let coarse = self.radius_m / (0.5 * self.cell_size_m);
-        let fine = self.radius_m / (0.125 * self.cell_size_m);
-        let noise = 0.65 * sample_octave(&self.ice_octaves[0], p, coarse)
-            + 0.35 * sample_octave(&self.ice_octaves[1], p, fine);
+    ///
+    /// Both octaves fade with the pixel size like the terrain octaves. Unfaded,
+    /// the cell/8 octave aliased into stray bars of ice at low zoom.
+    fn ice_threshold(&self, p: [f64; 3], ground_m: f64) -> f64 {
+        let lambdas = [0.5 * self.cell_size_m, 0.125 * self.cell_size_m];
+        let coeffs = [0.65, 0.35];
+        let mut noise = 0.0;
+        for index in 0..2 {
+            let fade = octave_fade(lambdas[index], ground_m);
+            if fade > 0.0 {
+                noise += coeffs[index]
+                    * fade
+                    * sample_octave(&self.ice_octaves[index], p, self.radius_m / lambdas[index]);
+            }
+        }
         0.5 + 0.3 * noise
     }
 
@@ -581,6 +627,100 @@ impl AtlasTerrain {
         weights: [f64; 4],
         amplitude: f64,
     ) -> f64 {
+        let land = land_fraction(self, cells, weights);
+        let (slope, _) = if land > WEIGHT_EPS {
+            self.bilinear_slope(p, cells, weights)
+        } else {
+            (0.0, [0.0, 0.0, 0.0])
+        };
+        let mut sum = self.detail_unsmoothed(p, ground_m, relief, cells, weights, amplitude);
+        // Zoom-independent: ice weight and canonical slope do not use `ground_m`.
+        // The fade bound still holds because the scale is at most 1.
+        let scale = self.ice_detail_scale(land, cells, weights, slope);
+        sum *= scale;
+        if land > 0.5 && slope < MICRO_SLOPE_HI && ice_weight_of(self, cells, weights) < 0.35 {
+            let micro = self.micro_metres(p, ground_m, slope);
+            if micro != 0.0 {
+                sum += micro / amplitude;
+            }
+        }
+        sum
+    }
+
+    /// `1` on rock and ice margins, about `0.15` on smooth interior ice.
+    ///
+    /// Interior means every bilinear parent is a land-ice cell ringed by ice,
+    /// so the rough band is about one cell wide. Canonical slope above ~0.6
+    /// stays rock (nunataks).
+    fn ice_detail_scale(&self, land: f64, cells: [u32; 4], weights: [f64; 4], slope: f64) -> f64 {
+        if land <= 0.5 {
+            return 1.0;
+        }
+        let mut interior = 0.0;
+        for slot in 0..4 {
+            if self.ice_interior[cells[slot] as usize] != 0 {
+                interior += weights[slot];
+            }
+        }
+        if interior < 0.45 {
+            return 1.0;
+        }
+        let inside = smoothstep(0.45, 0.85, interior);
+        let rock = smoothstep(0.50, 0.70, slope);
+        let smooth = inside * (1.0 - rock);
+        1.0 - 0.85 * smooth
+    }
+
+    /// A few metres at λ 220–1000 m. Zero on slopes above [`MICRO_SLOPE_HI`].
+    fn micro_metres(&self, p: [f64; 3], ground_m: f64, slope: f64) -> f64 {
+        let flat = 1.0 - smoothstep(MICRO_SLOPE_LO, MICRO_SLOPE_HI, slope);
+        if flat == 0.0 || octave_fade(MICRO_LAMBDAS[0], ground_m) == 0.0 {
+            return 0.0;
+        }
+        let mut acc = 0.0;
+        for (index, octave) in self.micro_octaves.iter().enumerate() {
+            let lambda = MICRO_LAMBDAS[index];
+            let fade = octave_fade(lambda, ground_m);
+            if fade == 0.0 {
+                break;
+            }
+            acc += MICRO_COEFFS[index] * fade * sample_octave(octave, p, self.radius_m / lambda);
+        }
+        MICRO_AMP_M * flat * acc
+    }
+
+    /// Terrain detail with and without ice smoothing. Micro-relief is not included.
+    #[cfg(test)]
+    fn terrain_detail_pair(&self, direction: [f64; 3], ground_m: f64) -> (f64, f64) {
+        let p = unit(direction);
+        let (bicubic_cells, bicubic_weights) = self.surface.bicubic_stencil(p);
+        let amplitude = self.amplitude_from(bicubic_cells, bicubic_weights);
+        let (cells, weights) = self.surface.bilinear_stencil(p);
+        let mut relief = 0.0;
+        for slot in 0..4 {
+            relief += weights[slot] * f64::from(self.relief_m[cells[slot] as usize]);
+        }
+        let (slope, _) = if land_fraction(self, cells, weights) > WEIGHT_EPS {
+            self.bilinear_slope(p, cells, weights)
+        } else {
+            (0.0, [0.0, 0.0, 0.0])
+        };
+        let land = land_fraction(self, cells, weights);
+        let raw = self.detail_unsmoothed(p, ground_m, relief, cells, weights, amplitude);
+        let scale = self.ice_detail_scale(land, cells, weights, slope);
+        (raw * scale, raw)
+    }
+
+    /// [`detail`] without the ice scale and without micro-relief.
+    fn detail_unsmoothed(
+        &self,
+        p: [f64; 3],
+        ground_m: f64,
+        relief: f64,
+        cells: [u32; 4],
+        weights: [f64; 4],
+        amplitude: f64,
+    ) -> f64 {
         let mountains = smoothstep(400.0, 1500.0, relief);
         let land = land_fraction(self, cells, weights);
         let (slope, down) = if land > WEIGHT_EPS {
@@ -743,7 +883,30 @@ impl AtlasTerrain {
             sum += (fade1 - fade0).abs() * self.half[index] * octave_cap(lambda, self.cell_size_m);
             lambda *= 0.5;
         }
-        amplitude * sum
+        amplitude * sum + self.micro_delta_bound(p, g0, g1)
+    }
+
+    /// Upper bound on the flat-land micro-relief change between two pixel sizes.
+    /// The weights are the same coefficients as [`Self::micro_metres`], and `|n| ≤ 1`.
+    #[cfg(test)]
+    fn micro_delta_bound(&self, p: [f64; 3], g0: f64, g1: f64) -> f64 {
+        let (cells, weights) = self.surface.bilinear_stencil(p);
+        let land = land_fraction(self, cells, weights);
+        if land <= 0.5 || ice_weight_of(self, cells, weights) >= 0.35 {
+            return 0.0;
+        }
+        let (slope, _) = self.bilinear_slope(p, cells, weights);
+        let flat = 1.0 - smoothstep(MICRO_SLOPE_LO, MICRO_SLOPE_HI, slope);
+        if flat == 0.0 {
+            return 0.0;
+        }
+        let mut bound = 0.0;
+        for (index, lambda) in MICRO_LAMBDAS.iter().enumerate() {
+            let fade0 = octave_fade(*lambda, g0);
+            let fade1 = octave_fade(*lambda, g1);
+            bound += MICRO_COEFFS[index] * (fade1 - fade0).abs();
+        }
+        MICRO_AMP_M * flat * bound
     }
 
     #[cfg(test)]
@@ -816,6 +979,85 @@ fn canonical_height(surface: &ToolSurface, elevation_m: &[f32], p: [f64; 3]) -> 
         canon += weights[slot] * f64::from(elevation_m[cells[slot] as usize]);
     }
     canon
+}
+
+/// Each cell's vegetation targets, 40% its own and 60% the mean of its land
+/// neighbours, quantized to `/255`. Ocean and lake neighbours are left out:
+/// counted as bare, they would strip the vegetation off every coast.
+fn smoothed_vegetation(
+    surface: &ToolSurface,
+    biome: &[u8],
+    ocean: &[u8],
+    wet: &[u8],
+) -> Vec<[u8; 2]> {
+    let targets: Vec<(f64, f64)> = biome
+        .iter()
+        .map(|id| palette::vegetation_targets(*id))
+        .collect();
+    (0..biome.len() as u32)
+        .map(|cell| {
+            let own = targets[cell as usize];
+            let mut sum = (0.0, 0.0);
+            let mut count = 0.0;
+            for neighbor in surface.neighbors(cell) {
+                if neighbor == TOOL_SURFACE_NONE
+                    || ocean[neighbor as usize] != 0
+                    || wet[neighbor as usize] != 0
+                {
+                    continue;
+                }
+                let other = targets[neighbor as usize];
+                sum.0 += other.0;
+                sum.1 += other.1;
+                count += 1.0;
+            }
+            let (veg, forest) = if count > 0.0 {
+                (
+                    0.4 * own.0 + 0.6 * sum.0 / count,
+                    0.4 * own.1 + 0.6 * sum.1 / count,
+                )
+            } else {
+                own
+            };
+            [
+                (veg * 255.0).round().clamp(0.0, 255.0) as u8,
+                (forest * 255.0).round().clamp(0.0, 255.0) as u8,
+            ]
+        })
+        .collect()
+}
+
+fn ice_weight_of(terrain: &AtlasTerrain, cells: [u32; 4], weights: [f64; 4]) -> f64 {
+    let mut ice = 0.0;
+    for slot in 0..4 {
+        if terrain.ice[cells[slot] as usize] != 0 {
+            ice += weights[slot];
+        }
+    }
+    ice
+}
+
+/// Land ice whose neighbours are all land ice. Ocean ice stays rough: that flag
+/// is pack, and the height under it is the seabed.
+fn ice_interior_mask(surface: &ToolSurface, ice: &[u8], ocean: &[u8], wet: &[u8]) -> Vec<u8> {
+    (0..ice.len() as u32)
+        .map(|cell| {
+            let index = cell as usize;
+            if ice[index] == 0 || ocean[index] != 0 || wet[index] != 0 {
+                return 0;
+            }
+            for neighbor in surface.neighbors(cell) {
+                if neighbor == TOOL_SURFACE_NONE {
+                    return 0;
+                }
+                let other = neighbor as usize;
+                if ice[other] == 0 || ocean[other] != 0 || wet[other] != 0 {
+                    return 0;
+                }
+            }
+            1
+        })
+        .collect()
 }
 
 fn land_fraction(terrain: &AtlasTerrain, cells: [u32; 4], weights: [f64; 4]) -> f64 {
@@ -894,8 +1136,18 @@ const GULLY_MIX: f64 = 0.7;
 const GULLY_SLOPE_LO: f64 = 0.02;
 const GULLY_SLOPE_HI: f64 = 0.18;
 
+/// Cover-warp octaves, from four cells down to half a cell.
+const COVER_WARP_OCTAVES: usize = 4;
+
 /// Smallest detail amplitude, metres. A shelf keeps this much texture.
 const MIN_AMPLITUDE_M: f64 = 4.0;
+
+/// Flat-land micro-relief. A few metres, only while the canonical slope is low.
+const MICRO_AMP_M: f64 = 4.0;
+const MICRO_SLOPE_LO: f64 = 0.02;
+const MICRO_SLOPE_HI: f64 = 0.08;
+const MICRO_LAMBDAS: [f64; 3] = [1_000.0, 500.0, 220.0];
+const MICRO_COEFFS: [f64; 3] = [0.55, 0.30, 0.15];
 
 /// Detail amplitude of one canonical cell. Land and lake cells scale with
 /// relief. Ocean cells scale with relief and fade in with depth, so a shallow
@@ -990,7 +1242,7 @@ mod tests {
     use super::*;
     use crate::style::{self, load_style, AtlasStyle};
 
-    fn fixture() -> &'static AtlasTerrain {
+    pub(super) fn fixture() -> &'static AtlasTerrain {
         static TERRAIN: OnceLock<AtlasTerrain> = OnceLock::new();
         TERRAIN.get_or_init(|| {
             let settings = Settings::from_parts(
@@ -1520,6 +1772,139 @@ mod tests {
             median >= 0.03,
             "cell {cell} moisture {moisture} median luminance std/mean {median}"
         );
+    }
+
+    #[test]
+    fn interior_ice_detail_is_smoothed() {
+        let terrain = fixture();
+        let mut checked = 0u32;
+        for cell in 0..terrain.ice_interior.len() as u32 {
+            if terrain.ice_interior[cell as usize] == 0 {
+                continue;
+            }
+            let q = terrain.slope_q[cell as usize];
+            let slope = (f64::from(q[0]) * f64::from(q[0])
+                + f64::from(q[1]) * f64::from(q[1])
+                + f64::from(q[2]) * f64::from(q[2]))
+            .sqrt()
+                / SLOPE_Q;
+            if slope > 0.45 {
+                continue;
+            }
+            let direction = terrain.surface().direction_of(cell);
+            let (smoothed, raw) = terrain.terrain_detail_pair(direction, 25.0);
+            if raw.abs() < 1e-3 {
+                continue;
+            }
+            assert!(
+                smoothed.abs() <= 0.20 * raw.abs() + 1e-9,
+                "cell {cell} smoothed {smoothed} raw {raw}"
+            );
+            checked += 1;
+            if checked == 8 {
+                break;
+            }
+        }
+        assert!(checked >= 1, "fixture has no low-slope interior ice cell");
+    }
+
+    #[test]
+    fn sea_ice_z2_has_no_pixel_scale_noise() {
+        let terrain = fixture();
+        let mut site = None;
+        for cell in 0..terrain.biome.len() as u32 {
+            if !is_pack_ice(terrain, cell) {
+                continue;
+            }
+            let mut interior = true;
+            for neighbor in terrain.surface().neighbors(cell) {
+                if neighbor == TOOL_SURFACE_NONE || !is_pack_ice(terrain, neighbor) {
+                    interior = false;
+                    break;
+                }
+            }
+            if interior {
+                site = Some(cell);
+                break;
+            }
+        }
+        let cell = site.expect("fixture has no interior perennial sea-ice cell");
+        let (lat_deg, lon_deg) = terrain.surface().cell_lat_lon_degrees(cell);
+        let z = 2u32;
+        let world = 256.0 * f64::from(1u32 << z);
+        let gx = (lon_deg + 180.0) / 360.0 * world;
+        let lat = lat_deg.clamp(-85.051_128_78, 85.051_128_78).to_radians();
+        let gy = (std::f64::consts::PI - lat.tan().asinh()) / std::f64::consts::TAU * world;
+        let size = 48u32;
+        let gx0 = (gx as u32).saturating_sub(size / 2);
+        let gy0 = (gy as u32).saturating_sub(size / 2);
+        let rgba = render_imagery_pixels(terrain, z, gx0, gy0, size, size, 1);
+        let ratios = window_luminance_ratios(&rgba, size as usize, 8, |mean| mean > 0.45);
+        assert!(
+            !ratios.is_empty(),
+            "no bright pack-ice window at cell {cell}"
+        );
+        for ratio in &ratios {
+            assert!(
+                *ratio < 0.02,
+                "cell {cell} pack window std/mean {ratio} (n {})",
+                ratios.len()
+            );
+        }
+    }
+
+    fn is_pack_ice(terrain: &AtlasTerrain, cell: u32) -> bool {
+        use daena_physical::products::Biome;
+        let index = cell as usize;
+        if terrain.ocean[index] == 0 {
+            return false;
+        }
+        terrain.ice[index] != 0
+            || Biome::from_u8(terrain.biome[index]) == Some(Biome::SeaIcePerennial)
+    }
+
+    fn window_luminance_ratios(
+        rgba: &[u8],
+        width: usize,
+        win: usize,
+        keep: impl Fn(f64) -> bool,
+    ) -> Vec<f64> {
+        use super::palette::srgb_to_linear;
+        let mut ratios = Vec::new();
+        let mut y = 0;
+        while y + win <= width {
+            let mut x = 0;
+            while x + win <= width {
+                let mut sum = 0.0;
+                let mut count = 0.0;
+                for row in y..y + win {
+                    for col in x..x + win {
+                        let pixel = (row * width + col) * 4;
+                        let lin = srgb_to_linear([rgba[pixel], rgba[pixel + 1], rgba[pixel + 2]]);
+                        sum += 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2];
+                        count += 1.0;
+                    }
+                }
+                let mean = sum / count;
+                if keep(mean) {
+                    let mut var = 0.0;
+                    for row in y..y + win {
+                        for col in x..x + win {
+                            let pixel = (row * width + col) * 4;
+                            let lin =
+                                srgb_to_linear([rgba[pixel], rgba[pixel + 1], rgba[pixel + 2]]);
+                            let lum = 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2];
+                            let delta = lum - mean;
+                            var += delta * delta;
+                        }
+                    }
+                    ratios.push(var.sqrt() / count.sqrt() / mean.max(1e-6));
+                }
+                x += win;
+            }
+            y += win;
+        }
+        ratios
     }
 
     #[test]

@@ -30,6 +30,8 @@ function render(name, options = {}) {
       manifest,
       "--locked",
       "--offline",
+      "--bin",
+      "atlas-map",
       "--",
       "--source",
       sourcePath,

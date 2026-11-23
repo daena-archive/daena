@@ -251,6 +251,77 @@ Each phase is reviewed with rendered images, a tile-seam check and timings.
    constants, and update ADR 0005 and `MAPS.md`.
 7. **Later.** The physical map view switches to the Atlas tiles.
 
+## Status
+
+Phase 1 is done, plus an imagery style that was not in the original plan:
+
+- **1 (`14f04b3`):** cube-sphere stencils, lake levels on the reference datum,
+  the terrain module, relief tiles, and the `atlas-terrain` review bin.
+- **1b (`3dd4f26`):** the imagery style.
+  - Land colour comes from biome vegetation targets, nudged by climate.
+  - Lighting is one sun plus sky light.
+  - Water is coloured by depth.
+  - Detail is eroded, with downhill gullies.
+- **1c:** ice and lowlands.
+  - Bright colours roll off instead of clipping.
+  - Ice has snow and melt zones, and its surface is smoothed.
+  - Ice edges follow terrain.
+  - Sea ice is pack ice with a broken edge.
+  - Lowlands get micro-relief and soft patches.
+  - Vegetation targets are smoothed over land neighbours.
+
+Lessons from 1b and 1c:
+
+- Linear features made by thresholding noise look artificial, and were
+  removed. These include drainage veins, glacier flow lines, crevasses and
+  hard tree clumps. Real drainage and flow structure has to come from the
+  engine's flow routing, which is phase 2.
+- A domain warp must move each octave by less than its own wavelength, or it
+  folds space into swirls.
+- The biome map is per cell. At zoom 5 a cell is only a few pixels, so
+  per-cell targets must be smoothed before they are interpolated.
+
+Imagery uses almost the whole tile budget: about 49 ms of 50 at zoom 12,
+n=512. Phase 3 needs headroom before it adds vector layers.
+
+Known artifacts, deferred:
+
+- **Ice-sheet edges** at zoom 5–8 are sharp cut-outs. The ice flag is per
+  cell.
+- **Thin horizontal bars of ice** at zoom 5, in both styles. The cause is not
+  found yet.
+- **One-cell lakes** along rivers draw as staircases at zoom 5.
+- **A faint crease along cube-face edges** shows on smooth ice and at zoom 2.
+- **The tundra review site** is a 3 km plateau at −21 °C, so it stays snow.
+
+**Phase 3a (Studio base map).** Imagery (new, the default) and Elevation are
+served by the terrain renderer up to zoom 12. A Studio session is either
+`Terrain` or `Legacy`:
+
+- **Terrain sessions** build `AtlasTerrain` from the physical tools' shared
+  `ToolSurface` LRU. They cache at most two terrains, one per (map, identity,
+  generation, epoch), and imagery and relief share one. At n=1024 a terrain
+  owns about 246 MiB. Terrain sessions never run the legacy prepare, which
+  peaks at about 1.6 GB.
+- **Inspect and region proposal** read the terrain's `ToolSurface`. The
+  inspect readout shows the detailed elevation and the cell's climate. It
+  has no winds, seasonal climate, storms, tributaries or orometry.
+- **Vectors** come from OpenLayers: the coastline from the derived GeoJSON,
+  and a graticule. The derived GeoJSON has no river or lake geometry, so
+  those toggles stay hidden. Phase 3b should emit them from the
+  `ToolSurface` rivers and lakes.
+- **Not on terrain styles yet:**
+  - labels;
+  - authored lines and points drawn by the server (the frontend still draws
+    authored overlays);
+  - tectonics, hazards, wind and debug layers. Their toggles are hidden on
+    terrain sessions.
+- **Still legacy:**
+  - thematic styles, capped at zoom 8;
+  - export, which renders "Imagery" with the relief palette.
+  - Capabilities still report `studio_max_zoom` 8. The view reads the
+    session's `max_zoom` instead.
+
 ## Open questions
 
 - **Atlas constraints.** `LockPath`, `ForceLake`, `FreezeErosion` and

@@ -6,6 +6,7 @@ use sha2::{Digest, Sha256};
 use crate::{AtlasError, CODE_REQUEST_INVALID};
 
 pub const RELIEF_STYLE_ID: &str = "daena-atlas-relief";
+pub const IMAGERY_STYLE_ID: &str = "daena-atlas-imagery";
 pub const ANTIQUE_STYLE_ID: &str = "daena-atlas-antique";
 pub const POLITICAL_STYLE_ID: &str = "daena-atlas-political";
 pub const BIOME_STYLE_ID: &str = "daena-atlas-biome";
@@ -27,6 +28,8 @@ pub const STYLE_VERSION: u32 = 1;
 
 const RELIEF_JSON: &str =
     include_str!("../../../docs/maps/atlas/styles/daena-atlas-relief.v1.json");
+const IMAGERY_JSON: &str =
+    include_str!("../../../docs/maps/atlas/styles/daena-atlas-imagery.v1.json");
 const ANTIQUE_JSON: &str =
     include_str!("../../../docs/maps/atlas/styles/daena-atlas-antique.v1.json");
 const POLITICAL_JSON: &str =
@@ -96,8 +99,9 @@ impl AtlasStyle {
 }
 
 #[must_use]
-pub fn bundled_style_ids() -> [&'static str; 16] {
+pub fn bundled_style_ids() -> [&'static str; 17] {
     [
+        IMAGERY_STYLE_ID,
         RELIEF_STYLE_ID,
         BIOME_STYLE_ID,
         TEMPERATURE_STYLE_ID,
@@ -120,6 +124,7 @@ pub fn bundled_style_ids() -> [&'static str; 16] {
 pub fn resolve_style_id(id: &str) -> Result<&'static str, AtlasError> {
     match id {
         RELIEF_STYLE_ID | SPIKE_STYLE_ALIAS => Ok(RELIEF_STYLE_ID),
+        IMAGERY_STYLE_ID => Ok(IMAGERY_STYLE_ID),
         ANTIQUE_STYLE_ID => Ok(ANTIQUE_STYLE_ID),
         POLITICAL_STYLE_ID => Ok(POLITICAL_STYLE_ID),
         BIOME_STYLE_ID => Ok(BIOME_STYLE_ID),
@@ -146,6 +151,7 @@ pub fn load_style(id: &str) -> Result<(AtlasStyle, &'static str), AtlasError> {
     let canonical = resolve_style_id(id)?;
     let raw = match canonical {
         RELIEF_STYLE_ID => RELIEF_JSON,
+        IMAGERY_STYLE_ID => IMAGERY_JSON,
         ANTIQUE_STYLE_ID => ANTIQUE_JSON,
         POLITICAL_STYLE_ID => POLITICAL_JSON,
         BIOME_STYLE_ID => BIOME_JSON,
@@ -380,7 +386,12 @@ mod tests {
             biome_fill(&biome, crate::control::CLIMATE_CLASS_ARID)
         );
         assert_ne!(biome_fill(&biome, 99), biome.biome_grassland);
-        assert_eq!(bundled_style_ids().len(), 16);
+        assert_eq!(bundled_style_ids().len(), 17);
+        let (imagery, imagery_raw) = load_style(IMAGERY_STYLE_ID).unwrap();
+        assert_eq!(imagery.id, IMAGERY_STYLE_ID);
+        assert_eq!(imagery.frame, relief.frame);
+        assert_eq!(imagery.label_ink, relief.label_ink);
+        assert!(!imagery_raw.contains("http"));
         let (temperature, _) = load_style(TEMPERATURE_STYLE_ID).unwrap();
         let (precip, _) = load_style(PRECIPITATION_STYLE_ID).unwrap();
         let (bathy, _) = load_style(BATHYMETRY_STYLE_ID).unwrap();

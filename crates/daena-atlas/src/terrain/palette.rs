@@ -26,8 +26,20 @@ const LAND_SRGB: [(Biome, [u8; 3]); 18] = [
 ];
 
 pub(super) const ROCK_SRGB: [u8; 3] = [118, 110, 102];
-pub(super) const SNOW_SRGB: [u8; 3] = [245, 247, 250];
-pub(super) const ICE_SRGB: [u8; 3] = [236, 240, 245];
+/// Accumulation snow and mountain snow. Kept under 250 so the shoulder can shade it.
+pub(super) const SNOW_SRGB: [u8; 3] = [236, 240, 246];
+/// Ablation-zone bare ice.
+pub(super) const BARE_ICE_SRGB: [u8; 3] = [196, 210, 222];
+/// Blue-ice patches in the ablation zone.
+pub(super) const BLUE_ICE_SRGB: [u8; 3] = [150, 185, 210];
+/// Debris on bare ice.
+pub(super) const ICE_DIRT_SRGB: [u8; 3] = [150, 145, 138];
+/// Moraine and outwash just outside the ice margin.
+pub(super) const MORAINE_SRGB: [u8; 3] = [118, 110, 100];
+/// Perennial pack ice. Off-white, not the land-ice snow tone.
+pub(super) const PACK_ICE_SRGB: [u8; 3] = [226, 232, 238];
+/// Tree and shrub clumps on open ground.
+pub(super) const TREE_CLUMP_SRGB: [u8; 3] = [46, 56, 30];
 pub(super) const BEACH_SRGB: [u8; 3] = [204, 188, 152];
 pub(super) const GRASS_DRY_SRGB: [u8; 3] = [150, 136, 86];
 pub(super) const GRASS_LUSH_SRGB: [u8; 3] = [96, 112, 58];
@@ -134,7 +146,12 @@ mod tests {
 
     fn palette_entries() -> impl Iterator<Item = [u8; 3]> {
         LAND_SRGB.into_iter().map(|(_, rgb)| rgb).chain([
-            ICE_SRGB,
+            BARE_ICE_SRGB,
+            BLUE_ICE_SRGB,
+            ICE_DIRT_SRGB,
+            MORAINE_SRGB,
+            PACK_ICE_SRGB,
+            TREE_CLUMP_SRGB,
             ROCK_SRGB,
             SNOW_SRGB,
             BEACH_SRGB,

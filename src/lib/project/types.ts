@@ -669,6 +669,7 @@ export interface AtlasStudioSessionStatus {
   mapEntityId: string;
   tileUrlTemplate: string;
   maxZoom: number;
+  kind: "terrain" | "legacy";
   tileSize: number;
   deviceScale: number;
   capturedContentGeneration: number;

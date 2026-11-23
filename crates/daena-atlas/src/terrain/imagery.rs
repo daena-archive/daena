@@ -4,11 +4,12 @@ use rayon::prelude::*;
 
 use super::noise::sample_octave;
 use super::palette::{
-    biome_linear, is_ice_biome, linear_to_srgb, srgb_to_linear, vegetation_targets, ALPINE_SRGB,
-    BEACH_SRGB, FOREST_BOREAL_SRGB, FOREST_TEMPERATE_SRGB, FOREST_TROPICAL_SRGB, GRASS_DRY_SRGB,
-    GRASS_LUSH_SRGB, GREY_ROCK_SRGB, HAZE_SRGB, ICE_SRGB, LAKE_DEEP_SRGB, LAKE_SHALLOW_SRGB,
-    OCEAN_DEEP_SRGB, OCEAN_MID_SRGB, OCEAN_SHELF_SRGB, RED_BROWN_SRGB, REEF_SRGB, SALT_CRUST_SRGB,
-    SALT_LAKE_SRGB, SAND_BARE_SRGB, SNOW_SRGB, TUNDRA_SRGB,
+    biome_linear, is_ice_biome, linear_to_srgb, srgb_to_linear, ALPINE_SRGB, BARE_ICE_SRGB,
+    BEACH_SRGB, BLUE_ICE_SRGB, FOREST_BOREAL_SRGB, FOREST_TEMPERATE_SRGB, FOREST_TROPICAL_SRGB,
+    GRASS_DRY_SRGB, GRASS_LUSH_SRGB, GREY_ROCK_SRGB, HAZE_SRGB, ICE_DIRT_SRGB, LAKE_DEEP_SRGB,
+    LAKE_SHALLOW_SRGB, MORAINE_SRGB, OCEAN_DEEP_SRGB, OCEAN_MID_SRGB, OCEAN_SHELF_SRGB,
+    PACK_ICE_SRGB, RED_BROWN_SRGB, REEF_SRGB, SALT_CRUST_SRGB, SALT_LAKE_SRGB, SAND_BARE_SRGB,
+    SNOW_SRGB, TREE_CLUMP_SRGB, TUNDRA_SRGB,
 };
 use super::render::{
     direction_from_lon_lat, mercator_latitude, mercator_longitude, mercator_world_px,
@@ -17,6 +18,8 @@ use super::{octave_fade, smoothstep, unit, AtlasTerrain, TerrainCover};
 use daena_physical::products::Biome;
 
 const AMBIENT: f64 = 0.30;
+/// Sky light. Flat ground divides this back out, so mid-tones stay on albedo.
+const AMBIENT_TINT: [f64; 3] = [0.92, 0.96, 1.06];
 const SUN_ALTITUDE_DEG: f64 = 35.0;
 const SUN_AZIMUTH_DEG: f64 = 315.0;
 const LAPSE_C_PER_KM: f64 = 6.5;
@@ -32,7 +35,6 @@ const WARP_PER_WAVELENGTH: f64 = 0.12;
 struct Sample {
     height: f64,
     cover: u8,
-    ice: u8,
 }
 
 /// RGBA pixels for the imagery style. Geometry matches [`super::render_pixels`].
@@ -69,7 +71,6 @@ pub fn render_imagery_pixels(
         Sample {
             height: 0.0,
             cover: 0,
-            ice: 0,
         };
         buf_w * buf_h
     ];
@@ -83,12 +84,11 @@ pub fn render_imagery_pixels(
             for (col, sample) in row_samples.iter_mut().enumerate() {
                 let gx = gx0_f + (col as f64 - halo as f64 + 0.5) / scale_f;
                 let lon = mercator_longitude(gx, world);
-                let (height, cover, ice) =
+                let (height, cover, _) =
                     terrain.sample_pixel(direction_from_lon_lat(lon, lat), ground);
                 *sample = Sample {
                     height,
                     cover: cover_byte(cover),
-                    ice: u8::from(ice),
                 };
             }
         });
@@ -116,7 +116,6 @@ pub fn render_imagery_pixels(
                     Shade {
                         height: centre.height,
                         cover: cover_from_byte(centre.cover),
-                        ice: centre.ice != 0,
                         east,
                         west,
                         north,
@@ -143,7 +142,6 @@ pub fn render_imagery_pixels(
 struct Shade {
     height: f64,
     cover: TerrainCover,
-    ice: bool,
     east: f64,
     west: f64,
     north: f64,
@@ -163,9 +161,12 @@ fn shade_pixel(terrain: &AtlasTerrain, shade: Shade) -> [u8; 3] {
     let slope = (dzdx * dzdx + dzdy * dzdy).sqrt();
     let bowl = (shade.east + shade.west + shade.north + shade.south - 4.0 * shade.height)
         / (4.0 * shade.ground);
-    let light = imagery_light(dzdx, dzdy, shade.exaggeration, bowl, shade.sun);
     let p = unit(shade.direction);
     let (cells, weights) = terrain.surface().bilinear_stencil(p);
+    let ice_w = super::ice_weight_of(terrain, cells, weights);
+    // Valley occlusion reads as a dark ring on the ice edge. Drop it there.
+    let ao_scale = 1.0 - smoothstep(0.04, 0.40, ice_w);
+    let light = imagery_light(dzdx, dzdy, shade.exaggeration, bowl, shade.sun, ao_scale);
     let depth = shade.sea_m - shade.height;
     if shade.cover == TerrainCover::Ocean && depth > slope * shade.ground + 0.5 {
         let colour = haze_colour(
@@ -174,11 +175,13 @@ fn shade_pixel(terrain: &AtlasTerrain, shade: Shade) -> [u8; 3] {
         );
         return encode(colour);
     }
-    let mut albedo = land_albedo(terrain, &shade, p, slope, bowl);
+    let mut albedo = land_albedo(terrain, &shade, p, slope, bowl, ice_w);
     let climate = bilinear_climate(terrain, cells, weights);
     let summer = summer_temperature(climate.temp_c, shade.lat, climate.elevation_m, shade.height);
-    // Warmer than the dithered snow line. Skip the snow samples.
-    let snow = if summer > SNOW_SKIP_C {
+    let extent = ice_extent(terrain, p, shade.ground, ice_w, bowl);
+    let ice_cover = smoothstep(0.47, 0.53, extent);
+    // Warmer than the dithered snow line, or already accumulation ice. Skip the samples.
+    let snow = if summer > SNOW_SKIP_C || ice_cover > 0.85 {
         0.0
     } else {
         let snow_n = faded_noise(
@@ -188,10 +191,31 @@ fn shade_pixel(terrain: &AtlasTerrain, shade: Shade) -> [u8; 3] {
             shade.ground,
             terrain.radius_m(),
         );
-        snow_fraction(summer, slope, pole_facing(shade.lat, dzdx, dzdy), snow_n)
+        snow_fraction(
+            summer,
+            slope,
+            pole_facing(shade.lat, dzdx, dzdy),
+            snow_n,
+            bowl,
+            sun_facing_slope(dzdx, dzdy, shade.sun),
+        )
     };
+    // Moraine only where the ground beside the ice is bare. Where the ice flag
+    // ends inside a snowfield, a fringe would draw a grey line through snow.
+    let bare = (1.0 - snow) * (1.0 - snow);
+    let fringe = moraine_weight(terrain, extent, shade.ground, ice_w) * bare;
+    if fringe > 0.0 {
+        albedo = lerp3(albedo, srgb_to_linear(MORAINE_SRGB), fringe);
+    }
+    // Full snow here; the ice blend below covers it. Scaling snow by
+    // `1 − ice_cover` as well let bare ground show through halfway across the
+    // ice edge and drew a grey line round ice inside snowfields.
     albedo = lerp3(albedo, srgb_to_linear(SNOW_SRGB), snow);
-    let mut colour = scale3(albedo, light);
+    if ice_cover > 0.0 {
+        let ice_alb = ice_surface(terrain, p, shade.ground, summer, cells, weights);
+        albedo = lerp3(albedo, ice_alb, ice_cover);
+    }
+    let mut colour = mul_light(albedo, light);
     colour = blend_water(terrain, colour, &shade, cells, weights, slope, light, p);
     encode(haze_colour(colour, shade.z))
 }
@@ -226,6 +250,10 @@ struct Field {
     ice_w: f64,
     salt_w: f64,
     wet_w: f64,
+    /// Savanna, grassland, and steppe. Tree clumps and broad patches use this.
+    open_w: f64,
+    glacier_w: f64,
+    sheet_w: f64,
 }
 
 fn bilinear_field(terrain: &AtlasTerrain, cells: [u32; 4], weights: [f64; 4]) -> Field {
@@ -239,6 +267,9 @@ fn bilinear_field(terrain: &AtlasTerrain, cells: [u32; 4], weights: [f64; 4]) ->
         ice_w: 0.0,
         salt_w: 0.0,
         wet_w: 0.0,
+        open_w: 0.0,
+        glacier_w: 0.0,
+        sheet_w: 0.0,
     };
     for (slot, cell) in cells.iter().enumerate() {
         let index = *cell as usize;
@@ -251,14 +282,22 @@ fn bilinear_field(terrain: &AtlasTerrain, cells: [u32; 4], weights: [f64; 4]) ->
         field.palette[0] += weight * palette[0];
         field.palette[1] += weight * palette[1];
         field.palette[2] += weight * palette[2];
-        let (veg_target, forest_target) = vegetation_targets(biome_id);
-        field.veg_target += weight * veg_target;
-        field.forest_target += weight * forest_target;
+        let smooth = terrain.veg_smooth[index];
+        field.veg_target += weight * f64::from(smooth[0]) / 255.0;
+        field.forest_target += weight * f64::from(smooth[1]) / 255.0;
         let Some(biome) = Biome::from_u8(biome_id) else {
             continue;
         };
         if is_ice_biome(biome) {
             field.ice_w += weight;
+        }
+        if biome == Biome::Glacier {
+            field.glacier_w += weight;
+        } else if biome == Biome::IceSheet {
+            field.sheet_w += weight;
+        }
+        if matches!(biome, Biome::Savanna | Biome::Grassland | Biome::ColdSteppe) {
+            field.open_w += weight;
         }
         if biome == Biome::SaltFlat {
             field.salt_w += weight;
@@ -276,6 +315,7 @@ fn land_albedo(
     p: [f64; 3],
     slope: f64,
     bowl: f64,
+    ice_w: f64,
 ) -> [f64; 3] {
     let warped = warp_direction(terrain, p, shade.ground);
     let (cells, weights) = terrain.surface().bilinear_stencil(warped);
@@ -325,10 +365,6 @@ fn land_albedo(
         let crust = scale3(srgb_to_linear(SALT_CRUST_SRGB), 1.0 + 0.04 * broad);
         albedo = lerp3(albedo, crust, field.salt_w);
     }
-    if shade.cover != TerrainCover::Ocean && (shade.ice || field.ice_w > 0.0) {
-        let ice_w = if shade.ice { 1.0 } else { field.ice_w };
-        albedo = lerp3(albedo, srgb_to_linear(ICE_SRGB), ice_w);
-    }
     albedo = apply_beach(
         terrain,
         albedo,
@@ -338,7 +374,10 @@ fn land_albedo(
         p,
         shade.cover,
     );
-    let concave = smoothstep(0.0, 0.15, bowl) * (1.0 - smoothstep(0.8, 1.6, moisture));
+    // The ice edge sits in valleys. The old darkening painted a smudge around it.
+    let ice_edge = smoothstep(0.04, 0.40, ice_w.max(field.ice_w));
+    let concave =
+        smoothstep(0.0, 0.15, bowl) * (1.0 - smoothstep(0.8, 1.6, moisture)) * (1.0 - ice_edge);
     let ridge = smoothstep(0.0, 0.15, -bowl);
     albedo = scale3(albedo, 1.0 - 0.08 * concave + 0.05 * ridge);
     let signal = if canopy_on {
@@ -346,7 +385,9 @@ fn land_albedo(
     } else {
         broad
     };
-    let amp = 0.07 + 0.05 * forest_share;
+    // Bare and sparse ground carries ±12%. Closed canopy stays near ±7%.
+    let sparse = 1.0 - smoothstep(0.25, 0.70, veg);
+    let amp = 0.07 + 0.05 * sparse.max(forest_share);
     let hue = faded_noise(
         &terrain.green_hue_octaves,
         &HUE_WAVELENGTHS_M,
@@ -359,6 +400,9 @@ fn land_albedo(
     albedo[0] = albedo[0] * gain - hue_shift * 0.45;
     albedo[1] = albedo[1] * gain + hue_shift;
     albedo[2] = albedo[2] * gain - hue_shift * 0.55;
+    if field.open_w > 0.35 {
+        albedo = apply_patches(terrain, albedo, warped, shade.ground, field.open_w, veg);
+    }
     albedo
 }
 
@@ -438,7 +482,7 @@ fn blend_water(
     cells: [u32; 4],
     weights: [f64; 4],
     slope: f64,
-    light: f64,
+    light: [f64; 3],
     p: [f64; 3],
 ) -> [f64; 3] {
     let ocean_w = parent_weight(terrain, cells, weights, true);
@@ -476,15 +520,15 @@ fn ocean_linear(
     shade: &Shade,
     cells: [u32; 4],
     weights: [f64; 4],
-    light: f64,
+    light: [f64; 3],
     p: [f64; 3],
 ) -> [f64; 3] {
     let (shelf, reef) = shelf_reef_weight(terrain, cells, weights);
-    let ice = sea_ice_amount(terrain, shade, cells, weights, p);
-    ocean_colour(shade.sea_m - shade.height, light, ice, shelf, reef)
+    let water = ocean_colour(shade.sea_m - shade.height, light, shelf, reef);
+    apply_sea_ice(terrain, shade, cells, weights, p, water, light)
 }
 
-fn ocean_colour(depth: f64, light: f64, ice_amount: f64, shelf_w: f64, reef_w: f64) -> [f64; 3] {
+fn ocean_colour(depth: f64, light: [f64; 3], shelf_w: f64, reef_w: f64) -> [f64; 3] {
     let depth = depth.max(0.0);
     let deep_w = 1.0 - (-depth / 40.0).exp();
     let mut colour = lerp3(
@@ -502,9 +546,6 @@ fn ocean_colour(depth: f64, light: f64, ice_amount: f64, shelf_w: f64, reef_w: f
             reef_t.clamp(0.0, 1.0),
         );
         colour = lerp3(colour, tint, tint_w);
-    }
-    if ice_amount > 0.0 {
-        colour = lerp3(colour, srgb_to_linear(ICE_SRGB), ice_amount.clamp(0.0, 1.0));
     }
     shade_water(colour, depth, light)
 }
@@ -526,18 +567,27 @@ fn shelf_reef_weight(terrain: &AtlasTerrain, cells: [u32; 4], weights: [f64; 4])
     (shelf, reef)
 }
 
-fn sea_ice_amount(
+fn apply_sea_ice(
     terrain: &AtlasTerrain,
     shade: &Shade,
     cells: [u32; 4],
     weights: [f64; 4],
     p: [f64; 3],
-) -> f64 {
+    water: [f64; 3],
+    light: [f64; 3],
+) -> [f64; 3] {
     if shade.cover != TerrainCover::Ocean {
-        return 0.0;
+        return water;
     }
-    // Imagery is a summer view: seasonal sea ice has melted to open water,
-    // so only perennial ice (or the ice flag) paints.
+    // A latitude cutoff is a straight band at world scale. Shift the lookup
+    // north–south by up to ±140 km where that octave still resolves.
+    let (cells, weights) = if let Some(shifted) = sea_ice_shift(terrain, p, shade.ground, shade.lat)
+    {
+        terrain.surface().bilinear_stencil(shifted)
+    } else {
+        (cells, weights)
+    };
+    // Summer view: seasonal sea ice has melted. Only perennial ice paints.
     let mut perennial = 0.0;
     for (slot, cell) in cells.iter().enumerate() {
         let index = *cell as usize;
@@ -549,46 +599,42 @@ fn sea_ice_amount(
             perennial += weights[slot];
         }
     }
-    if perennial == 0.0 {
-        return 0.0;
+    if perennial <= 0.0 {
+        return water;
     }
-    perennial * perennial_cover(floe_noise(terrain, p, shade.ground))
+    let (cover, lead, floe_n) = pack_structure(terrain, p, shade.ground, perennial);
+    if cover <= 0.0 {
+        return water;
+    }
+    let mut pack = srgb_to_linear(PACK_ICE_SRGB);
+    pack = scale3(pack, 1.0 + 0.04 * floe_n);
+    pack = scale3(pack, 1.0 - 0.62 * lead);
+    let lum = 0.2126 * light[0] + 0.7152 * light[1] + 0.0722 * light[2];
+    pack = scale3(pack, 1.0 + 0.04 * (lum - 1.0));
+    lerp3(water, pack, cover)
 }
 
-/// `None` when every floe octave is smaller than the pixel.
-fn floe_noise(terrain: &AtlasTerrain, p: [f64; 3], ground: f64) -> Option<f64> {
-    let lambdas = [0.5 * terrain.cell_size_m(), 0.125 * terrain.cell_size_m()];
-    let mut acc = 0.0;
-    let mut weight_sum = 0.0;
-    for (index, octave) in terrain.snow_octaves.iter().enumerate() {
-        if index >= lambdas.len() {
-            break;
-        }
-        let fade = octave_fade(lambdas[index], ground);
-        if fade == 0.0 {
-            continue;
-        }
-        let weight = fade * if index == 0 { 0.65 } else { 0.35 };
-        acc += weight * sample_octave(octave, p, terrain.radius_m() / lambdas[index]);
-        weight_sum += weight;
+/// `None` when the pixel is too far south, or the 280 km octave has faded.
+fn sea_ice_shift(terrain: &AtlasTerrain, p: [f64; 3], ground: f64, lat: f64) -> Option<[f64; 3]> {
+    if lat.abs() < 0.70 {
+        return None;
     }
-    if weight_sum == 0.0 {
-        None
-    } else {
-        Some((acc / weight_sum).clamp(-1.0, 1.0))
+    const LAMBDA: f64 = 280_000.0;
+    let fade = octave_fade(LAMBDA, ground);
+    if fade == 0.0 {
+        return None;
     }
+    let noise = sample_octave(&terrain.sea_ice_octaves[0], p, terrain.radius_m() / LAMBDA);
+    let (_, north) = super::tangent_axes(p);
+    let ang = 140_000.0 * fade * noise / terrain.radius_m();
+    Some(unit([
+        p[0] + north[0] * ang,
+        p[1] + north[1] * ang,
+        p[2] + north[2] * ang,
+    ]))
 }
 
-fn perennial_cover(noise: Option<f64>) -> f64 {
-    let Some(noise) = noise else {
-        return 0.9;
-    };
-    // Cracks sit in the low tail so the mean stays near 0.9.
-    let crack = smoothstep(-0.15, -0.55, noise);
-    0.9 - 0.5 * crack
-}
-
-fn lake_colour(depth: f64, light: f64) -> [f64; 3] {
+fn lake_colour(depth: f64, light: [f64; 3]) -> [f64; 3] {
     let t = 1.0 - (-depth.max(0.0) / 18.0).exp();
     let colour = lerp3(
         srgb_to_linear(LAKE_SHALLOW_SRGB),
@@ -598,20 +644,29 @@ fn lake_colour(depth: f64, light: f64) -> [f64; 3] {
     shade_water(colour, depth, light)
 }
 
-fn salt_lake_colour(depth: f64, light: f64) -> [f64; 3] {
+fn salt_lake_colour(depth: f64, light: [f64; 3]) -> [f64; 3] {
     let pale = srgb_to_linear(SALT_LAKE_SRGB);
     let deep = scale3(pale, 0.72);
     let colour = lerp3(pale, deep, 1.0 - (-depth.max(0.0) / 12.0).exp());
-    shade_water(colour, depth, light * 0.25 + 0.75)
+    let mild = [
+        light[0] * 0.25 + 0.75,
+        light[1] * 0.25 + 0.75,
+        light[2] * 0.25 + 0.75,
+    ];
+    shade_water(colour, depth, mild)
 }
 
 /// Seafloor relief fades with depth. Deep water keeps at most ±5% shade.
-fn shade_water(colour: [f64; 3], depth: f64, light: f64) -> [f64; 3] {
+fn shade_water(colour: [f64; 3], depth: f64, light: [f64; 3]) -> [f64; 3] {
     let relief = (-depth.max(0.0) / 25.0).exp();
-    let delta = light - 1.0;
-    let deep_delta = delta.clamp(-0.05, 0.05);
-    let factor = 1.0 + relief * delta + (1.0 - relief) * deep_delta;
-    scale3(colour, factor)
+    let mut out = [0.0; 3];
+    for channel in 0..3 {
+        let delta = light[channel] - 1.0;
+        let deep_delta = delta.clamp(-0.05, 0.05);
+        let factor = 1.0 + relief * delta + (1.0 - relief) * deep_delta;
+        out[channel] = colour[channel] * factor;
+    }
+    out
 }
 
 fn parent_weight(terrain: &AtlasTerrain, cells: [u32; 4], weights: [f64; 4], ocean: bool) -> f64 {
@@ -671,18 +726,20 @@ fn warp_direction(terrain: &AtlasTerrain, p: [f64; 3], ground: f64) -> [f64; 3] 
     let mut dn = 0.0;
     // Each octave displaces by at most 0.12 of its own wavelength, so the warp
     // never folds space. Larger warps fold and smear the texture into swirls.
-    let mut amp = WARP_PER_WAVELENGTH;
-    let mut lambda = terrain.cell_size_m();
-    for index in 0..3 {
+    // Start at four cells: at low zoom a cell is only a few pixels, and the
+    // biome map shows as blocks unless the warp moves boundaries by about a
+    // cell. Each octave still moves at most 0.12 of its own wavelength.
+    let octaves = super::COVER_WARP_OCTAVES;
+    let mut lambda = 4.0 * terrain.cell_size_m();
+    for index in 0..octaves {
         let fade = octave_fade(lambda, ground);
         if fade > 0.0 {
             let frequency = terrain.radius_m() / lambda;
-            let metres = amp * terrain.cell_size_m() * fade;
+            let metres = WARP_PER_WAVELENGTH * lambda * fade;
             let angle = metres / terrain.radius_m();
             de += sample_octave(&terrain.cover_warp[index], p, frequency) * angle;
-            dn += sample_octave(&terrain.cover_warp[index + 3], p, frequency) * angle;
+            dn += sample_octave(&terrain.cover_warp[index + octaves], p, frequency) * angle;
         }
-        amp *= 0.5;
         lambda *= 0.5;
     }
     unit([
@@ -771,6 +828,326 @@ fn faded_noise(
     }
 }
 
+/// Bilinear ice weight plus a valley/ridge term and multi-scale noise, compared
+/// with 0.5 by the caller. No ice parent means no ice: the terrain term only
+/// moves a margin that already exists.
+fn ice_extent(terrain: &AtlasTerrain, p: [f64; 3], ground: f64, ice_w: f64, bowl: f64) -> f64 {
+    if ice_w <= 0.0 {
+        return 0.0;
+    }
+    // Curvature is per pixel. Once a pixel is a sizeable part of a cell, a
+    // one-pixel valley spikes it and ice runs out along every small valley as
+    // a thin bar, so the terrain term fades out at low zoom.
+    let resolved = 1.0 - smoothstep(0.1, 0.25, ground / terrain.cell_size_m());
+    let terrain_term = resolved
+        * if bowl > 0.0 {
+            (bowl * 2.6).min(0.55)
+        } else {
+            (bowl * 1.2).max(-0.22)
+        };
+    // Interior ice cannot fall through 0.5 even at the worst noise and ridge.
+    if ice_w >= 0.94 {
+        return ice_w + terrain_term;
+    }
+    ice_w + terrain_term + 0.18 * ice_margin_noise(terrain, p, ground)
+}
+
+fn ice_margin_noise(terrain: &AtlasTerrain, p: [f64; 3], ground: f64) -> f64 {
+    let cell = terrain.cell_size_m();
+    let lambdas = [4.0 * cell, 1.5 * cell];
+    let coeffs = [0.65, 0.35];
+    if octave_fade(lambdas[0], ground) == 0.0 {
+        return 0.0;
+    }
+    let mut acc = 0.0;
+    let mut weight_sum = 0.0;
+    for index in 0..lambdas.len() {
+        let fade = octave_fade(lambdas[index], ground);
+        if fade == 0.0 {
+            break;
+        }
+        let weight = coeffs[index] * fade;
+        acc += weight
+            * sample_octave(
+                &terrain.ice_octaves[index],
+                p,
+                terrain.radius_m() / lambdas[index],
+            );
+        weight_sum += weight;
+    }
+    if weight_sum == 0.0 {
+        0.0
+    } else {
+        (acc / weight_sum).clamp(-1.0, 1.0)
+    }
+}
+
+fn moraine_weight(terrain: &AtlasTerrain, extent: f64, ground: f64, ice_w: f64) -> f64 {
+    if ice_w <= 0.0 {
+        return 0.0;
+    }
+    let outside = (0.5 - extent).max(0.0);
+    if outside <= 0.0 {
+        return 0.0;
+    }
+    let dist_m = outside * terrain.cell_size_m();
+    let width = (3.0 * ground).clamp(450.0, 1_200.0);
+    // A band only a few pixels wide reads as a pencil outline round the ice,
+    // so the fringe appears only once it spans many pixels (about z 10 on).
+    let resolved = 1.0 - smoothstep(60.0, 150.0, ground);
+    resolved * (1.0 - smoothstep(0.0, width, dist_m))
+}
+
+/// Ice albedo by zone: snow above the dithered equilibrium line, bare and
+/// blue ice with dirt below it, and a faint long undulation inside ice sheets.
+fn ice_surface(
+    terrain: &AtlasTerrain,
+    p: [f64; 3],
+    ground: f64,
+    summer: f64,
+    cells: [u32; 4],
+    weights: [f64; 4],
+) -> [f64; 3] {
+    let zone = faded_octave(
+        &terrain.ice_surface_octaves,
+        0,
+        p,
+        ground,
+        6_000.0,
+        terrain.radius_m(),
+    );
+    let ela = -1.0 + 0.55 * zone;
+    // About ±150 m either side of the −1 °C line, at 6.5 °C/km.
+    let accum = 1.0 - smoothstep(ela - 1.0, ela + 1.0, summer);
+    let snow = srgb_to_linear(SNOW_SRGB);
+    let mut albedo = if accum > 0.98 {
+        snow
+    } else {
+        let patch = faded_octave(
+            &terrain.ice_surface_octaves,
+            1,
+            p,
+            ground,
+            900.0,
+            terrain.radius_m(),
+        );
+        let blue = smoothstep(0.45, 0.72, patch);
+        let dirt = smoothstep(0.50, 0.78, -patch);
+        let mut ablation = lerp3(
+            srgb_to_linear(BARE_ICE_SRGB),
+            srgb_to_linear(BLUE_ICE_SRGB),
+            blue * 0.80,
+        );
+        ablation = lerp3(ablation, srgb_to_linear(ICE_DIRT_SRGB), dirt * 0.65);
+        lerp3(ablation, snow, accum)
+    };
+    // Thresholded noise lines (flow lines, crevasses) read as circuit-board
+    // webs, not ice. Ice keeps only its zones, smooth surface and shading.
+    let (sheet_w, interior) = ice_classes(terrain, cells, weights);
+    if sheet_w > 0.60 && interior > 0.65 {
+        albedo = sheet_undulation(terrain, albedo, p, ground);
+    }
+    albedo
+}
+
+/// Bilinear ice-sheet weight and interior (all-ice neighbourhood) weight.
+fn ice_classes(terrain: &AtlasTerrain, cells: [u32; 4], weights: [f64; 4]) -> (f64, f64) {
+    let mut sheet = 0.0;
+    let mut interior = 0.0;
+    for slot in 0..4 {
+        let index = cells[slot] as usize;
+        let weight = weights[slot];
+        if Biome::from_u8(terrain.biome[index]) == Some(Biome::IceSheet) {
+            sheet += weight;
+        }
+        if terrain.ice_interior[index] != 0 {
+            interior += weight;
+        }
+    }
+    (sheet, interior)
+}
+
+fn sheet_undulation(
+    terrain: &AtlasTerrain,
+    albedo: [f64; 3],
+    p: [f64; 3],
+    ground: f64,
+) -> [f64; 3] {
+    const LAMBDA: f64 = 12_000.0;
+    let fade = octave_fade(LAMBDA, ground);
+    if fade == 0.0 {
+        return albedo;
+    }
+    let noise = sample_octave(
+        &terrain.ice_sheet_octaves[0],
+        p,
+        terrain.radius_m() / LAMBDA,
+    );
+    scale3(albedo, 1.0 + 0.02 * fade * noise)
+}
+
+fn faded_octave(
+    octaves: &[super::noise::Octave],
+    index: usize,
+    p: [f64; 3],
+    ground: f64,
+    lambda: f64,
+    radius: f64,
+) -> f64 {
+    let Some(octave) = octaves.get(index) else {
+        return 0.0;
+    };
+    let fade = octave_fade(lambda, ground);
+    if fade == 0.0 {
+        return 0.0;
+    }
+    fade * sample_octave(octave, p, radius / lambda)
+}
+
+fn stretch_sample(p: [f64; 3], along: [f64; 3], stretch: f64) -> [f64; 3] {
+    let len = (along[0] * along[0] + along[1] * along[1] + along[2] * along[2]).sqrt();
+    if len < 1e-8 || stretch <= 1.0 {
+        return p;
+    }
+    let along = [along[0] / len, along[1] / len, along[2] / len];
+    super::stretch_along(p, along, stretch)
+}
+
+/// Marginal ice zone plus leads. Fine octaves contribute nothing once they
+/// fade, so a z2 interior is a smooth field of the bilinear perennial weight.
+fn pack_structure(
+    terrain: &AtlasTerrain,
+    p: [f64; 3],
+    ground: f64,
+    perennial: f64,
+) -> (f64, f64, f64) {
+    let coarse = sea_noise(terrain, 0, p, ground, 32_000.0);
+    let mid = sea_noise(terrain, 0, p, ground, 10_000.0);
+    let thresh = if coarse.is_none() && mid.is_none() {
+        0.35
+    } else {
+        (0.30 + 0.28 * coarse.unwrap_or(0.0) + 0.12 * mid.unwrap_or(0.0)).clamp(0.15, 0.72)
+    };
+    let solid = smoothstep(thresh, (thresh + 0.20).min(0.92), perennial);
+    let floe_lambda = 2_500.0;
+    let floe_fade = octave_fade(floe_lambda, ground);
+    let floe = if floe_fade == 0.0 {
+        0.0
+    } else {
+        sample_octave(
+            &terrain.sea_ice_octaves[1],
+            p,
+            terrain.radius_m() / floe_lambda,
+        )
+    };
+    let cover = if floe_fade == 0.0 {
+        solid
+    } else {
+        let edge = 1.0 - smoothstep(thresh + 0.04, thresh + 0.42, perennial);
+        let cut = 0.05 + 0.50 * edge;
+        let pieces = smoothstep(cut, cut + 0.22, floe * 0.5 + 0.5);
+        solid * ((1.0 - edge) + edge * pieces)
+    };
+    let lead = if cover < 0.2 {
+        0.0
+    } else {
+        sea_leads(terrain, p, ground) * cover
+    };
+    let floe_n = if floe_fade == 0.0 {
+        0.0
+    } else {
+        floe * floe_fade
+    };
+    (
+        cover.clamp(0.0, 1.0),
+        lead.clamp(0.0, 1.0),
+        floe_n.clamp(-1.0, 1.0),
+    )
+}
+
+/// `None` when the octave is smaller than the pixel.
+fn sea_noise(
+    terrain: &AtlasTerrain,
+    index: usize,
+    p: [f64; 3],
+    ground: f64,
+    lambda: f64,
+) -> Option<f64> {
+    let fade = octave_fade(lambda, ground);
+    if fade == 0.0 {
+        return None;
+    }
+    let octave = terrain.sea_ice_octaves.get(index)?;
+    Some((fade * sample_octave(octave, p, terrain.radius_m() / lambda)).clamp(-1.0, 1.0))
+}
+
+fn sea_leads(terrain: &AtlasTerrain, p: [f64; 3], ground: f64) -> f64 {
+    const LAMBDA: f64 = 6_000.0;
+    let fade = octave_fade(LAMBDA, ground);
+    if fade == 0.0 {
+        return 0.0;
+    }
+    const AXES: [[f64; 3]; 3] = [[0.80, 0.15, 0.58], [-0.30, 0.92, 0.25], [0.20, -0.35, 0.91]];
+    let mut lead = 0.0f64;
+    for axis in AXES {
+        let stretched = stretch_sample(p, axis, 9.0);
+        let noise = sample_octave(
+            &terrain.sea_ice_octaves[2],
+            stretched,
+            terrain.radius_m() / LAMBDA,
+        );
+        let line = smoothstep(0.86, 0.96, 1.0 - noise.abs());
+        lead = lead.max(line);
+    }
+    lead * fade
+}
+
+/// Broad moisture patches and soft tree-clump mottling on open ground.
+fn apply_patches(
+    terrain: &AtlasTerrain,
+    mut albedo: [f64; 3],
+    p: [f64; 3],
+    ground: f64,
+    open_w: f64,
+    veg: f64,
+) -> [f64; 3] {
+    let broad = faded_octave(
+        &terrain.patch_octaves,
+        0,
+        p,
+        ground,
+        6_000.0,
+        terrain.radius_m(),
+    );
+    if broad != 0.0 {
+        albedo = scale3(albedo, 1.0 + 0.10 * broad.clamp(-1.0, 1.0) * open_w);
+    }
+    let speckle_lambda = 420.0;
+    if octave_fade(speckle_lambda, ground) == 0.0 || veg < 0.2 {
+        return albedo;
+    }
+    let speckle = sample_octave(
+        &terrain.patch_octaves[1],
+        p,
+        terrain.radius_m() / speckle_lambda,
+    );
+    // Soft mottling, not a hard threshold: a thresholded speckle reads as a
+    // camouflage pattern across the whole lowland.
+    let clump = (0.5 + 0.5 * speckle).clamp(0.0, 1.0).powi(3)
+        * open_w
+        * octave_fade(speckle_lambda, ground);
+    lerp3(albedo, srgb_to_linear(TREE_CLUMP_SRGB), clump * 0.30 * veg)
+}
+
+fn sun_facing_slope(dzdx: f64, dzdy: f64, sun: [f64; 3]) -> f64 {
+    let slope = (dzdx * dzdx + dzdy * dzdy).sqrt();
+    let sun_h = (sun[0] * sun[0] + sun[1] * sun[1]).sqrt();
+    if slope < 1e-8 || sun_h < 1e-8 {
+        return 0.0;
+    }
+    ((-dzdx * sun[0] - dzdy * sun[1]) / (slope * sun_h)).max(0.0)
+}
+
 fn local_temperature(temp_cell_c: f64, elevation_cell_m: f64, height_m: f64) -> f64 {
     temp_cell_c - LAPSE_C_PER_KM * (height_m - elevation_cell_m) / 1_000.0
 }
@@ -787,18 +1164,37 @@ pub(super) fn summer_temperature(
     local_temperature(annual_c + boost, elevation_cell_m, height_m)
 }
 
-/// Perennial snow from summer temperature. `noise` in `[-1, 1]` dithers the
-/// 0 °C line by less than half a degree. Pole-facing slopes hold snow 1.5 °C
-/// warmer. Slopes steeper than about 0.8 shed it.
+/// Perennial snow from summer temperature.
+///
+/// `noise` in `[-1, 1]` dithers the line. Pole-facing slopes hold snow warmer.
+/// Sun-facing slopes hold it colder and dither it further, so the cover is
+/// patchy. Concave ground (`bowl > 0`) holds an extra degree. Slopes steeper
+/// than about 0.8 shed it. With `bowl == 0` and `sun_facing == 0` the line
+/// matches the previous pole-and-noise rule.
 #[must_use]
-pub(super) fn snow_fraction(temp_c: f64, slope: f64, pole_facing: f64, noise: f64) -> f64 {
-    let line = 1.5 * pole_facing.clamp(0.0, 1.0) + 0.45 * noise.clamp(-1.0, 1.0);
-    let mut cover = 1.0 - smoothstep(line - 0.2, line + 0.2, temp_c);
+pub(super) fn snow_fraction(
+    temp_c: f64,
+    slope: f64,
+    pole_facing: f64,
+    noise: f64,
+    bowl: f64,
+    sun_facing: f64,
+) -> f64 {
+    let gully = smoothstep(0.0, 0.12, bowl);
+    let sun = sun_facing.clamp(0.0, 1.0);
+    let dither = (0.45 + 0.65 * sun) * noise.clamp(-1.0, 1.0);
+    let line = 1.5 * pole_facing.clamp(0.0, 1.0) - 1.6 * sun + 1.3 * gully + dither;
+    let mut cover = 1.0 - smoothstep(line - 0.35, line + 0.35, temp_c);
     cover *= 1.0 - smoothstep(0.8, 1.05, slope);
     cover
 }
 
-/// Flat ground (`dz = 0`, no curvature) returns exactly 1.
+/// Flat, unoccluded ground returns exactly `(1, 1, 1)`.
+///
+/// The ambient term is tinted by [`AMBIENT_TINT`] and then divided by the same
+/// mix at `lambert == lambert_flat`, so a level surface stays on its albedo.
+/// Shadowed snow therefore goes blue-grey. `ao_scale` fades the valley
+/// occlusion; pass `1` for the full term.
 #[must_use]
 pub(super) fn imagery_light(
     dzdx: f64,
@@ -806,15 +1202,24 @@ pub(super) fn imagery_light(
     exaggeration: f64,
     bowl: f64,
     sun: [f64; 3],
-) -> f64 {
+    ao_scale: f64,
+) -> [f64; 3] {
     let nx = -dzdx * exaggeration;
     let ny = -dzdy * exaggeration;
     let nz = 1.0;
     let len = (nx * nx + ny * ny + nz * nz).sqrt();
     let lambert = ((nx * sun[0] + ny * sun[1] + nz * sun[2]) / len).max(0.0);
-    let lambert_flat = sun[2];
-    let occlusion = 1.0 - 0.12 * smoothstep(0.0, 0.2, bowl);
-    (AMBIENT + (1.0 - AMBIENT) * (lambert / lambert_flat)) * occlusion
+    let lambert_flat = sun[2].max(1e-6);
+    let occlusion = 1.0 - 0.12 * smoothstep(0.0, 0.2, bowl) * ao_scale.clamp(0.0, 1.0);
+    let sun_w = (1.0 - AMBIENT) * (lambert / lambert_flat) * occlusion;
+    let amb_w = AMBIENT * occlusion;
+    let mut light = [0.0; 3];
+    for channel in 0..3 {
+        let raw = amb_w * AMBIENT_TINT[channel] + sun_w;
+        let flat = AMBIENT * AMBIENT_TINT[channel] + (1.0 - AMBIENT);
+        light[channel] = raw / flat;
+    }
+    light
 }
 
 fn imagery_exaggeration(z: u32) -> f64 {
@@ -856,10 +1261,38 @@ fn haze_colour(colour: [f64; 3], z: u32) -> [f64; 3] {
 
 fn encode(colour: [f64; 3]) -> [u8; 3] {
     linear_to_srgb([
-        colour[0].clamp(0.0, 1.0),
-        colour[1].clamp(0.0, 1.0),
-        colour[2].clamp(0.0, 1.0),
+        tone_curve(colour[0]),
+        tone_curve(colour[1]),
+        tone_curve(colour[2]),
     ])
+}
+
+/// Filmic shoulder. Identity through 0.8 linear, then a C1 curve that
+/// approaches 1 and never reaches it for a finite input.
+#[must_use]
+pub(super) fn tone_curve(x: f64) -> f64 {
+    if x <= 0.0 {
+        return 0.0;
+    }
+    const KNEE: f64 = 0.8;
+    if x <= KNEE {
+        return x;
+    }
+    let room = 1.0 - KNEE;
+    let mapped = 1.0 - (room * room) / (room + (x - KNEE));
+    if mapped >= 1.0 {
+        1.0
+    } else {
+        mapped
+    }
+}
+
+fn mul_light(albedo: [f64; 3], light: [f64; 3]) -> [f64; 3] {
+    [
+        albedo[0] * light[0],
+        albedo[1] * light[1],
+        albedo[2] * light[2],
+    ]
 }
 
 fn ground_or_zero(z: u32, lat: f64, radius: f64) -> f64 {
@@ -901,13 +1334,43 @@ mod tests {
     #[test]
     fn flat_ground_with_no_detail_lights_to_its_albedo() {
         let sun = sun_direction();
-        let light = imagery_light(0.0, 0.0, 4.0, 0.0, sun);
-        assert!(
-            (light - 1.0).abs() < 1e-12,
-            "flat light {light} sun {sun:?}"
-        );
-        let curved = imagery_light(0.0, 0.0, 1.0, 0.0, sun);
-        assert!((curved - 1.0).abs() < 1e-12);
+        let light = imagery_light(0.0, 0.0, 4.0, 0.0, sun, 1.0);
+        for channel in light {
+            assert!(
+                (channel - 1.0).abs() < 1e-12,
+                "flat light {light:?} sun {sun:?}"
+            );
+        }
+        let curved = imagery_light(0.0, 0.0, 1.0, 0.0, sun, 1.0);
+        for channel in curved {
+            assert!((channel - 1.0).abs() < 1e-12);
+        }
+        let albedo = [0.18, 0.22, 0.11];
+        let encoded = encode(mul_light(albedo, light));
+        assert_eq!(encoded, linear_to_srgb(albedo));
+    }
+
+    #[test]
+    fn tone_curve_is_monotonic_and_identity_below_the_shoulder() {
+        let mut previous = 0.0;
+        for step in 0..=500 {
+            let x = f64::from(step) * 0.01;
+            let y = tone_curve(x);
+            assert!(y <= 1.0, "x {x} mapped to {y}");
+            assert!(y + 1e-12 >= previous, "x {x} fell from {previous} to {y}");
+            if x <= 0.75 {
+                assert!(
+                    (y - x).abs() <= 1.0 / 255.0,
+                    "x {x} moved by {}",
+                    (y - x).abs()
+                );
+            }
+            previous = y;
+        }
+        assert_eq!(tone_curve(-0.4), 0.0);
+        let bright = tone_curve(1.4);
+        assert!(bright < 1.0 && bright > 0.8, "shoulder {bright}");
+        assert!(tone_curve(1.4) > tone_curve(0.9));
     }
 
     #[test]
@@ -916,15 +1379,15 @@ mod tests {
         let high = summer_temperature(0.0, equator, 0.0, 1_200.0);
         let low = summer_temperature(0.0, equator, 0.0, 200.0);
         assert!(
-            snow_fraction(high, 0.05, 0.0, 0.0) > 0.95,
+            snow_fraction(high, 0.05, 0.0, 0.0, 0.0, 0.0) > 0.95,
             "1200 m at the equator should be snow, T {high}"
         );
         assert!(
-            snow_fraction(low, 0.05, 1.0, -1.0) < 0.05,
+            snow_fraction(low, 0.05, 1.0, -1.0, 0.0, 0.0) < 0.05,
             "200 m at the equator should be clear, T {low}"
         );
-        assert!(snow_fraction(high, 0.05, 1.0, -1.0) > 0.95);
-        let shed = snow_fraction(high, 1.2, 0.0, 0.0);
+        assert!(snow_fraction(high, 0.05, 1.0, -1.0, 0.0, 0.0) > 0.95);
+        let shed = snow_fraction(high, 1.2, 0.0, 0.0, 0.0, 0.0);
         assert!(shed < 0.05, "a steep face sheds snow, got {shed}");
         let tundra_lat = 65.0_f64.to_radians();
         let tundra = summer_temperature(-8.0, tundra_lat, 200.0, 200.0);
@@ -933,7 +1396,7 @@ mod tests {
             "tundra summer should be above freezing, T {tundra}"
         );
         assert!(
-            snow_fraction(tundra, 0.1, 1.0, -1.0) < 0.05,
+            snow_fraction(tundra, 0.1, 1.0, -1.0, 0.0, 0.0) < 0.05,
             "tundra summer stays snow-free, T {tundra}"
         );
     }

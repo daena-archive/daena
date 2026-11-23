@@ -702,6 +702,23 @@ fn store_tool_surface(key: String, surface: Arc<daena_physical::engine::ToolSurf
     cache.push_back((key, surface));
 }
 
+/// Generation JSON for one physical map, read the same way as the derived commands.
+pub(super) fn physical_generation_for_map(
+    project: &ProjectStore,
+    map_entity_id: &str,
+) -> Result<serde_json::Value, CoreError> {
+    let descriptor = project
+        .list_fields(map_entity_id.to_string())?
+        .into_iter()
+        .find(|field| field.namespace == daena_core::maps::MAP_NAMESPACE && field.key == "map")
+        .ok_or_else(|| CoreError::Validation("maps:map descriptor is missing".into()))?;
+    descriptor
+        .value
+        .get("generation")
+        .cloned()
+        .ok_or_else(|| CoreError::Validation("maps: physical generation is missing".into()))
+}
+
 /// Return the compact tool surface for one map and epoch. The small in-process
 /// LRU holds the present and one epoch; a cold surface re-derives the world and
 /// drops it once the surface exists. The cache key reuses the historical key

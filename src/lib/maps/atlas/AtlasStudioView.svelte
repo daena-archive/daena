@@ -8,6 +8,7 @@ import Feature from "ol/Feature.js";
 import LineString from "ol/geom/LineString.js";
 import MultiLineString from "ol/geom/MultiLineString.js";
 import Point from "ol/geom/Point.js";
+import Graticule from "ol/layer/Graticule.js";
 import TileLayer from "ol/layer/Tile.js";
 import VectorLayer from "ol/layer/Vector.js";
 import VectorSource from "ol/source/Vector.js";
@@ -74,6 +75,15 @@ import { bindMapLifecycle, type MapLifecycle } from "../openlayers/lifecycle";
 import { createAtlasRenderCompletionTracker } from "./render-completion.ts";
 import MapLayerVisibilityList from "../MapLayerVisibilityList.svelte";
 import { ATLAS_DETAIL_ALGORITHM_VERSION, atlasStyleLabel, isAtlasLayerEnabledByDefault } from "./constants.ts";
+import {
+  coastStyle,
+  hydroKind,
+  isTerrainStyle,
+  lakeStyle,
+  riverStyle,
+  TERRAIN_IMAGERY_STYLE_ID,
+  TERRAIN_RELIEF_STYLE_ID,
+} from "./terrain-vectors.ts";
 import AtlasOverlayPanel from "./AtlasOverlayPanel.svelte";
 import { simplifyFreehandGeometry } from "../native-vector/geometry.ts";
 import { daenaProperties, featureName, type VectorFeature } from "../native-vector/types.ts";
@@ -148,7 +158,15 @@ let error = $state("");
 let stale = $state("");
 let cursor = $state("—");
 let loading = $state(true);
-let styleId = $state("daena-atlas-relief");
+let styleId = $state(TERRAIN_IMAGERY_STYLE_ID);
+let coastOn = $state(false);
+let riversOn = $state(false);
+let lakesOn = $state(false);
+let graticuleOn = $state(false);
+let hydroHas = $state({ coast: false, river: false, lake: false });
+let hydroRequest = 0;
+/** `mapId:offsetYears` of the hydro features in the current sources. */
+let hydroLoadedKey = "";
 let offsetYears = $state(0);
 let timeKind = $state<"physical-offset-year" | "calendar-year">("physical-offset-year");
 let authoredYear = $state(1);
@@ -247,6 +265,13 @@ let routeRequest = 0;
 let unlisten: UnlistenFn | undefined;
 let map: Map | null = null;
 let tileSource: XYZ | null = null;
+let coastSource: VectorSource | null = null;
+let coastLayer: VectorLayer | null = null;
+let riverSource: VectorSource | null = null;
+let riverLayer: VectorLayer | null = null;
+let lakeSource: VectorSource | null = null;
+let lakeLayer: VectorLayer | null = null;
+let graticuleLayer: Graticule | null = null;
 let findPlaceSource: VectorSource | null = null;
 let findPlaceLayer: VectorLayer | null = null;
 let namedWaterSource: VectorSource | null = null;
@@ -468,29 +493,55 @@ function styleLabel(id: string) {
   return atlasStyleLabel(id);
 }
 
-const studioLayerBook = $derived([
-  {
-    id: "overlays",
-    label: "Overlays",
-    layers:
-      overlayAuthoring?.layers.map((layer) => ({
-        id: layer.id,
-        name: layer.name,
-        enabled: layer.defaultVisible,
-        meta: overlayFamilyLabel(overlayLayerFamily(layer)),
-        overlay: true,
-      })) ?? [],
-  },
-  {
-    id: "physical",
-    label: "Physical",
-    layers: layers.map((layer) => ({
-      id: layer.id,
-      name: layer.name,
-      enabled: layer.enabled,
-    })),
-  },
-]);
+const terrainStyleChoices = $derived((capabilities?.styles ?? []).filter((id) => isTerrainStyle(id)));
+const legacyStyleChoices = $derived((capabilities?.styles ?? []).filter((id) => !isTerrainStyle(id)));
+const studioLayerBook = $derived.by(() => {
+  const terrain = session?.kind === "terrain";
+  type StudioLayer = {
+    id: string;
+    name: string;
+    enabled: boolean;
+    meta?: string;
+    overlay?: boolean;
+  };
+  // Terrain tiles ignore every server-drawn layer, so their toggles would do nothing.
+  const physical: StudioLayer[] = (terrain ? [] : layers).map((layer) => ({
+    id: layer.id,
+    name: layer.name,
+    enabled: layer.enabled,
+  }));
+  const groups: Array<{ id: string; label: string; layers: StudioLayer[] }> = [
+    {
+      id: "overlays",
+      label: "Overlays",
+      layers:
+        overlayAuthoring?.layers.map((layer) => ({
+          id: layer.id,
+          name: layer.name,
+          enabled: layer.defaultVisible,
+          meta: overlayFamilyLabel(overlayLayerFamily(layer)),
+          overlay: true,
+        })) ?? [],
+    },
+  ];
+  if (terrain) {
+    const vectors: StudioLayer[] = [];
+    // Derived GeoJSON has no river or lake geometry yet; show only what it carries.
+    if (hydroHas.coast) {
+      vectors.push({ id: "terrain:coast", name: "Coastline", enabled: coastOn });
+    }
+    if (hydroHas.river) {
+      vectors.push({ id: "terrain:rivers", name: "Rivers", enabled: riversOn });
+    }
+    if (hydroHas.lake) {
+      vectors.push({ id: "terrain:lakes", name: "Lake outlines", enabled: lakesOn });
+    }
+    vectors.push({ id: "terrain:graticule", name: "Graticule", enabled: graticuleOn });
+    groups.push({ id: "terrain", label: "Terrain · zoom 12", layers: vectors });
+  }
+  if (physical.length > 0) groups.push({ id: "physical", label: "Physical", layers: physical });
+  return groups;
+});
 
 function atlasLayerIds() {
   return [
@@ -528,9 +579,11 @@ function toMicro(value: number) {
 
 async function loadCapabilities() {
   capabilities = await project.atlasCapabilities(mapId);
-  styleId = capabilities.styles.includes("daena-atlas-relief")
-    ? "daena-atlas-relief"
-    : (capabilities.styles[0] ?? "daena-atlas-relief");
+  styleId = capabilities.styles.includes(TERRAIN_IMAGERY_STYLE_ID)
+    ? TERRAIN_IMAGERY_STYLE_ID
+    : capabilities.styles.includes(TERRAIN_RELIEF_STYLE_ID)
+      ? TERRAIN_RELIEF_STYLE_ID
+      : (capabilities.styles[0] ?? TERRAIN_IMAGERY_STYLE_ID);
   if (capabilities.calendarBinding) {
     authoredYear = capabilities.calendarBinding.calendarReferenceYear;
   }
@@ -564,9 +617,11 @@ async function openSession() {
     session = next;
     styleId = next.styleId;
     offsetYears = next.offsetYears;
+    applyTerrainDefaults(previous, next);
     if (map && tileSource) {
       stage = "Updating map…";
-      configureTileSource(tileSource, next);
+      applySessionView(next);
+      syncTerrainVisibility();
       watchRenderCompletion(next, () => tileSource?.refresh());
     } else {
       stage = "Mounting map…";
@@ -574,6 +629,13 @@ async function openSession() {
       mapLifecycle = undefined;
       map = null;
       tileSource = null;
+      coastSource = null;
+      coastLayer = null;
+      riverSource = null;
+      riverLayer = null;
+      lakeSource = null;
+      lakeLayer = null;
+      graticuleLayer = null;
       findPlaceLayer = null;
       findPlaceSource = null;
       namedWaterLayer = null;
@@ -582,8 +644,10 @@ async function openSession() {
       routeSource = null;
       const overview = applyWorldConstraints();
       const center: [number, number] = keepCenter ?? [0, 20];
-      mountMap(next, { center, zoom: keepZoom ?? overview });
+      const zoom = Math.min(keepZoom ?? overview, next.maxZoom);
+      mountMap(next, { center, zoom });
     }
+    void loadTerrainHydro(next);
     if (previous && previous.sessionToken !== next.sessionToken) {
       void project.atlasStudioClose(previous.sessionToken).catch(() => undefined);
     }
@@ -601,6 +665,110 @@ function scheduleSession() {
   if (!mountedControls) return;
   if (debounce) clearTimeout(debounce);
   debounce = setTimeout(() => void openSession(), 300);
+}
+
+function applyTerrainDefaults(previous: AtlasStudioSessionStatus | null, next: AtlasStudioSessionStatus) {
+  if (next.kind !== "terrain") return;
+  if (previous?.kind === "terrain" && previous.styleId === next.styleId) return;
+  const on = next.styleId === TERRAIN_RELIEF_STYLE_ID;
+  coastOn = on;
+  riversOn = on;
+  lakesOn = on;
+  graticuleOn = false;
+}
+
+function syncTerrainVisibility() {
+  const terrain = session?.kind === "terrain";
+  coastLayer?.setVisible(Boolean(terrain && coastOn && hydroHas.coast));
+  riverLayer?.setVisible(Boolean(terrain && riversOn && hydroHas.river));
+  lakeLayer?.setVisible(Boolean(terrain && lakesOn && hydroHas.lake));
+  graticuleLayer?.setVisible(Boolean(terrain && graticuleOn));
+}
+
+function applyHydroFeatures(features: Feature[]) {
+  const coasts: Feature[] = [];
+  const rivers: Feature[] = [];
+  const lakes: Feature[] = [];
+  for (const feature of features) {
+    const kind = hydroKind(feature);
+    if (kind === "coast") coasts.push(feature);
+    else if (kind === "river") rivers.push(feature);
+    else if (kind === "lake") lakes.push(feature);
+  }
+  coastSource?.clear();
+  riverSource?.clear();
+  lakeSource?.clear();
+  if (coasts.length > 0) coastSource?.addFeatures(coasts);
+  if (rivers.length > 0) riverSource?.addFeatures(rivers);
+  if (lakes.length > 0) lakeSource?.addFeatures(lakes);
+  hydroHas = { coast: coasts.length > 0, river: rivers.length > 0, lake: lakes.length > 0 };
+  syncTerrainVisibility();
+}
+
+async function loadTerrainHydro(status: AtlasStudioSessionStatus) {
+  const request = ++hydroRequest;
+  const key = `${mapId}:${status.offsetYears}`;
+  if (status.kind === "terrain" && key === hydroLoadedKey) {
+    syncTerrainVisibility();
+    return;
+  }
+  hydroLoadedKey = "";
+  if (status.kind !== "terrain") {
+    hydroHas = { coast: false, river: false, lake: false };
+    coastSource?.clear();
+    riverSource?.clear();
+    lakeSource?.clear();
+    syncTerrainVisibility();
+    return;
+  }
+  try {
+    const text =
+      status.offsetYears === 0
+        ? await project.physicalMapDerivedGeoJson(mapId)
+        : (await project.physicalMapDerivedEpoch(mapId, status.offsetYears)).geojson;
+    if (request !== hydroRequest || session?.sessionToken !== status.sessionToken) return;
+    const format = new GeoJSON();
+    const features = format.readFeatures(text, {
+      dataProjection: "EPSG:4326",
+      featureProjection: "EPSG:3857",
+    }) as Feature[];
+    applyHydroFeatures(features);
+    hydroLoadedKey = key;
+  } catch {
+    if (request !== hydroRequest) return;
+    hydroHas = { coast: false, river: false, lake: false };
+    coastSource?.clear();
+    riverSource?.clear();
+    lakeSource?.clear();
+    syncTerrainVisibility();
+  }
+}
+
+function applySessionView(status: AtlasStudioSessionStatus) {
+  if (!map) return;
+  const view = map.getView();
+  view.setMaxZoom(status.maxZoom);
+  const zoom = view.getZoom();
+  if (zoom !== undefined && zoom > status.maxZoom) {
+    view.setZoom(status.maxZoom);
+    viewZoom = status.maxZoom;
+  }
+  const gridMax = tileSource?.getTileGrid()?.getMaxZoom();
+  if (!tileSource || gridMax !== status.maxZoom) {
+    const nextSource = new XYZ({
+      projection: "EPSG:3857",
+      tileSize: status.tileSize,
+      minZoom: 0,
+      maxZoom: status.maxZoom,
+      wrapX: true,
+    });
+    configureTileSource(nextSource, status);
+    tileSource = nextSource;
+    const layer = map.getLayers().item(0);
+    if (layer instanceof TileLayer) layer.setSource(nextSource);
+  } else {
+    configureTileSource(tileSource, status);
+  }
 }
 
 function configureTileSource(source: XYZ, status: AtlasStudioSessionStatus) {
@@ -646,11 +814,28 @@ function mountMap(status: AtlasStudioSessionStatus, initial?: { center: [number,
     wrapX: true,
   });
   configureTileSource(tileSource, status);
+  hydroLoadedKey = "";
+  coastSource = new VectorSource();
+  riverSource = new VectorSource();
+  lakeSource = new VectorSource();
+  coastLayer = new VectorLayer({ source: coastSource, style: coastStyle, visible: false });
+  riverLayer = new VectorLayer({ source: riverSource, style: riverStyle, visible: false });
+  lakeLayer = new VectorLayer({ source: lakeSource, style: lakeStyle, visible: false });
+  graticuleLayer = new Graticule({
+    strokeStyle: new Stroke({ color: "rgba(80, 88, 96, 0.55)", width: 1 }),
+    showLabels: false,
+    visible: false,
+    wrapX: true,
+  });
   try {
     map = new Map({
       target: container,
       layers: [
         new TileLayer({ source: tileSource, preload: 1 }),
+        coastLayer,
+        riverLayer,
+        lakeLayer,
+        graticuleLayer,
         authoredOverlayLayer(),
         landmassSelectionLayer(),
         routeOverlayLayer(),
@@ -2377,7 +2562,10 @@ onDestroy(() => {
         <label class="style-field">
           Style
           <select bind:value={styleId} onchange={() => scheduleSession()}>
-            {#each capabilities?.styles ?? [] as id}
+            {#each terrainStyleChoices as id}
+              <option value={id}>{styleLabel(id)} · zoom 12</option>
+            {/each}
+            {#each legacyStyleChoices as id}
               <option value={id}>{styleLabel(id)}</option>
             {/each}
           </select>
@@ -2481,6 +2669,26 @@ onDestroy(() => {
                 sidebarPane = "draw";
               }}
               onToggle={(id) => {
+                if (id === "terrain:coast") {
+                  coastOn = !coastOn;
+                  syncTerrainVisibility();
+                  return;
+                }
+                if (id === "terrain:rivers") {
+                  riversOn = !riversOn;
+                  syncTerrainVisibility();
+                  return;
+                }
+                if (id === "terrain:lakes") {
+                  lakesOn = !lakesOn;
+                  syncTerrainVisibility();
+                  return;
+                }
+                if (id === "terrain:graticule") {
+                  graticuleOn = !graticuleOn;
+                  syncTerrainVisibility();
+                  return;
+                }
                 const overlay = overlayAuthoring?.layers.find((layer) => layer.id === id);
                 if (overlay && overlayAuthoring) {
                   overlayAuthoring.setVisible(id, !overlay.defaultVisible);

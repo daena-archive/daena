@@ -9,6 +9,11 @@ and the checks green.
 Read this whole file before you start. Where it disagrees with an older plan
 document, this file wins. Update the older document to match what you build.
 
+**Progress:** keep-alive slices 3 and 4 and side-by-side sub-steps 5.1a to
+5.1c are done and merged into `main`. Resume at 5.1d. The "Branch report" at
+the end of this file says what was built, what changed from this plan, and
+what to watch for.
+
 ## 0. Ground rules
 
 - **Branch.** Start from `main` at or after `125dfb4` ("Plugin instance labels
@@ -66,6 +71,14 @@ rtk npm run test:shell
 
 ```bash
 rtk npm run test:plugins
+```
+
+```bash
+rtk npm run test:unit
+```
+
+```bash
+rtk npm run test:maps
 ```
 
 ```bash
@@ -676,3 +689,231 @@ this file and commit it as the last commit. Include:
   stop";
 - the combined manual checklist for the owner: every "For the owner" item
   above, plus anything your changes added, ordered by risk.
+
+## Branch report
+
+Written on 2026-11-22, when `tabs-remaining` was merged into `main`. The
+work was done by subagents, one step each, and reviewed before each commit:
+full diff read, moved code compared token by token with the original, full
+suite re-run. Nothing on this branch has been run in the desktop app yet.
+
+### Commits
+
+| Commit | Step | What it did |
+| --- | --- | --- |
+| `7c75cfb` | — | This walkthrough. |
+| `7fe6531` | Keep-alive 3 | Writing webviews pooled: hidden and suspended on leave, reused on return, 3 at most, pruned when their tab or plugin goes. |
+| `698f0e7` | Keep-alive 4 | Writing keeps its editor and undo when the entry and revision are unchanged; Language pooled, refreshed by `language.resume`. |
+| `eb4c1a5` | 5.1a | `LocationStore` created: selection, document, fields, revisions, dirty tracking, autosave, save queue, conflicts, selection dialogs, mutation controller. |
+| `30ca781` | 5.1b | Collection, paging, scroll, panes, manuscript outline and houses summaries in the store, with five effects. |
+| `e60f503` | 5.1c | Section, view flags, surfaces, home and settings flags, Houses tree location, `currentShellLocation` / `restoreShellLocation`, the view switches, seven more effects. |
+
+`30ca781` fails `test:unit` (`houses-management.test.mjs` still looked for
+moved code on the page). The suite used then did not run `test:unit`;
+`e60f503` fixes the test, and section 0 now lists `test:unit` and
+`test:maps`.
+
+### Where to resume
+
+Next is **5.1d**, then **5.1e**, then 5.2 to 5.6 as written above.
+
+- **5.1d, Writing and Language bridges.** Move `languagePaneRequest`,
+  `languageWebview`, `languageLeave`, `writingWebview`, `writingReadyCount`,
+  `writingFullscreen`, `writingFullscreenInstance`, `writingLoadKey`,
+  `writingLoad`, `writingFlush`, `writingDraftQueue`,
+  `writingEditablePosted`, and the per-store pool hooks
+  (`writingHostedInstance`, `languageHostedInstance`, the mount prior-ready
+  and retained fields), with their functions (`canLeaveLanguageSection`,
+  `requestLanguagePane`, `postLanguageMessage`, `handleLanguageStateEvent`,
+  `trackLanguageMount`, `postWritingMessage`, `applyWritingDraft`,
+  `enqueueWritingDraft`, `flushWritingWebview`, `postWritingLoad`,
+  `notifyWritingSaved`, `handleWritingStateEvent`, `trackWritingMount`,
+  `endWritingFullscreen`, `beginPooledWritingMount` / `writingMounted` and
+  the Language pair) and the Writing effects (load, AI state, editable,
+  conflict, save error, fullscreen reset). The pool itself (`webviewPool`,
+  `languageCreatedState`, the prune effect) is shell-global: in 5.5 it keeps
+  every store's shown instance, so it stays on the page.
+  `shownWebviewInstance` stays on the page until 5.4 makes it per store.
+- **5.1e, map editor session and selection AI.** Move the inventory's "Map
+  editor session" and "AI dialog bound to the selection" state and
+  functions. Then delete the temporary context bridges listed below.
+- **5.1 exit check.** `rg` the page for per-location `$state` and list what
+  stays, with the reason (see "Left on the page").
+
+How the sub-steps were checked, worth keeping:
+
+- For each moved function, compare a normalised token stream (strip `this.`,
+  `this.ctx.`, `ctx.`, `loc.`, comments and whitespace) of the store method
+  against `git show <parent>:src/routes/+page.svelte`. Every difference must
+  be explained. Expected ones so far: shell writes that now go through a
+  context callback (`error` → `setError`, `globalQuery` →
+  `clearGlobalQuery`, `entities` → `appendEntityToCache`, the restore flag,
+  the map session), shorthand properties expanded, trailing commas.
+- For each moved effect, read it against the original, and check ordering:
+  effects in the store's `$effect.root` flush before the page's effects and
+  before child components' effects, where before they ran in page order.
+- Filter the page diff to hunks that are more than a `loc.` rename or a line
+  rewrap, and read those.
+
+### Changes from this walkthrough
+
+Keep-alive slice 3:
+
+- `SandboxView` takes `prepareMount(self, mountKey) => { retain, reuse }`
+  instead of a `retain` callback, plus `pooled` and `onmounted`.
+- Unpooled embedded views (the graph, Chronology, other sandbox views) also
+  pass a retain list (`prepareUnpooledMount`): the mounting view plus the
+  most recently used pooled instances that fit. Without it, visiting Lore or
+  Chronology closed every hidden Writing webview.
+- A pooled view asks for `reuse` only when the pool already knew that
+  instance with the same mount key. A closed tab's entry is pruned at once
+  but its unmount may still be in flight; a reopened tab (same id) must not
+  adopt that label, or it waits forever for a `ready` that already came.
+- The host keeps a `hidden` flag per embedded webview, so a document that
+  finishes loading while hidden stays hidden.
+- The visibility effect does not show a pooled Writing or Language instance
+  until its own mount finished (`writingHostedInstance`,
+  `languageHostedInstance`). Otherwise the old bounds flash over the tab
+  being restored.
+- A `ready` from a hidden instance still marks its pool entry ready
+  (`noteHiddenWebviewReady`).
+
+Keep-alive slice 4:
+
+- **Hold, not publish.** A load for another entry or revision while the
+  editor has unsent text keeps the editor and shows a save error ("Your
+  text is still here but was not saved. Copy it, then close this tab to
+  continue."). It does not publish, because that would overwrite a revision
+  the editor never saw. The leave flush should make this unreachable. A
+  recovery action, beyond copying, is an open decision.
+- The reading mode (Article / Edit) is not re-applied on a kept load once
+  the user chose one.
+- A kept editor re-reads the entry name (`refreshTitle`), because a rename
+  in another tab is not announced to a hidden editor.
+- An open AI dialog survives a kept load, with its tokens rebased to the new
+  load token, so a run the suspend cancelled shows its cancellation.
+- Language: a pooled instance is mounted with the pane it was created with
+  (`languageCreatedState`, `languageMountState`). The pane is part of the
+  mount key; following the current pane would recreate the webview on every
+  return. The current pane reaches it through `language.resume`.
+- The Overview pane reloads on resume (`refreshToken`) unless it has
+  unsaved edits.
+
+Side-by-side 5.1:
+
+- Store effects run in `$effect.root` created in the constructor, stopped by
+  `destroy()`, which the page calls on teardown. Step 5.4 creates and
+  destroys stores at runtime, so effects must not depend on the page's init
+  scope.
+- The store gets the project client through `LocationContext`, not by
+  import, so `scripts/location-store.test.mjs` can load the runes class in
+  Node (module hooks compile it with `compileModule`;
+  `scripts/location-store-reactive.svelte.ts` drives reactive context
+  values).
+- Moving the effects changed their order. Found: one extra collection
+  fetch pass that is cancelled before it sends, when the Language list
+  refresh or the Writing / Timeline tab clamp fires; and one fewer
+  transient webview visibility toggle when leaving Lore with the wiki open.
+  End states are the same.
+
+Temporary context bridges, to remove when their state moves:
+
+- 5.1d: `canLeaveLanguageSection`, `flushWritingWebview`,
+  `requestLanguagePane`, `notifyWritingSaved`.
+- 5.1e: `resolveDirtyMapSession`, `currentMapId`, `setMapsEditorMode`,
+  `setMapsEditorKey`, `clearMapFocus`, `closeAiRewrite`, `closeAiFieldFill`.
+
+Left on the page on purpose (they mix location and shell state, and read
+or write `loc.*`):
+
+- `openSettings`, `openProjectCenter`, `closeSettings`, `dismissSettings`
+  (install summary, schema editor, admin refresh).
+- `openTreePerson`, `openEntityById`, `openEntityWithIntent`.
+- Gates that also read `ready` or `modules`: `languagePaneShown`,
+  `writingWebviewShown`, `workspaceViewNavShown`, `writingFullscreenShown`,
+  `embeddedPluginWebviewIds`; and `workbenchSupportsInspector`,
+  `workspaceGridStyle`.
+- The relationship and fields dialogs: `openRelationshipMetadata`,
+  `saveRelationshipMetadata`, `openFieldsDialog`, `entityFieldsTabs`, the
+  fields-dialog effect, `backlinkRelationships`, `selectedCalendarId`,
+  `definitionForDateField`.
+- `entityEditDialog` and its functions (one modal, category (c)).
+- `loadEraContexts` (the create dialog uses it too).
+- `PROJECTION_ICONS` (icon components do not load in the Node harness; the
+  table is in `src/lib/location/projection-sandboxes.ts`).
+
+In 5.4 each of these needs a target store: the focused one, or the one that
+opened the dialog.
+
+### Tests
+
+Added:
+
+- `scripts/webview-pool.test.mjs` (pool module) and
+  `scripts/webview-pool-source.test.mjs` (only Writing and Language are
+  pooled, unpooled views keep the pool alive, reuse only for known
+  instances, prune and reset wiring).
+- Rust, `src-tauri/src/tests.rs`: mount key, reuse decision, retain labels
+  (a bad instance id fails the mount), close list.
+- `scripts/writing-plugin-source.test.mjs`: the keep rule, held text,
+  `writing.saved` revision; `scripts/language-plugin-source.test.mjs` and
+  `scripts/language-bridge.test.mjs`: `language.resume`.
+- `scripts/location-store.test.mjs`: dirty marking, save queue, stale-result
+  guards, conflicts, `selectEntity`; collection capture and apply, scroll,
+  panes, section-driven effects; location round trips for every kind;
+  the `switchSection` leave sequence and each refusal.
+
+Re-pointed from `+page.svelte` to the store (meaning unchanged):
+`writing-shell-guards`, `writing-bridge`, `window-close`,
+`check-plugin-isolation`, `webview-pool-source`, `sandbox-view-resync`,
+`entity-lifecycle`, `async-entity-picker`, `tree-interaction`,
+`houses-management`, `writing-outline`.
+
+### Suite at merge
+
+At `e60f503` on the branch, every command in section 0 passed:
+svelte-check 0 errors and 0 warnings, `test:shell`, `test:plugins`,
+`test:unit`, `test:maps`, `test:ui-ux`, `test:entity-lifecycle`, the
+Language bridge test, `npm run build` (only the known OpenLayers
+unused-import warnings), and 288 Rust tests.
+
+### Open questions for the owner
+
+1. Writing hold (above): is copying the text enough, or should the editor
+   offer to save it as a recovery copy, as the shell's conflict path does?
+2. Keep-alive open questions 1 to 3 (`keep-alive-webviews.md`): memory with
+   three live webviews, whether a hidden WKWebView keeps keyboard focus, and
+   whether two Language webviews share `localStorage`.
+
+### Manual checklist, by risk
+
+1. Quit from a Writing tab, and from a Language tab with unsaved edits:
+   nothing lost.
+2. Edit an entry, wait for autosave, switch tabs, switch back; force a
+   revision conflict with an external edit; reload from disk and overwrite.
+   (5.1a moved this code.)
+3. Back and Forward across workspace, home, settings, project, plugin and
+   Houses tree locations: each restores its section, view, entry,
+   collection query, scroll and pane widths. Restart restores tabs. (5.1c.)
+4. Switch between two Writing tabs and a Lore tab many times: the right
+   text, the right bounds, no flash; typing goes to the visible editor only.
+5. Type in Writing, undo a few steps, switch to Language and back, undo
+   again: it works.
+6. Same manuscript in two tabs: an edit in one shows in the other with a
+   fresh editor; a rename in one updates the other's title.
+7. Open four Writing tabs: the oldest reloads when revisited. Close a
+   Writing tab and reopen it: fresh text, no hang.
+8. Start an AI rewrite, switch away before it finishes: on return the
+   dialog shows the cancellation, nothing is inserted.
+9. Fullscreen in Writing, switch tabs: the next tab is not fullscreen.
+10. A tab menu or popover over Writing or Language hides it; closing it
+    shows only the shown instance.
+11. Edit a lexicon in one Language tab, return to another: it shows the
+    change and the right pane. Cancel a Language leave dialog: you stay.
+12. Disable Writing: no webview remains. Close a Language tab: its webview
+    goes.
+13. Collection: filter, sort, page, group, scroll in one section, switch
+    section and back: restored. Resize and hide panes per section.
+14. Leave Lore with the wiki open; open the World graph and Chronology.
+15. Keyboard focus never stays in a hidden webview (open question 2).
+16. Activity Monitor with three live webviews (open question 1).

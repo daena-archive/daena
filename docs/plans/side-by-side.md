@@ -6,8 +6,14 @@ on workspace tabs (`docs/plans/tabs.md`) and on keep-alive webviews
 (`docs/plans/keep-alive-webviews.md`). The state inventory behind this plan is
 in `docs/plans/side-by-side-inventory.md`.
 
-Status: draft. Layout A chosen (the two strips split inside the topbar). Open
-questions at the end.
+Status: slice 1 in progress. `LocationStore`
+(`src/lib/location/location-store.svelte.ts`) holds the selection,
+document and autosave, the collection and panes, and the open surface with
+location capture and restore (sub-steps 5.1a to 5.1c of
+`tabs-remaining-walkthrough.md`). The Writing and Language bridges (5.1d)
+and the map editor session and selection AI (5.1e) are still on the page.
+Layout A chosen (the two strips split inside the topbar). The decisions for
+the open questions at the end are in the walkthrough, section 2.
 
 ## Layout
 

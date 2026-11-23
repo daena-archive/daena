@@ -327,8 +327,7 @@ served by the terrain renderer up to zoom 12. A Studio session is either
 Each tile is a GeoJSON `FeatureCollection` in lon/lat. Coast, lakes and
 contours are marching squares on a lattice of one node every two scale-1
 pixels, with a one-node halo, sampled the same way as the raster. Rivers are
-smoothed canonical centre-lines from `ToolSurface`, not yet carved into
-`h(p)` (phase 2), so at high zoom they can cross small detailed ridges.
+the displaced centre-line from phase 2a, the same curve carved into `h(p)`.
 Rivers end on the centre of the first ocean or lake cell, so they reach the
 water. Vector tiles have their own render gate and queue, 4 renders and 128
 waiting, so they never crowd out the raster tiles. Neither queue retries a
@@ -338,6 +337,24 @@ tile time was 2.1 ms for the coastline, 0.7 ms for lakes, 0.004 ms for rivers
 and 5.4 ms for contours (3.3 ms at the highest land site), all under the
 15 ms budget. `TerrainVectors::new`
 was 2.2 ms at n=512 (2.6 MiB) and 3.7 ms at n=1024 (4.5 MiB).
+
+**Phase 2a (engine rivers carved into `h(p)`).** `AtlasTerrain::new`
+builds one centre-line. Vectors sample it per tile, and the raster
+carves it after detail and before the class pull. Two Chaikin passes,
+then a `"meander"` offset, with vertex normals so the groove does not
+kink. `λ = max(12·w, 1 km)`. Widths are 12, 30, 70, 160, 350 m for
+orders 1–5, then ×2.2. `V = min(8·w, 0.3·cell)`. The bed is the running
+minimum of `canonical − 1.20·amplitude` (fixture detail/amplitude is
+−0.33 at the 1st percentile and about −1.10 at a valley shoulder),
+floored at sea + 1 m, with a mouth ramp. Wet lakes are not carved.
+A foot clamped to a chord end also counts its along-track overshoot, so
+the bank has no notch at the vertices. Release n=512 imagery, zoom 12,
+scale 2, is 49.7 ms median and 50.9 ms worst (budget 55/85). The longest
+order ≥ 4 river there is 49.4 ms median. On the n=1024 review world that
+tile is 50.4 ms median.
+Its z12 river vectors are 0.4 ms. Geometry is 13.6 MB at n=512 and
+38.6 MB at n=1024, under 64 MB. Tributaries, ice edges, and coast and
+lake contours stay later in phase 2.
 
 ## Open questions
 

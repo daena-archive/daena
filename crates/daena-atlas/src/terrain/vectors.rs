@@ -2,12 +2,11 @@
 //!
 //! The lattice sits on the zoom's scale-1 pixel grid, one node every two
 //! pixels, with one node of halo. Shared tile edges therefore sample `h(p)`
-//! at the same directions. Rivers are smoothed canonical centre-lines. They
-//! are not carved into `h(p)`.
+//! at the same directions. Rivers use the terrain's displaced centre-line,
+//! the same curve carved into `h(p)`.
 
 use std::collections::BTreeMap;
 
-use daena_physical::hydro_claim::canonical_river_id;
 use rayon::prelude::*;
 
 use super::render::{
@@ -23,7 +22,8 @@ const LATTICE_STEP_PX: f64 = 2.0;
 const NODE_SPAN: usize = 131;
 const HALO_PX: f64 = LATTICE_STEP_PX;
 const FIELD_FLOOR_M: f64 = 0.01;
-const SIMPLIFY_PX: f64 = 0.5;
+/// Keeps a simplified river inside half a pixel of the carved centre-line.
+const RIVER_SIMPLIFY_PX: f64 = 0.35;
 const COORD_SCALE: f64 = 1_000_000.0;
 
 /// One vector layer of a terrain tile.
@@ -67,11 +67,17 @@ struct RiverPiece {
     max_lon: f64,
     min_lat: f64,
     max_lat: f64,
+    run: u32,
+    s0: f64,
+    s1: f64,
 }
 
 struct PreparedRiver {
     id: String,
     order: u16,
+    channel_width_m: f64,
+    run_start: u32,
+    run_count: u32,
     pieces: Vec<RiverPiece>,
 }
 
@@ -83,22 +89,36 @@ pub struct TerrainVectors {
 }
 
 impl TerrainVectors {
-    /// Smooth every canonical river. Mouth and source of each wet-lake-free run stay fixed.
+    /// Clip geometry for the centre-lines already built on `terrain`.
     #[must_use]
     pub fn new(terrain: &AtlasTerrain) -> Self {
-        let surface = terrain.surface();
-        let mut rivers = Vec::with_capacity(surface.rivers.len());
-        for river in &surface.rivers {
-            let pieces = prepare_river(surface, river);
-            if pieces.is_empty() {
-                continue;
-            }
-            rivers.push(PreparedRiver {
-                id: canonical_river_id(river.source_cell),
-                order: river.strahler_order,
-                pieces,
-            });
-        }
+        let step = (terrain.cell_size_m() / 8.0).clamp(250.0, 2_000.0);
+        let rivers = terrain
+            .rivers
+            .export_rivers(step)
+            .into_iter()
+            .map(|river| PreparedRiver {
+                id: river.id,
+                order: river.order,
+                channel_width_m: river.channel_width_m,
+                run_start: river.run_start,
+                run_count: river.run_count,
+                pieces: river
+                    .pieces
+                    .into_iter()
+                    .map(|piece| RiverPiece {
+                        lonlat: piece.lonlat,
+                        min_lon: piece.min_lon,
+                        max_lon: piece.max_lon,
+                        min_lat: piece.min_lat,
+                        max_lat: piece.max_lat,
+                        run: piece.run,
+                        s0: piece.s0,
+                        s1: piece.s1,
+                    })
+                    .collect(),
+            })
+            .collect();
         Self { rivers }
     }
 
@@ -126,8 +146,15 @@ struct Node {
 
 enum Props {
     Empty,
-    River { id: String, order: u16 },
-    Contour { elevation_m: i32, index: bool },
+    River {
+        id: String,
+        order: u16,
+        channel_width_m: f64,
+    },
+    Contour {
+        elevation_m: i32,
+        index: bool,
+    },
 }
 
 struct Drawn {
@@ -151,7 +178,7 @@ pub fn render_terrain_vector_tile(
     let drawn = match layer {
         TerrainVectorLayer::Coastline => coastline(terrain, z, x, y),
         TerrainVectorLayer::Lakes => lakes(terrain, z, x, y),
-        TerrainVectorLayer::Rivers => rivers(vectors, z, x, y),
+        TerrainVectorLayer::Rivers => rivers(terrain, vectors, z, x, y),
         TerrainVectorLayer::Contours => contours(terrain, z, x, y),
     };
     Ok(encode_collection(&drawn))
@@ -378,47 +405,92 @@ fn contour_levels(min_rel: f64, max_rel: f64, interval: i32) -> Vec<i32> {
     levels
 }
 
-fn rivers(vectors: &TerrainVectors, z: u32, x: u32, y: u32) -> Vec<Drawn> {
+fn rivers(terrain: &AtlasTerrain, vectors: &TerrainVectors, z: u32, x: u32, y: u32) -> Vec<Drawn> {
     let min_order = min_strahler_order(z);
     let expanded = expanded_rect(x, y);
     let bounds = tile_lonlat_bounds(z, x, y, HALO_PX);
+    let world = mercator_world_px(z);
+    let gy = (f64::from(y) + 0.5) * TILE_PX;
+    let lat = mercator_latitude(gy, world);
+    let ground = super::ground_metres_per_pixel(z, lat, terrain.radius_m()).max(1.0);
+    let coarse = (terrain.cell_size_m() / 8.0).clamp(250.0, 2_000.0);
     let mut drawn = Vec::new();
     for river in &vectors.rivers {
         if river.order < min_order {
             continue;
         }
-        for piece in &river.pieces {
-            if !piece_hits(piece, bounds) {
-                continue;
-            }
-            let pixels = piece
-                .lonlat
+        let step = river_sample_step(ground, river.channel_width_m);
+        let spans = if river.pieces.is_empty() {
+            (river.run_start..river.run_start + river.run_count)
+                .map(|run| (run, 0.0, f64::MAX))
+                .collect::<Vec<_>>()
+        } else {
+            let hits = river
+                .pieces
                 .iter()
-                .map(|point| lonlat_to_px(point[0], point[1], z, x))
+                .filter(|piece| piece_hits(piece, bounds))
+                .map(|piece| (piece.run, piece.s0, piece.s1))
                 .collect::<Vec<_>>();
-            for clipped in clip_polyline(&pixels, expanded) {
-                let simplified = douglas_peucker(&clipped, SIMPLIFY_PX);
-                let lonlat = simplified
+            merge_run_spans(&hits)
+        };
+        for (run, s0, s1) in spans {
+            let lonlat = terrain
+                .rivers
+                .sample_run_span(run, step, s0 - coarse, s1 + coarse);
+            for part in split_dateline(&lonlat) {
+                let pixels = part
                     .iter()
-                    .map(|px| px_to_lonlat(z, px[0], px[1]))
+                    .map(|point| lonlat_to_px(point[0], point[1], z, x))
                     .collect::<Vec<_>>();
-                for ring in split_dateline(&lonlat) {
-                    let ring = round_ring(&ring);
-                    if ring.len() < 2 {
-                        continue;
+                for clipped in clip_polyline(&pixels, expanded) {
+                    let simplified = douglas_peucker(&clipped, RIVER_SIMPLIFY_PX);
+                    let lonlat = simplified
+                        .iter()
+                        .map(|px| px_to_lonlat(z, px[0], px[1]))
+                        .collect::<Vec<_>>();
+                    for ring in split_dateline(&lonlat) {
+                        let ring = round_ring(&ring);
+                        if ring.len() < 2 {
+                            continue;
+                        }
+                        drawn.push(Drawn {
+                            props: Props::River {
+                                id: river.id.clone(),
+                                order: river.order,
+                                channel_width_m: river.channel_width_m,
+                            },
+                            ring,
+                        });
                     }
-                    drawn.push(Drawn {
-                        props: Props::River {
-                            id: river.id.clone(),
-                            order: river.order,
-                        },
-                        ring,
-                    });
                 }
             }
         }
     }
     drawn
+}
+
+fn merge_run_spans(spans: &[(u32, f64, f64)]) -> Vec<(u32, f64, f64)> {
+    let mut spans = spans.to_vec();
+    spans.sort_by(|left, right| left.0.cmp(&right.0).then(left.1.total_cmp(&right.1)));
+    let mut merged = Vec::new();
+    for (run, s0, s1) in spans {
+        if let Some((last_run, _, last_s1)) = merged.last_mut() {
+            if *last_run == run && s0 <= *last_s1 {
+                *last_s1 = last_s1.max(s1);
+                continue;
+            }
+        }
+        merged.push((run, s0, s1));
+    }
+    merged
+}
+
+/// Dense enough that a chord stays inside half a pixel, and never coarser than
+/// a fraction of the meander wavelength.
+fn river_sample_step(ground_m: f64, width_m: f64) -> f64 {
+    let lambda = (12.0 * width_m).max(1_000.0);
+    let pixel = (ground_m * 0.2).max(4.0);
+    pixel.min(lambda / 8.0)
 }
 
 fn finish_lattice(z: u32, x: u32, y: u32, lines: &[Vec<[f64; 2]>], props: Props) -> Vec<Drawn> {
@@ -448,9 +520,14 @@ fn finish_lattice(z: u32, x: u32, y: u32, lines: &[Vec<[f64; 2]>], props: Props)
 fn clone_props(props: &Props) -> Props {
     match props {
         Props::Empty => Props::Empty,
-        Props::River { id, order } => Props::River {
+        Props::River {
+            id,
+            order,
+            channel_width_m,
+        } => Props::River {
             id: id.clone(),
             order: *order,
+            channel_width_m: *channel_width_m,
         },
         Props::Contour { elevation_m, index } => Props::Contour {
             elevation_m: *elevation_m,
@@ -931,141 +1008,6 @@ fn lon_ranges_overlap(a0: f64, a1: f64, b0: f64, b1: f64) -> bool {
         .any(|a| right.iter().any(|b| a.0 <= b.1 && b.0 <= a.1))
 }
 
-fn prepare_river(
-    surface: &daena_physical::engine::ToolSurface,
-    river: &daena_physical::engine::SurfaceRiver,
-) -> Vec<RiverPiece> {
-    let mut pieces = Vec::new();
-    for run in river_runs(surface, river) {
-        let smoothed = chaikin_twice(&run);
-        let lonlat = smoothed
-            .iter()
-            .map(|direction| direction_lonlat(*direction))
-            .collect::<Vec<_>>();
-        for part in split_dateline(&lonlat) {
-            if let Some(piece) = river_piece(part) {
-                pieces.push(piece);
-            }
-        }
-    }
-    pieces
-}
-
-fn river_piece(lonlat: Vec<[f64; 2]>) -> Option<RiverPiece> {
-    if lonlat.len() < 2 {
-        return None;
-    }
-    let mut min_lon = f64::MAX;
-    let mut max_lon = f64::MIN;
-    let mut min_lat = f64::MAX;
-    let mut max_lat = f64::MIN;
-    for point in &lonlat {
-        min_lon = min_lon.min(point[0]);
-        max_lon = max_lon.max(point[0]);
-        min_lat = min_lat.min(point[1]);
-        max_lat = max_lat.max(point[1]);
-    }
-    Some(RiverPiece {
-        lonlat,
-        min_lon,
-        max_lon,
-        min_lat,
-        max_lat,
-    })
-}
-
-fn river_runs(
-    surface: &daena_physical::engine::ToolSurface,
-    river: &daena_physical::engine::SurfaceRiver,
-) -> Vec<Vec<[f64; 3]>> {
-    // A run ends on the centre of the first ocean or lake cell and restarts on
-    // the centre of the last lake cell, so the line reaches the water instead
-    // of stopping half a cell short of the shore.
-    let mut runs = Vec::new();
-    let mut current = Vec::new();
-    let mut previous = None;
-    let mut last_lake = None;
-    for &cell in &river.cells {
-        if previous == Some(cell) {
-            continue;
-        }
-        previous = Some(cell);
-        if surface.ocean(cell) {
-            if !current.is_empty() {
-                current.push(surface.direction_of(cell));
-            }
-            break;
-        }
-        if surface.wet_lake(cell) {
-            if !current.is_empty() {
-                current.push(surface.direction_of(cell));
-            }
-            keep_run(&mut runs, &mut current);
-            last_lake = Some(cell);
-            continue;
-        }
-        if current.is_empty() {
-            if let Some(lake) = last_lake.take() {
-                current.push(surface.direction_of(lake));
-            }
-        }
-        current.push(surface.direction_of(cell));
-    }
-    keep_run(&mut runs, &mut current);
-    runs
-}
-
-fn keep_run(runs: &mut Vec<Vec<[f64; 3]>>, current: &mut Vec<[f64; 3]>) {
-    if current.len() >= 2 {
-        runs.push(std::mem::take(current));
-    } else {
-        current.clear();
-    }
-}
-
-fn chaikin_twice(points: &[[f64; 3]]) -> Vec<[f64; 3]> {
-    chaikin_once(&chaikin_once(points))
-}
-
-fn chaikin_once(points: &[[f64; 3]]) -> Vec<[f64; 3]> {
-    if points.len() < 2 {
-        return points.to_vec();
-    }
-    let mut out = Vec::with_capacity(points.len() * 2);
-    out.push(points[0]);
-    for pair in points.windows(2) {
-        out.push(renormalize(mix(pair[0], pair[1], 0.25)));
-        out.push(renormalize(mix(pair[0], pair[1], 0.75)));
-    }
-    out.push(*points.last().expect("run has an end"));
-    out
-}
-
-fn mix(a: [f64; 3], b: [f64; 3], t: f64) -> [f64; 3] {
-    let u = 1.0 - t;
-    [
-        a[0] * u + b[0] * t,
-        a[1] * u + b[1] * t,
-        a[2] * u + b[2] * t,
-    ]
-}
-
-fn renormalize(point: [f64; 3]) -> [f64; 3] {
-    let len = (point[0] * point[0] + point[1] * point[1] + point[2] * point[2]).sqrt();
-    if len == 0.0 {
-        point
-    } else {
-        [point[0] / len, point[1] / len, point[2] / len]
-    }
-}
-
-fn direction_lonlat(direction: [f64; 3]) -> [f64; 2] {
-    let point = renormalize(direction);
-    let lat = point[2].clamp(-1.0, 1.0).asin().to_degrees();
-    let lon = point[1].atan2(point[0]).to_degrees();
-    [lon, lat]
-}
-
 fn douglas_peucker(points: &[[f64; 2]], epsilon: f64) -> Vec<[f64; 2]> {
     if points.len() < 3 {
         return points.to_vec();
@@ -1224,11 +1166,17 @@ fn encode_collection(features: &[Drawn]) -> Vec<u8> {
         out.push_str("{\"type\":\"Feature\",\"properties\":");
         match &feature.props {
             Props::Empty => out.push_str("{}"),
-            Props::River { id, order } => {
+            Props::River {
+                id,
+                order,
+                channel_width_m,
+            } => {
                 out.push_str("{\"id\":");
                 push_json_string(&mut out, id);
                 out.push_str(",\"strahler_order\":");
                 out.push_str(&order.to_string());
+                out.push_str(",\"channel_width_m\":");
+                push_metres(&mut out, *channel_width_m);
                 out.push('}');
             }
             Props::Contour { elevation_m, index } => {
@@ -1271,6 +1219,15 @@ fn push_json_string(out: &mut String, value: &str) {
         }
     }
     out.push('"');
+}
+
+fn push_metres(out: &mut String, metres: f64) {
+    let rounded = (metres * 10.0).round() / 10.0;
+    if (rounded - rounded.round()).abs() < 1e-6 {
+        out.push_str(&format!("{}", rounded.round() as i64));
+    } else {
+        out.push_str(&format!("{rounded:.1}"));
+    }
 }
 
 fn push_coord(out: &mut String, value: f64) {
@@ -1784,10 +1741,18 @@ mod tests {
             let vectors = TerrainVectors::new(&terrain);
             let build_ms = started.elapsed().as_secs_f64() * 1000.0;
             println!(
-                "TerrainVectors::new n={resolution} {build_ms:.3} ms storage {} bytes (world gen {world_ms:.0} ms, rivers {})",
+                "TerrainVectors::new n={resolution} {build_ms:.3} ms storage {} bytes geometry {} bytes (world gen {world_ms:.0} ms, rivers {})",
                 vectors.storage_bytes(),
+                terrain.river_geometry_bytes(),
                 vectors.rivers.len()
             );
+            if resolution >= 1024 {
+                let bytes = terrain.river_geometry_bytes();
+                assert!(
+                    bytes <= 64 * 1024 * 1024,
+                    "river geometry n={resolution} is {bytes} bytes"
+                );
+            }
             let mut counts = BTreeMap::<u16, usize>::new();
             for river in &vectors.rivers {
                 *counts.entry(river.order).or_default() += 1;
@@ -1843,10 +1808,58 @@ mod tests {
         drop(terrain);
         drop(vectors);
 
-        let (_, _, build_ms) = build(1024);
+        let (terrain, vectors, build_ms) = build(1024);
         assert!(
             build_ms <= 200.0,
             "TerrainVectors::new n=1024 took {build_ms:.3} ms"
+        );
+        let (max_segs, nonempty, listed) = terrain.rivers.segment_list_stats();
+        let mean = if nonempty == 0 {
+            0.0
+        } else {
+            listed as f64 / f64::from(nonempty)
+        };
+        println!("n=1024 index max {max_segs} nonempty {nonempty} mean {mean:.2}");
+        let (lon, lat) = terrain
+            .river_site(None)
+            .expect("world has no river of order 4 or higher");
+        let (x, y) = super::super::lon_lat_to_tile(lon, lat, 12);
+        let mut times = Vec::with_capacity(9);
+        for _ in 0..9 {
+            let started = Instant::now();
+            let bytes = render_terrain_vector_tile(
+                &terrain,
+                &vectors,
+                TerrainVectorLayer::Rivers,
+                12,
+                x,
+                y,
+            )
+            .expect("river tile");
+            assert!(!bytes.is_empty());
+            times.push(started.elapsed().as_secs_f64() * 1000.0);
+        }
+        times.sort_by(f64::total_cmp);
+        let median = times[4];
+        let worst = times[8];
+        println!(
+            "vector n=1024 river-site rivers z12 median {median:.3} ms worst {worst:.3} ms at {lon:.4},{lat:.4} tile {x}/{y}"
+        );
+        assert!(
+            median <= 15.0,
+            "n=1024 river-site rivers z12 median {median:.3} ms worst {worst:.3} ms"
+        );
+        let mut imagery = Vec::with_capacity(9);
+        for _ in 0..9 {
+            let started = Instant::now();
+            let _pixels =
+                super::super::render_imagery_pixels(&terrain, 12, x * 256, y * 256, 256, 256, 2);
+            imagery.push(started.elapsed().as_secs_f64() * 1000.0);
+        }
+        imagery.sort_by(f64::total_cmp);
+        println!(
+            "imagery n=1024 river-site z12 median {:.3} ms worst {:.3} ms",
+            imagery[4], imagery[8]
         );
     }
 }

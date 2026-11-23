@@ -50,6 +50,13 @@ fn main() -> Result<(), String> {
     let source = fs::read(&source_path).map_err(|error| error.to_string())?;
     let terrain = AtlasTerrain::from_source(&source, offset).map_err(|error| error.to_string())?;
     let (lon, lat) = site(&terrain, &option)?;
+    println!(
+        "{}",
+        serde_json::json!({
+            "riverGeometryBytes": terrain.river_geometry_bytes(),
+            "riverCount": terrain.river_count(),
+        })
+    );
     let relief = if style_name == "relief" {
         Some(
             load_style(style::RELIEF_STYLE_ID)
@@ -161,9 +168,30 @@ fn site(
         return Ok((lon, lat));
     }
     if let Some(name) = site.as_deref() {
-        let biome_name = name
-            .strip_prefix("biome:")
-            .ok_or("--site must be auto, biome:<name>, or omit it for --lon/--lat")?;
+        if name == "river" || name.starts_with("river:") {
+            if lon.is_some() || lat.is_some() {
+                return Err("--site river does not take --lon or --lat".to_string());
+            }
+            let order = if name == "river" {
+                None
+            } else {
+                let text = &name["river:".len()..];
+                if text.is_empty() {
+                    return Err("--site river:<order> needs an integer order".to_string());
+                }
+                Some(
+                    text.parse::<u16>()
+                        .map_err(|_| "--site river:<order> needs an integer order".to_string())?,
+                )
+            };
+            return terrain.river_site(order).ok_or_else(|| match order {
+                None => "world has no river of order 4 or higher".to_string(),
+                Some(order) => format!("world has no river of order {order}"),
+            });
+        }
+        let biome_name = name.strip_prefix("biome:").ok_or(
+            "--site must be auto, biome:<name>, river, river:<order>, or omit it for --lon/--lat",
+        )?;
         let biome = Biome::ALL
             .into_iter()
             .find(|biome| biome.name() == biome_name)

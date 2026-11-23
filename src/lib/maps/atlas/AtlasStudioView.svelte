@@ -84,6 +84,7 @@ import {
   isTerrainStyle,
   lakeVectorStyle,
   riverVectorStyle,
+  streamVectorStyle,
   TERRAIN_IMAGERY_STYLE_ID,
   TERRAIN_RELIEF_STYLE_ID,
   type TerrainVectorLayerId,
@@ -165,6 +166,7 @@ let loading = $state(true);
 let styleId = $state(TERRAIN_IMAGERY_STYLE_ID);
 let coastOn = $state(false);
 let riversOn = $state(true);
+let streamsOn = $state(true);
 let lakesOn = $state(false);
 let contoursOn = $state(false);
 let graticuleOn = $state(false);
@@ -272,6 +274,8 @@ let coastSource: TerrainVectorSource | null = null;
 let coastLayer: TerrainVectorLayer | null = null;
 let riverSource: TerrainVectorSource | null = null;
 let riverLayer: TerrainVectorLayer | null = null;
+let streamSource: TerrainVectorSource | null = null;
+let streamLayer: TerrainVectorLayer | null = null;
 let lakeSource: TerrainVectorSource | null = null;
 let lakeLayer: TerrainVectorLayer | null = null;
 let contourSource: TerrainVectorSource | null = null;
@@ -532,6 +536,7 @@ const studioLayerBook = $derived.by(() => {
   if (terrain) {
     const vectors: StudioLayer[] = [
       { id: "terrain:rivers", name: "Rivers", enabled: riversOn },
+      { id: "terrain:streams", name: "Streams", enabled: streamsOn },
       { id: "terrain:coast", name: "Coastline", enabled: coastOn },
       { id: "terrain:lakes", name: "Lakes", enabled: lakesOn },
       { id: "terrain:contours", name: "Contours", enabled: contoursOn },
@@ -677,6 +682,7 @@ function applyTerrainDefaults(previous: AtlasStudioSessionStatus | null, next: A
   if (previous?.kind === "terrain" && previous.styleId === next.styleId) return;
   const relief = next.styleId === TERRAIN_RELIEF_STYLE_ID;
   riversOn = true;
+  streamsOn = true;
   coastOn = relief;
   lakesOn = relief;
   contoursOn = relief;
@@ -687,6 +693,7 @@ function syncTerrainVisibility() {
   const terrain = session?.kind === "terrain";
   coastLayer?.setVisible(Boolean(terrain && coastOn));
   riverLayer?.setVisible(Boolean(terrain && riversOn));
+  streamLayer?.setVisible(Boolean(terrain && streamsOn));
   lakeLayer?.setVisible(Boolean(terrain && lakesOn));
   contourLayer?.setVisible(Boolean(terrain && contoursOn));
   graticuleLayer?.setVisible(Boolean(terrain && graticuleOn));
@@ -705,6 +712,7 @@ function riverLabel(id: string) {
 function syncTerrainStyles() {
   const relief = session?.styleId === TERRAIN_RELIEF_STYLE_ID;
   riverLayer?.setStyle(riverVectorStyle(relief, zoomForResolution, riverLabel));
+  streamLayer?.setStyle(streamVectorStyle(relief, zoomForResolution));
   coastLayer?.setStyle(coastVectorStyle());
   lakeLayer?.setStyle(lakeVectorStyle());
   contourLayer?.setStyle(contourVectorStyle(zoomForResolution));
@@ -780,10 +788,12 @@ function applySessionView(status: AtlasStudioSessionStatus) {
     configureTileSource(tileSource, status);
   }
   riverSource = bindVectorSource(riverSource, status, "rivers");
+  streamSource = bindVectorSource(streamSource, status, "streams");
   coastSource = bindVectorSource(coastSource, status, "coastline");
   lakeSource = bindVectorSource(lakeSource, status, "lakes");
   contourSource = bindVectorSource(contourSource, status, "contours");
   riverLayer?.setSource(riverSource);
+  streamLayer?.setSource(streamSource);
   coastLayer?.setSource(coastSource);
   lakeLayer?.setSource(lakeSource);
   contourLayer?.setSource(contourSource);
@@ -835,10 +845,12 @@ function mountMap(status: AtlasStudioSessionStatus, initial?: { center: [number,
   });
   configureTileSource(tileSource, status);
   const rivers = makeVectorSource(status, "rivers");
+  const streams = makeVectorSource(status, "streams");
   const coasts = makeVectorSource(status, "coastline");
   const lakes = makeVectorSource(status, "lakes");
   const contours = makeVectorSource(status, "contours");
   riverSource = rivers;
+  streamSource = streams;
   coastSource = coasts;
   lakeSource = lakes;
   contourSource = contours;
@@ -847,6 +859,13 @@ function mountMap(status: AtlasStudioSessionStatus, initial?: { center: [number,
     source: rivers,
     visible: terrain && riversOn,
     zIndex: 5,
+  });
+  streamLayer = new VectorTileLayer({
+    source: streams,
+    visible: terrain && streamsOn,
+    // OpenLayers `minZoom` is exclusive; streams start at zoom 8.
+    minZoom: 7.99,
+    zIndex: 4.5,
   });
   coastLayer = new VectorTileLayer({
     source: coasts,
@@ -879,6 +898,7 @@ function mountMap(status: AtlasStudioSessionStatus, initial?: { center: [number,
         contourLayer,
         lakeLayer,
         coastLayer,
+        streamLayer,
         riverLayer,
         graticuleLayer,
         authoredOverlayLayer(),
@@ -1033,6 +1053,7 @@ function prefetchVectorRing(
   if (!template || status.kind !== "terrain") return;
   const layers = [
     riversOn ? "rivers" : "",
+    streamsOn ? "streams" : "",
     coastOn ? "coastline" : "",
     lakesOn ? "lakes" : "",
     contoursOn ? "contours" : "",
@@ -2776,6 +2797,11 @@ onDestroy(() => {
                 }
                 if (id === "terrain:rivers") {
                   riversOn = !riversOn;
+                  syncTerrainVisibility();
+                  return;
+                }
+                if (id === "terrain:streams") {
+                  streamsOn = !streamsOn;
                   syncTerrainVisibility();
                   return;
                 }

@@ -293,6 +293,13 @@ Known artifacts, deferred:
 - **One-cell lakes** along rivers draw as staircases at zoom 5.
 - **A faint crease along cube-face edges** shows on smooth ice and at zoom 2.
 - **The tundra review site** is a 3 km plateau at −21 °C, so it stays snow.
+- **Streams at zoom 12 are straight** between 1.2 km grid nodes. Each link
+  is smoothed on its own, and a two-point link cannot curve. Subdividing
+  links with a small sideways wiggle would fix it.
+- **Streams climb out of pits.** 18.5% of the steps drawn at zoom 12 rise,
+  where a pit breaches over a rise. That is 2% of the whole routed tree.
+- **Very flat plains** get a dense, maze-like stream net at zoom 10. Stream
+  heads end close to other streams.
 
 **Phase 3a (Studio base map).** Imagery (new, the default) and Elevation are
 served by the terrain renderer up to zoom 12. A Studio session is either
@@ -355,6 +362,34 @@ tile is 50.4 ms median.
 Its z12 river vectors are 0.4 ms. Geometry is 13.6 MB at n=512 and
 38.6 MB at n=1024, under 64 MB. Tributaries, ice edges, and coast and
 lake contours stay later in phase 2.
+
+**Phase 2b (tributaries below engine resolution).** Streams are routed
+over `h(p)`. They are not carved, so the raster is unchanged. Each land
+cell (not ocean, not a wet lake, not ice) builds one tree on a jittered
+`k × k` grid, `k = clamp(round(cell_m / 1200 m), 4, 16)`, in the tangent
+frame at the cell centre. Heights are `sample_pixel` at
+`ground_m = spacing / 2`, so the tree does not depend on zoom. A node
+drains by steepest descent. A pit, which has no lower neighbour,
+breaches to the receiver edge, to detailed water, or to the grid node
+nearest an engine-river centre-line. The breach is a priority flood:
+minimum spill, then fewest steps, then node index. Grid nodes do not
+drain into an inflow. An inflow carries the upstream flow, two cells
+deep: `w(A→B) = R0(A) + Σ R0(u)` for inflow neighbours `u` whose node
+reaches A's receiver. `R0` is that cell's grid-only share of its
+receiver and is cached per cell. The inflow is added only when `w > 0`.
+One Chaikin pass keeps outlets, inflows, and the river join fixed. A
+river outlet ends on the nearest centre-line point. Trees sit in a
+2048-cell LRU. One tree is about 26 KiB at `k = 16`, so a full cache
+is about 52 MiB. `R0` and the exit weight sit in a side map, 512 KiB
+at 65536 cells. Grid cores are scratch and capped at 2048. The bytes
+do not depend on the cache or the thread count. Tiles below z8 are
+empty. Accumulation thresholds, doubled where `P/PET < 0.3`, and the
+stricter of the two cells is used on both sides of a shared edge:
+`k²/2` at z8–9 and `k` from z10 up, including z12. A z12 value of 2
+drew two-node spikes and star junctions. Release n=512, cold cache:
+auto streams z8 9.1 ms and z12 2.7 ms; the highest land is 4.7 ms and
+0.07 ms. All are under 15 ms. On the n=64 fixture, 2.0% of routed
+steps rise. Of the steps z12 draws, 18.5% rise; those are pit outlets.
 
 ## Open questions
 

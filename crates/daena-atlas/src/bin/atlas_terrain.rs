@@ -8,7 +8,8 @@ use std::time::Instant;
 
 use daena_atlas::style::{self, load_style, AtlasStyle};
 use daena_atlas::terrain::{
-    ground_metres_per_pixel, lon_lat_to_tile, render_imagery_pixels, render_pixels, AtlasTerrain,
+    ground_metres_per_pixel, lon_lat_to_tile, render_imagery_pixels, render_pixels,
+    render_terrain_vector_tile, AtlasTerrain, TerrainVectorLayer, TerrainVectors,
 };
 use daena_physical::products::Biome;
 
@@ -47,6 +48,10 @@ fn main() -> Result<(), String> {
     if style_name != "relief" && style_name != "imagery" {
         return Err("--style must be relief or imagery".to_string());
     }
+    let vector_layers = match option("--vectors") {
+        None => Vec::new(),
+        Some(text) => parse_vectors(&text)?,
+    };
     let source = fs::read(&source_path).map_err(|error| error.to_string())?;
     let terrain = AtlasTerrain::from_source(&source, offset).map_err(|error| error.to_string())?;
     let (lon, lat) = site(&terrain, &option)?;
@@ -67,6 +72,11 @@ fn main() -> Result<(), String> {
         None
     };
     fs::create_dir_all(&out_dir).map_err(|error| error.to_string())?;
+    let prepared = if vector_layers.is_empty() {
+        None
+    } else {
+        Some(TerrainVectors::new(&terrain))
+    };
 
     for z in zooms {
         let (tile_x, tile_y) = lon_lat_to_tile(lon, lat, z);
@@ -101,6 +111,28 @@ fn main() -> Result<(), String> {
                 );
             }
         }
+        if let Some(prepared) = &prepared {
+            for dy in -1i32..=1 {
+                for dx in -1i32..=1 {
+                    let x = (tile_x as i32 + dx).rem_euclid(n as i32) as u32;
+                    let y = (tile_y as i32 + dy).clamp(0, n as i32 - 1) as u32;
+                    paint_vectors(
+                        &mut image,
+                        stitched,
+                        &terrain,
+                        prepared,
+                        &vector_layers,
+                        z,
+                        x,
+                        y,
+                        ((dx + 1) as usize) * tile_px as usize,
+                        ((dy + 1) as usize) * tile_px as usize,
+                        scale,
+                        relief.is_some(),
+                    )?;
+                }
+            }
+        }
         write_png(
             &Path::new(&out_dir).join(format!("z{z}.png")),
             stitched as u32,
@@ -125,7 +157,28 @@ fn main() -> Result<(), String> {
     }
 
     let world_px = 1024 * scale;
-    let world = render_view(&terrain, relief.as_ref(), 2, 0, 0, 1024, 1024, scale);
+    let mut world = render_view(&terrain, relief.as_ref(), 2, 0, 0, 1024, 1024, scale);
+    if let Some(prepared) = &prepared {
+        let tiles = 1024 / 256;
+        for ty in 0..tiles {
+            for tx in 0..tiles {
+                paint_vectors(
+                    &mut world,
+                    world_px as usize,
+                    &terrain,
+                    prepared,
+                    &vector_layers,
+                    2,
+                    tx,
+                    ty,
+                    tx as usize * 256 * scale as usize,
+                    ty as usize * 256 * scale as usize,
+                    scale,
+                    relief.is_some(),
+                )?;
+            }
+        }
+    }
     write_png(
         &Path::new(&out_dir).join("whole.png"),
         world_px,
@@ -255,4 +308,219 @@ fn write_png(path: &Path, width: u32, height: u32, rgba: &[u8]) -> Result<(), St
         .write_image_data(rgba)
         .map_err(|error| error.to_string())?;
     Ok(())
+}
+
+fn parse_vectors(text: &str) -> Result<Vec<TerrainVectorLayer>, String> {
+    let mut layers = Vec::new();
+    for part in text.split(',') {
+        if part.is_empty() {
+            return Err("--vectors entries must be layer ids".to_string());
+        }
+        let layer = TerrainVectorLayer::from_id(part)
+            .ok_or_else(|| format!("unknown vector layer {part}"))?;
+        if !layers.contains(&layer) {
+            layers.push(layer);
+        }
+    }
+    if layers.is_empty() {
+        return Err("--vectors must list a layer".to_string());
+    }
+    Ok(layers)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn paint_vectors(
+    image: &mut [u8],
+    image_w: usize,
+    terrain: &AtlasTerrain,
+    vectors: &TerrainVectors,
+    layers: &[TerrainVectorLayer],
+    z: u32,
+    tile_x: u32,
+    tile_y: u32,
+    origin_x: usize,
+    origin_y: usize,
+    scale: u32,
+    relief: bool,
+) -> Result<(), String> {
+    for layer in layers {
+        let bytes = render_terrain_vector_tile(terrain, vectors, *layer, z, tile_x, tile_y)
+            .map_err(|error| error.to_string())?;
+        let value: serde_json::Value =
+            serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+        let Some(features) = value["features"].as_array() else {
+            continue;
+        };
+        let (rgb, alpha) = layer_paint(*layer, relief);
+        for feature in features {
+            let Some(coords) = feature["geometry"]["coordinates"].as_array() else {
+                continue;
+            };
+            let width = stroke_width(feature, *layer, z, scale, terrain.radius_m());
+            let mut previous: Option<[f64; 2]> = None;
+            for coord in coords {
+                let lon = coord[0].as_f64().unwrap_or(0.0);
+                let lat = coord[1].as_f64().unwrap_or(0.0);
+                let point = lonlat_to_image(lon, lat, z, tile_x, tile_y, origin_x, origin_y, scale);
+                if let Some(start) = previous {
+                    stroke(image, image_w, start, point, rgb, alpha, width);
+                }
+                previous = Some(point);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn layer_paint(layer: TerrainVectorLayer, relief: bool) -> ([u8; 3], f64) {
+    let rgb = if relief {
+        [0x3b, 0x6e, 0xa5]
+    } else {
+        [0x2e, 0x58, 0x68]
+    };
+    match layer {
+        TerrainVectorLayer::Streams => (rgb, 0.7),
+        TerrainVectorLayer::Rivers => (rgb, 1.0),
+        _ => ([0x1c, 0x24, 0x2a], 1.0),
+    }
+}
+
+fn stroke_width(
+    feature: &serde_json::Value,
+    layer: TerrainVectorLayer,
+    z: u32,
+    scale: u32,
+    radius_m: f64,
+) -> f64 {
+    let props = &feature["properties"];
+    let order = props["order"]
+        .as_u64()
+        .or_else(|| props["strahler_order"].as_u64())
+        .unwrap_or(1) as u16;
+    let zoom_px = match layer {
+        TerrainVectorLayer::Streams => stream_width_px(order, z),
+        TerrainVectorLayer::Rivers => {
+            let styled = river_width_px(order, z);
+            let metres = props["channel_width_m"].as_f64().unwrap_or(0.0);
+            let lat = feature["geometry"]["coordinates"][0][1]
+                .as_f64()
+                .unwrap_or(0.0);
+            let ground = ground_metres_per_pixel(z, lat.to_radians(), radius_m).max(1.0);
+            styled.max(metres / ground)
+        }
+        _ => 1.0,
+    };
+    zoom_px * f64::from(scale.max(1))
+}
+
+/// Same ramp as `riverWidthPx` in `terrain-vectors.ts`.
+fn river_width_px(order: u16, zoom: u32) -> f64 {
+    let t = ((f64::from(order) - 1.0) / 4.0).clamp(0.0, 1.0);
+    let at = |major: f64| 0.35 + t * (major - 0.35);
+    let u = ((f64::from(zoom) - 5.0) / 7.0).clamp(0.0, 1.0);
+    at(1.0) + (at(3.0) - at(1.0)) * u
+}
+
+/// Same ramp as `streamWidthPx` in `terrain-vectors.ts`.
+fn stream_width_px(order: u16, zoom: u32) -> f64 {
+    let t = ((f64::from(order) - 1.0) / 4.0).clamp(0.0, 1.0);
+    let base = 0.5 + t * 0.7;
+    let clamped = f64::from(zoom).clamp(8.0, 12.0);
+    base * (1.0 + 0.06 * (clamped - 8.0))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn lonlat_to_image(
+    lon: f64,
+    lat: f64,
+    z: u32,
+    tile_x: u32,
+    tile_y: u32,
+    origin_x: usize,
+    origin_y: usize,
+    scale: u32,
+) -> [f64; 2] {
+    let world = 256.0 * (1u64 << z.min(30)) as f64;
+    let mut gx = (lon + 180.0) / 360.0 * world;
+    let tile_gx = f64::from(tile_x) * 256.0;
+    if gx - tile_gx > world * 0.5 {
+        gx -= world;
+    } else if tile_gx - gx > world * 0.5 {
+        gx += world;
+    }
+    let lat = lat.clamp(-85.051_128_78, 85.051_128_78);
+    let mercator_y = lat.to_radians().tan().asinh();
+    let gy = (std::f64::consts::PI - mercator_y) / std::f64::consts::TAU * world;
+    let tile_gy = f64::from(tile_y) * 256.0;
+    let scale_f = f64::from(scale.max(1));
+    [
+        (gx - tile_gx) * scale_f + origin_x as f64,
+        (gy - tile_gy) * scale_f + origin_y as f64,
+    ]
+}
+
+fn stroke(
+    image: &mut [u8],
+    image_w: usize,
+    start: [f64; 2],
+    end: [f64; 2],
+    rgb: [u8; 3],
+    alpha: f64,
+    width_px: f64,
+) {
+    let image_h = image.len() / (image_w * 4);
+    let pad = width_px * 0.5 + 1.5;
+    let min_x = (start[0].min(end[0]) - pad).floor().max(0.0) as i32;
+    let max_x = (start[0].max(end[0]) + pad)
+        .ceil()
+        .min(image_w as f64 - 1.0) as i32;
+    let min_y = (start[1].min(end[1]) - pad).floor().max(0.0) as i32;
+    let max_y = (start[1].max(end[1]) + pad)
+        .ceil()
+        .min(image_h as f64 - 1.0) as i32;
+    if max_x < min_x || max_y < min_y {
+        return;
+    }
+    for y in min_y..=max_y {
+        for x in min_x..=max_x {
+            let dist = point_segment([x as f64 + 0.5, y as f64 + 0.5], start, end);
+            let coverage = (width_px * 0.5 + 0.5 - dist).clamp(0.0, 1.0);
+            if coverage <= 0.0 {
+                continue;
+            }
+            blend(
+                &mut image[((y as usize) * image_w + x as usize) * 4..],
+                rgb,
+                alpha * coverage,
+            );
+        }
+    }
+}
+
+fn blend(pixel: &mut [u8], rgb: [u8; 3], alpha: f64) {
+    let alpha = alpha.clamp(0.0, 1.0);
+    if alpha <= 0.0 {
+        return;
+    }
+    for channel in 0..3 {
+        let src = f64::from(rgb[channel]);
+        let dst = f64::from(pixel[channel]);
+        pixel[channel] = (src * alpha + dst * (1.0 - alpha)).round() as u8;
+    }
+    pixel[3] = 255;
+}
+
+fn point_segment(point: [f64; 2], start: [f64; 2], end: [f64; 2]) -> f64 {
+    let dx = end[0] - start[0];
+    let dy = end[1] - start[1];
+    let len2 = dx * dx + dy * dy;
+    let t = if len2 <= 1e-12 {
+        0.0
+    } else {
+        ((point[0] - start[0]) * dx + (point[1] - start[1]) * dy) / len2
+    };
+    let t = t.clamp(0.0, 1.0);
+    let px = start[0] + t * dx - point[0];
+    let py = start[1] + t * dy - point[1];
+    (px * px + py * py).sqrt()
 }

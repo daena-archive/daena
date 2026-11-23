@@ -280,6 +280,7 @@ impl RiverGeometry {
             distance: hit.distance,
             bed,
             run: hit.run,
+            position: hit.position,
         };
         let half = 0.5 * width;
         let bank = (hit.distance - half).max(0.0);
@@ -607,10 +608,57 @@ impl RiverGeometry {
         } else {
             0.0
         };
+        let position = normalize(add(centre, scale(normal, offset / self.radius_m)));
         Some(Hit {
             distance: (signed - offset).hypot(overshoot),
             bed: lerp(f64::from(self.bed[i0]), f64::from(self.bed[i0 + 1]), t),
             run: run_index,
+            position,
+        })
+    }
+
+    /// Nearest point on a displaced centre-line indexed at `cells`.
+    ///
+    /// `amp_m` is the meander cap `A` and `width_m` is the channel width `w`.
+    /// Stream outlets use the band `A + w`.
+    pub(super) fn nearest_centreline(
+        &self,
+        cells: &[u32],
+        point: [f64; 3],
+    ) -> Option<CentrelineHit> {
+        let mut best: Option<Hit> = None;
+        for &cell in cells {
+            let cell = cell as usize;
+            if cell + 1 >= self.cell_offsets.len() {
+                continue;
+            }
+            let start = self.cell_offsets[cell] as usize;
+            let end = self.cell_offsets[cell + 1] as usize;
+            if start == end {
+                continue;
+            }
+            let Some(hit) = self.closest(point, start, end) else {
+                continue;
+            };
+            let replace = match &best {
+                None => true,
+                Some(kept) => {
+                    hit.distance < kept.distance
+                        || (hit.distance == kept.distance && hit.run < kept.run)
+                }
+            };
+            if replace {
+                best = Some(hit);
+            }
+        }
+        best.map(|hit| {
+            let run = &self.runs[hit.run as usize];
+            CentrelineHit {
+                direction: hit.position,
+                distance_m: hit.distance,
+                amp_m: f64::from(run.amp_cap_m),
+                width_m: f64::from(run.width_m),
+            }
         })
     }
 
@@ -737,6 +785,14 @@ struct Hit {
     distance: f64,
     bed: f64,
     run: u32,
+    position: [f64; 3],
+}
+
+pub(super) struct CentrelineHit {
+    pub direction: [f64; 3],
+    pub distance_m: f64,
+    pub amp_m: f64,
+    pub width_m: f64,
 }
 
 #[cfg(test)]

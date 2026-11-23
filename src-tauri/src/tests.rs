@@ -6496,6 +6496,17 @@ fn atlas_studio_parses_vector_tiles_and_legacy_rejects_them() {
         contours.layer,
         Some(daena_atlas::terrain::TerrainVectorLayer::Contours)
     );
+    let streams = crate::atlas_studio::parse_studio_tile_request(&atlas_studio_get(&format!(
+        "atlas-studio://localhost/{token}/8/5/6.streams.json"
+    )))
+    .unwrap();
+    assert_eq!(streams.z, 8);
+    assert_eq!(streams.x, 5);
+    assert_eq!(streams.y, 6);
+    assert_eq!(
+        streams.layer,
+        Some(daena_atlas::terrain::TerrainVectorLayer::Streams)
+    );
     assert!(contours.prefetch);
     let foo = crate::atlas_studio::parse_studio_tile_request(&atlas_studio_get(&format!(
         "atlas-studio://localhost/{token}/1/0/0.foo.json"

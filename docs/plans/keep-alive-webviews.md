@@ -5,10 +5,11 @@ one is instant and keeps its in-editor state. Side-by-side tabs come later.
 This plan gives each webview its own label and session so two of the same
 plugin can exist, and it does not build side-by-side.
 
-Status: slice 1 done (SDK renews an expired, revoked, or stale session once). Slice 2 done (instance labels and routing; pool size stays 1, so leaving a tab still destroys the webview). Slices 3–4 not started. Workspace tabs are in place
-(`docs/plans/tabs.md`). An inactive tab is a saved `ShellLocation`. One
-embedded webview exists at a time. Its label names the plugin and the tab
-(`plugin:daena/writing:<tab id>`). Leaving a tab destroys it. An external
+Status: slice 1 done (SDK renews an expired, revoked, or stale session once). Slice 2 done (instance labels and routing; pool size stays 1, so leaving a tab still destroys the webview). Slice 3 done (pool for Writing). Slice 4 done (the Writing editor is kept when a load names the entity and revision it shows; Language joins the pool and re-reads its data with `language.resume`). All slices are done. The graph, Chronology and Maps still close on leave. Questions 1 to 3 below are open for the owner to check in the app. Workspace tabs are in place
+(`docs/plans/tabs.md`). An inactive tab is a saved `ShellLocation`. Up to three
+embedded Writing and Language webviews stay alive, one per tab and plugin; their
+label names the plugin and the tab (`plugin:daena/writing:<tab id>`). Leaving a
+tab hides its webview instead of destroying it. An external
 plugin window still uses the bare label from `plugin_window_label`.
 
 Found while planning: a plugin session expires after 15 minutes. Slice 1
@@ -165,10 +166,72 @@ slice 3 relies on this so no stray instance enters the pool.
 
 ### Pool
 
-The shell keeps a map from tab id to `{ pluginId, instanceId, mountKey,
-lastUsed }`. `mountKey` is the plugin, the view id, and the mount params
-(`entityId`, `moduleState`, and `mapEntityId` / `linkId` if a caller starts
-passing them).
+The shell keeps a pool (`src/lib/plugins/webview-pool.ts`, pure and
+immutable) of `{ pluginId, instanceId, mountKey, ready, lastUsedAt }`, keyed
+by (instance id, plugin id). The instance id is the tab id. `mountKey` is the
+plugin, the view id, and the mount params (`entityId`, `moduleState`, and
+`mapEntityId` / `linkId` if a caller starts passing them). Slices 3 and 4 pool
+Writing and Language.
+
+The host owns what exists; the pool decides what survives. Three host
+pieces make that work (`src-tauri/src/plugin_webview.rs`):
+
+- `plugin_mount_webview(..., reuse, retain)` returns `"reused"` or
+  `"created"`. With `reuse` true, a live label whose stored `mount_key`
+  equals the new one is adopted: bounds set, shown, document untouched
+  (a document still loading is positioned and shown by its page-load
+  handler). Any other case recreates the webview, because query params are
+  read only at document load. `mount_key` is a JSON array of the plugin, the
+  view id and every mount param (`embedded_mount_key`).
+- `retain` is a list of `{ pluginId, instanceId }`. The mount closes every
+  other embedded `plugin:` webview (external bare windows are left alone),
+  cancelling each closed label's AI. The mounting label is never closed by
+  that loop. A bad instance id in `retain` fails the whole mount instead of
+  being skipped, so a malformed list cannot silently keep or close the wrong
+  webviews. The shell computes `retain` with `retainSet(pool, shown, 3)`: the
+  shown instance plus the most recently used others. A fourth Writing tab
+  therefore closes the least recently used hidden one on the next mount, and
+  the host never leaks a webview the shell forgot.
+- `plugin_suspend_webview(plugin_id, instance_id)` hides the instance after
+  moving focus to `main`, cancels that label's AI requests, and keeps it
+  alive (its session stays valid). `plugin_set_webview_visible(false)` also
+  focuses `main` first. The host remembers that the shell hid a webview, so
+  a document that finishes loading while hidden stays hidden.
+
+`SandboxView` takes `pooled`, `prepareMount` and `onmounted`.
+`prepareMount(self, mountKey)` runs right before the host mount and returns
+`{ retain, reuse }`. Unpooled views (the graph, Chronology, other
+sandbox views) unmount their own label first, mount with `reuse` false, and
+unmount on teardown; their `retain` is the mounting view plus the most
+recently used pooled instances that fit beside it (`retainSet` with the
+mounting view as the shown one), so visiting Lore keeps hidden Writing
+webviews alive within the limit. A pooled view skips the unmount, mounts
+with the current retain list, reports the outcome, and on teardown suspends
+instead of unmounting. It asks for `reuse` only when the pool already knew
+that instance with the same mount key: a closed tab's entry is pruned at
+once while its unmount may still be in flight, and adopting that label for a
+reopened tab (same id) would show a document whose `ready` report the shell
+never recorded. A pooled view torn down while the host is still mounting
+suspends what the host just created.
+
+The shell removes pool entries in one place, an effect over the open tab ids
+(and the enabled plugins). It unmounts every entry it drops. That covers a
+closed tab (shown or hidden), close others, close to the right, close all,
+archive (`closeTabsForEntity`), a disabled plugin
+(`pruneUnavailableShellTabs`, and `prunePlugins`), and a project switch.
+`resetProjectSessionState` clears the pool, and project close, switch and
+quit still destroy every `plugin:` label through `closeAllPluginWebviews`.
+Teardown only suspends, so a closed tab's instance is unmounted by the
+effect whichever of the two arrives first, and a suspend can never bring it
+back. Reopening a closed tab reuses its id, but its entry and label are gone,
+so the mount creates a fresh webview.
+
+The visibility effect addresses the shown instance only; hidden members are
+never shown by it, so closing an overlay cannot reveal one. It also does not
+show a pooled Writing instance until that instance's own mount finished,
+because a tab switch changes the shown instance before the mount sets its
+bounds. A `ready` report from a hidden instance still marks its pool entry
+ready, so a later reuse knows its document loaded.
 
 N is 3. This repo has no measurement of a Daena webview. Public write-ups
 put a non-trivial WKWebView around 50–150 MB of private memory, and a
@@ -188,17 +251,8 @@ Destroy an instance when:
 Hidden instances call `hide` and are never given focus. `open_plugin_webview`
 is the only `set_focus` on a plugin view today, and it is the external
 window. Do not add `set_focus` for a hidden embedded view. Before hiding
-the view that has been on screen, move focus back to `main`. Confirm on
-macOS that a hidden WKWebView is not left as first responder (open question).
-
-`SandboxView` (`src/lib/plugins/SandboxView.svelte`) today closes and
-recreates on every mount (`:98`–`:104`) and closes again on destroy
-(`:123`). For a pooled plugin it adopts the live instance: set bounds, show,
-and on placeholder destroy it hides. It closes only when the pool says the
-instance is gone. `plugin_mount_webview` must not recreate an instance that
-is already loaded with the same `mountKey`. A different `mountKey` on the
-same tab closes that instance and mounts another. Query params are still
-read only at document load (`plugin_webview.rs` comment around line 311).
+an embedded view, the host moves focus back to `main`. Confirm on macOS that
+a hidden WKWebView is not left as first responder (open question).
 
 ### Writing
 
@@ -268,6 +322,21 @@ Cases:
   failure instead of deleting it. Replace is for a load the shell intends,
   after a clean flush.
 
+As built (`packages/modules/writing/src/load-rule.ts`, applied by
+`WritingWorkspace.startLoad`): same entity and revision keeps the editor and
+adopts the new token, and unsent text is published again under it. A different
+entity or revision with unsent text holds the editor: it keeps its old token and
+its text, the failure is shown through the save-error path, and the text is not
+published, because the shell would drop a draft under a token that is no longer
+the editor's, and a draft under the new token would overwrite a revision the
+editor never saw. While held, every later load keeps the editor too, until one
+names the entity and revision it shows; the user copies the text or closes the
+tab. A load still in flight when text is typed, and changes the editor has not
+reported yet, count as unsent. A kept editor reads the entity name again, since
+a rename made while it was hidden is not announced to it, and keeps the reading
+mode the user chose. An open AI dialog stays open, so a run the hide cancelled
+shows its cancellation.
+
 On hide, after a successful flush: cancel the idle and retry timers
 (`draft-sync.ts` `dispose`), cancel this origin's AI, and ignore further
 drafts until show. The queue in `draft-sync.ts` already serializes a flush
@@ -292,8 +361,21 @@ Language itself writes (`plugin-main.ts:83` and `:121`), which updates the
 shell, not the other way around.
 
 On show, post `language.resume` with the tab's entity id and pane. The
-webview re-runs `loadLanguage` and the active pane's load. That is a new
-host message. Pane and leave messages stay as they are.
+webview shows that pane (after its leave guards) and re-runs `loadLanguage`,
+which replaces the language object and so makes the active pane load; Overview,
+which skips a reload for an unchanged language, takes a refresh token and
+keeps unsaved edits. That is a new host message. Pane and leave messages stay
+as they are. The shell posts it only when the host reused a webview whose
+`ready` report the pool recorded; a created or still-loading webview reads its
+data at load and reports `ready`, and the ready handler corrects its pane.
+
+The mount's `state` param (`{ pane }`) is part of the mount key. A kept
+instance is therefore mounted with the state it was created with, for the same
+language (`languageMountState`), not the pane the user has moved to since:
+otherwise any pane change would make the next mount look like a different
+document and recreate the webview. The current pane reaches the instance with
+`language.resume`. A different language is a different `entityId`, so it
+recreates the webview.
 
 Leave guards run before the tab switch (`canLeaveLanguageSection`,
 `:1764`), which posts `language.can-leave`. The active pane saves or asks
@@ -325,7 +407,7 @@ remounted by `{#key mapsEditorKey:mapReloadCounter}`. `maps-state` is still
 forwarded for a maps plugin view. Keeping the map editor warm is a separate
 change to that Svelte view, and this plan does not do it.
 
-v1 does not pool graph, chronology, or maps. They keep closing on leave, so
+v1 does not pool graph, chronology, or maps. (Language is pooled since slice 4.) They keep closing on leave, so
 the next open reads current data. The pool's `mountKey` is there so a later
 slice can keep one when the params match and a refresh message exists.
 Pooling them now would show a stale graph.
@@ -475,7 +557,7 @@ Do not add a plugin-published event for the instance id.
    Open an external plugin window if one is still reachable. Overlay hide
    and show still line up.
 
-3. **Pool, for Writing and Language.** Hide instead of close. N is 3.
+3. **Pool, for Writing and Language. Done: Writing in slice 3, Language in slice 4.** Hide instead of close. N is 3.
    LRU eviction, tab close, archive, disable, and project close destroy the
    right labels. Only the shown instance is visible. Bounds are set before
    show. Suspend on hide (draft timers, AI cancel, focus back to `main`).
@@ -494,7 +576,7 @@ Do not add a plugin-published event for the instance id.
    does not take keys. Disable Writing and confirm no `plugin:` webview
    remains. Quit from a Writing tab still saves.
 
-4. **Keep the editor, and resume Language.** `startLoad` implements the
+4. **Keep the editor, and resume Language. Done.** `startLoad` implements the
    keep rule. `writing.saved` stores the revision when nothing is unsent.
    `language.resume` reloads the open language and the active pane.
    Files: `packages/modules/writing/src/WritingWorkspace.svelte`,
@@ -551,9 +633,9 @@ it, and slice 1 is worth landing on its own. Do not turn slice 3 on for users an
 3. Do two `plugin://daena.language` webviews share one WebKit data store?
    If they do, `localStorage` keys are shared. Confirm before any per-tab
    state is written there.
-4. Is suspend a new `writing.hold` message, or can hide be "flush, cancel
-   this origin's AI, dispose draft timers" with no protocol change? Prefer
-   no new message if the webview can do it from the existing flush.
-5. Graph and chronology join the pool only after they accept a refresh
-   message and re-query. Until then they remount. The map editor is the
+4. Answered: no new message. Hide is the leave flush, the host cancelling the
+   instance's AI requests, and focus back to `main`. The webview needs nothing
+   else, because a hidden editor cannot type and the shell drops its events.
+5. Open by choice: graph and chronology join the pool only after they accept a
+   refresh message and re-query. Until then they remount. The map editor is the
    main-window `NativeVectorMapEditor`, and warming it is out of this plan.

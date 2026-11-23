@@ -44,6 +44,8 @@ let pendingLexemeId: string | null = $state(null);
 // svelte-ignore state_referenced_locally
 let languageLoading = $state(Boolean(context.focusEntityId));
 let languageRequest = $state(0);
+/** Counts `language.resume` messages, so panes that skip a reload for an unchanged language read it again. */
+let resumeCount = $state(0);
 let guideOpen = $state(false);
 let guideMode: GuideMode = $state("tour");
 let guideIndex = $state(0);
@@ -96,6 +98,17 @@ async function showHostPane(next: Pane) {
 }
 
 /**
+ * The host shows this kept webview again. Another tab may have edited the language, its lexicon or its other
+ * records meanwhile, so the language is read again (which makes the active pane load its data) and the pane the
+ * host names is shown. A different language than the one shown is loaded the same way.
+ */
+async function resumeFromHost(entityId: string, next: Pane) {
+  resumeCount += 1;
+  await showHostPane(next);
+  await loadLanguage(entityId);
+}
+
+/**
  * The host asks whether Language may be torn down. Pending is reported before
  * any guard runs, so the host knows a reply is coming. A throwing guard blocks
  * the teardown rather than leaving the host waiting for a reply forever.
@@ -124,6 +137,7 @@ function isMutating() {
 onMount(() => {
   const unsubscribePane = bridge?.onPaneRequest((next) => void showHostPane(next));
   const unsubscribeLeave = bridge?.onLeaveRequest((requestId) => void answerLeaveRequest(requestId));
+  const unsubscribeResume = bridge?.onResume((entityId, next) => void resumeFromHost(entityId, next));
 
   // Load language entity if focusEntityId is provided
   if (context.focusEntityId) {
@@ -134,6 +148,7 @@ onMount(() => {
     cancelled = true;
     unsubscribePane?.();
     unsubscribeLeave?.();
+    unsubscribeResume?.();
   };
 });
 
@@ -325,6 +340,7 @@ $effect(() => {
           {context}
           {selectedLanguage}
           active={pane === "overview"}
+          refreshToken={resumeCount}
           registerLeaveGuard={registerOverviewGuard}
           {onLanguageChanged}
           {onLanguageArchived} />

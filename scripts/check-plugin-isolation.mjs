@@ -36,6 +36,10 @@ assert.deepEqual(
 );
 
 const route = fs.readFileSync("src/routes/+page.svelte", "utf8");
+// The per-location code (surfaces, switches, restore) lives in the location store; the table of projection sandboxes
+// beside it.
+const store = fs.readFileSync("src/lib/location/location-store.svelte.ts", "utf8");
+const projections = fs.readFileSync("src/lib/location/projection-sandboxes.ts", "utf8");
 const frame = fs.readFileSync("src/lib/plugins/SandboxView.svelte", "utf8");
 const plugin = fs.readFileSync("src-tauri/plugin-assets/shared/plugin.js", "utf8");
 const timelineHtml = fs.readFileSync("src-tauri/plugin-assets/timeline/index.html", "utf8");
@@ -59,6 +63,7 @@ assert.doesNotMatch(frame, /srcdoc|sandbox=/, "main webview must not host plugin
 assert.match(frame, /mountPluginWebview/);
 assert.match(frame, /resizePluginWebview/);
 assert.match(frame, /unmountPluginWebview/);
+assert.match(frame, /suspendPluginWebview/);
 assert.doesNotMatch(
   plugin,
   /__TAURI_INTERNALS__|@tauri-apps/,
@@ -150,6 +155,7 @@ assert.doesNotMatch(
   "plugin isolation script must neutralize Tauri internals fail-soft",
 );
 assert.match(tauriSource, /plugin_unmount_webview/);
+assert.match(tauriSource, /plugin_suspend_webview/);
 assert.match(tauriSource, /use_https_scheme\(true\)/);
 assert.match(tauriSource, /register_uri_scheme_protocol\("plugin"/);
 assert.doesNotMatch(
@@ -200,21 +206,21 @@ assert.match(fs.readFileSync("src/lib/date.ts", "utf8"), /calendar\.ts/);
 assert.match(fs.readFileSync("src/lib/modules/chronology.ts", "utf8"), /era-scope\.ts/);
 assert.match(fs.readFileSync("src/lib/date/dateField.ts", "utf8"), /calendar\.ts/);
 
-function sourceSlice(start, end) {
-  const from = route.indexOf(start);
-  const to = route.indexOf(end);
+function sourceSlice(start, end, source = route) {
+  const from = source.indexOf(start);
+  const to = source.indexOf(end);
   assert.notEqual(from, -1, start);
   assert.notEqual(to, -1, end);
-  return route.slice(from, to);
+  return source.slice(from, to);
 }
 
 // The World graph and Chronology share one sandbox path: a table of plugin, shell view id, and surface.
-assert.match(route, /function projectionSandboxKey\(\): ProjectionSandboxKey \| null/);
-assert.match(route, /function projectionSandboxOpen\(key\?: ProjectionSandboxKey\): boolean/);
-const projectionTable = sourceSlice("const PROJECTION_SANDBOXES", "/** The projection whose sandbox");
+assert.match(store, /projectionSandboxKey\(\): ProjectionSandboxKey \| null/);
+assert.match(store, /projectionSandboxOpen\(key\?: ProjectionSandboxKey\): boolean/);
+const projectionTable = sourceSlice("export const PROJECTION_SANDBOXES", "\n};\n", projections);
 assert.match(
   projectionTable,
-  /lore: \{[^}]*pluginId: "daena\.lore"[^}]*viewId: "graph"[^}]*title: "World graph"[^}]*subtitle: "Explore entities and their connections"[^}]*icon: Network[^}]*surfaceKey: "workspace:lore:graph"/,
+  /lore: \{[^}]*pluginId: "daena\.lore"[^}]*viewId: "graph"[^}]*title: "World graph"[^}]*subtitle: "Explore entities and their connections"[^}]*surfaceKey: "workspace:lore:graph"/,
   "the World graph must open the daena.lore sandbox as the graph view",
 );
 assert.match(
@@ -222,7 +228,12 @@ assert.match(
   /timeline: \{[^}]*pluginId: "daena\.timeline"[^}]*viewId: "chronology"[^}]*title: "Chronology"[^}]*subtitle: "Explore your world across time"[^}]*surfaceKey: "workspace:timeline:timeline"/,
   "Chronology must keep its daena.timeline sandbox",
 );
-const openProjection = sourceSlice("async function openProjection", "async function openLoreLibrary");
+assert.match(
+  route,
+  /const PROJECTION_ICONS: Record<ProjectionSandboxKey, typeof Network> = \{ lore: Network, timeline: CalendarRange \};/,
+  "each projection keeps its topbar icon",
+);
+const openProjection = sourceSlice("async openProjection", "async openLoreLibrary", store);
 assert.match(openProjection, /section === "timeline" \? "timeline" : "lore"/);
 assert.match(openProjection, /projectionSandboxOpen\(key\)/);
 assert.match(openProjection, /entry\.id === surface\.pluginId && entry\.enabled/);
@@ -230,36 +241,44 @@ assert.match(openProjection, /is disabled, so \$\{surface\.title\} cannot open/)
 assert.match(openProjection, /renderer: \{ type: "sandboxed" \}/);
 assert.match(openProjection, /renderer: "webview"/);
 assert.doesNotMatch(openProjection, /projectionView|projectionModule/);
-const workspaceView = sourceSlice("function currentWorkspaceLocationView", "function currentModuleState");
+const workspaceView = sourceSlice(
+  "currentWorkspaceLocationView(): WorkspaceLocationView",
+  "currentModuleState()",
+  store,
+);
 assert.match(workspaceView, /projectionSandboxOpen\("lore"\)\) return "graph"/);
 assert.match(workspaceView, /projectionSandboxOpen\("timeline"\)\) return "timeline"/);
-const surfaceKey = sourceSlice("function specializedSurfaceKey()", "function specializedSurfaceKeyForLocation");
+const surfaceKey = sourceSlice(
+  "specializedSurfaceKey(): string | null",
+  "currentShellLocation(): ShellLocation",
+  store,
+);
 assert.match(
   surfaceKey,
-  /const projection = projectionSandboxKey\(\);\s*if \(projection\) return PROJECTION_SANDBOXES\[projection\]\.surfaceKey/,
+  /const projection = this\.projectionSandboxKey\(\);\s*if \(projection\) return PROJECTION_SANDBOXES\[projection\]\.surfaceKey/,
 );
 assert.ok(
   surfaceKey.indexOf("projectionSandboxKey()") < surfaceKey.indexOf("sandboxView?.view"),
   "projection surfaces must be matched before the generic sandbox branch",
 );
-const shellLocation = sourceSlice("function currentShellLocation()", "function recordCurrentShellLocation");
-assert.match(shellLocation, /sandboxView\?\.view && !projectionSandboxOpen\(\)/);
+const shellLocation = sourceSlice("currentShellLocation(): ShellLocation", "async openHostView", store);
+assert.match(shellLocation, /sandboxView\?\.view && !this\.projectionSandboxOpen\(\)/);
 const tabPresentation = sourceSlice("function currentTabPresentation()", "function workspaceHeadingKicker");
-assert.match(tabPresentation, /!projectionSandboxOpen\(\)/);
-const closeProjection = sourceSlice("async function closeProjectionView", "async function closePluginView");
+assert.match(tabPresentation, /!loc\.projectionSandboxOpen\(\)/);
+const closeProjection = sourceSlice("async closeProjectionView", "async closePluginView", store);
 assert.match(closeProjection, /recordShellDeparture\(departure\)/);
-assert.match(closeProjection, /if \(projectionSandboxOpen\(\)\) sandboxView = null/);
+assert.match(closeProjection, /if \(this\.projectionSandboxOpen\(\)\) this\.sandboxView = null/);
 assert.doesNotMatch(closeProjection, /shellHistoryBack|navigateShellHistory/);
 assert.match(route, /<WorkspaceTopbar/);
-assert.match(route, /\{:else if projectionSandboxKey\(\)\}/);
+assert.match(route, /\{:else if loc\.projectionSandboxKey\(\)\}/);
 assert.match(
   route,
-  /<SandboxView\s+pluginId=\{projection\.pluginId\}\s+instanceId=\{shownWebviewInstance\}\s+holdMount=\{shellNavigationBusy\}\s+title=\{projection\.title\}\s*\/>/,
+  /<SandboxView\s+pluginId=\{projection\.pluginId\}\s+instanceId=\{shownWebviewInstance\}\s+holdMount=\{shellNavigationBusy\}\s+title=\{projection\.title\}\s+prepareMount=\{prepareUnpooledMount\}\s*\/>/,
   "the World graph and Chronology mount one SandboxView with their table entry",
 );
 assert.match(
   route,
-  /!hostView &&\s*\(!sandboxView \|\| projectionSandboxOpen\(\)\) &&\s*\(section === "lore"/,
+  /!loc\.hostView &&\s*\(!loc\.sandboxView \|\| loc\.projectionSandboxOpen\(\)\) &&\s*\(loc\.section === "lore"/,
   "workspace view tabs stay visible while the World graph or Chronology is open",
 );
 assert.doesNotMatch(
@@ -289,6 +308,12 @@ assert.match(
   route,
   /<SandboxView\s+pluginId="daena\.language"\s+instanceId=\{shownWebviewInstance\}\s+holdMount=\{shellNavigationBusy\}\s+viewId="language-workspace"/,
   "the Languages content pane must mount the isolated daena.language webview",
+);
+// Language is pooled like Writing: it hides on leave, and its mount reports back so a reused instance is resumed.
+assert.match(
+  route,
+  /<SandboxView\s+pluginId="daena\.language"\s+instanceId=\{shownWebviewInstance\}\s+holdMount=\{shellNavigationBusy\}\s+viewId="language-workspace"\s+title="Language"\s+entityId=\{loc\.selected\?\.id\}\s+moduleState=\{languageMountState\(shownWebviewInstance\)\}\s+pooled\s+prepareMount=\{beginPooledLanguageMount\}\s+onmounted=\{languageMounted\}\s*\/>/,
+  "the Language content pane must be a pooled SandboxView with its own mount hooks",
 );
 assert.doesNotMatch(route, /<ModuleMount\b/, "the shell must not mount Language through the trusted ModuleMount");
 assert.doesNotMatch(route, /projectionModule\("language"\)/, "Language must not be a trusted projection");
@@ -320,7 +345,7 @@ assert.match(tauriSource, /\("daena\.writing", "\/dist\/ui\/writing\.css"\)/);
 // kept mounted across selections. It is the only editor for them; there is no flag for the old path.
 assert.match(
   route,
-  /<SandboxView\s+pluginId="daena\.writing"\s+instanceId=\{shownWebviewInstance\}\s+holdMount=\{shellNavigationBusy\}\s+viewId="writing-workspace"\s+title="Writing"\s*\/>/,
+  /<SandboxView\s+pluginId="daena\.writing"\s+instanceId=\{shownWebviewInstance\}\s+holdMount=\{shellNavigationBusy\}\s+viewId="writing-workspace"\s+title="Writing"\s+pooled\s+prepareMount=\{beginPooledWritingMount\}\s+onmounted=\{writingMounted\}\s*\/>/,
   "the Writing content pane must mount the isolated daena.writing webview",
 );
 assert.doesNotMatch(

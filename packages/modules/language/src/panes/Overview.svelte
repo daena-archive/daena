@@ -1,4 +1,5 @@
 <script lang="ts">
+import { untrack } from "svelte";
 import type { EntityRecord, EntitySummary, ModuleContext, ModuleManifest } from "../../../../module-api/src/index";
 import type { FieldDefinition } from "../../../../plugin-sdk/src/generated";
 import RichTextEditor from "../../../../../src/lib/editor/RichTextEditor.svelte";
@@ -13,6 +14,7 @@ let {
   context,
   selectedLanguage,
   active,
+  refreshToken = 0,
   registerLeaveGuard,
   onLanguageChanged,
   onLanguageArchived,
@@ -20,6 +22,8 @@ let {
   context: ModuleContext;
   selectedLanguage: EntitySummary | null;
   active: boolean;
+  /** Bumped when the host shows this webview again (`language.resume`): the language is read again. */
+  refreshToken?: number;
   registerLeaveGuard: (guard: (() => Promise<boolean> | boolean) | null) => void;
   onLanguageChanged: (language: EntitySummary) => void;
   onLanguageArchived: (languageId: string) => void;
@@ -57,13 +61,23 @@ let overviewAutosaveTimer = $state<number | null>(null);
 let overviewAutosaveQueued = $state(false);
 
 let lastLoadedLanguage: string | null = null;
+let lastRefreshToken = 0;
 
 $effect(() => {
   const languageId = selectedLanguage?.id ?? null;
+  const refresh = refreshToken;
   void languageId;
   if (!active) return;
-  if (languageId === lastLoadedLanguage) return;
+  if (languageId === lastLoadedLanguage) {
+    if (refresh === lastRefreshToken) return;
+    // The host showed this webview again: another tab may have changed the language. Edits made here are kept.
+    if (untrack(() => overviewDirty || overviewSaving)) return;
+    lastRefreshToken = refresh;
+    untrack(() => void loadOverview({ quiet: true }));
+    return;
+  }
   lastLoadedLanguage = languageId;
+  lastRefreshToken = refresh;
   void loadOverview();
 });
 

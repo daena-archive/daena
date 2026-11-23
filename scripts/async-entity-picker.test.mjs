@@ -130,6 +130,8 @@ assert.equal(calls, 2);
 assert.deepEqual(emptyAsyncEntityPage(25).limit, 25);
 
 const shell = await read("src/routes/+page.svelte");
+// Relationship writes (updateRelationshipField) moved into the location store.
+const locationStore = await read("src/lib/location/location-store.svelte.ts");
 const relationship = await read("src/lib/RelationshipPicker.svelte");
 const rootPicker = await read("src/lib/houses/FamilyRootPicker.svelte");
 const memberDialog = await read("src/lib/houses/FamilyMemberDialog.svelte");
@@ -161,12 +163,17 @@ assert.match(shell, /newInManuscript/);
 assert.match(shell, /toShellSortField/);
 assert.match(shell, /resolveSelectedEntities/);
 assert.match(shell, /Promise\.all/);
-assert.match(shell, /collectionRefreshEpoch/);
+assert.match(locationStore, /collectionRefreshEpoch/);
 assert.match(shell, /refreshAfterEntityMutation/);
 assert.match(
-  shell,
+  locationStore,
   /const source = await project.getEntity\(endpoints.sourceId\)/,
   "relationship creates must read the live source revision, not a cached selected.revision",
+);
+assert.doesNotMatch(
+  locationStore,
+  /selected.id === endpoints.sourceId && selected.revision/,
+  "stale selected.revision must not be reused for relationship OCC",
 );
 assert.doesNotMatch(
   shell,
@@ -174,7 +181,7 @@ assert.doesNotMatch(
   "stale selected.revision must not be reused for relationship OCC",
 );
 assert.match(shell, /bumpCollectionRefresh/);
-assert.match(shell, /queueCollectionScroll/);
+assert.match(locationStore, /queueCollectionScroll/);
 assert.match(shell, /searchEntities=\{searchEntitiesPaged\(\)\}/);
 assert.doesNotMatch(shell, /RelationshipPicker[\s\S]{0,120}\{entities\}/);
 

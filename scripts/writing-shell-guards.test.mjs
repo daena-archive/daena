@@ -4,6 +4,17 @@ import fs from "node:fs";
 // Source checks for the shell side of the isolated Writing webview (docs/plans/writing-isolation.md, slice 3b).
 // The guarded paths are not exported from the route, so these read src/routes/+page.svelte and check its order.
 const page = fs.readFileSync("src/routes/+page.svelte", "utf8");
+// The per-location functions (selection, save, autosave) live in the location store; the page reaches them as `loc.<name>`.
+const store = fs.readFileSync("src/lib/location/location-store.svelte.ts", "utf8");
+
+/** The source of a store method (or arrow-function property): its declaration to the brace that closes it. */
+function storeMethodBody(name) {
+  const match = new RegExp(`\\n  (?:async )?${name}\\(|\\n  ${name} = (?:async )?\\(`).exec(store);
+  assert.ok(match, `${name} is declared in the location store`);
+  const end = store.slice(match.index + 1).search(/\n {2}\};?\n/);
+  assert.ok(end > 0, `${name} closes`);
+  return store.slice(match.index, match.index + 1 + end);
+}
 
 /** The source of a top-level function, from its declaration to the brace that closes it at column 0. */
 function functionBody(name) {
@@ -26,7 +37,7 @@ function between(from, to) {
 // Every path that hides or unmounts the Writing webview, or changes its entry, saves through flushAutoSave first.
 // Each entry names the first statement that navigates, which must come after the flush.
 const flushesBeforeNavigating = [
-  ["toggleWorkbenchPane", /workbenchPaneVisibility = \{/],
+  ["toggleWorkbenchPane", /this\.workbenchPaneVisibility = \{/, "store"],
   ["navigateShellHistory", /shellNavigationBusy = true/],
   ["switchToTab", /activateTab\(/],
   ["openInNewTab", /openTab\(/],
@@ -34,28 +45,28 @@ const flushesBeforeNavigating = [
   ["applyTabsChange", /change\(snapshotActiveTab\(\)\)/],
   ["createWithOption", /entities\.create\(/],
   ["openTreePerson", /leavePluginView\(\)/],
-  ["openPluginView", /leavePluginView\(\)|openHostView\(|dismissSettings\(\)/],
-  ["switchSection", /dismissSettings\(\)|section = next/],
-  ["switchWritingView", /writingView = resolved/],
-  ["switchTimelineView", /timelineView = resolved/],
-  ["switchHousesView", /housesView = resolved/],
-  ["switchLanguagePane", /requestLanguagePane\(next\)/],
-  ["openProjectHome", /projectHomeOpen = true/],
+  ["openPluginView", /leavePluginView\(\)|openHostView\(|dismissSettings\(\)/, "store"],
+  ["switchSection", /dismissSettings\(\)|section = next/, "store"],
+  ["switchWritingView", /writingView = resolved/, "store"],
+  ["switchTimelineView", /timelineView = resolved/, "store"],
+  ["switchHousesView", /housesView = resolved/, "store"],
+  ["switchLanguagePane", /requestLanguagePane\(next\)/, "store"],
+  ["openProjectHome", /projectHomeOpen = true/, "store"],
   ["openSettings", /showSettings = true/],
   ["openProjectCenter", /showSettings = true/],
-  ["selectSearchResult", /leavePluginView\(\)|section = nextSection/],
-  ["selectEntity", /selected = entity;/],
+  ["selectSearchResult", /leavePluginView\(\)|section = nextSection/, "store"],
+  ["selectEntity", /this\.selected = entity;/, "store"],
   // activateBreadcrumb is gone: the breadcrumb no longer navigates (tabs slice 3).
-  ["reconcileWorkspaceSection", /leavePluginView\(\)/],
+  ["reconcileWorkspaceSection", /leavePluginView\(\)/, "store"],
   ["openHouseTree", /leavePluginView\(\)/],
-  ["openLoreLibrary", /dismissSettings\(\)|leavePluginView\(\)/],
-  ["openLoreWiki", /leavePluginView\(\)/],
-  ["closeLoreWiki", /loreWikiOpen = false/],
-  ["closeProjectionView", /sandboxView = null/],
-  ["closePluginView", /leavePluginView\(\)/],
-  ["openProjection", /leavePluginView\(\)/],
+  ["openLoreLibrary", /dismissSettings\(\)|leavePluginView\(\)/, "store"],
+  ["openLoreWiki", /leavePluginView\(\)/, "store"],
+  ["closeLoreWiki", /loreWikiOpen = false/, "store"],
+  ["closeProjectionView", /sandboxView = null/, "store"],
+  ["closePluginView", /leavePluginView\(\)/, "store"],
+  ["openProjection", /leavePluginView\(\)/, "store"],
   ["createMap", /leavePluginView\(\)/],
-  ["ensureMapEditorOpen", /selected = map;/],
+  ["ensureMapEditorOpen", /loc\.selected = map;/],
   ["archiveEntity", /clearSelection\(\)|entities\.delete\(/],
   ["openExternalImport", /showExternalImport = true/],
   ["seedExample", /clearSelection\(\)/],
@@ -66,8 +77,8 @@ const flushesBeforeNavigating = [
   ["importPortableCheckpoint", /leavePluginView\(\{ closeWebviews: true \}\)/],
   ["restoreRecoveryBackup", /leavePluginView\(\{ closeWebviews: true \}\)/],
 ];
-for (const [name, navigates] of flushesBeforeNavigating) {
-  const body = functionBody(name);
+for (const [name, navigates, owner] of flushesBeforeNavigating) {
+  const body = owner === "store" ? storeMethodBody(name) : functionBody(name);
   const step = body.search(navigates);
   assert.ok(step >= 0, `${name} still navigates where its check expects (${navigates})`);
   if (body.includes("flushAutoSave()")) {
@@ -87,7 +98,7 @@ for (const [name, navigates] of flushesBeforeNavigating) {
 const navigatesThroughGuardedPath = [
   ["openEntityById", /selectSearchResult\(target\)[\s\S]*selectEntity\(target\)/],
   ["selectQuickOpenItem", /selectSearchResult\(matchedEntity\)[\s\S]*openProjectHome\(\)/],
-  ["archiveSelected", /archiveEntity\(selected/],
+  ["archiveSelected", /archiveEntity\(loc\.selected/],
   ["openSelectedMapEditor", /openPluginView\(mapsView\)/],
   ["confirmWritingArchive", /archiveSelected\(\)/],
 ];
@@ -115,8 +126,8 @@ for (const [name, through] of navigatesThroughGuardedPath) {
 // Hiding the content column, and every other place the webview leaves the screen, is covered above. Toggling the
 // content column is the one that needs a flush of its own: it used to ask only the Language webview.
 assert.match(
-  functionBody("toggleWorkbenchPane"),
-  /pane === "content" && workbenchPaneVisibility\.content\)\s*\{\s*if \(!\(await flushAutoSave\(\)\)\) return;/,
+  storeMethodBody("toggleWorkbenchPane"),
+  /pane === "content" && this\.workbenchPaneVisibility\.content\)\s*\{\s*if \(!\(await this\.flushAutoSave\(\)\)\) return;/,
 );
 
 // Writing's full screen is the webview's own. It must not be part of the overlay that hides every embedded webview.
@@ -136,20 +147,25 @@ function workspaceStyle() {
 
 // The full screen ends with the selection, with navigation out of the pane, and with Escape in the shell.
 {
-  const reset = between("$effect(() => {\n  void selected?.id;", "/**\n * Runs a shell shortcut.");
+  const reset = between("$effect(() => {\n  void loc.selected?.id;", "/**\n * Runs a shell shortcut.");
   assert.match(reset, /void writingWebviewShown;/, "leaving the Writing pane ends the full screen");
   assert.match(reset, /untrack\(\(\) => exitWritingFullscreen\(\)\)/);
-  assert.match(functionBody("exitWritingFullscreen"), /writingFullscreenMessage\(false\)/, "the webview is told");
+  assert.match(functionBody("exitWritingFullscreen"), /endWritingFullscreen\(\)/, "the shell ends the full screen");
+  assert.match(
+    functionBody("endWritingFullscreen"),
+    /writingFullscreenMessage\(false\), instance\)/,
+    "the instance that was fullscreen is told, not the tab that is shown by then",
+  );
   const escape = between("const handleWritingFullscreenKey", 'window.addEventListener("resize"');
   assert.match(escape, /event\.key === "Escape"\)\s*exitWritingFullscreen\(\)/);
   const mount = between("function trackWritingMount()", "async function postWritingMessage(");
-  assert.match(mount, /writingFullscreen = false;/, "unmounting resets the full screen");
+  assert.match(mount, /endWritingFullscreen\(\);/, "unmounting and switching instances end the full screen");
   const ready = between('    case "ready":\n      if (!writingWebview.mounted) return;', '    case "draft":');
   assert.match(ready, /writingFullscreen = false;/, "a restarted webview starts out of full screen");
   const stateEvent = functionBody("handleWritingStateEvent");
   assert.match(
     stateEvent,
-    /case "fullscreen":[\s\S]*event\.entityId === selected\?\.id\)\s*writingFullscreen = event\.on;/,
+    /case "fullscreen":[\s\S]*event\.entityId === loc\.selected\?\.id\) \{\s*writingFullscreen = event\.on;\s*writingFullscreenInstance = event\.on \? shownWebviewInstance : null;/,
   );
 }
 
@@ -158,7 +174,7 @@ function workspaceStyle() {
   const stateEvent = functionBody("handleWritingStateEvent");
   assert.match(
     stateEvent,
-    /case "request-rename":\s*if \(writingWebview\.mounted && selected && event\.entityId === selected\.id\) void openEntityEditDialog\(selected\);/,
+    /case "request-rename":\s*if \(writingWebview\.mounted && loc\.selected && event\.entityId === loc\.selected\.id\)\s*void openEntityEditDialog\(loc\.selected\);/,
   );
   assert.match(
     stateEvent,
@@ -169,7 +185,7 @@ function workspaceStyle() {
   assert.match(archive, /confirmDialog\(archiveConfirmOptions\(target\.name\)\)/, "archive keeps its confirmation");
   assert.match(
     archive,
-    /selected\?\.id !== entityId\) return;\s*await archiveSelected\(\)/,
+    /loc\.selected\?\.id !== entityId\) return;\s*await archiveSelected\(\)/,
     "checked again after the dialog",
   );
 }
@@ -201,7 +217,7 @@ function workspaceStyle() {
   assert.match(page, /\{#if error && !writingWebviewShown\}/, "the toast is left to the webview");
   const slot = between(
     "{:else if writingWebviewShown}",
-    "{:else if workbenchPaneVisibility.content && !writingEntrySelected}",
+    "{:else if loc.workbenchPaneVisibility.content && !loc.writingEntrySelected}",
   );
   assert.match(slot, /class="writing-content"/);
   assert.match(
@@ -217,24 +233,24 @@ function workspaceStyle() {
 // overlay view open): a second editor would be a second writer next to the webview's drafts.
 {
   assert.match(
-    page,
-    /const writingEntrySelected = \$derived\(section === "writing" && writingWebviewHandles\(selected\?\.entity_type\)\);/,
+    store,
+    /readonly writingEntrySelected = \$derived\(\s*this\.section === "writing" && writingWebviewHandles\(this\.selected\?\.entity_type\),?\s*\);/,
     "one derived says a webview-handled Writing entry is selected",
   );
   const shown = between("const writingWebviewShown = $derived(", "\n);");
   assert.match(
     shown,
-    /^const writingWebviewShown = \$derived\(\s*writingEntrySelected &&/,
+    /^const writingWebviewShown = \$derived\(\s*loc\.writingEntrySelected &&/,
     "shown only for such an entry",
   );
   for (const gate of [
     "ready",
     "workbenchPaneVisibility.content",
-    "!projectHomeOpen",
-    "!showSettings",
-    "!hostView",
-    "!sandboxView",
-    "!loreWikiOpen",
+    "!loc.projectHomeOpen",
+    "!loc.showSettings",
+    "!loc.hostView",
+    "!loc.sandboxView",
+    "!loc.loreWikiOpen",
   ]) {
     assert.ok(shown.includes(gate), `the webview needs ${gate}`);
   }
@@ -246,14 +262,14 @@ function workspaceStyle() {
   const branches = [...chain.matchAll(/^ {8}\{(?:#|:else )if ([^}]+)\}/gm)].map((match) => match[1]);
   assert.deepEqual(
     branches,
-    ["writingWebviewShown", "workbenchPaneVisibility.content && !writingEntrySelected"],
+    ["writingWebviewShown", "loc.workbenchPaneVisibility.content && !loc.writingEntrySelected"],
     "the shell editor branch excludes webview-handled Writing entries",
   );
   // The shell editor (RichTextEditor and the content pane body) renders only inside that last branch.
   assert.equal(page.match(/<RichTextEditor\b/g)?.length, 1, "one shell RichTextEditor");
   assert.ok(
     page.indexOf("<RichTextEditor") >
-      page.indexOf("{:else if workbenchPaneVisibility.content && !writingEntrySelected}"),
+      page.indexOf("{:else if loc.workbenchPaneVisibility.content && !loc.writingEntrySelected}"),
     "the shell RichTextEditor sits behind the guard",
   );
   assert.equal(page.match(/\{#snippet contentPaneBody\(\)\}/g)?.length, 1);
@@ -261,7 +277,7 @@ function workspaceStyle() {
   // Lore, Maps and the Writing types the webview does not handle keep the shell editor.
   assert.match(
     page,
-    /placeholder=\{section === "writing"\s*\? `Write this \$\{createLabel\(\)\}…`\s*: section === "maps"/,
+    /placeholder=\{loc\.section === "writing"\s*\? `Write this \$\{createLabel\(\)\}…`\s*: loc\.section === "maps"/,
   );
   assert.match(page, /Write the canonical story of this entry…/);
 }
@@ -296,11 +312,14 @@ function workspaceStyle() {
   assert.ok(selectAt < errorAt, "the note failure is reported after selectEntity clears error");
   assert.match(create, /was created, but its opening note was not saved: \$\{friendlyError\(cause\)\}/);
   assert.match(
-    functionBody("flushAutoSave"),
+    storeMethodBody("flushAutoSave"),
     /flushWritingWebview\(\)/,
     "the shell is the writer, after the webview's flush",
   );
-  assert.match(page, /await project\.saveEntry\(\s*\{\s*document: \{ entity_id: entityId, body, format: "markdown" \}/);
+  assert.match(
+    store,
+    /await project\.saveEntry\(\s*\{\s*document: \{ entity_id: entityId, body, format: "markdown" \}/,
+  );
   const command = fs.readFileSync("src-tauri/src/project_commands.rs", "utf8");
   assert.match(
     command,
@@ -319,7 +338,7 @@ function workspaceStyle() {
 // A rename refreshes the header in place when the editor keeps its text.
 {
   const load = between("async function postWritingLoad", "$effect(() => {");
-  assert.match(load, /writingTitleMessage\(entityId, selected\.name\)/, "the header follows the rename");
+  assert.match(load, /writingTitleMessage\(entityId, loc\.selected\.name\)/, "the header follows the rename");
 }
 
 console.log("writing shell guard checks passed");

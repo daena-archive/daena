@@ -99,6 +99,11 @@ async function start(target: HTMLElement): Promise<void> {
         const parsed = parseLanguageHostMessage(message);
         if (parsed?.type === "language.can-leave") handler(parsed.requestId);
       }),
+    onResume: (handler) =>
+      onHostMessage((message) => {
+        const parsed = parseLanguageHostMessage(message);
+        if (parsed?.type === "language.resume") handler(parsed.entityId, parsed.pane);
+      }),
     reportLeave: (message) => void publish(message),
   };
 

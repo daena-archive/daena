@@ -706,8 +706,12 @@ export const project = {
     linkId?: string,
     entityId?: string,
     moduleState?: string,
+    /** Adopt the live webview when it was loaded with the same mount params; otherwise it is recreated. */
+    reuse = false,
+    /** Embedded webviews that survive this mount. Every other one closes. */
+    retain: Array<{ pluginId: string; instanceId: string }> = [],
   ) =>
-    invoke<void>("plugin_mount_webview", {
+    invoke<"reused" | "created">("plugin_mount_webview", {
       pluginId,
       instanceId,
       viewId,
@@ -716,6 +720,8 @@ export const project = {
       entityId,
       moduleState,
       bounds,
+      reuse,
+      retain,
     }),
   /** Delivers one shell message to the mounted plugin webview as a `daena:host-message` event. */
   postPluginWebviewMessage: (pluginId: string, instanceId: string, message: unknown) =>
@@ -726,6 +732,9 @@ export const project = {
   /** Hides or shows the mounted plugin webview, e.g. under a shell overlay. */
   setPluginWebviewVisible: (pluginId: string, instanceId: string, visible: boolean) =>
     invoke<void>("plugin_set_webview_visible", { pluginId, instanceId, visible }),
+  /** Hides the instance, cancels its AI requests and keeps it alive. The shell does this when a pooled view leaves the screen. */
+  suspendPluginWebview: (pluginId: string, instanceId: string) =>
+    invoke<void>("plugin_suspend_webview", { pluginId, instanceId }),
   resizePluginWebview: (
     pluginId: string,
     instanceId: string,

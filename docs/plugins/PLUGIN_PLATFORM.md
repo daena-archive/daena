@@ -239,7 +239,16 @@ Rules:
   owns the surface placement, mount parameters (`entityId`, `state`), and the
   `daena.language/state@1` protocol (pane, leave guard, entity changes, link
   opening via `open-link`, entity opening via `open-entity`); Language owns
-  its guides, rich text, and dialogs. Writing declares
+  its guides, rich text, and dialogs. The shell talks to Language through
+  host messages: `language.pane` (show a pane), `language.can-leave` (ask
+  whether the webview may be hidden or closed; the active pane saves or asks)
+  and `language.resume` (`entityId`, `pane`). The shell posts `language.resume`
+  when it shows a Language webview that stayed alive while its tab was in the
+  background: the webview shows the pane the shell names (after its leave
+  guards) and reads the language and the active pane's data again, because
+  another tab may have edited them meanwhile. A webview that was just created
+  or is still loading gets no resume; it reads its data at load and reports
+  `ready`. Writing declares
   `host.surface:daena.writing/workspace@1` the same way; its `writing-workspace`
   view runs in the `daena.writing` plugin webview inside the content pane for
   manuscripts and reference pages, and the shell talks to it through host
@@ -247,7 +256,15 @@ Rules:
   `writing.editable`, `writing.ai-state`) and the `daena.writing/state@1`
   protocol (`ready`, `draft`, `flush-reply`, `open-link`, `open-entity`,
   `fullscreen`, `request-rename`, `request-archive`, `shortcut`); see
-  [`writing-isolation.md`](../plans/writing-isolation.md). The Writing webview
+  [`writing-isolation.md`](../plans/writing-isolation.md). A `writing.load`
+  that names the entity and revision the editor already shows (the revision of
+  the last applied load, updated by `writing.saved` when nothing is unsent)
+  keeps the editor, its undo history and its selection; it only adopts the new
+  load token and the shell's editable flag and placeholder. Any other load
+  replaces the editor. A load never discards text the shell has not received:
+  with unsent text the editor stays, and a load for another entity or revision
+  reports the failure through the save-error path instead of resetting. The
+  Writing webview
   is the only editor for those entries and the shell is the only writer: the
   webview hands its text to the shell, which saves it with the entry's field
   edits in one trusted `saveEntry` call, and the webview never writes a

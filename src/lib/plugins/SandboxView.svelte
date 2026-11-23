@@ -1,6 +1,7 @@
 <script lang="ts">
 import { onMount, tick } from "svelte";
 import { project } from "$lib/project/client";
+import { webviewMountKey, type WebviewInstanceRef } from "$lib/plugins/webview-pool";
 
 let {
   pluginId,
@@ -12,6 +13,9 @@ let {
   entityId,
   moduleState,
   holdMount = false,
+  pooled = false,
+  prepareMount,
+  onmounted,
 }: {
   pluginId: string;
   instanceId: string;
@@ -27,6 +31,22 @@ let {
    * not create a webview for the wrong tab.
    */
   holdMount?: boolean;
+  /**
+   * The shell keeps this instance alive in its webview pool. The mount then adopts a live webview with the same
+   * mount params instead of recreating it, and teardown suspends (hides) the instance instead of closing it. The
+   * shell unmounts it when its tab goes away. Unpooled views create fresh and close on teardown.
+   */
+  pooled?: boolean;
+  /**
+   * Called right before the host mount, with this instance and its mount key. `retain` names the instances that
+   * survive the mount; the host closes every other embedded webview. `reuse` (pooled views only) asks the host to
+   * adopt a live webview with these params; the shell sets it only for an instance its pool already knew with the
+   * same key, so a stale label left by a closed tab is never adopted. Without it, a pooled view retains itself
+   * alone and asks for no reuse, and an unpooled view retains nothing.
+   */
+  prepareMount?: (self: WebviewInstanceRef, mountKey: string) => { retain: WebviewInstanceRef[]; reuse: boolean };
+  /** Pooled only. Called once the host mounted this instance, and says whether it adopted a live webview. */
+  onmounted?: (outcome: "reused" | "created", self: WebviewInstanceRef, mountKey: string) => void;
 } = $props();
 
 let releaseWaiters: Array<() => void> = [];
@@ -102,6 +122,7 @@ onMount(() => {
   // cleanup runs. Closing every webview of this plugin would close that newer instance.
   const mountedPluginId = pluginId;
   const mountedInstanceId = instanceId;
+  const isPooled = pooled;
   let alive = true;
   const observer = new ResizeObserver(scheduleResize);
   observePositionSources(observer);
@@ -120,15 +141,30 @@ onMount(() => {
     await mountReleased();
     if (!alive) return;
     lastBoundsKey = null;
-    // Drop this instance's previous child so the mount query params
-    // (mapEntityId, linkId, entityId, state) load in a fresh document.
-    // The host mount closes every other embedded plugin webview.
-    await project.unmountPluginWebview(mountedPluginId, mountedInstanceId).catch(() => undefined);
-    if (!alive) return;
+    if (!isPooled) {
+      // Drop this instance's previous child so the mount query params
+      // (mapEntityId, linkId, entityId, state) load in a fresh document.
+      // The host mount closes every other embedded plugin webview.
+      await project.unmountPluginWebview(mountedPluginId, mountedInstanceId).catch(() => undefined);
+      if (!alive) return;
+    }
     const bounds = currentBounds();
     if (!bounds) throw new Error("sandbox view container is unavailable");
     const serialisedState = moduleState ? JSON.stringify(moduleState) : undefined;
-    await project.mountPluginWebview(
+    const self = { pluginId: mountedPluginId, instanceId: mountedInstanceId };
+    const mountKey = webviewMountKey(mountedPluginId, {
+      viewId,
+      mapEntityId,
+      linkId,
+      entityId,
+      moduleState: serialisedState,
+    });
+    // A pooled view keeps its own webview when the host still has one with these params. The host closes every
+    // embedded webview that is not in `retain`.
+    const plan = prepareMount?.(self, mountKey);
+    const reuse = isPooled && (plan?.reuse ?? false);
+    const keep = plan?.retain ?? (isPooled ? [self] : []);
+    const outcome = await project.mountPluginWebview(
       mountedPluginId,
       mountedInstanceId,
       viewId,
@@ -137,12 +173,18 @@ onMount(() => {
       linkId,
       entityId,
       serialisedState,
+      reuse,
+      keep,
     );
-    if (alive) {
-      hostMounted = true;
-      lastBoundsKey = boundsKey(bounds);
-      scheduleResize();
+    if (!alive) {
+      // Torn down while the host mounted: the webview exists now and would show once it loads.
+      if (isPooled) void project.suspendPluginWebview(mountedPluginId, mountedInstanceId).catch(() => undefined);
+      return;
     }
+    hostMounted = true;
+    lastBoundsKey = boundsKey(bounds);
+    scheduleResize();
+    if (isPooled) onmounted?.(outcome, self, mountKey);
   };
   void mount().catch((cause) => {
     if (alive) error = cause instanceof Error ? cause.message : String(cause);
@@ -156,7 +198,10 @@ onMount(() => {
     window.visualViewport?.removeEventListener("resize", scheduleResize);
     window.removeEventListener("scroll", scheduleResize, { capture: true });
     if (resizeFrame !== null) window.cancelAnimationFrame(resizeFrame);
-    void project.unmountPluginWebview(mountedPluginId, mountedInstanceId);
+    // A pooled instance stays alive, hidden. The shell unmounts it when its tab closes; this view only suspends,
+    // so it cannot bring a closed tab's instance back.
+    if (isPooled) void project.suspendPluginWebview(mountedPluginId, mountedInstanceId).catch(() => undefined);
+    else void project.unmountPluginWebview(mountedPluginId, mountedInstanceId);
   };
 });
 </script>

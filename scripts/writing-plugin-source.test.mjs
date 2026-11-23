@@ -16,6 +16,11 @@ import {
   pickWritingManifest,
   writingShortcutForKey,
 } from "../packages/modules/writing/src/plugin-protocol.ts";
+import {
+  WRITING_HELD_TEXT_MESSAGE,
+  decideWritingLoad,
+  revisionAfterSaved,
+} from "../packages/modules/writing/src/load-rule.ts";
 import { entityIdsInMarkdown, loadWritingDocument } from "../packages/modules/writing/src/document-source.ts";
 import {
   MAX_WRITING_AI_LABEL_LENGTH,
@@ -1418,6 +1423,92 @@ assert.deepEqual(entityIdsInMarkdown("[bad](daena://entity/%E0%A4%A)"), [], "a m
     assert.equal(methods().filter((method) => method === "ai.request.poll").length, WRITING_AI_MAX_POLL_FAILURES);
     assert.deepEqual(methods().slice(-2), ["ai.request.cancel", "ai.request.citations"], "and the request is stopped");
   }
+}
+
+// Keep rule (keep-alive slice 4): a load for the entity and revision the editor shows keeps the editor and its undo
+// history; any other load replaces it; text the shell has not received is never discarded by a load.
+{
+  const shown = { entityId: "e-1", shownRevision: "r-2" };
+  const decide = (current, unsent, entityId, revision) =>
+    decideWritingLoad({ current, unsent, incoming: { entityId, revision } });
+
+  // Same entity and revision: keep.
+  assert.deepEqual(decide(shown, false, "e-1", "r-2"), { action: "keep", republish: false });
+  // A different revision (the same manuscript edited in another tab, or an external edit): replace.
+  assert.deepEqual(decide(shown, false, "e-1", "r-3"), { action: "replace" });
+  // A different entity: replace.
+  assert.deepEqual(decide(shown, false, "e-2", "r-2"), { action: "replace" });
+  // Nothing shown yet: replace (the first load).
+  assert.deepEqual(decide(null, false, "e-1", "r-2"), { action: "replace" });
+  // Empty revisions (an entry without a document yet) are still compared, and match.
+  assert.deepEqual(decide({ entityId: "e-1", shownRevision: "" }, false, "e-1", ""), {
+    action: "keep",
+    republish: false,
+  });
+
+  // Unsent text, same entity and revision: keep the editor and publish the text again.
+  assert.deepEqual(decide(shown, true, "e-1", "r-2"), { action: "keep", republish: true });
+  // Unsent text, different revision or entity: keep the editor and report it. Never replace.
+  assert.deepEqual(decide(shown, true, "e-1", "r-3"), { action: "hold" });
+  assert.deepEqual(decide(shown, true, "e-2", "r-2"), { action: "hold" });
+  // Unsent text survives every path: no combination of entity and revision replaces an editor that holds it.
+  for (const entityId of ["e-1", "e-2"])
+    for (const revision of ["r-2", "r-3", ""])
+      assert.notEqual(decide(shown, true, entityId, revision).action, "replace", `${entityId}/${revision}`);
+
+  // writing.saved: the saved revision becomes the shown one when it is this entity's and nothing is unsent.
+  assert.equal(revisionAfterSaved(shown, { entityId: "e-1", revision: "r-3" }, false), "r-3");
+  assert.equal(revisionAfterSaved(shown, { entityId: "e-1", revision: "r-3" }, true), null, "unsent text: unchanged");
+  assert.equal(revisionAfterSaved(shown, { entityId: "e-2", revision: "r-3" }, false), null, "another entity");
+  assert.equal(revisionAfterSaved(null, { entityId: "e-1", revision: "r-3" }, false), null, "no editor");
+  // After a save the next load names the saved revision, so the editor is kept: undo survives the first autosave.
+  const savedRevision = revisionAfterSaved(shown, { entityId: "e-1", revision: "r-3" }, false);
+  assert.equal(decide({ ...shown, shownRevision: savedRevision }, false, "e-1", "r-3").action, "keep");
+  assert.match(WRITING_HELD_TEXT_MESSAGE, /not saved/);
+
+  // The component applies the rule: load-rule.ts decides, and only the replace path may reset the draft queue.
+  const workspace = fs.readFileSync("packages/modules/writing/src/WritingWorkspace.svelte", "utf8");
+  const part = (from, to) => workspace.slice(workspace.indexOf(from), workspace.indexOf(to));
+  assert.match(workspace, /from "\.\/load-rule\.ts"/);
+  const startLoad = part("function startLoad(", "function keepEditor(");
+  assert.match(startLoad, /decideWritingLoad\(\{/, "startLoad asks the rule");
+  assert.match(startLoad, /unsent: textWouldBeLost\(\)/, "unpublished editor changes and held text count as unsent");
+  assert.match(startLoad, /shownRevision: view\.shownRevision/);
+  assert.match(startLoad, /revision: message\.revision/, "the load's revision is what is compared");
+  assert.ok(
+    startLoad.indexOf('decision.action === "keep"') < startLoad.indexOf("sync.reset()") &&
+      startLoad.indexOf('decision.action === "hold"') < startLoad.indexOf("sync.reset()"),
+    "keep and hold return before the draft queue is reset",
+  );
+  assert.equal(workspace.split("sync.reset()").length, 2, "the draft queue is reset only by the replace path");
+  const keep = part("function keepEditor(", "function holdEditor(");
+  assert.doesNotMatch(keep, /sync\.reset\(|view = |closeAiDialog\(\)/, "keeping touches neither editor nor dialog");
+  assert.match(keep, /source\.token = message\.token;/, "the new load token is adopted");
+  assert.match(keep, /source\.placeholder = message\.placeholder;/);
+  assert.match(keep, /shellEditable = message\.editable;/);
+  assert.match(keep, /sync\.change\(source\.entityId, source\.token, source\.markdown\);\s*void sync\.publishNow\(\);/);
+  assert.match(keep, /const seq = \+\+loadSeq;/, "a load still in flight cannot replace the kept editor");
+  // An AI run the hide cancelled keeps its dialog, which shows the cancellation; the dialog follows the new token.
+  assert.match(keep, /if \(aiDialog\) aiDialog\.token = message\.token;/);
+  assert.match(keep, /if \(aiSnapshot\) aiSnapshot\.token = message\.token;/);
+  const hold = part("function holdEditor(", "async function refreshTitle(");
+  assert.match(hold, /heldText = true;/);
+  assert.match(hold, /saveError = WRITING_HELD_TEXT_MESSAGE;/, "reported through the save-error path");
+  assert.doesNotMatch(hold, /token|sync\.|view = /, "a held editor keeps its token and its text");
+  // Text typed while an entry loads is not lost to the editor swap.
+  const show = part("async function show(", "async function resolveMentions(");
+  assert.equal(show.split("textWouldBeLost()").length, 3, "both ways out of show() check for unsent text first");
+  // writing.saved stores the revision.
+  const savedCase = part('case "writing.saved"', 'case "writing.conflict"');
+  assert.match(savedCase, /revisionAfterSaved\(/);
+  assert.match(savedCase, /view\.shownRevision = revision;/);
+  assert.match(workspace, /shownRevision: message\.revision/, "an applied load sets the shown revision");
+  // Hide never resets the editor: the leave flush ran and suspend only hides, so the webview needs no hold message.
+  assert.doesNotMatch(
+    fs.readFileSync("packages/modules/writing/src/plugin-protocol.ts", "utf8"),
+    /writing\.hold|writing\.suspend/,
+    "no new Writing host message",
+  );
 }
 
 // Bundle markers: the committed bundle is the broker-only build of this entry.

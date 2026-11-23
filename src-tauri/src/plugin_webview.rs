@@ -119,10 +119,92 @@ pub(super) struct PluginWebviewBounds {
     pub(super) viewport_height: f64,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(super) struct EmbeddedPluginWebviewState {
     pub(super) bounds: PluginWebviewBounds,
     pub(super) ready: bool,
+    /// What the document was loaded with (see `embedded_mount_key`). A mount
+    /// with `reuse` adopts the live webview only when this equals the new key.
+    pub(super) mount_key: String,
+    /// The shell hid this webview (overlay or suspend). A document that
+    /// finishes loading while it is set stays hidden instead of popping up
+    /// over whatever the shell shows now.
+    pub(super) hidden: bool,
+}
+
+/// One embedded plugin instance, as the shell names it in `retain`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub(super) struct WebviewInstanceRef {
+    pub(super) plugin_id: String,
+    pub(super) instance_id: String,
+}
+
+/// What `plugin_mount_webview` did, as the shell sees it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub(super) enum MountOutcome {
+    /// The live webview was adopted: bounds set, shown, document untouched.
+    Reused,
+    /// A new webview was created (any previous one with this label closed).
+    Created,
+}
+
+/// Everything that is read once, when the document loads: the plugin, the view
+/// and every mount param. A JSON array, so no value can run into its
+/// neighbour and `None` differs from an empty string.
+pub(super) fn embedded_mount_key(
+    plugin_id: &str,
+    view_id: Option<&str>,
+    map_entity_id: Option<&str>,
+    link_id: Option<&str>,
+    entity_id: Option<&str>,
+    module_state: Option<&str>,
+) -> String {
+    serde_json::json!([
+        plugin_id,
+        view_id,
+        map_entity_id,
+        link_id,
+        entity_id,
+        module_state
+    ])
+    .to_string()
+}
+
+/// A mount adopts the live webview only when the caller asked for reuse and the
+/// stored key (None when the label has no state) equals the new one.
+pub(super) fn mount_should_reuse(reuse: bool, stored_key: Option<&str>, new_key: &str) -> bool {
+    reuse && stored_key == Some(new_key)
+}
+
+/// Turns the shell's `retain` list into labels. An instance the host would
+/// not accept in a label is an error: the whole mount is refused, not skipped.
+pub(super) fn retain_labels(retain: &[WebviewInstanceRef]) -> Result<BTreeSet<String>, String> {
+    retain
+        .iter()
+        .map(|item| plugin_instance_label(&item.plugin_id, &item.instance_id))
+        .collect()
+}
+
+/// The embedded labels a mount closes: every `plugin:` webview that is not the
+/// one being mounted, not retained, and not an external bare window
+/// (`is_window`). The mounting label is never in the result.
+pub(super) fn embedded_labels_to_close(
+    existing: &[(String, bool)],
+    mounting: &str,
+    retain: &BTreeSet<String>,
+) -> Vec<String> {
+    existing
+        .iter()
+        .filter(|(label, is_window)| {
+            label.starts_with("plugin:")
+                && !is_window
+                && label != mounting
+                && !retain.contains(label)
+        })
+        .map(|(label, _)| label.clone())
+        .collect()
 }
 
 pub(super) fn embedded_webview_states(
@@ -273,7 +355,10 @@ pub(super) async fn plugin_mount_webview(
     entity_id: Option<String>,
     module_state: Option<String>,
     bounds: PluginWebviewBounds,
-) -> Result<(), String> {
+    reuse: bool,
+    retain: Vec<WebviewInstanceRef>,
+) -> Result<MountOutcome, String> {
+    let retained = retain_labels(&retain)?;
     let bounds = native_plugin_bounds(&app, bounds)?;
     let project_id = current_info(state.inner())?
         .map(|info| info.root)
@@ -312,26 +397,79 @@ pub(super) async fn plugin_mount_webview(
     };
     let label = plugin_instance_label(&plugin_id, &instance_id)?;
 
-    // Only one embedded plugin view occupies the workspace. Do not close a
-    // legacy external plugin window with the same identity.
-    for (other_label, webview) in app.webviews() {
-        if other_label.starts_with("plugin:")
-            && other_label != label
-            && app.get_webview_window(&other_label).is_none()
-        {
-            // Its session origin is that label; cancel before it goes away.
-            cancel_plugin_webview_ai(&app, &other_label);
-            if let Ok(mut states) = embedded_webview_states().lock() {
-                states.remove(&other_label);
-            }
+    let mount_key = embedded_mount_key(
+        &plugin_id,
+        view_id.as_deref(),
+        map_entity_id.as_deref(),
+        link_id.as_deref(),
+        entity_id.as_deref(),
+        module_state.as_deref(),
+    );
+
+    // The shell names the instances that survive this mount (`retain`);
+    // every other embedded webview closes, so nothing leaks. A closed
+    // webview's session origin is its label: cancel its AI first. The
+    // mounting label is never closed by this loop, and a legacy external
+    // plugin window is left alone.
+    let existing = app
+        .webviews()
+        .into_keys()
+        .map(|existing_label| {
+            let is_window = app.get_webview_window(&existing_label).is_some();
+            (existing_label, is_window)
+        })
+        .collect::<Vec<_>>();
+    for other_label in embedded_labels_to_close(&existing, &label, &retained) {
+        cancel_plugin_webview_ai(&app, &other_label);
+        if let Ok(mut states) = embedded_webview_states().lock() {
+            states.remove(&other_label);
+        }
+        if let Some(webview) = app.get_webview(&other_label) {
             let _ = webview.close();
         }
     }
 
-    // Always recreate the embedded webview on mount. Reusing an existing
-    // child and only resizing it drops query params such as mapEntityId, so
-    // opening a saved map (or switching maps) would keep the previous source
-    // loaded and never hit asset.read / uploadMap for the requested entity.
+    // Reuse adopts a live webview whose document was loaded with exactly
+    // these params. Query params are read only at document load, so any other
+    // mount recreates the webview: keeping it would keep the previous source
+    // (for example the old mapEntityId) and never load the requested entity.
+    if app.get_webview_window(&label).is_none() {
+        if let Some(webview) = app.get_webview(&label) {
+            let adopted = {
+                let mut states = embedded_webview_states()
+                    .lock()
+                    .map_err(|_| "embedded webview state lock poisoned".to_string())?;
+                match states.get_mut(&label) {
+                    Some(state)
+                        if mount_should_reuse(
+                            reuse,
+                            Some(state.mount_key.as_str()),
+                            &mount_key,
+                        ) =>
+                    {
+                        state.bounds = bounds;
+                        state.hidden = false;
+                        Some(state.ready)
+                    }
+                    _ => None,
+                }
+            };
+            if let Some(ready) = adopted {
+                // A document that is still loading is positioned and shown by
+                // its page-load handler, using the bounds stored above.
+                if ready {
+                    webview
+                        .set_position(tauri::LogicalPosition::new(bounds.x, bounds.y))
+                        .map_err(|error| error.to_string())?;
+                    webview
+                        .set_size(tauri::LogicalSize::new(bounds.width, bounds.height))
+                        .map_err(|error| error.to_string())?;
+                    webview.show().map_err(|error| error.to_string())?;
+                }
+                return Ok(MountOutcome::Reused);
+            }
+        }
+    }
     if let Some(window) = app.get_webview_window(&label) {
         window.close().map_err(|error| error.to_string())?;
     }
@@ -353,18 +491,20 @@ pub(super) async fn plugin_mount_webview(
         .on_navigation(move |url| plugin_navigation_allowed(url, &navigation_policy))
         .on_page_load(move |webview, payload| {
             if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
-                let bounds = embedded_webview_states()
+                let loaded = embedded_webview_states()
                     .lock()
                     .ok()
                     .and_then(|mut states| {
                         let state = states.get_mut(webview.label())?;
                         state.ready = true;
-                        Some(state.bounds)
+                        Some((state.bounds, state.hidden))
                     });
-                if let Some(bounds) = bounds {
+                if let Some((bounds, hidden)) = loaded {
                     let _ = webview.set_position(tauri::LogicalPosition::new(bounds.x, bounds.y));
                     let _ = webview.set_size(tauri::LogicalSize::new(bounds.width, bounds.height));
-                    let _ = webview.show();
+                    if !hidden {
+                        let _ = webview.show();
+                    }
                 }
             }
         });
@@ -380,6 +520,8 @@ pub(super) async fn plugin_mount_webview(
             EmbeddedPluginWebviewState {
                 bounds,
                 ready: false,
+                mount_key,
+                hidden: false,
             },
         );
     }
@@ -393,7 +535,7 @@ pub(super) async fn plugin_mount_webview(
         }
         return Err(error.to_string());
     }
-    Ok(())
+    Ok(MountOutcome::Created)
 }
 
 #[tauri::command]
@@ -414,6 +556,9 @@ pub(super) async fn plugin_resize_webview(
             let state = states.entry(label).or_insert(EmbeddedPluginWebviewState {
                 bounds,
                 ready: true,
+                // Unknown document: a later reuse must recreate it.
+                mount_key: String::new(),
+                hidden: false,
             });
             state.bounds = bounds;
             state.ready
@@ -496,12 +641,49 @@ pub(super) fn plugin_set_webview_visible(
     let Some(webview) = app.get_webview(&label) else {
         return Ok(());
     };
+    set_embedded_hidden(&label, !visible);
     if visible {
         webview.show()
     } else {
-        webview.hide()
+        hide_embedded_webview(&app, &webview)
     }
     .map_err(|error| error.to_string())
+}
+
+/// Records whether the shell has the webview hidden, for the page-load handler.
+fn set_embedded_hidden(label: &str, hidden: bool) {
+    if let Ok(mut states) = embedded_webview_states().lock() {
+        if let Some(state) = states.get_mut(label) {
+            state.hidden = hidden;
+        }
+    }
+}
+
+/// Hides an embedded webview after moving keyboard focus to `main`, so a
+/// hidden WKWebView cannot stay first responder. Focus errors are ignored.
+fn hide_embedded_webview(app: &tauri::AppHandle, webview: &tauri::Webview) -> tauri::Result<()> {
+    if let Some(main) = app.get_webview("main") {
+        let _ = main.set_focus();
+    }
+    webview.hide()
+}
+
+/// Keeps a pooled instance alive but out of play: its AI requests are
+/// cancelled and it is hidden (focus moves to `main` first). Nothing closes
+/// and its session stays valid. A webview that is not mounted is not an error.
+#[tauri::command]
+pub(super) fn plugin_suspend_webview(
+    app: tauri::AppHandle,
+    plugin_id: String,
+    instance_id: String,
+) -> Result<(), String> {
+    let label = plugin_instance_label(&plugin_id, &instance_id)?;
+    let Some(webview) = app.get_webview(&label) else {
+        return Ok(());
+    };
+    cancel_plugin_webview_ai(&app, &label);
+    set_embedded_hidden(&label, true);
+    hide_embedded_webview(&app, &webview).map_err(|error| error.to_string())
 }
 
 pub(super) fn validate_plugin_view(

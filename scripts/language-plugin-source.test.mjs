@@ -64,6 +64,55 @@ assert.equal(parseLanguageHostMessage({ type: "other.message", pane: "overview" 
 assert.equal(parseLanguageHostMessage("language.pane"), null);
 assert.equal(parseLanguageHostMessage(null), null);
 
+// language.resume carries the language and the pane, and nothing else is accepted in their place.
+assert.deepEqual(parseLanguageHostMessage({ type: "language.resume", entityId: "e-1", pane: "lexicon" }), {
+  type: "language.resume",
+  entityId: "e-1",
+  pane: "lexicon",
+});
+assert.equal(parseLanguageHostMessage({ type: "language.resume", entityId: "", pane: "lexicon" }), null);
+assert.equal(parseLanguageHostMessage({ type: "language.resume", entityId: "e-1", pane: "bogus" }), null);
+assert.equal(parseLanguageHostMessage({ type: "language.resume", entityId: "e-1" }), null);
+assert.equal(parseLanguageHostMessage({ type: "language.resume", entityId: 7, pane: "overview" }), null);
+assert.equal(parseLanguageHostMessage({ type: "language.resume", entityId: "x".repeat(129), pane: "overview" }), null);
+
+// The webview handles it: the bridge subscribes, the workspace shows the pane, then reads the language again,
+// which makes the active pane load; Overview skips a reload for an unchanged language, so it has a refresh token.
+{
+  const main = fs.readFileSync("packages/modules/language/src/plugin-main.ts", "utf8");
+  assert.match(
+    main,
+    /onResume: \(handler\) =>[\s\S]*?parsed\?\.type === "language\.resume"\) handler\(parsed\.entityId, parsed\.pane\)/,
+  );
+  const workspace = fs.readFileSync("packages/modules/language/src/LanguageWorkspace.svelte", "utf8");
+  assert.match(workspace, /bridge\?\.onResume\(\(entityId, next\) => void resumeFromHost\(entityId, next\)\)/);
+  assert.match(workspace, /unsubscribeResume\?\.\(\)/, "the subscription is released with the workspace");
+  const resume = workspace.slice(
+    workspace.indexOf("async function resumeFromHost("),
+    workspace.indexOf("async function answerLeaveRequest("),
+  );
+  assert.match(resume, /resumeCount \+= 1;/);
+  assert.match(
+    resume,
+    /await showHostPane\(next\);\s*await loadLanguage\(entityId\);/,
+    "the pane, then the language is read again",
+  );
+  assert.match(workspace, /refreshToken=\{resumeCount\}/, "Overview is told to read again");
+  const overview = fs.readFileSync("packages/modules/language/src/panes/Overview.svelte", "utf8");
+  assert.match(overview, /refreshToken = 0/);
+  assert.match(overview, /overviewDirty \|\| overviewSaving/, "Overview keeps edits made before the resume");
+  assert.match(overview, /loadOverview\(\{ quiet: true \}\)/);
+  // Every other pane reloads when the language object is replaced, which loadLanguage does.
+  for (const pane of ["Lexicon", "Sounds", "Writing", "Grammar", "Forms", "Samples"]) {
+    const source = fs.readFileSync(`packages/modules/language/src/panes/${pane}.svelte`, "utf8");
+    assert.match(
+      source,
+      /if \(languageId === lastLoadedLanguage\) \{\s*untrack\(\(\) => void load\w+\(\)\);\s*return;/,
+      `${pane} reloads for an unchanged language id`,
+    );
+  }
+}
+
 // Pane reports derive from the workspace's module state.
 assert.deepEqual(paneStatePayload({ pane: "lexicon" }), { kind: "pane", pane: "lexicon" });
 assert.equal(paneStatePayload({ pane: "nope" }), null);

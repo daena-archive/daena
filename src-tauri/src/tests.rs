@@ -1970,6 +1970,171 @@ fn host_message_script_serialises_message_and_bounds_size() {
 }
 
 #[test]
+fn embedded_mount_key_changes_with_every_mount_param() {
+    let key = |view: Option<&str>,
+               map: Option<&str>,
+               link: Option<&str>,
+               entity: Option<&str>,
+               state: Option<&str>| {
+        embedded_mount_key("daena.writing", view, map, link, entity, state)
+    };
+    let base = key(Some("editor"), None, None, Some("e1"), Some("{}"));
+    assert_eq!(
+        base,
+        key(Some("editor"), None, None, Some("e1"), Some("{}"))
+    );
+    // A different entity (or any other param) must recreate.
+    assert_ne!(
+        base,
+        key(Some("editor"), None, None, Some("e2"), Some("{}"))
+    );
+    assert_ne!(base, key(Some("other"), None, None, Some("e1"), Some("{}")));
+    assert_ne!(
+        base,
+        key(Some("editor"), Some("m"), None, Some("e1"), Some("{}"))
+    );
+    assert_ne!(
+        base,
+        key(Some("editor"), None, Some("l"), Some("e1"), Some("{}"))
+    );
+    assert_ne!(
+        base,
+        key(Some("editor"), None, None, Some("e1"), Some("{\"pane\":1}"))
+    );
+    assert_ne!(
+        base,
+        embedded_mount_key(
+            "daena.language",
+            Some("editor"),
+            None,
+            None,
+            Some("e1"),
+            Some("{}")
+        )
+    );
+    // Unambiguous: None is not an empty string, and values cannot run together.
+    assert_ne!(
+        key(None, None, None, None, None),
+        key(Some(""), None, None, None, None)
+    );
+    assert_ne!(
+        key(Some("a"), Some("b"), None, None, None),
+        key(Some("ab"), None, None, None, None)
+    );
+    assert_ne!(
+        key(None, Some("a"), None, Some("b"), None),
+        key(None, Some("a\",\"b"), None, None, None)
+    );
+}
+
+#[test]
+fn mount_reuses_only_a_live_label_with_the_same_mount_key() {
+    let key = embedded_mount_key(
+        "daena.writing",
+        Some("editor"),
+        None,
+        None,
+        Some("e1"),
+        None,
+    );
+    let other = embedded_mount_key(
+        "daena.writing",
+        Some("editor"),
+        None,
+        None,
+        Some("e2"),
+        None,
+    );
+    assert!(mount_should_reuse(true, Some(&key), &key));
+    // Different entity: recreate.
+    assert!(!mount_should_reuse(true, Some(&key), &other));
+    // No stored state for the label (not mounted, or state unknown): recreate.
+    assert!(!mount_should_reuse(true, None, &key));
+    assert!(!mount_should_reuse(true, Some(""), &key));
+    // The caller did not ask for reuse: always recreate.
+    assert!(!mount_should_reuse(false, Some(&key), &key));
+}
+
+#[test]
+fn mount_retain_list_becomes_labels_and_rejects_bad_instances() {
+    let a = "4f2a9c1b-1111-4222-8333-444444444444";
+    let b = "4f2a9c1b-1111-4222-8333-555555555555";
+    let refs = vec![
+        WebviewInstanceRef {
+            plugin_id: "daena.writing".into(),
+            instance_id: a.into(),
+        },
+        WebviewInstanceRef {
+            plugin_id: "daena.writing".into(),
+            instance_id: b.into(),
+        },
+    ];
+    let labels = retain_labels(&refs).unwrap();
+    assert_eq!(
+        labels,
+        BTreeSet::from([
+            plugin_instance_label("daena.writing", a).unwrap(),
+            plugin_instance_label("daena.writing", b).unwrap(),
+        ])
+    );
+    assert!(retain_labels(&[]).unwrap().is_empty());
+
+    // A bad instance id fails the whole list; it is never skipped.
+    for bad in ["", "NOT-HEX", "a:b", "../x", &"a".repeat(65)] {
+        let mut with_bad = refs.clone();
+        with_bad.push(WebviewInstanceRef {
+            plugin_id: "daena.writing".into(),
+            instance_id: bad.into(),
+        });
+        assert!(retain_labels(&with_bad).is_err(), "instance {bad:?}");
+    }
+    let bad_plugin = vec![WebviewInstanceRef {
+        plugin_id: "Daena Writing".into(),
+        instance_id: a.into(),
+    }];
+    assert!(retain_labels(&bad_plugin).is_err());
+}
+
+#[test]
+fn mount_closes_every_embedded_label_that_is_not_retained() {
+    let a = plugin_instance_label("daena.writing", "4f2a9c1b-1111-4222-8333-444444444444").unwrap();
+    let b = plugin_instance_label("daena.writing", "4f2a9c1b-1111-4222-8333-555555555555").unwrap();
+    let c = plugin_instance_label("daena.writing", "4f2a9c1b-1111-4222-8333-666666666666").unwrap();
+    let lore = plugin_instance_label("daena.lore", "4f2a9c1b-1111-4222-8333-444444444444").unwrap();
+    let external = plugin_window_label("daena.maps");
+    let existing = vec![
+        ("main".to_string(), false),
+        (a.clone(), false),
+        (b.clone(), false),
+        (c.clone(), false),
+        (lore.clone(), false),
+        (external.clone(), true),
+    ];
+
+    // Nothing retained: all embedded labels but the mounting one close.
+    let mut closed = embedded_labels_to_close(&existing, &a, &BTreeSet::new());
+    closed.sort();
+    let mut expected = vec![b.clone(), c.clone(), lore.clone()];
+    expected.sort();
+    assert_eq!(closed, expected);
+
+    // Retained labels survive; the rest close.
+    let retained = BTreeSet::from([b.clone(), c.clone()]);
+    assert_eq!(
+        embedded_labels_to_close(&existing, &a, &retained),
+        vec![lore.clone()]
+    );
+
+    // The mounting label is never closed, even when it is not retained, and
+    // `main` and an external bare window are never closed.
+    let closed = embedded_labels_to_close(&existing, &lore, &retained);
+    assert_eq!(closed, vec![a.clone()]);
+    assert!(!closed.contains(&"main".to_string()));
+    assert!(!closed.contains(&external));
+    assert!(!closed.contains(&lore));
+}
+
+#[test]
 fn plugin_state_events_forward_only_for_their_owner() {
     // The owning publisher forwards its own state to the matching shell event.
     assert_eq!(

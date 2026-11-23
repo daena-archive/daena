@@ -21,6 +21,7 @@ const between = (source, start, end) => {
 };
 
 const page = await read("src/routes/+page.svelte");
+const store = await read("src/lib/location/location-store.svelte.ts");
 const handler = between(page, "onCloseRequested(async (event) => {", ".then((cleanup) => {");
 
 const preventIndex = handler.indexOf("event.preventDefault();");
@@ -49,7 +50,7 @@ const branches = [
   ],
   [
     "plugin view guard refuses",
-    /if \(!\(await leavePluginView\(\{ closeWebviews: true \}\)\)\) \{\s*await keepWindowOpen\(\);\s*return;\s*\}/,
+    /if \(!\(await loc\.leavePluginView\(\{ closeWebviews: true \}\)\)\) \{\s*await keepWindowOpen\(\);\s*return;\s*\}/,
   ],
   ["every check passed", /await project\.appCloseConfirm\(\);\s*\} catch \(cause\)/],
   ["exception", /\} catch \(cause\) \{[\s\S]*?await keepWindowOpen\(\);\s*\} finally/],
@@ -57,6 +58,40 @@ const branches = [
 for (const [name, pattern] of branches) {
   assert.match(handler, pattern, `the ${name} branch answers the shell`);
 }
+
+// Pooled Writing webviews outlive their view, so quit and project close must still destroy every one.
+// The close handler leaves through `leavePluginView({ closeWebviews: true })`, which sweeps every `plugin:` label.
+const leave = between(store, "async leavePluginView(", "\n  }\n");
+assert.match(
+  leave,
+  /options\.closeWebviews\) await this\.ctx\.closeNativePluginWebviews\(\)/,
+  "closeWebviews sweeps the plugin webviews",
+);
+assert.match(
+  between(page, "async function closeNativePluginWebviews()", "\n}\n"),
+  /project\.closeAllPluginWebviews\(\)/,
+  "the sweep is plugin_close_all_webviews, not one plugin",
+);
+const pluginWebview = await read("src-tauri/src/plugin_webview.rs");
+assert.match(
+  between(pluginWebview, "fn plugin_close_all_webviews", "\n}\n"),
+  /starts_with\("plugin:"\)/,
+  "the sweep closes every plugin: label, hidden pool members included",
+);
+// Project close, project switch, import and restore close the webviews, then clear the pool with the session.
+for (const name of ["pickAndOpenProject", "openRecentProject", "closeProject"]) {
+  const body = between(page, `async function ${name}(`, "\n}\n");
+  assert.match(body, /leavePluginView\(\{ closeWebviews: true \}\)/, `${name} closes the plugin webviews`);
+  assert.ok(
+    body.indexOf("leavePluginView({ closeWebviews: true })") < body.indexOf("resetProjectSessionState()"),
+    `${name} closes the webviews before it resets the session`,
+  );
+}
+assert.match(
+  between(page, "function resetProjectSessionState() {", "mapsEditorKey = "),
+  /webviewPool = emptyWebviewPool;/,
+  "resetProjectSessionState clears the webview pool",
+);
 
 const client = await read("src/lib/project/client.ts");
 assert.match(

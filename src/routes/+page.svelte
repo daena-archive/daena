@@ -5,13 +5,12 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { appVersion, appVersionSyncFallback } from "$lib/appVersion";
 const logoUrl = "/branding/logo.png";
 import { revokeAllResolvedAssetUrls } from "$lib/assets/resolve";
+import { LocationStore, isRevisionConflict, type PluginNavigationItem } from "$lib/location/location-store.svelte";
+import { PROJECTION_SANDBOXES, type ProjectionSandboxKey } from "$lib/location/projection-sandboxes";
 import { installShellEditorHost, setShellEntityOpener, shellEditorHost } from "$lib/editor/shell-host";
-import { mimeTypeFor } from "$lib/assets/mime";
 import {
   project,
-  type Asset,
   type Entity,
-  type EntityPage,
   type Relationship,
   type MapLocation,
   type ProjectModuleManifest,
@@ -46,42 +45,25 @@ import {
   counterpartId,
   counterpartIds,
   coveredRelationshipIds,
-  defaultRelationshipMetadata,
-  endpointsForCreate,
   groupedRelationshipFields,
   manifestOwningRelationshipType,
-  relationshipsForField,
 } from "$lib/modules/contributed-fields";
-import { toHostRelationship } from "$lib/modules/host-relationship";
 import {
-  appearanceLabel,
-  buildManuscriptOutline,
   collectOutlineIds,
-  collectPartOfEdges,
-  containmentNames,
-  defaultExpandedOutlineIds,
   isManuscriptType,
   MANUSCRIPT_OUTLINE_CAP,
-  outlinePathIds,
   outlineRoleLabel,
   paginateOutlineRoots,
-  parentByChild,
-  partOfEdgesFromRelationships,
   WRITING_FEATURES,
-  WRITING_PART_OF,
   type OutlineNode,
 } from "$lib/writing/outline";
 import {
   emptyShellNavigationHistory,
   recordShellLocation,
-  sameShellLocation,
   shellHistoryBack,
   shellHistoryForward,
   type ShellLocation,
   type ShellNavigationHistory,
-  type WorkspaceCollectionLocation,
-  type WorkspaceLocationView,
-  type WorkspacePaneDimensions,
 } from "$lib/navigation/history";
 import { openIntent, type OpenIntent } from "$lib/navigation/open-intent";
 import { isTabShortcut, tabShortcutForKey, type TabShortcut } from "$lib/navigation/tab-shortcuts";
@@ -114,20 +96,12 @@ import {
   type TabIcon,
 } from "$lib/navigation/tabs";
 import {
-  collectionEntityTypes,
-  collectionTabForEntityType,
   presentCollectionPage,
-  DEFAULT_COLLECTION_QUERY,
   type LanguagePane,
-  type TimelineView,
   type WorkspaceSection,
   type ProjectSection,
   type SettingsSection,
-  type CollectionQuery,
   type CollectionResult,
-  type SortDirection,
-  type SortField,
-  type WritingView,
   workspaceCollectionTabs,
   workspaceSectionDescription,
   workspaceSectionViewNav,
@@ -140,19 +114,12 @@ import {
   viewRenderer,
   workspaceDescription,
   workspaceSectionLabel,
-  type NavigationRenderer,
 } from "$lib/modules/workspace-presentation";
 import {
-  collectionPaneDefault,
   collectionPaneMax,
   collectionPaneMin,
-  inspectorPaneDefault,
   inspectorPaneMax,
   inspectorPaneMin,
-  loadCollectionQuery,
-  loadWorkbenchLayout,
-  saveWorkbenchLayout,
-  type WorkbenchPane,
 } from "$lib/shell/workbench-persistence";
 import {
   chronologyWarnings,
@@ -169,6 +136,21 @@ import { formatWithCalendar, type CalendarDefinition } from "../../packages/modu
 import HostView from "$lib/plugins/HostView.svelte";
 import SandboxView from "$lib/plugins/SandboxView.svelte";
 import { anyRectOverlaps } from "$lib/plugins/popover-overlap";
+import {
+  WEBVIEW_POOL_LIMIT,
+  emptyWebviewPool,
+  evicted,
+  findWebviewEntry,
+  markReady,
+  prunePlugins,
+  pruneTabs as pruneWebviewPoolTabs,
+  removeWebviews,
+  retainSet,
+  touch as touchWebviewPool,
+  webviewRefs,
+  type WebviewInstanceRef,
+  type WebviewPool,
+} from "$lib/plugins/webview-pool";
 import {
   capabilityDescription,
   capabilityLabel,
@@ -259,17 +241,8 @@ import {
   readUpdateChannelPreference,
   type UpdateChannelPreference,
 } from "$lib/appUpdate.ts";
-import { formatHouseMemberSummary, houseMemberSummaries } from "$lib/houses/fetch.ts";
-import { classifyMutationError } from "$lib/houses/mutations.ts";
-import {
-  treeHistoryKey,
-  sameTreeSession,
-  HOUSE_TYPE,
-  PERSON_TYPE,
-  isKinshipRelationshipType,
-  type TreeSession,
-  type HouseMemberSummary,
-} from "$lib/houses/model.ts";
+import { formatHouseMemberSummary } from "$lib/houses/fetch.ts";
+import { treeHistoryKey, sameTreeSession, HOUSE_TYPE, PERSON_TYPE } from "$lib/houses/model.ts";
 import TreeSurface from "$lib/houses/TreeSurface.svelte";
 import EntityAvatar from "$lib/EntityAvatar.svelte";
 import EntityArchiveAction from "$lib/entity-lifecycle/EntityArchiveAction.svelte";
@@ -286,9 +259,7 @@ import {
   type AsyncEntitySearchFn,
   type AsyncEntitySearchQuery,
 } from "$lib/entity-lifecycle/asyncEntityQuery.ts";
-import { createMutationController } from "$lib/entity-lifecycle/mutationState.ts";
 import { ENTITY_ACTIONS } from "$lib/entity-lifecycle/vocabulary.ts";
-import type { MutationSnapshot } from "$lib/entity-lifecycle/mutationState.ts";
 import {
   Boxes,
   Home,
@@ -314,7 +285,7 @@ import {
 import {
   LANGUAGE_PLUGIN_ID,
   LanguageLeaveTracker,
-  isLanguagePane,
+  languageResumeMessage,
   openableLinkHref,
   parseLanguageStateEvent,
   type LanguageStateEvent,
@@ -329,7 +300,6 @@ import {
   writingLoadMessage,
   writingMessageCurrent,
   writingTitleMessage,
-  writingWebviewHandles,
   type WritingBridgeDraft,
   type WritingBridgeShortcut,
   type WritingLoad,
@@ -341,7 +311,6 @@ import AiProposalPreview from "$lib/ai/AiProposalPreview.svelte";
 import { validateAiProposal } from "$lib/ai/proposal";
 import { reduceTextGenerationEvent } from "$lib/ai/stream";
 import { htmlToMarkdown } from "$lib/markdown";
-import { normalizeDocument } from "$lib/markdown/normalize";
 import {
   applyThemePreference,
   normalizeProjectThemePack,
@@ -370,22 +339,13 @@ import {
   updatedDateLabel,
   type CalendarDate,
 } from "$lib/date";
-import {
-  hasMeaningfulDateValue,
-  isEmptyFieldValue,
-  isSentinelDateValue,
-  isStructuredFieldValue,
-  restoreStructuredFieldValue,
-  shouldPersistFieldValue,
-} from "$lib/fields/persistence";
+import { isEmptyFieldValue } from "$lib/fields/persistence";
 import {
   aiJsonValueSchema,
   aiScalarValue,
   coerceAiFieldValue,
   fieldDisplayValue,
   fieldInputValue,
-  fieldRevisionKey,
-  fieldValueForSave,
   suggestionConfidenceLabel,
   suggestionConfidenceTone,
 } from "$lib/fields/values";
@@ -415,14 +375,9 @@ type WorkspaceNavigationItem = {
   renderer: "workspace" | "maps";
   view?: PluginAdminEntry["views"][number];
 };
-type PluginNavigationItem = {
-  kind: "plugin";
-  plugin: PluginAdminEntry;
-  view: PluginAdminEntry["views"][number];
-  key: string;
-  renderer: Exclude<NavigationRenderer, "workspace">;
-};
 type NavigationItem = WorkspaceNavigationItem | PluginNavigationItem;
+/** The icon each projection sandbox shows in its topbar. The table itself lives with the location store. */
+const PROJECTION_ICONS: Record<ProjectionSandboxKey, typeof Network> = { lore: Network, timeline: CalendarRange };
 
 const recentProjectsKey = "daena.recent-projects";
 let settingsMigrated = false;
@@ -447,7 +402,6 @@ let ready = $state(false);
 let error = $state("");
 let projectTransitionBusy = $state(false);
 let projectTransitionMessage = $state("");
-let projectHomeOpen = $state(true);
 function homeNewTab(): NewTab {
   return { id: crypto.randomUUID(), location: { kind: "home" }, title: "Home", icon: { kind: "home" } };
 }
@@ -468,12 +422,6 @@ $effect(() => {
 });
 let shellNavigationBusy = $state(false);
 let shellNavigationRestoring = false;
-let section = $state<WorkspaceSection>("lore");
-let writingView = $state<WritingView>("manuscripts");
-let timelineView = $state<TimelineView>("events");
-let loreGuideHint = $state(0);
-let timelineGuideHint = $state(0);
-let languagePane = $state<LanguagePane>("overview");
 /** Mount state of the Language webview: `mounted` while its content pane element exists, `ready` after it reports ready. */
 let languageWebview = $state({ mounted: false, ready: false });
 /** Can-leave requests to the Language webview, resolved by its leave-pending/leave-reply/ready messages. */
@@ -489,6 +437,32 @@ let writingReadyCount = $state(0);
  * every embedded webview, and this one needs the webview visible so it can fill the window.
  */
 let writingFullscreen = $state(false);
+/** The instance that reported `writingFullscreen`, so ending it reaches that instance even after the tab changed. */
+let writingFullscreenInstance: string | null = null;
+/**
+ * Embedded webviews the shell keeps alive (Writing only). The host owns what exists; this record decides which
+ * instances the next mount keeps (`retainSet`) and which are unmounted when their tab or plugin goes.
+ */
+let webviewPool = $state<WebviewPool>(emptyWebviewPool);
+/** The Writing instance whose host mount finished. The visibility effect shows no other Writing instance. */
+let writingHostedInstance = $state<string | null>(null);
+/** The same for Language: the instance whose host mount finished. */
+let languageHostedInstance = $state<string | null>(null);
+/** Whether the mounting Language instance was ready before its mount began. See `beginPooledMount`. */
+let languageMountPriorReady = false;
+/** What the Language mount in progress keeps, so only those the host actually closed leave the pool. */
+let languageMountRetained: WebviewInstanceRef[] = [];
+/**
+ * The pane each Language instance was created with, and for which language. The mount key contains it (it is the
+ * mount's `state` param), so the pane the user moved to since would make every later mount look like a different
+ * document and recreate the webview. A pooled instance keeps the state it was created with; `language.resume`
+ * carries the current pane. Used only while the pool still knows the instance (see `languageMountState`).
+ */
+const languageCreatedState = new Map<string, { entityId: string | undefined; pane: LanguagePane }>();
+/** Whether the mounting instance was ready before its mount began. See `beginPooledWritingMount`. */
+let writingMountPriorReady = false;
+/** What the mount in progress keeps, so only those the host actually closed leave the pool. */
+let writingMountRetained: WebviewInstanceRef[] = [];
 /**
  * What the last `writing.load` was for (entity id and the shell's load counter), so an unchanged selection is
  * not reposted. Saving does not change it; a new entity or a reload from disk does.
@@ -507,124 +481,123 @@ const writingFlush = createWritingFlushBroker({
 let writingDraftQueue: Promise<unknown> = Promise.resolve();
 /** The last `writing.editable` value the webview was told, so only changes are posted. */
 let writingEditablePosted: boolean | null = null;
-let housesView = $state<WorkspaceLocationView>("houses");
 let calendarDefinitions = $state<Record<string, CalendarDefinition>>({});
 /** Bounded calendar entity list from paged queries — avoids scanning the full entity cache. */
 let calendarEntities = $state<Entity[]>([]);
 let entities = $state<Entity[]>([]);
-let selected = $state<Entity | null>(null);
-let selectedLoading = $state(false);
-let selectedLoadError = $state("");
-let documentBody = $state("");
-let documentMode = $state<"read" | "edit">("edit");
-let fields = $state<Record<string, unknown>>({});
-let relationships = $state<Relationship[]>([]);
-let eraContexts = $state<EraContext[]>([]);
 let createEraContexts = $state<EraContext[]>([]);
-let metadataDialog = $state<{ relationship: Relationship; definition: FieldDefinition | null } | null>(null);
-let assets = $state<Asset[]>([]);
-let assetBusyId = $state<string | null>(null);
-let assetDialog = $state<Asset | null>(null);
 let entityEditDialog = $state<{ entity: Entity; name: string; entityType: string | null; busy: boolean } | null>(null);
-let profileEditorOpen = $state(false);
-let fieldsDialogOpen = $state(false);
-let fieldsDialogTab = $state<EntityFieldsTabId>("relationships");
-let entityMutationSnapshot = $state<MutationSnapshot>({ phase: "idle", message: "", detail: "" });
-const entityMutation = createMutationController({
-  get: () => entityMutationSnapshot,
-  set: (next) => {
-    entityMutationSnapshot = next;
+/**
+ * The one live location: selection, document, field drafts, revisions, dirty tracking, autosave and the save
+ * queue. Everything the store needs from the shell comes through this context; the callbacks are arrows so they
+ * can name page functions and constants declared further down.
+ */
+const loc: LocationStore = new LocationStore({
+  project,
+  get entities() {
+    return entities;
   },
+  get projectDiagnostics() {
+    return projectDiagnostics;
+  },
+  get calendarDefinitions() {
+    return calendarDefinitions;
+  },
+  get ready() {
+    return ready;
+  },
+  get projectInfo() {
+    return projectInfo;
+  },
+  get adminPlugins() {
+    return adminPlugins;
+  },
+  get moduleCount() {
+    return modules.length;
+  },
+  get workspaceSectionOrder() {
+    return workspaceSectionOrder;
+  },
+  confirmDialog: (options) => confirmDialog(options),
+  setError: (message) => {
+    error = message;
+  },
+  resetSelectionShellState: () => {
+    createEraContexts = [];
+    projectDiagnostics = [];
+    showCreateForm = false;
+  },
+  canLeaveLanguageSection: () => canLeaveLanguageSection(),
+  flushWritingWebview: () => flushWritingWebview(),
+  recordShellDeparture: (location) => recordShellDeparture(location),
+  setShellNavigationRestoring: (restoring) => {
+    shellNavigationRestoring = restoring;
+  },
+  closeNativePluginWebviews: () => closeNativePluginWebviews(),
+  resolveDirtyMapSession: () => resolveDirtyMapSession(),
+  currentMapId: () => currentMapId(),
+  setMapsEditorMode: (mode) => {
+    mapsEditorMode = mode;
+  },
+  setMapsEditorKey: (key) => {
+    mapsEditorKey = key;
+  },
+  clearMapFocus: () => {
+    mapFocusLinkId = null;
+    mapFocusFeatureId = null;
+  },
+  dismissSettings: () => dismissSettings(),
+  openSettings: (nextSection) => openSettings(nextSection),
+  openProjectCenter: (nextSection) => openProjectCenter(nextSection),
+  requestLanguagePane: (pane) => requestLanguagePane(pane),
+  clearGlobalQuery: () => {
+    globalQuery = "";
+  },
+  refreshAdmin: () => refreshAdmin(),
+  pluginNavigationItemByKey: (key) => pluginNavigationItemByKey(key),
+  appendEntityToCache: (entity) => {
+    entities = [...entities, entity];
+  },
+  closeAiFieldFill: () => closeAiFieldFill(),
+  closeAiRewrite: () => closeAiRewrite(),
+  contextFor: (target) => contextFor(target),
+  contextOwningRelationshipType: (relationshipType) => contextOwningRelationshipType(relationshipType),
+  activeManifest: () => activeManifest(),
+  activeModuleId: () => activeModuleId(),
+  definitions: () => definitions(),
+  chronologyDateDefinitions: () => chronologyDateDefinitions(),
+  namespaceForField: (definition) => namespaceForField(definition),
+  sectionEnabled: () => sectionEnabled(),
+  mapsEnabled: () => mapsEnabled(),
+  sectionEntityTypes: () => sectionEntityTypes(),
+  activeTabEntityTypes: () => activeTabEntityTypes(),
+  manifestForWorkspaceSection: (target) => manifestForWorkspaceSection(target),
+  collectionTabsFor: (target) => collectionTabsFor(target),
+  enabledWorkspaceSections: () => enabledWorkspaceSections(),
+  allEntityTypesForSection: (target) => allEntityTypesForSection(target),
+  sectionForEntityType: (entityType) => sectionForEntityType(entityType),
+  collectionResult: () => collectionResult(),
+  housesModuleContext: () =>
+    buildModuleContext(housesManifestJson as unknown as ModuleManifest, projectInfo?.root ?? "", {
+      availableServices: enabledServices(),
+    }),
+  upsertEntityInCache: (entity) => upsertEntityInCache(entity),
+  refreshAfterEntityMutation: (options) => refreshAfterEntityMutation(options),
+  loadEraContexts: (eraIds) => loadEraContexts(eraIds),
+  notifyWritingSaved: (entityId) => notifyWritingSaved(entityId),
+  notifyProfileTimelineChanged: (eventId) => notifyProfileTimelineChanged(eventId),
+  loadProjectStatus: (includeGit) => loadProjectStatus(includeGit),
 });
 type LifecycleToast = { message: string; actionLabel?: string; onAction?: () => void };
 let lifecycleToast = $state<LifecycleToast | null>(null);
 let lifecycleToastTimer = 0;
-let mapLocations = $state<MapLocation[]>([]);
 let modules = $state<InstalledModule[]>([]);
 let globalQuery = $state("");
 let quickOpenOpen = $state(false);
 let quickOpenSearchLoading = $state(false);
-let filterOpen = $state(false);
-let expandedGroups = $state<Set<string>>(new Set());
 let railCollapsed = $state(localStorage.getItem("daena:rail-collapsed") === "true");
 
-let collectionQuery = $state<CollectionQuery>(loadCollectionQuery("lore"));
-const emptyEntityPage = (): EntityPage => ({
-  items: [],
-  total: 0,
-  offset: 0,
-  limit: DEFAULT_COLLECTION_QUERY.pageSize,
-  has_more: false,
-  type_counts: [],
-});
-let collectionPage = $state<EntityPage>(emptyEntityPage());
-let collectionLoading = $state(false);
-let collectionError = $state("");
-let collectionRequest = 0;
-/** Bumped to re-query the visible collection page without reloading every entity. */
-let collectionRefreshEpoch = $state(0);
-/** Bumped when kinship relationships or tree-relevant entities change outside TreeSurface. */
-let kinshipRefreshEpoch = $state(0);
-let houseCollectionSummaries = $state(new Map<string, HouseMemberSummary>());
-let houseSummaryRequest = 0;
-let houseSummariesPending = $state(false);
-let manuscriptOutline = $state<OutlineNode[]>([]);
-let manuscriptOutlineEntities = $state<Entity[]>([]);
-let manuscriptOutlineRequest = 0;
-let manuscriptOutlineLoading = $state(false);
-let manuscriptOutlineTruncated = $state(false);
-let manuscriptOutlineLibraryKey = "";
-let manuscriptExpanded = $state(new Set<string>());
-let manuscriptPathLabels = $state<Record<string, string>>({});
-let pendingManuscriptParentId = $state<string | null>(null);
-let writingAppearanceLabels = $state<Record<string, string>>({});
-
-let collectionScopeKey = "";
-let collectionQueryRestoring = false;
-let collectionListElement = $state<HTMLDivElement | null>(null);
-let collectionPaneElement = $state<HTMLElement | null>(null);
-let contentPaneElement = $state<HTMLElement | null>(null);
-let inspectorPaneElement = $state<HTMLElement | null>(null);
-let collectionScrollBySection = $state<Partial<Record<WorkspaceSection, number>>>({});
-let pendingCollectionScroll = $state<{ section: WorkspaceSection; scrollTop: number } | null>(null);
-let restoredWorkspacePaneDimensions = $state<WorkspacePaneDimensions | null>(null);
 let workbenchViewportWidth = $state(window.innerWidth);
-const initialWorkbenchLayout = loadWorkbenchLayout("lore");
-let workbenchPaneVisibility = $state<Record<WorkbenchPane, boolean>>(initialWorkbenchLayout.visibility);
-let workbenchPaneWidths = $state({
-  collection: initialWorkbenchLayout.collectionWidth,
-  inspector: initialWorkbenchLayout.inspectorWidth,
-});
-let specializedSurfaceElement = $state<HTMLElement | null>(null);
-let specializedSurfaceScrollByKey = $state<Record<string, number>>({});
-let pendingSpecializedSurfaceScroll = $state<{ key: string; scrollTop: number } | null>(null);
-
-$effect(() => {
-  const q = collectionQuery;
-  try {
-    const serializable = { ...q, excludedTypes: [...q.excludedTypes] };
-    localStorage.setItem(`daena:collection-query:${q.section}`, JSON.stringify(serializable));
-  } catch {}
-});
-
-$effect(() => {
-  collectionQueryRestoring = true;
-  collectionQuery = loadCollectionQuery(section);
-  expandedGroups = new Set();
-  void tick().then(() => {
-    collectionQueryRestoring = false;
-  });
-});
-
-$effect(() => {
-  const layout = loadWorkbenchLayout(section);
-  workbenchPaneVisibility = layout.visibility;
-  workbenchPaneWidths = {
-    collection: layout.collectionWidth,
-    inspector: layout.inspectorWidth,
-  };
-  restoredWorkspacePaneDimensions = null;
-});
 let name = $state("");
 let selectedCreateKey = $state("");
 let createFieldValues = $state<Record<string, unknown>>({});
@@ -632,26 +605,6 @@ let createDateCalendarByField = $state<Record<string, string>>({});
 let createDocumentBody = $state("");
 let showDiscardPrompt = $state(false);
 let pendingCreateDiscard = $state<(() => void) | null>(null);
-let isSaving = $state(false);
-let savedAt = $state("");
-let saveError = $state("");
-let editorFullscreen = $state(false);
-let hasUnsavedChanges = $state(false);
-let autoSaveTimer: number | null = null;
-const dateFieldDirtyTimers: Record<string, number> = {};
-let saveInFlight: Promise<boolean> | null = null;
-let saveQueued = false;
-let autoSaveFailureCount = 0;
-let documentRevision = 0;
-// Inspector definition keys with unsaved edits; persistDocumentSnapshot saves only these
-// (plus the document). Keys match definition.key, unique per selected entity's field set.
-const dirtyFieldKeys = new Set<string>();
-let loadedDocumentRevision = "";
-let loadedFieldRevisions: Record<string, string> = {};
-let loadedStructuredFieldKeys = new Set<string>();
-let selectedLoadToken = 0;
-let documentConflict = $state<{ paths: string[]; diagnostics: string[] } | null>(null);
-let conflictDiskBody = $state("");
 let mapSaveStates = $state<Record<string, { status: string; detail: unknown }>>({});
 let mapReloadCounter = $state(0);
 let mapsEditorKey = $state("welcome");
@@ -667,10 +620,6 @@ let mapPickPending = $state<
 let mapReconcileNotice = $state("");
 let mapPickNotice = $state("");
 let projectDiagnostics = $state<string[]>([]);
-let showSettings = $state(false);
-let settingsSurface = $state<"application" | "project">("application");
-let settingsSection = $state<SettingsSection>("general");
-let projectSection = $state<ProjectSection>("overview");
 let archivedCount = $state(0);
 let statusCenterOpen = $state(false);
 let tabStripPopoverOpen = $state(false);
@@ -829,11 +778,6 @@ let aiSourceBody = $state("");
 let aiSourceRevision = $state("");
 let aiLastSequence = $state(-1);
 let aiUnlisten: (() => void) | null = null;
-let editorRef = $state<{
-  insertAiTextAtRequest: (value: string) => string | null;
-  replaceAiTextWithMarkdown: (value: string) => string | null;
-  flushPendingChanges: () => void;
-} | null>(null);
 let aiFieldFillBusy = $state(false);
 let aiFieldFillOpen = $state(false);
 let aiFieldFillRequestId = $state<string | null>(null);
@@ -846,17 +790,6 @@ let aiSourceEntityId = $state<string | null>(null);
 let aiFieldFillEntityId = $state<string | null>(null);
 let aiFieldFillLastSequence = $state(-1);
 let adminPlugins = $state<PluginAdminEntry[] | null>(null);
-let hostView = $state<{ plugin: PluginAdminEntry; view: PluginAdminEntry["views"][number] } | null>(null);
-let sandboxView = $state<{
-  plugin: PluginAdminEntry;
-  view: PluginAdminEntry["views"][number] | null;
-  renderer: "maps" | "webview";
-} | null>(null);
-let treeRootId = $state<string | null>(null);
-let treeSession = $state<TreeSession | null>(null);
-let treeRestoreNonce = $state(0);
-let loreWikiOpen = $state(false);
-let loreWikiEntityId = $state<string | null>(null);
 let adminBusy = $state(false);
 let pluginActionId = $state<string | null>(null);
 let installing = $state(false);
@@ -899,8 +832,6 @@ let createMoreDetailsOpen = $state(false);
 let createBusy = $state(false);
 let createDialogElement = $state<HTMLElement | null>(null);
 let createDialogReturnFocus: HTMLElement | null = null;
-let dateEditorOpen = $state<Record<string, boolean>>({});
-let dateCalendarByField = $state<Record<string, string>>({});
 
 const toastDurationMs = 3500;
 function showToast(message: string) {
@@ -931,19 +862,19 @@ $effect(() => {
     quickOpenOpen ||
     showCreateForm ||
     aiRewriteOpen ||
-    editorFullscreen ||
+    loc.editorFullscreen ||
     upgradePreview !== null ||
     confirmAction !== null ||
     deleteTarget !== null ||
     installConsent !== null ||
     installReview !== null ||
     deleteBackupPath !== "" ||
-    metadataDialog !== null ||
-    assetDialog !== null ||
+    loc.metadataDialog !== null ||
+    loc.assetDialog !== null ||
     showExternalImport ||
     entityEditDialog !== null ||
-    profileEditorOpen ||
-    fieldsDialogOpen;
+    loc.profileEditorOpen ||
+    loc.fieldsDialogOpen;
   document.body.classList.toggle("modal-open", modalOpen);
   if (!modalOpen) return;
   const onKey = (event: KeyboardEvent) => {
@@ -954,9 +885,9 @@ $effect(() => {
     } else if (showCreateForm) {
       event.preventDefault();
       closeCreateForm();
-    } else if (profileEditorOpen) {
+    } else if (loc.profileEditorOpen) {
       event.preventDefault();
-      profileEditorOpen = false;
+      loc.profileEditorOpen = false;
     } else if (entityEditDialog) {
       event.preventDefault();
       if (!entityEditDialog.busy) closeEntityEditDialog();
@@ -981,15 +912,15 @@ $effect(() => {
     } else if (aiRewriteOpen) {
       event.preventDefault();
       closeAiRewrite();
-    } else if (metadataDialog) {
+    } else if (loc.metadataDialog) {
       event.preventDefault();
-      metadataDialog = null;
-    } else if (assetDialog) {
+      loc.metadataDialog = null;
+    } else if (loc.assetDialog) {
       event.preventDefault();
-      assetDialog = null;
-    } else if (fieldsDialogOpen) {
+      loc.assetDialog = null;
+    } else if (loc.fieldsDialogOpen) {
       event.preventDefault();
-      fieldsDialogOpen = false;
+      loc.fieldsDialogOpen = false;
     }
   };
   window.addEventListener("keydown", onKey, true);
@@ -1000,29 +931,29 @@ $effect(() => {
 });
 
 const activeModuleId = () =>
-  section === "lore"
+  loc.section === "lore"
     ? "daena.lore"
-    : section === "timeline"
+    : loc.section === "timeline"
       ? "daena.timeline"
-      : section === "writing"
+      : loc.section === "writing"
         ? "daena.writing"
-        : section === "language"
+        : loc.section === "language"
           ? "daena.language"
-          : section === "houses"
+          : loc.section === "houses"
             ? "daena.houses"
             : "daena.maps";
 const activeManifest = () => {
   const fromProject = modules.find((module) => module.id === activeModuleId());
   if (fromProject) return fromProject as unknown as ModuleManifest;
-  return (section === "lore"
+  return (loc.section === "lore"
     ? loreManifestJson
-    : section === "timeline"
+    : loc.section === "timeline"
       ? timelineManifestJson
-      : section === "writing"
+      : loc.section === "writing"
         ? writingManifestJson
-        : section === "language"
+        : loc.section === "language"
           ? languageManifestJson
-          : section === "houses"
+          : loc.section === "houses"
             ? housesManifestJson
             : null) as unknown as ModuleManifest | null;
 };
@@ -1048,20 +979,13 @@ function sectionEntityTypeDefs(target: WorkspaceSection) {
 function collectionTabsFor(target: WorkspaceSection) {
   return workspaceCollectionTabs(target, sectionEntityTypeDefs(target));
 }
-function activeCollectionTab(target: WorkspaceSection = section) {
+function activeCollectionTab(target: WorkspaceSection = loc.section) {
   const tabs = collectionTabsFor(target);
-  const id = target === "timeline" ? timelineView : target === "writing" ? writingView : null;
+  const id = target === "timeline" ? loc.timelineView : target === "writing" ? loc.writingView : null;
   return (id ? tabs.find((tab) => tab.id === id) : undefined) ?? tabs[0];
 }
-function applyCollectionTabForEntityType(entityType: string | null) {
-  const owner = sectionForEntityType(entityType) ?? section;
-  const tab = collectionTabForEntityType(collectionTabsFor(owner), entityType);
-  if (!tab) return;
-  if (owner === "writing") writingView = tab.id;
-  if (owner === "timeline") timelineView = tab.id;
-}
 function workspaceViewNavItems() {
-  return workspaceSectionViewNav(section, sectionEntityTypeDefs(section));
+  return workspaceSectionViewNav(loc.section, sectionEntityTypeDefs(loc.section));
 }
 function enabledWorkspaceSections() {
   return workspaceSectionOrder.filter((target) =>
@@ -1179,7 +1103,7 @@ function availableEditTypes(): string[] {
     for (const schema of mod.schemas) for (const t of schema.entityTypes) types.add(t.id);
   }
   // Keep current selection visible even if its type is disabled/custom or from maps
-  if (selected?.entity_type) types.add(selected.entity_type);
+  if (loc.selected?.entity_type) types.add(loc.selected.entity_type);
   if (entityEditDialog?.entity.entity_type) types.add(entityEditDialog.entity.entity_type);
   // Ensure map type is selectable if maps module exists in any state
   const hasMapDecl = modules.some((m) =>
@@ -1194,7 +1118,7 @@ function groupedEditTypes(): Array<{ heading: string; types: string[] }> {
     if (!mod.enabled) continue;
     for (const schema of mod.schemas) for (const t of schema.entityTypes) enabled.add(t.id);
   }
-  if (selected?.entity_type) enabled.add(selected.entity_type);
+  if (loc.selected?.entity_type) enabled.add(loc.selected.entity_type);
   if (entityEditDialog?.entity.entity_type) enabled.add(entityEditDialog.entity.entity_type);
   if (modules.some((m) => m.schemas.some((s) => schemaEntityTypeIds(s).includes("daena.maps:world-map"))))
     enabled.add("daena.maps:world-map");
@@ -1236,15 +1160,16 @@ function editTypeWarning(): string | null {
     return "Languages own lexemes, phonemes and grammar records. Those records require the language type and will become read-only if the type changes.";
   }
   // Generic field/relationship hiding
-  const hasPopulated = Object.entries(fields).some(([, v]) => !isEmptyFieldValue(v)) || relationships.length > 0;
+  const hasPopulated =
+    Object.entries(loc.fields).some(([, v]) => !isEmptyFieldValue(v)) || loc.relationships.length > 0;
   if (hasPopulated)
     return "Fields and relationships that don't apply to the new type will be hidden but preserved. You can revert the type to restore them.";
   return "The entry will move to the collection for the new type.";
 }
 const definitions = () => {
   const entityType =
-    selected?.entity_type ??
-    (section === "timeline" || section === "writing" ? activeCollectionTab()?.entityTypes[0] : undefined);
+    loc.selected?.entity_type ??
+    (loc.section === "timeline" || loc.section === "writing" ? activeCollectionTab()?.entityTypes[0] : undefined);
   const active = activeManifest();
   if (!active) return [];
   return contributedRelationshipFields<FieldDefinition>(
@@ -1258,7 +1183,7 @@ const definitions = () => {
 function namespaceForField(definition: FieldDefinition): string {
   const manifest = activeManifest();
   return primarySchemaNamespace(manifest?.schemas, {
-    entityType: selected?.entity_type,
+    entityType: loc.selected?.entity_type,
     fieldKey: definition.key,
     fallback: activeModuleId(),
   });
@@ -1300,8 +1225,9 @@ function selectedCreateOption() {
   return createOptions().find((option) => option.key === selectedCreateKey) ?? null;
 }
 function defaultCreateOption(options: CreateOption[]) {
-  const moduleId = workspaceModuleId(section);
-  const tabTypes = section === "timeline" || section === "writing" ? (activeCollectionTab()?.entityTypes ?? []) : null;
+  const moduleId = workspaceModuleId(loc.section);
+  const tabTypes =
+    loc.section === "timeline" || loc.section === "writing" ? (activeCollectionTab()?.entityTypes ?? []) : null;
   return (
     options.find(
       (option) => option.module.id === moduleId && (tabTypes ? tabTypes.includes(option.template.entityType) : true),
@@ -1433,7 +1359,7 @@ function clearCreateDateField(key: string) {
   createDateCalendarByField = next;
 }
 
-function contextFor(currentSection = section): ModuleContext {
+function contextFor(currentSection = loc.section): ModuleContext {
   if (!projectInfo?.root) throw new Error("No project is open");
   const moduleId =
     currentSection === "lore"
@@ -1479,7 +1405,7 @@ async function closeNativePluginWebviews() {
 
 async function resolveDirtyMapSession(): Promise<boolean> {
   const mapId = currentMapId();
-  if (!mapId || sandboxView?.renderer !== "maps" || mapSaveStates[mapId]?.status !== "dirty") return true;
+  if (!mapId || loc.sandboxView?.renderer !== "maps" || mapSaveStates[mapId]?.status !== "dirty") return true;
   if (mapsEditorMode === "physical") return true;
   if (
     await confirmDialog({
@@ -1504,113 +1430,32 @@ async function resolveDirtyMapSession(): Promise<boolean> {
   });
 }
 
-/**
- * Leaves whatever plugin surface is open. Native plugin webviews are only closed when a
- * full-surface plugin view (host or sandbox) was open, or when the caller asks for it.
- * The Language content pane is not one of those: its SandboxView owns its webview and
- * closes it when it unmounts, so closing every webview here would blank a pane that stays.
- */
-async function leavePluginView(options: { closeWebviews?: boolean } = {}): Promise<boolean> {
-  if (!(await resolveDirtyMapSession())) return false;
-  const fullSurfaceOpen = hostView !== null || sandboxView !== null;
-  editorFullscreen = false;
-  hostView = null;
-  sandboxView = null;
-  if (fullSurfaceOpen || options.closeWebviews) await closeNativePluginWebviews();
-  return true;
-}
-
-type ProjectionSandboxKey = "lore" | "timeline";
-
-/**
- * Projections drawn as isolated plugin webviews in the content column: the Lore World graph and
- * Chronology. Each webview mounts its package entrypoint, so `viewId` is a shell-only id that the
- * manifests do not declare (validate_plugin_view rejects unlisted ids). That is why SandboxView is
- * mounted without a viewId for these surfaces.
- */
-const PROJECTION_SANDBOXES: Record<
-  ProjectionSandboxKey,
-  {
-    moduleName: string;
-    pluginId: string;
-    viewId: string;
-    title: string;
-    subtitle: string;
-    icon: typeof Network;
-    surfaceKey: string;
-  }
-> = {
-  lore: {
-    moduleName: "Lore",
-    pluginId: "daena.lore",
-    viewId: "graph",
-    title: "World graph",
-    subtitle: "Explore entities and their connections",
-    icon: Network,
-    surfaceKey: "workspace:lore:graph",
-  },
-  timeline: {
-    moduleName: "Timeline",
-    pluginId: "daena.timeline",
-    viewId: "chronology",
-    title: "Chronology",
-    subtitle: "Explore your world across time",
-    icon: CalendarRange,
-    surfaceKey: "workspace:timeline:timeline",
-  },
-};
-
-/** The projection whose sandbox webview is the open full surface, if any. */
-function projectionSandboxKey(): ProjectionSandboxKey | null {
-  if (!sandboxView || sandboxView.renderer !== "webview" || !sandboxView.view) return null;
-  const pluginId = sandboxView.plugin.id;
-  const viewId = sandboxView.view.id;
-  const keys = Object.keys(PROJECTION_SANDBOXES) as ProjectionSandboxKey[];
-  return (
-    keys.find(
-      (key) => PROJECTION_SANDBOXES[key].pluginId === pluginId && PROJECTION_SANDBOXES[key].viewId === viewId,
-    ) ?? null
-  );
-}
-
-/** True while the given projection is open, or any projection when `key` is omitted. */
-function projectionSandboxOpen(key?: ProjectionSandboxKey): boolean {
-  const open = projectionSandboxKey();
-  return open !== null && (key === undefined || open === key);
-}
-
 /** The Language workspace is an isolated webview drawn in the content column of the Languages section. */
 const languagePaneShown = $derived(
   ready &&
-    section === "language" &&
-    workbenchPaneVisibility.content &&
-    !projectHomeOpen &&
-    !showSettings &&
-    !hostView &&
-    !sandboxView &&
-    !loreWikiOpen &&
+    loc.section === "language" &&
+    loc.workbenchPaneVisibility.content &&
+    !loc.projectHomeOpen &&
+    !loc.showSettings &&
+    !loc.hostView &&
+    !loc.sandboxView &&
+    !loc.loreWikiOpen &&
     enabledWorkspaceSections().includes("language"),
 );
 
-/**
- * A manuscript or reference page is selected in the Writing section. The Writing webview is the only editor for it:
- * the shell editor never renders for such an entry, even in states where the webview is not shown (see
- * `writingWebviewShown`), so a second editor can never take typing next to the webview's drafts.
- */
-const writingEntrySelected = $derived(section === "writing" && writingWebviewHandles(selected?.entity_type));
 /**
  * The Writing webview is the content column's editor for manuscripts and reference pages. It stays mounted while the
  * selection moves between them.
  */
 const writingWebviewShown = $derived(
-  writingEntrySelected &&
+  loc.writingEntrySelected &&
     ready &&
-    workbenchPaneVisibility.content &&
-    !projectHomeOpen &&
-    !showSettings &&
-    !hostView &&
-    !sandboxView &&
-    !loreWikiOpen &&
+    loc.workbenchPaneVisibility.content &&
+    !loc.projectHomeOpen &&
+    !loc.showSettings &&
+    !loc.hostView &&
+    !loc.sandboxView &&
+    !loc.loreWikiOpen &&
     enabledWorkspaceSections().includes("writing"),
 );
 /** The content column fills the window while the Writing webview is in full screen (see `writingFullscreen`). */
@@ -1618,11 +1463,11 @@ const writingFullscreenShown = $derived(writingWebviewShown && writingFullscreen
 /** Same gate the standalone view row used: Lore, Timeline, Writing, and Houses, not a full plugin sandbox. */
 const workspaceViewNavShown = $derived(
   ready &&
-    !showSettings &&
-    !projectHomeOpen &&
-    !hostView &&
-    (!sandboxView || projectionSandboxOpen()) &&
-    (section === "lore" || section === "timeline" || section === "writing" || section === "houses"),
+    !loc.showSettings &&
+    !loc.projectHomeOpen &&
+    !loc.hostView &&
+    (!loc.sandboxView || loc.projectionSandboxOpen()) &&
+    (loc.section === "lore" || loc.section === "timeline" || loc.section === "writing" || loc.section === "houses"),
 );
 
 /**
@@ -1638,7 +1483,7 @@ const modalOverlayOpen = $derived(
     showCreateForm ||
     showDiscardPrompt ||
     projectTransitionBusy ||
-    editorFullscreen ||
+    loc.editorFullscreen ||
     aiRewriteOpen ||
     upgradePreview !== null ||
     confirmAction !== null ||
@@ -1646,12 +1491,12 @@ const modalOverlayOpen = $derived(
     deleteBackupPath !== "" ||
     installConsent !== null ||
     installReview !== null ||
-    metadataDialog !== null ||
-    assetDialog !== null ||
+    loc.metadataDialog !== null ||
+    loc.assetDialog !== null ||
     showExternalImport ||
     entityEditDialog !== null ||
-    profileEditorOpen ||
-    fieldsDialogOpen ||
+    loc.profileEditorOpen ||
+    loc.fieldsDialogOpen ||
     dialogState.open,
 );
 
@@ -1684,8 +1529,8 @@ const embeddedPluginWebviewIds = $derived.by(() => {
   const ids = new Set<string>();
   if (languageWebview.mounted) ids.add(LANGUAGE_PLUGIN_ID);
   if (writingWebview.mounted) ids.add(WRITING_PLUGIN_ID);
-  const sandboxShown = ready && !showSettings && !projectHomeOpen && !hostView && !loreWikiOpen;
-  if (sandboxShown && sandboxView?.renderer === "webview") ids.add(sandboxView.plugin.id);
+  const sandboxShown = ready && !loc.showSettings && !loc.projectHomeOpen && !loc.hostView && !loc.loreWikiOpen;
+  if (sandboxShown && loc.sandboxView?.renderer === "webview") ids.add(loc.sandboxView.plugin.id);
   return [...ids];
 });
 
@@ -1735,8 +1580,43 @@ $effect(() => {
   void languageWebview.ready;
   void writingWebview.ready;
   void shownWebviewInstance;
+  void writingHostedInstance;
+  void languageHostedInstance;
   const visible = !modalOverlayOpen && !popoverOverlapsWebview;
-  for (const pluginId of embeddedPluginWebviewIds) void setPluginWebviewVisibleQuietly(pluginId, visible);
+  for (const pluginId of embeddedPluginWebviewIds) {
+    // A pooled Writing instance that a tab switch just made current may still be suspended. Its own mount sets
+    // its bounds and shows it; showing it earlier would draw its old rectangle over the tab being restored.
+    // Hiding is always allowed.
+    if (visible && pluginId === WRITING_PLUGIN_ID && writingHostedInstance !== shownWebviewInstance) continue;
+    // The same for a pooled Language instance, whose old rectangle would show over the tab being restored.
+    if (visible && pluginId === LANGUAGE_PLUGIN_ID && languageHostedInstance !== shownWebviewInstance) continue;
+    void setPluginWebviewVisibleQuietly(pluginId, visible);
+  }
+});
+
+/** Ids of every open tab, joined. A string, so the prune effect reruns only when a tab opens or closes. */
+const liveTabIdKey = $derived(shellTabs.groups.flatMap((group) => group.tabs.map((tab) => tab.id)).join(","));
+
+$effect(() => {
+  // One place covers every way a pooled instance loses its owner: closing a tab (also close others, to the
+  // right, all, archive and a disabled plugin, which close tabs), and a project switch (fresh tabs). The tab's
+  // `SandboxView` only suspends when it is torn down, so the instance is unmounted here, never left suspended.
+  // Suspend and unmount can arrive in either order: suspend only hides, so neither order can bring it back.
+  const live = new Set(liveTabIdKey === "" ? [] : liveTabIdKey.split(","));
+  const enabled = new Set(modules.filter((module) => module.enabled).map((module) => module.id));
+  const modulesKnown = modules.length > 0;
+  untrack(() => {
+    let next = pruneWebviewPoolTabs(webviewPool, live);
+    // A project that is still loading has no module list; that is not "every plugin is disabled".
+    if (modulesKnown) next = prunePlugins(next, enabled);
+    if (next === webviewPool) return;
+    const dropped = evicted(webviewPool, webviewRefs(next));
+    webviewPool = next;
+    for (const instance of dropped) {
+      if (instance.pluginId === LANGUAGE_PLUGIN_ID) languageCreatedState.delete(instance.instanceId);
+      void project.unmountPluginWebview(instance.pluginId, instance.instanceId).catch(() => undefined);
+    }
+  });
 });
 
 /**
@@ -1751,12 +1631,14 @@ function trackLanguageMount() {
   const generation = ++languageMountGeneration;
   languageWebview.mounted = true;
   languageWebview.ready = false;
+  languageHostedInstance = null;
   languagePaneRequest = null;
   languageLeave.releaseAll();
   return () => {
     if (generation !== languageMountGeneration) return;
     languageWebview.mounted = false;
     languageWebview.ready = false;
+    languageHostedInstance = null;
     languagePaneRequest = null;
     languageLeave.releaseAll();
   };
@@ -1777,8 +1659,8 @@ async function postLanguageMessage(message: unknown, instanceId = shownWebviewIn
  * reads `languagePane`.
  */
 function requestLanguagePane(next: LanguagePane) {
-  if (languagePane === next) return;
-  languagePane = next;
+  if (loc.languagePane === next) return;
+  loc.languagePane = next;
   if (!languageWebview.mounted || !languageWebview.ready) {
     languagePaneRequest = null;
     return;
@@ -1791,7 +1673,7 @@ function requestLanguagePane(next: LanguagePane) {
 
 /** Asks the Language webview whether it may be torn down. Resolves true when it is not mounted or ready. */
 async function canLeaveLanguageSection(): Promise<boolean> {
-  if (section !== "language" || !languageWebview.mounted || !languageWebview.ready) return true;
+  if (loc.section !== "language" || !languageWebview.mounted || !languageWebview.ready) return true;
   // Captured before the await. `switchToTab` and `applyTabsChange` call this
   // before they change `shellTabs`, so this is the outgoing tab.
   const instanceId = shownWebviewInstance;
@@ -1807,27 +1689,28 @@ function handleLanguageStateEvent(event: LanguageStateEvent) {
     case "ready": {
       if (!languageWebview.mounted) return;
       languageWebview.ready = true;
+      webviewPool = markReady(webviewPool, languageRef(shownWebviewInstance), true);
       languagePaneRequest = null;
       languageLeave.releaseAll();
       // The webview mounted with the pane it was given; if the shell moved on meanwhile, the shell wins.
-      if (event.pane !== null && event.pane !== languagePane)
-        void postLanguageMessage({ type: "language.pane", pane: languagePane });
+      if (event.pane !== null && event.pane !== loc.languagePane)
+        void postLanguageMessage({ type: "language.pane", pane: loc.languagePane });
       return;
     }
     case "pane": {
       if (!languageWebview.mounted) return;
-      if (event.pane === languagePane) {
+      if (event.pane === loc.languagePane) {
         languagePaneRequest = null;
         return;
       }
       if (languagePaneRequest !== null) {
         // Answer to a shell request that the webview refused: revert without a history entry.
         languagePaneRequest = null;
-        languagePane = event.pane;
+        loc.languagePane = event.pane;
         return;
       }
-      recordShellDeparture(currentShellLocation());
-      languagePane = event.pane;
+      recordShellDeparture(loc.currentShellLocation());
+      loc.languagePane = event.pane;
       return;
     }
     case "leave-pending":
@@ -1838,7 +1721,7 @@ function handleLanguageStateEvent(event: LanguageStateEvent) {
       return;
     case "entity-changed":
       if (event.deleted) {
-        if (selected?.id === event.entityId) clearSelection();
+        if (loc.selected?.id === event.entityId) loc.clearSelection();
         void refreshAfterEntityMutation({ entityId: event.entityId, removed: true });
       } else {
         void refreshAfterEntityMutation({ entityId: event.entityId });
@@ -1865,23 +1748,166 @@ let writingMountGeneration = 0;
 /** Attachment for the Writing content pane: tracks whether the pane element is in the document. */
 function trackWritingMount() {
   const generation = ++writingMountGeneration;
+  // The outgoing instance may be fullscreen inside its own webview: end that before the state resets.
+  endWritingFullscreen();
   writingWebview.mounted = true;
   writingWebview.ready = false;
+  writingHostedInstance = null;
   writingLoadKey = null;
   writingLoad = null;
   writingEditablePosted = null;
-  writingFullscreen = false;
   writingFlush.releaseAll();
   return () => {
     if (generation !== writingMountGeneration) return;
+    endWritingFullscreen();
     writingWebview.mounted = false;
     writingWebview.ready = false;
+    writingHostedInstance = null;
     writingLoadKey = null;
     writingLoad = null;
     writingEditablePosted = null;
-    writingFullscreen = false;
     writingFlush.releaseAll();
   };
+}
+
+const writingRef = (instanceId: string): WebviewInstanceRef => ({ pluginId: WRITING_PLUGIN_ID, instanceId });
+const languageRef = (instanceId: string): WebviewInstanceRef => ({ pluginId: LANGUAGE_PLUGIN_ID, instanceId });
+
+/**
+ * The part of a pooled mount that is the same for Writing and Language, run right before the host mount. It records
+ * the instance as used and not ready (the mount decides in `settlePooledMount` whether a ready document is
+ * adopted), and returns the instances to keep: this one plus the most recently used others, `WEBVIEW_POOL_LIMIT` in
+ * all. The host closes every other embedded webview.
+ *
+ * The entry exists before the host can create the webview, so its `ready` report is never lost. Readiness the
+ * entry had before is returned as `priorReady`: `settlePooledMount` restores it only if the host reused the webview.
+ *
+ * Reuse is asked for only when the pool already knew this instance with the same mount key. A closed tab's entry is
+ * pruned at once, but its unmount may still be in flight when the reopened tab (same id) mounts; adopting that
+ * label would show a document whose `ready` report the shell never recorded, and the view would wait forever.
+ */
+function beginPooledMount(
+  self: WebviewInstanceRef,
+  mountKey: string,
+): { retain: WebviewInstanceRef[]; reuse: boolean; priorReady: boolean } {
+  const before = findWebviewEntry(webviewPool, self);
+  const known = Boolean(before && before.mountKey === mountKey);
+  const priorReady = known && Boolean(before?.ready);
+  webviewPool = markReady(touchWebviewPool(webviewPool, self, mountKey, Date.now()), self, false);
+  return { retain: retainSet(webviewPool, self, WEBVIEW_POOL_LIMIT), reuse: known, priorReady };
+}
+
+/**
+ * The part of the host's answer that is the same for both plugins. The host closed every embedded webview outside
+ * the retain list; forget those. `shown` is false when the instance is no longer the one on screen or the pool
+ * dropped it meanwhile. `ready` is true when the host reused a webview whose document the pool knew had loaded: it
+ * will not report ready again. A webview that is still loading reports it later, through the state event.
+ */
+function settlePooledMount(
+  outcome: "reused" | "created",
+  self: WebviewInstanceRef,
+  retained: WebviewInstanceRef[],
+  priorReady: boolean,
+): { shown: boolean; ready: boolean } {
+  webviewPool = removeWebviews(webviewPool, evicted(webviewPool, retained));
+  if (self.instanceId !== shownWebviewInstance || !findWebviewEntry(webviewPool, self)) {
+    return { shown: false, ready: false };
+  }
+  if (outcome === "reused" && priorReady) webviewPool = markReady(webviewPool, self, true);
+  return { shown: true, ready: outcome === "reused" && Boolean(findWebviewEntry(webviewPool, self)?.ready) };
+}
+
+/** Called by the pooled Writing `SandboxView` right before the host mount. See `beginPooledMount`. */
+function beginPooledWritingMount(
+  self: WebviewInstanceRef,
+  mountKey: string,
+): { retain: WebviewInstanceRef[]; reuse: boolean } {
+  const plan = beginPooledMount(self, mountKey);
+  writingMountPriorReady = plan.priorReady;
+  writingMountRetained = plan.retain;
+  return { retain: plan.retain, reuse: plan.reuse };
+}
+
+/**
+ * Called by every unpooled embedded `SandboxView` (the graph, Chronology, other sandbox views) right before
+ * its host mount. The mounting webview counts toward the pool limit, so the most recently used pooled instances
+ * that fit beside it survive and the rest close. Without this, visiting Lore would close every hidden Writing.
+ */
+function prepareUnpooledMount(self: WebviewInstanceRef): { retain: WebviewInstanceRef[]; reuse: boolean } {
+  const retain = retainSet(webviewPool, self, WEBVIEW_POOL_LIMIT);
+  webviewPool = removeWebviews(webviewPool, evicted(webviewPool, retain));
+  return { retain, reuse: false };
+}
+
+/** The host finished mounting the pooled Writing instance (`self` is the one on screen). */
+function writingMounted(outcome: "reused" | "created", self: WebviewInstanceRef) {
+  const settled = settlePooledMount(outcome, self, writingMountRetained, writingMountPriorReady);
+  if (!settled.shown) return;
+  writingMountPriorReady = false;
+  writingHostedInstance = self.instanceId;
+  // A reused webview already loaded its document and will not report ready again. A webview that is still
+  // loading reports it later, through the state event. `writing.load` is posted by the load effect, as for a
+  // new webview: the tracker above left `writingLoad` and `writingLoadKey` empty.
+  if (settled.ready) {
+    writingWebview.ready = true;
+    writingReadyCount += 1;
+  }
+}
+
+/**
+ * The `state` param of a Language mount. It is part of the mount key, so it must not follow the pane the user moved
+ * to inside a kept instance: that would make the next mount of the same tab look like a different document and
+ * recreate the webview. A pooled instance is mounted with the state it was created with (for the same language);
+ * the current pane reaches it through `language.resume`. Anything the pool does not know starts on the current pane.
+ */
+function languageMountState(instanceId: string): { pane: LanguagePane } {
+  const created = languageCreatedState.get(instanceId);
+  const pooled = Boolean(findWebviewEntry(webviewPool, languageRef(instanceId)));
+  return { pane: created && pooled && created.entityId === loc.selected?.id ? created.pane : loc.languagePane };
+}
+
+/** Called by the pooled Language `SandboxView` right before the host mount. See `beginPooledMount`. */
+function beginPooledLanguageMount(
+  self: WebviewInstanceRef,
+  mountKey: string,
+): { retain: WebviewInstanceRef[]; reuse: boolean } {
+  // Read before the pool learns the instance: this is the state the mount key was built from.
+  const state = languageMountState(self.instanceId);
+  const plan = beginPooledMount(self, mountKey);
+  languageMountPriorReady = plan.priorReady;
+  languageMountRetained = plan.retain;
+  if (!plan.reuse) languageCreatedState.set(self.instanceId, { entityId: loc.selected?.id, pane: state.pane });
+  return { retain: plan.retain, reuse: plan.reuse };
+}
+
+/**
+ * The host finished mounting the pooled Language instance (`self` is the one on screen). A reused instance loaded
+ * long ago and reports ready only once, so it is marked ready here and told to read its data again with
+ * `language.resume`: the language and the pane's records may have changed in another tab. A created instance, or one
+ * still loading, reports ready itself, and the ready handler corrects its pane.
+ */
+function languageMounted(outcome: "reused" | "created", self: WebviewInstanceRef) {
+  const settled = settlePooledMount(outcome, self, languageMountRetained, languageMountPriorReady);
+  if (!settled.shown) return;
+  languageMountPriorReady = false;
+  languageHostedInstance = self.instanceId;
+  if (!settled.ready) return;
+  languageWebview.ready = true;
+  languagePaneRequest = null;
+  languageLeave.releaseAll();
+  const entityId = loc.selected?.id;
+  if (entityId) void postLanguageMessage(languageResumeMessage(entityId, loc.languagePane), self.instanceId);
+}
+
+/**
+ * A `ready` report from an instance the shell is not showing. The shell ignores such events, but the pool must know
+ * that instance's document loaded, or a later reuse would wait for a report that already came.
+ */
+function noteHiddenWebviewReady(pluginId: string, payload: unknown) {
+  const instanceId = (payload as { instanceId?: unknown } | null)?.instanceId;
+  if (typeof instanceId !== "string") return;
+  const event = pluginId === LANGUAGE_PLUGIN_ID ? parseLanguageStateEvent(payload) : parseWritingStateEvent(payload);
+  if (event?.kind === "ready") webviewPool = markReady(webviewPool, { pluginId, instanceId }, true);
 }
 
 async function postWritingMessage(message: unknown, instanceId = shownWebviewInstance): Promise<boolean> {
@@ -1895,16 +1921,16 @@ async function postWritingMessage(message: unknown, instanceId = shownWebviewIns
 
 /** Whether the webview may edit: not while an entry loads or fails to load, diagnostics block saving, AI works or a conflict waits. */
 const writingEditable = $derived(
-  !selectedLoading &&
-    !selectedLoadError &&
+  !loc.selectedLoading &&
+    !loc.selectedLoadError &&
     projectDiagnostics.length === 0 &&
     !aiBusy &&
     !aiRewriteOpen &&
-    !documentConflict,
+    !loc.documentConflict,
 );
 
 function writingPlaceholder() {
-  return selected?.entity_type === "daena.writing:reference-page"
+  return loc.selected?.entity_type === "daena.writing:reference-page"
     ? "Write this reference page…"
     : "Write your manuscript…";
 }
@@ -1917,10 +1943,10 @@ function writingPlaceholder() {
 async function applyWritingDraft(draft: WritingBridgeDraft): Promise<boolean> {
   // A transfer is claimed first so a rejected draft does not leave its text waiting.
   const text = "text" in draft ? draft.text : await project.takePluginTextTransfer(WRITING_PLUGIN_ID, draft.transfer);
-  if (!writingMessageCurrent(draft, selected?.id, writingLoad)) return false;
-  if (selectedLoading || selectedLoadError || projectDiagnostics.length > 0) return false;
-  if (text === documentBody) return false;
-  updateDocumentBody(text);
+  if (!writingMessageCurrent(draft, loc.selected?.id, writingLoad)) return false;
+  if (loc.selectedLoading || loc.selectedLoadError || projectDiagnostics.length > 0) return false;
+  if (text === loc.documentBody) return false;
+  loc.updateDocumentBody(text);
   return true;
 }
 
@@ -1957,7 +1983,8 @@ async function postWritingLoad(entityId: string, key: string) {
   // replaced, and if there was any it wins, so the webview keeps its editor and the shell saves that text.
   if (writingLoad?.entityId === entityId && (await flushWritingWebview())) {
     // The editor stays, but a rename may have changed the header, which a load would otherwise have refreshed.
-    if (selected?.id === entityId) void postWritingMessage(writingTitleMessage(entityId, selected.name), instanceId);
+    if (loc.selected?.id === entityId)
+      void postWritingMessage(writingTitleMessage(entityId, loc.selected.name), instanceId);
     return;
   }
   if (writingLoadKey !== key) return;
@@ -1965,10 +1992,10 @@ async function postWritingLoad(entityId: string, key: string) {
   writingLoad = load;
   writingEditablePosted = writingEditable;
   const sent = await postWritingMessage(
-    writingLoadMessage(entityId, load.token, loadedDocumentRevision, {
+    writingLoadMessage(entityId, load.token, loc.loadedDocumentRevision, {
       editable: writingEditable,
       placeholder: writingPlaceholder(),
-      mode: documentMode,
+      mode: loc.documentMode,
     }),
     instanceId,
   );
@@ -1981,9 +2008,9 @@ $effect(() => {
   // The webview stays mounted across entities, so the shell tells it which one to show: once it is ready, and
   // again whenever the selection or a reload from disk replaces what the shell holds.
   if (!writingWebviewShown || !writingWebview.ready) return;
-  const entityId = selected?.id;
-  if (!entityId || selectedLoading) return;
-  const key = `${entityId}:${selectedLoadToken}`;
+  const entityId = loc.selected?.id;
+  if (!entityId || loc.selectedLoading) return;
+  const key = `${entityId}:${loc.selectedLoadToken}`;
   if (key === writingLoadKey) return;
   writingLoadKey = key;
   // Only the selection and the load counter decide when to post; what the message reads is not tracked.
@@ -2008,7 +2035,7 @@ $effect(() => {
   // Editability follows the shell's state (loading, conflict, AI). The load message carries the value at its
   // posting time; this posts the changes after it.
   const editable = writingEditable;
-  if (!writingWebview.ready || writingLoad === null || writingLoad.entityId !== selected?.id) return;
+  if (!writingWebview.ready || writingLoad === null || writingLoad.entityId !== loc.selected?.id) return;
   if (editable === writingEditablePosted) return;
   writingEditablePosted = editable;
   void postWritingMessage({ type: "writing.editable", editable });
@@ -2016,37 +2043,37 @@ $effect(() => {
 
 $effect(() => {
   // A revision conflict found by the shell's own save path is shown in the webview's banner.
-  const conflict = documentConflict;
-  if (!conflict || !writingWebview.ready || writingLoad === null || writingLoad.entityId !== selected?.id) return;
+  const conflict = loc.documentConflict;
+  if (!conflict || !writingWebview.ready || writingLoad === null || writingLoad.entityId !== loc.selected?.id) return;
   void postWritingMessage(writingConflictMessage(writingLoad.entityId, conflict));
 });
 
 $effect(() => {
   // The status area that showed save errors is hidden while the webview is shown, so the webview reports them.
-  const message = saveError;
-  if (!message || !writingWebview.ready || writingLoad === null || writingLoad.entityId !== selected?.id) return;
+  const message = loc.saveError;
+  if (!message || !writingWebview.ready || writingLoad === null || writingLoad.entityId !== loc.selected?.id) return;
   void postWritingMessage({ type: "writing.save-error", entityId: writingLoad.entityId, message });
 });
 
 /** Tells the webview its entry was saved; the revision is informational and does not change its token. */
 function notifyWritingSaved(entityId: string) {
   if (!writingWebview.ready || writingLoad?.entityId !== entityId) return;
-  void postWritingMessage({ type: "writing.saved", entityId, revision: loadedDocumentRevision });
+  void postWritingMessage({ type: "writing.saved", entityId, revision: loc.loadedDocumentRevision });
 }
 
 /** Runs the shell's own conflict action the user picked in the webview banner. */
 function handleWritingConflictAction(event: Extract<WritingStateEvent, { kind: "conflict-action" }>) {
-  if (!writingMessageCurrent(event, selected?.id, writingLoad) || !documentConflict) return;
+  if (!writingMessageCurrent(event, loc.selected?.id, writingLoad) || !loc.documentConflict) return;
   switch (event.action) {
     case "reload":
-      void reloadConflict();
+      void loc.reloadConflict();
       return;
     case "overwrite":
       // The shell's own button is disabled while the canonical source needs attention.
-      if (documentConflict.diagnostics.length === 0) void overwriteConflict();
+      if (loc.documentConflict.diagnostics.length === 0) void loc.overwriteConflict();
       return;
     case "recovery":
-      void saveConflictRecoveryCopy();
+      void loc.saveConflictRecoveryCopy();
       return;
   }
 }
@@ -2054,13 +2081,23 @@ function handleWritingConflictAction(event: Extract<WritingStateEvent, { kind: "
 /** Ends the Writing webview's full screen from the shell's side, and tells the webview to leave its own. */
 function exitWritingFullscreen() {
   if (!writingFullscreen) return;
+  endWritingFullscreen();
+}
+
+/**
+ * Ends the full screen and tells the instance that reported it, which is not always the one on screen: the effect
+ * below runs after a tab switch has already changed `shownWebviewInstance`.
+ */
+function endWritingFullscreen() {
+  const instance = writingFullscreenInstance;
   writingFullscreen = false;
-  if (writingWebview.ready) void postWritingMessage(writingFullscreenMessage(false));
+  writingFullscreenInstance = null;
+  if (instance) void postWritingMessage(writingFullscreenMessage(false), instance);
 }
 
 // The full screen belongs to the entry on screen: choosing another entry, or leaving the Writing pane, ends it.
 $effect(() => {
-  void selected?.id;
+  void loc.selected?.id;
   void writingWebviewShown;
   untrack(() => exitWritingFullscreen());
 });
@@ -2068,7 +2105,7 @@ $effect(() => {
 /** Moves among the tabs of the active group. A missing index does nothing. One tab does not cycle. */
 function runTabShortcut(shortcut: TabShortcut) {
   if (shortcut === "tab-new") {
-    void openInNewTab(openProjectHome, { position: "end" });
+    void openInNewTab(loc.openProjectHome, { position: "end" });
     return;
   }
   if (shortcut === "tab-close") {
@@ -2118,12 +2155,18 @@ function runShellShortcut(shortcut: WritingBridgeShortcut | TabShortcut) {
 
 /** The webview's Archive button: the same confirmation as the entry's own Archive button, then the shell's archive. */
 async function confirmWritingArchive(entityId: string) {
-  const target = selected;
-  if (!target || target.id !== entityId || selectedLoading || projectDiagnostics.length > 0 || entityMutation.busy)
+  const target = loc.selected;
+  if (
+    !target ||
+    target.id !== entityId ||
+    loc.selectedLoading ||
+    projectDiagnostics.length > 0 ||
+    loc.entityMutation.busy
+  )
     return;
   if (!(await confirmDialog(archiveConfirmOptions(target.name)))) return;
   // The confirmation is modal, but archiving acts on whatever is selected, so the entry is checked again.
-  if (selected?.id !== entityId) return;
+  if (loc.selected?.id !== entityId) return;
   await archiveSelected();
 }
 
@@ -2140,8 +2183,10 @@ function handleWritingStateEvent(event: WritingStateEvent) {
       writingLoad = null;
       writingEditablePosted = null;
       writingFullscreen = false;
+      writingFullscreenInstance = null;
       writingFlush.releaseAll();
       writingWebview.ready = true;
+      webviewPool = markReady(webviewPool, writingRef(shownWebviewInstance), true);
       writingReadyCount += 1;
       return;
     case "draft":
@@ -2167,13 +2212,17 @@ function handleWritingStateEvent(event: WritingStateEvent) {
       return;
     case "fullscreen":
       // Only the entry on screen can change the full screen; a message for any other entry is stale.
-      if (writingWebview.mounted && event.entityId === selected?.id) writingFullscreen = event.on;
+      if (writingWebview.mounted && event.entityId === loc.selected?.id) {
+        writingFullscreen = event.on;
+        writingFullscreenInstance = event.on ? shownWebviewInstance : null;
+      }
       return;
     case "shortcut":
       if (writingWebview.mounted) runShellShortcut(event.shortcut);
       return;
     case "request-rename":
-      if (writingWebview.mounted && selected && event.entityId === selected.id) void openEntityEditDialog(selected);
+      if (writingWebview.mounted && loc.selected && event.entityId === loc.selected.id)
+        void openEntityEditDialog(loc.selected);
       return;
     case "request-archive":
       if (writingWebview.mounted) void confirmWritingArchive(event.entityId);
@@ -2188,160 +2237,40 @@ function pluginViewLabel(item: PluginNavigationItem) {
 }
 
 function workspaceNavigationActive(target: WorkspaceSection) {
-  if (projectHomeOpen) return false;
+  if (loc.projectHomeOpen) return false;
   if (target === "maps") {
-    return section === "maps" && !hostView && (!sandboxView || sandboxView.plugin.id === workspaceModuleId(target));
+    return (
+      loc.section === "maps" &&
+      !loc.hostView &&
+      (!loc.sandboxView || loc.sandboxView.plugin.id === workspaceModuleId(target))
+    );
   }
-  return !hostView && !sandboxView && section === target;
+  return !loc.hostView && !loc.sandboxView && loc.section === target;
 }
 
 function pluginNavigationActive(item: PluginNavigationItem) {
   if (item.renderer === "host") {
-    return hostView?.plugin.id === item.plugin.id && hostView.view.id === item.view.id;
+    return loc.hostView?.plugin.id === item.plugin.id && loc.hostView.view.id === item.view.id;
   }
-  return sandboxView?.plugin.id === item.plugin.id && sandboxView.view?.id === item.view.id;
+  return loc.sandboxView?.plugin.id === item.plugin.id && loc.sandboxView.view?.id === item.view.id;
 }
 
 function navigationActive(item: NavigationItem) {
   return item.kind === "workspace" ? workspaceNavigationActive(item.section) : pluginNavigationActive(item);
 }
 
-function currentWorkspaceLocationView(): WorkspaceLocationView {
-  if (section === "lore") {
-    if (loreWikiOpen) return "wiki";
-    if (projectionSandboxOpen("lore")) return "graph";
-    return "library";
-  }
-  if (section === "timeline") {
-    if (projectionSandboxOpen("timeline")) return "timeline";
-    return timelineView;
-  }
-  if (section === "writing") return writingView;
-  if (section === "houses") return housesView;
-  return "default";
-}
-
-function currentModuleState(): Record<string, unknown> | null {
-  if (section === "language") return { pane: languagePane };
-  if (section === "houses" && housesView === "tree") return (treeSession as Record<string, unknown> | null) ?? null;
-  return null;
-}
-
-function restoreModuleState(section: WorkspaceSection, state: Record<string, unknown> | null | undefined) {
-  if (section === "language") {
-    requestLanguagePane(state && isLanguagePane(state.pane) ? state.pane : "overview");
-    return;
-  }
-  if (section === "houses") {
-    treeSession = (state as TreeSession | null) ?? null;
-  }
-}
-
-function currentWorkspaceCollectionLocation(): WorkspaceCollectionLocation {
-  const pendingScrollTop = pendingCollectionScroll?.section === section ? pendingCollectionScroll.scrollTop : null;
-  return {
-    query: {
-      textSearch: collectionQuery.textSearch,
-      sortField: collectionQuery.sortField,
-      sortDir: collectionQuery.sortDir,
-      pageSize: collectionQuery.pageSize,
-      page: collectionQuery.page,
-      excludedTypes: [...collectionQuery.excludedTypes].sort(),
-      viewMode: collectionQuery.viewMode,
-    },
-    expandedGroups: [...expandedGroups].sort(),
-    scrollTop: pendingScrollTop ?? collectionListElement?.scrollTop ?? collectionScrollBySection[section] ?? 0,
-  };
-}
-
-function measuredPaneWidth(element: HTMLElement | null, fallback: number) {
-  const width = element?.getBoundingClientRect().width ?? 0;
-  return width > 0 ? Math.round(width) : fallback;
-}
-
-function currentWorkspacePaneDimensions(): WorkspacePaneDimensions {
-  const fallback = restoredWorkspacePaneDimensions;
-  return {
-    collectionWidth: measuredPaneWidth(collectionPaneElement, fallback?.collectionWidth ?? 0),
-    contentWidth: measuredPaneWidth(contentPaneElement, fallback?.contentWidth ?? 0),
-    inspectorWidth: measuredPaneWidth(inspectorPaneElement, fallback?.inspectorWidth ?? 0),
-    viewportWidth: typeof window === "undefined" ? (fallback?.viewportWidth ?? 0) : window.innerWidth,
-  };
-}
-
-async function restoreWorkspacePaneDimensions(panes: WorkspacePaneDimensions) {
-  const viewportWidth = typeof window === "undefined" ? panes.viewportWidth : window.innerWidth;
-  restoredWorkspacePaneDimensions =
-    panes.viewportWidth > 0 && Math.abs(panes.viewportWidth - viewportWidth) <= 2 ? { ...panes } : null;
-  await tick();
-}
-
-function persistWorkbenchLayout() {
-  saveWorkbenchLayout(section, {
-    visibility: workbenchPaneVisibility,
-    collectionWidth: workbenchPaneWidths.collection,
-    inspectorWidth: workbenchPaneWidths.inspector,
-  });
-}
-
-function activePaneDimensions(): WorkspacePaneDimensions {
-  return {
-    collectionWidth: restoredWorkspacePaneDimensions?.collectionWidth || workbenchPaneWidths.collection,
-    contentWidth: restoredWorkspacePaneDimensions?.contentWidth || 640,
-    inspectorWidth: restoredWorkspacePaneDimensions?.inspectorWidth || workbenchPaneWidths.inspector,
-    viewportWidth: typeof window === "undefined" ? 0 : window.innerWidth,
-  };
-}
-
 function workbenchSupportsInspector() {
-  return section !== "language" && (section !== "maps" || sandboxView?.renderer !== "maps");
-}
-
-function resizeWorkbenchPane(pane: "collection" | "inspector", delta: number) {
-  const panes = activePaneDimensions();
-  if (pane === "collection")
-    panes.collectionWidth = Math.max(collectionPaneMin, Math.min(collectionPaneMax, panes.collectionWidth + delta));
-  else panes.inspectorWidth = Math.max(inspectorPaneMin, Math.min(inspectorPaneMax, panes.inspectorWidth + delta));
-  workbenchPaneWidths = {
-    collection: panes.collectionWidth,
-    inspector: panes.inspectorWidth,
-  };
-  restoredWorkspacePaneDimensions = panes;
-  persistWorkbenchLayout();
-}
-
-function resetWorkbenchPane(pane: "collection" | "inspector") {
-  const panes = activePaneDimensions();
-  if (pane === "collection") panes.collectionWidth = collectionPaneDefault;
-  else panes.inspectorWidth = inspectorPaneDefault;
-  workbenchPaneWidths = {
-    collection: panes.collectionWidth,
-    inspector: panes.inspectorWidth,
-  };
-  restoredWorkspacePaneDimensions = panes;
-  persistWorkbenchLayout();
-}
-
-async function toggleWorkbenchPane(pane: WorkbenchPane) {
-  // Hiding the content column tears down the Language and Writing webviews, so save and ask them first.
-  if (pane === "content" && workbenchPaneVisibility.content) {
-    if (!(await flushAutoSave())) return;
-    if (!(await canLeaveLanguageSection())) return;
-  }
-  const visible = !workbenchPaneVisibility[pane];
-  workbenchPaneVisibility = { ...workbenchPaneVisibility, [pane]: visible };
-  persistWorkbenchLayout();
-  if (pane === "content" && !visible) editorFullscreen = false;
+  return loc.section !== "language" && (loc.section !== "maps" || loc.sandboxView?.renderer !== "maps");
 }
 
 function workspaceGridStyle() {
-  if (mapSurfaceOpen) return undefined;
+  if (loc.mapSurfaceOpen) return undefined;
   // Full screen hides the other panes, so the content column is the only track.
   if (writingFullscreenShown) return "grid-template-columns: minmax(0, 1fr)";
-  const panes = activePaneDimensions();
-  const collectionVisible = workbenchPaneVisibility.collection;
-  const contentVisible = workbenchPaneVisibility.content;
-  const inspectorVisible = workbenchPaneVisibility.inspector && workbenchSupportsInspector();
+  const panes = loc.activePaneDimensions();
+  const collectionVisible = loc.workbenchPaneVisibility.collection;
+  const contentVisible = loc.workbenchPaneVisibility.content;
+  const inspectorVisible = loc.workbenchPaneVisibility.inspector && workbenchSupportsInspector();
   const columns: string[] = [];
   if (workbenchViewportWidth <= 1180) {
     if (collectionVisible && contentVisible) return "grid-template-columns: 220px minmax(320px, 1fr)";
@@ -2356,124 +2285,9 @@ function workspaceGridStyle() {
   return `grid-template-columns: ${columns.length ? columns.join(" ") : "minmax(0, 1fr)"}`;
 }
 
-function rememberCollectionScroll() {
-  if (!collectionListElement) return;
-  collectionScrollBySection[section] = collectionListElement.scrollTop;
-}
-
-function queueCollectionScroll(target: WorkspaceSection, scrollTop: number) {
-  collectionScrollBySection[target] = scrollTop;
-  pendingCollectionScroll = { section: target, scrollTop };
-}
-
-async function applyWorkspaceCollectionLocation(location: WorkspaceCollectionLocation) {
-  collectionQueryRestoring = true;
-  collectionQuery = {
-    section,
-    ...location.query,
-    excludedTypes: [...location.query.excludedTypes],
-  };
-  expandedGroups = new Set(location.expandedGroups);
-  queueCollectionScroll(section, location.scrollTop);
-  await tick();
-  collectionQueryRestoring = false;
-}
-
-function specializedSurfaceKey(): string | null {
-  if (hostView) return `plugin:${hostView.plugin.id}:${hostView.view.id}`;
-  const projection = projectionSandboxKey();
-  if (projection) return PROJECTION_SANDBOXES[projection].surfaceKey;
-  if (sandboxView?.view && sandboxView.renderer !== "maps") {
-    return `plugin:${sandboxView.plugin.id}:${sandboxView.view.id}`;
-  }
-  if (loreWikiOpen) return "workspace:lore:wiki";
-  if (section === "houses" && housesView === "tree") return "workspace:houses:tree";
-  return null;
-}
-
-function specializedSurfaceKeyForLocation(location: ShellLocation): string | null {
-  if (location.kind === "plugin") return `plugin:${location.key}`;
-  if (location.kind !== "workspace") return null;
-  if (
-    location.view === "wiki" ||
-    location.view === "graph" ||
-    location.view === "timeline" ||
-    location.view === "tree"
-  ) {
-    return `workspace:${location.section}:${location.view}`;
-  }
-  return null;
-}
-
-function currentSpecializedSurfaceScrollTop() {
-  const key = specializedSurfaceKey();
-  if (!key) return 0;
-  return pendingSpecializedSurfaceScroll?.key === key
-    ? pendingSpecializedSurfaceScroll.scrollTop
-    : (specializedSurfaceElement?.scrollTop ?? specializedSurfaceScrollByKey[key] ?? 0);
-}
-
-function rememberSpecializedSurfaceScroll(scrollTop: number) {
-  const key = specializedSurfaceKey();
-  if (!key) return;
-  specializedSurfaceScrollByKey[key] = scrollTop;
-  if (pendingSpecializedSurfaceScroll?.key === key) pendingSpecializedSurfaceScroll = null;
-}
-
-async function restoreSpecializedSurfaceScroll(location: ShellLocation) {
-  if (location.kind === "home" || location.kind === "settings" || location.kind === "project") return;
-  const key = specializedSurfaceKeyForLocation(location);
-  if (!key) return;
-  pendingSpecializedSurfaceScroll = { key, scrollTop: location.surfaceScrollTop };
-  specializedSurfaceScrollByKey[key] = location.surfaceScrollTop;
-  await tick();
-  await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
-  if (specializedSurfaceKey() !== key || !specializedSurfaceElement) return;
-  specializedSurfaceElement.scrollTop = location.surfaceScrollTop;
-  specializedSurfaceScrollByKey[key] = specializedSurfaceElement.scrollTop;
-  pendingSpecializedSurfaceScroll = null;
-}
-
-function currentShellLocation(): ShellLocation {
-  if (showSettings && settingsSurface === "project") return { kind: "project", section: projectSection };
-  if (showSettings) return { kind: "settings", section: settingsSection };
-  if (projectHomeOpen) return { kind: "home" };
-  if (hostView) {
-    return {
-      kind: "plugin",
-      key: `${hostView.plugin.id}:${hostView.view.id}`,
-      section,
-      entityId: selected?.id ?? null,
-      surfaceScrollTop: currentSpecializedSurfaceScrollTop(),
-    };
-  }
-  if (sandboxView?.view && !projectionSandboxOpen()) {
-    return {
-      kind: "plugin",
-      key: `${sandboxView.plugin.id}:${sandboxView.view.id}`,
-      section,
-      entityId: selected?.id ?? null,
-      surfaceScrollTop: currentSpecializedSurfaceScrollTop(),
-      moduleState: null,
-    };
-  }
-  return {
-    kind: "workspace",
-    section,
-    view: currentWorkspaceLocationView(),
-    entityId: section === "houses" && housesView === "tree" ? treeRootId : (selected?.id ?? null),
-    writingView,
-    timelineView,
-    collection: currentWorkspaceCollectionLocation(),
-    panes: currentWorkspacePaneDimensions(),
-    surfaceScrollTop: currentSpecializedSurfaceScrollTop(),
-    moduleState: currentModuleState(),
-  };
-}
-
 function recordCurrentShellLocation() {
   if (!ready || shellNavigationRestoring) return;
-  setShellNavigationHistory(recordShellLocation(shellNavigationHistory, currentShellLocation()));
+  setShellNavigationHistory(recordShellLocation(shellNavigationHistory, loc.currentShellLocation()));
 }
 
 function recordShellDeparture(location: ShellLocation) {
@@ -2493,24 +2307,12 @@ async function openTreePerson(entityId: string) {
     }
   }
   if (!entity || entity.deleted) return;
-  if (!(await flushAutoSave())) return;
-  if (!(await leavePluginView())) return;
-  section = "lore";
-  projectHomeOpen = false;
-  loreWikiOpen = false;
-  await selectEntity(entity);
-}
-
-async function openHostView(
-  plugin: PluginAdminEntry,
-  view: PluginAdminEntry["views"][number],
-  departure = currentShellLocation(),
-) {
-  if (!(await dismissSettings())) return;
-  if (!(await leavePluginView())) return;
-  recordShellDeparture(departure);
-  projectHomeOpen = false;
-  hostView = { plugin, view };
+  if (!(await loc.flushAutoSave())) return;
+  if (!(await loc.leavePluginView())) return;
+  loc.section = "lore";
+  loc.projectHomeOpen = false;
+  loc.loreWikiOpen = false;
+  await loc.selectEntity(entity);
 }
 
 function pluginViews(): PluginNavigationItem[] {
@@ -2566,10 +2368,10 @@ function pluginNavigationItemByKey(key: string): PluginNavigationItem | null {
 
 async function openNavigationItem(item: NavigationItem) {
   if (item.kind === "workspace") {
-    await switchSection(item.section);
+    await loc.switchSection(item.section);
     return;
   }
-  await openPluginView(item);
+  await loc.openPluginView(item);
 }
 
 function mostRecentPluginTab(state: ShellTabsState, key: string): ShellTab | null {
@@ -2603,7 +2405,7 @@ function openSidebarNavigationItem(key: string, intent: OpenIntent = "current") 
 
 function openHomeWithIntent(intent: OpenIntent) {
   if (intent === "new-tab") {
-    void openInNewTab(() => openProjectHome());
+    void openInNewTab(() => loc.openProjectHome());
     return;
   }
   const state = snapshotActiveTab();
@@ -2612,7 +2414,7 @@ function openHomeWithIntent(intent: OpenIntent) {
     void switchToTab(home.id);
     return;
   }
-  void openProjectHome();
+  void loc.openProjectHome();
 }
 
 function updateRailCollapsed(collapsed: boolean) {
@@ -2620,85 +2422,42 @@ function updateRailCollapsed(collapsed: boolean) {
   localStorage.setItem("daena:rail-collapsed", String(collapsed));
 }
 
-async function openPluginView(item: PluginNavigationItem, departure = currentShellLocation()) {
-  if (!(await flushAutoSave())) return;
-  if (section === "language" && !(await canLeaveLanguageSection())) return;
-  if (item.renderer === "maps") {
-    if (!(await dismissSettings())) return;
-    const mapId = currentMapId();
-    if (sandboxView?.renderer === "maps") {
-      const mapsWelcome = sandboxView.view === null;
-      if ((mapId === null && mapsWelcome) || (mapId !== null && !mapsWelcome)) return;
-    }
-    if (mapId) {
-      const mapField = (await project.listFields(mapId)).find(
-        (field) => field.namespace === "maps" && field.key === "map",
-      );
-      const descriptor = mapField?.value as { provider?: { id?: string } } | undefined;
-      mapsEditorMode = "vector";
-    }
-    mapFocusLinkId = null;
-    mapFocusFeatureId = null;
-    if (!(await leavePluginView())) return;
-    recordShellDeparture(departure);
-    projectHomeOpen = false;
-    loreWikiOpen = false;
-    section = "maps";
-    sandboxView = mapId
-      ? { plugin: item.plugin, view: item.view, renderer: "maps" }
-      : { plugin: item.plugin, view: null, renderer: "maps" };
-    if (mapId) mapsEditorKey = mapId;
-    else if (!sandboxView.view) mapsEditorKey = "welcome";
-    return;
-  }
-  if (item.renderer === "host") {
-    await openHostView(item.plugin, item.view, departure);
-    return;
-  }
-  if (!(await dismissSettings())) return;
-  if (!(await leavePluginView())) return;
-  recordShellDeparture(departure);
-  projectHomeOpen = false;
-  sandboxView = { plugin: item.plugin, view: item.view, renderer: "webview" };
-}
-
 let mapsEditorMode = $state<"vector" | "physical">("vector");
 let mapsVectorStart = $state<"import" | "geojson">("geojson");
 let mapProviderMenuOpen = $state<"header" | "empty" | null>(null);
-const mapSurfaceOpen = $derived(section === "maps" && sandboxView?.renderer === "maps" && Boolean(sandboxView?.view));
 async function createMap(provider: "image" | "vector" | "physical" = "physical") {
   if (projectDiagnostics.length > 0) return;
   try {
-    if (!(await flushAutoSave())) return;
-    const departure = currentShellLocation();
+    if (!(await loc.flushAutoSave())) return;
+    const departure = loc.currentShellLocation();
     mapProviderMenuOpen = null;
     const mapView = mapsNavigationItem();
     if (!mapView) throw new Error("The Maps plugin view is not available");
     if (!(await dismissSettings())) return;
-    if (!(await leavePluginView())) return;
+    if (!(await loc.leavePluginView())) return;
     recordShellDeparture(departure);
-    selected = null;
-    fields = {};
-    relationships = [];
-    assets = [];
-    mapLocations = [];
+    loc.selected = null;
+    loc.fields = {};
+    loc.relationships = [];
+    loc.assets = [];
+    loc.mapLocations = [];
     mapFocusLinkId = null;
     mapFocusFeatureId = null;
-    projectHomeOpen = false;
-    loreWikiOpen = false;
-    section = "maps";
+    loc.projectHomeOpen = false;
+    loc.loreWikiOpen = false;
+    loc.section = "maps";
     // Draft editor: no map entity until the native editor accepts/creates one.
     mapsEditorMode = provider === "physical" ? "physical" : "vector";
     mapsVectorStart = provider === "image" ? "import" : "geojson";
     mapsEditorKey = `draft-${Date.now()}`;
-    sandboxView = { plugin: mapView.plugin, view: mapView.view, renderer: "maps" };
+    loc.sandboxView = { plugin: mapView.plugin, view: mapView.view, renderer: "maps" };
   } catch (cause) {
     error = friendlyError(cause);
   }
 }
 
 function currentMapId() {
-  return selected?.entity_type === "daena.maps:world-map" ? selected.id : null;
+  return loc.selected?.entity_type === "daena.maps:world-map" ? loc.selected.id : null;
 }
 
 $effect(() => {
@@ -2716,7 +2475,7 @@ type SavedMapEntry = Entity & { size: number };
 let savedMapsCache = $state<SavedMapEntry[] | null>(null);
 let savedMapsRequest = 0;
 $effect(() => {
-  const mapsWorkspaceOpen = section === "maps";
+  const mapsWorkspaceOpen = loc.section === "maps";
   void entities;
   if (!ready || !mapsWorkspaceOpen) {
     savedMapsCache = null;
@@ -2774,18 +2533,6 @@ $effect(() => {
   })();
 });
 
-let languageListRefreshed = false;
-$effect(() => {
-  if (!ready || section !== "language") {
-    languageListRefreshed = false;
-    return;
-  }
-  if (languageListRefreshed) return;
-  languageListRefreshed = true;
-  bumpCollectionRefresh();
-  if (!selected && collectionResult().entities.length > 0) void selectEntity(collectionResult().entities[0], false);
-});
-
 function savedMaps() {
   return savedMapsCache ?? [];
 }
@@ -2832,446 +2579,40 @@ function mapConflictDetail(detail: unknown): { path?: string } {
 }
 
 function sectionEntityTypes(): string[] {
-  return manifestForWorkspaceSection(section)?.schemas.flatMap(schemaEntityTypeIds) ?? [];
+  return manifestForWorkspaceSection(loc.section)?.schemas.flatMap(schemaEntityTypeIds) ?? [];
 }
 
 function activeTabEntityTypes(): string[] | undefined {
-  if (section !== "writing" && section !== "timeline") return undefined;
+  if (loc.section !== "writing" && loc.section !== "timeline") return undefined;
   return activeCollectionTab()?.entityTypes ?? [];
-}
-
-$effect(() => {
-  if (!modules.length) return;
-  const timelineTabs = collectionTabsFor("timeline");
-  if (timelineTabs.length > 0 && !timelineTabs.some((tab) => tab.id === timelineView)) {
-    timelineView = timelineTabs[0].id;
-  }
-  const writingTabs = collectionTabsFor("writing");
-  if (writingTabs.length > 0 && !writingTabs.some((tab) => tab.id === writingView)) {
-    writingView = writingTabs[0].id;
-  }
-});
-
-$effect(() => {
-  const entityTypes = collectionEntityTypes({
-    entityTypes: new Set(sectionEntityTypes()),
-    tabEntityTypes: activeTabEntityTypes(),
-  });
-  const scopeKey = JSON.stringify([
-    section,
-    entityTypes,
-    collectionQuery.textSearch.trim(),
-    collectionQuery.sortField,
-    collectionQuery.sortDir,
-    collectionQuery.pageSize,
-    collectionQuery.excludedTypes,
-  ]);
-  if (collectionScopeKey && collectionScopeKey !== scopeKey && !collectionQueryRestoring) {
-    collectionPage = emptyEntityPage();
-    if (collectionQuery.page !== 0) collectionQuery.page = 0;
-  }
-  collectionScopeKey = scopeKey;
-});
-
-$effect(() => {
-  void collectionRefreshEpoch;
-  const active = ready && Boolean(projectInfo);
-  const page = collectionQuery.page;
-  const limit = collectionQuery.pageSize;
-  const entityTypes = collectionEntityTypes({
-    entityTypes: new Set(sectionEntityTypes()),
-    tabEntityTypes: activeTabEntityTypes(),
-  });
-  const query = collectionQuery.textSearch.trim();
-  const excludedEntityTypes = [...collectionQuery.excludedTypes];
-  const sortField = collectionQuery.sortField;
-  const sortDirection = collectionQuery.sortDir;
-  const request = ++collectionRequest;
-  collectionError = "";
-  const structureOutline =
-    section === "writing" &&
-    writingView === "manuscripts" &&
-    collectionQuery.viewMode === "grouped" &&
-    !collectionQuery.textSearch.trim();
-  if (!active) {
-    collectionPage = emptyEntityPage();
-    collectionLoading = false;
-    return;
-  }
-  if (structureOutline) {
-    collectionLoading = false;
-    return;
-  }
-  collectionLoading = true;
-  const timer = window.setTimeout(
-    () => {
-      void project
-        .queryEntities({
-          query: query || undefined,
-          entityTypes,
-          excludedEntityTypes,
-          sortField,
-          sortDirection,
-          offset: page * limit,
-          limit,
-        })
-        .then((result) => {
-          if (request !== collectionRequest) return;
-          if (page > 0 && result.items.length === 0 && result.total > 0) {
-            collectionQuery.page = Math.max(0, Math.ceil(result.total / limit) - 1);
-            return;
-          }
-          collectionPage = result;
-          for (const entity of result.items) upsertEntityInCache(entity);
-        })
-        .catch((cause) => {
-          if (request !== collectionRequest) return;
-          collectionPage = emptyEntityPage();
-          collectionError = friendlyError(cause);
-        })
-        .finally(() => {
-          if (request === collectionRequest) collectionLoading = false;
-        });
-    },
-    query ? 180 : 0,
-  );
-  return () => window.clearTimeout(timer);
-});
-
-$effect(() => {
-  const housesSection = ready && section === "houses" && housesView === "houses";
-  const ids = collectionPage.items
-    .filter((entity) => {
-      const type = entity.entity_type ?? "";
-      return type === HOUSE_TYPE || type.endsWith(":house");
-    })
-    .map((entity) => entity.id);
-  void collectionRefreshEpoch;
-  if (!housesSection || ids.length === 0) {
-    if (!housesSection) houseCollectionSummaries = new Map();
-    houseSummariesPending = false;
-    return;
-  }
-  const request = ++houseSummaryRequest;
-  houseSummariesPending = true;
-  const context = buildModuleContext(housesManifestJson as unknown as ModuleManifest, projectInfo?.root ?? "", {
-    availableServices: enabledServices(),
-  });
-  void houseMemberSummaries(context, ids)
-    .then((summaries) => {
-      if (request !== houseSummaryRequest) return;
-      houseCollectionSummaries = summaries;
-    })
-    .catch(() => {
-      if (request !== houseSummaryRequest) return;
-      houseCollectionSummaries = new Map();
-    })
-    .finally(() => {
-      if (request === houseSummaryRequest) houseSummariesPending = false;
-    });
-});
-
-async function queryWritingPartOf(entityIds: string[]) {
-  if (entityIds.length === 0 || !projectInfo?.root) return [];
-  const context = contextFor("writing");
-  const items: Array<{
-    id: string;
-    sourceId: string;
-    targetId: string;
-    type: string;
-    metadata?: unknown;
-  }> = [];
-  let offset = 0;
-  while (true) {
-    const page = await context.relationships.query({
-      entityIds: entityIds as UUID[],
-      relationshipTypes: [WRITING_PART_OF],
-      direction: "any",
-      offset,
-      limit: 200,
-    });
-    items.push(...page.items);
-    if (!page.hasMore || page.items.length === 0) break;
-    offset += page.items.length;
-  }
-  return partOfEdgesFromRelationships(
-    items.map((relationship) => ({
-      id: relationship.id,
-      source_id: relationship.sourceId,
-      target_id: relationship.targetId,
-      relationship_type: relationship.type,
-      metadata: relationship.metadata,
-    })),
-  );
-}
-
-async function listManuscriptOutlineSummaries(
-  entityTypes: string[],
-  excludedEntityTypes: string[],
-  sortField: SortField,
-  sortDirection: SortDirection,
-): Promise<{ items: Entity[]; truncated: boolean }> {
-  const items: Entity[] = [];
-  let offset = 0;
-  while (items.length < MANUSCRIPT_OUTLINE_CAP) {
-    const limit = Math.min(200, MANUSCRIPT_OUTLINE_CAP - items.length);
-    const page = await project.queryEntities({
-      entityTypes,
-      excludedEntityTypes,
-      sortField,
-      sortDirection,
-      offset,
-      limit,
-    });
-    items.push(...page.items);
-    if (!page.has_more || page.items.length === 0) return { items, truncated: false };
-    offset += page.items.length;
-  }
-  return { items, truncated: true };
-}
-
-async function manuscriptContainmentLabels(seed: string[]): Promise<Record<string, string>> {
-  const edges = await collectPartOfEdges(seed, queryWritingPartOf);
-  const ids = new Set(seed);
-  for (const edge of edges) {
-    ids.add(edge.sourceId);
-    ids.add(edge.targetId);
-  }
-  const names = new Map<string, string>();
-  for (const entity of [...manuscriptOutlineEntities, ...entities, ...collectionPage.items]) {
-    if (ids.has(entity.id)) names.set(entity.id, entity.name);
-  }
-  const missing = [...ids].filter((id) => !names.has(id));
-  for (let index = 0; index < missing.length; index += 500) {
-    const loaded = await contextFor("writing").entities.getMany(missing.slice(index, index + 500) as UUID[]);
-    for (const entity of loaded) names.set(entity.id, entity.name);
-  }
-  const parents = parentByChild(edges);
-  const labels: Record<string, string> = {};
-  for (const id of seed) labels[id] = appearanceLabel(containmentNames(id, parents, names));
-  return labels;
-}
-
-async function refreshWritingAppearanceLabels() {
-  if (!selected) {
-    writingAppearanceLabels = {};
-    return;
-  }
-  const sources = [
-    ...new Set(
-      relationships
-        .filter(
-          (relationship) =>
-            relationship.relationship_type === WRITING_FEATURES && relationship.target_id === selected!.id,
-        )
-        .map((relationship) => relationship.source_id),
-    ),
-  ];
-  if (sources.length === 0) {
-    writingAppearanceLabels = {};
-    return;
-  }
-  try {
-    const edges = await collectPartOfEdges(sources, queryWritingPartOf);
-    const ids = new Set(sources);
-    for (const edge of edges) {
-      ids.add(edge.sourceId);
-      ids.add(edge.targetId);
-    }
-    const names = new Map<string, string>();
-    for (const entity of entities) {
-      if (ids.has(entity.id)) names.set(entity.id, entity.name);
-    }
-    const missing = [...ids].filter((id) => !names.has(id));
-    if (missing.length > 0) {
-      const loaded = await contextFor("writing").entities.getMany(missing as UUID[]);
-      for (const entity of loaded) names.set(entity.id, entity.name);
-    }
-    const parents = parentByChild(edges);
-    const labels: Record<string, string> = {};
-    for (const id of sources) labels[id] = appearanceLabel(containmentNames(id, parents, names));
-    writingAppearanceLabels = labels;
-  } catch {
-    writingAppearanceLabels = {};
-  }
 }
 
 function relationshipRowTitle(relationship: Relationship, definition: FieldDefinition) {
   const otherId = relationshipOtherId(definition, relationship);
-  if (relationship.relationship_type === WRITING_FEATURES && writingAppearanceLabels[otherId]) {
-    return writingAppearanceLabels[otherId];
+  if (relationship.relationship_type === WRITING_FEATURES && loc.writingAppearanceLabels[otherId]) {
+    return loc.writingAppearanceLabels[otherId];
   }
   return relationshipTargetName(relationship, definition);
 }
 
-$effect(() => {
-  const onManuscripts = ready && Boolean(projectInfo) && section === "writing" && writingView === "manuscripts";
-  const search = collectionQuery.textSearch.trim();
-  const grouped = collectionQuery.viewMode === "grouped";
-  const entityTypes = collectionEntityTypes({
-    entityTypes: new Set(sectionEntityTypes()),
-    tabEntityTypes: activeTabEntityTypes(),
-  });
-  const excludedEntityTypes = [...collectionQuery.excludedTypes];
-  const sortField = collectionQuery.sortField;
-  const sortDirection = collectionQuery.sortDir;
-  const pageItems = collectionPage.items;
-  void collectionRefreshEpoch;
-  if (!onManuscripts) {
-    if (section !== "writing" || writingView !== "manuscripts") {
-      manuscriptOutline = [];
-      manuscriptOutlineEntities = [];
-      manuscriptOutlineTruncated = false;
-      manuscriptOutlineLibraryKey = "";
-      manuscriptPathLabels = {};
-      manuscriptOutlineLoading = false;
-    }
-    return;
-  }
-  const request = ++manuscriptOutlineRequest;
-  if (search) {
-    manuscriptOutline = [];
-    manuscriptOutlineTruncated = false;
-    manuscriptOutlineLoading = false;
-    const seed = pageItems.map((entity) => entity.id);
-    if (seed.length === 0) {
-      manuscriptPathLabels = {};
-      return;
-    }
-    void (async () => {
-      try {
-        const labels = await manuscriptContainmentLabels(seed);
-        if (request !== manuscriptOutlineRequest) return;
-        manuscriptPathLabels = labels;
-      } catch {
-        if (request !== manuscriptOutlineRequest) return;
-        manuscriptPathLabels = {};
-      }
-    })();
-    return;
-  }
-  manuscriptPathLabels = {};
-  if (!grouped) {
-    manuscriptOutline = [];
-    manuscriptOutlineEntities = [];
-    manuscriptOutlineTruncated = false;
-    manuscriptOutlineLoading = false;
-    return;
-  }
-  if (entityTypes.length === 0) {
-    manuscriptOutline = [];
-    manuscriptOutlineEntities = [];
-    manuscriptOutlineTruncated = false;
-    manuscriptOutlineLoading = false;
-    return;
-  }
-  manuscriptOutlineLoading = true;
-  void (async () => {
-    try {
-      const { items, truncated } = await listManuscriptOutlineSummaries(
-        entityTypes,
-        excludedEntityTypes,
-        sortField,
-        sortDirection,
-      );
-      if (request !== manuscriptOutlineRequest) return;
-      const edges = await collectPartOfEdges(
-        items.map((entity) => entity.id),
-        queryWritingPartOf,
-      );
-      if (request !== manuscriptOutlineRequest) return;
-      const roots = buildManuscriptOutline(items, [], edges);
-      const libraryKey = roots.map((node) => node.id).join("\0");
-      if (libraryKey !== manuscriptOutlineLibraryKey) {
-        manuscriptOutlineLibraryKey = libraryKey;
-        manuscriptExpanded = defaultExpandedOutlineIds(roots);
-      } else {
-        const allowed = collectOutlineIds(roots);
-        manuscriptExpanded = new Set([...manuscriptExpanded].filter((id) => allowed.has(id)));
-      }
-      const lastPage = Math.max(0, Math.ceil(roots.length / Math.max(1, collectionQuery.pageSize)) - 1);
-      if (collectionQuery.page > lastPage) collectionQuery.page = lastPage;
-      manuscriptOutlineEntities = items;
-      manuscriptOutlineTruncated = truncated;
-      manuscriptOutline = roots;
-      for (const entity of items) upsertEntityInCache(entity);
-    } catch {
-      if (request !== manuscriptOutlineRequest) return;
-      manuscriptOutline = [];
-      manuscriptOutlineEntities = [];
-      manuscriptOutlineTruncated = false;
-    } finally {
-      if (request === manuscriptOutlineRequest) manuscriptOutlineLoading = false;
-    }
-  })();
-});
-
-$effect(() => {
-  const id = selected?.id;
-  if (!id || manuscriptOutline.length === 0) return;
-  const path = outlinePathIds(manuscriptOutline, id);
-  if (!path || path.length < 2) return;
-  const next = new Set(manuscriptExpanded);
-  let changed = false;
-  for (const ancestor of path.slice(0, -1)) {
-    if (!next.has(ancestor)) {
-      next.add(ancestor);
-      changed = true;
-    }
-  }
-  if (changed) manuscriptExpanded = next;
-});
-
-$effect(() => {
-  const pending = pendingCollectionScroll;
-  void collectionPage.items;
-  void manuscriptOutline;
-  if (
-    !pending ||
-    collectionLoading ||
-    manuscriptOutlineLoading ||
-    collectionQuery.section !== pending.section ||
-    section !== pending.section ||
-    projectHomeOpen ||
-    showSettings ||
-    hostView ||
-    sandboxView ||
-    loreWikiOpen
-  )
-    return;
-  pendingCollectionScroll = null;
-  void tick().then(() => {
-    if (!collectionListElement || section !== pending.section) return;
-    collectionListElement.scrollTop = pending.scrollTop;
-    collectionScrollBySection[pending.section] = collectionListElement.scrollTop;
-  });
-});
-
 function toggleTypeFilter(type: string) {
-  const idx = collectionQuery.excludedTypes.indexOf(type);
+  const idx = loc.collectionQuery.excludedTypes.indexOf(type);
   if (idx >= 0) {
-    collectionQuery.excludedTypes = collectionQuery.excludedTypes.filter((t) => t !== type);
+    loc.collectionQuery.excludedTypes = loc.collectionQuery.excludedTypes.filter((t) => t !== type);
   } else {
-    collectionQuery.excludedTypes = [...collectionQuery.excludedTypes, type];
+    loc.collectionQuery.excludedTypes = [...loc.collectionQuery.excludedTypes, type];
   }
-}
-
-function toggleGroup(type: string) {
-  const next = new Set(expandedGroups);
-  if (next.has(type)) next.delete(type);
-  else next.add(type);
-  expandedGroups = next;
 }
 
 function collectionResult(): CollectionResult {
-  return presentCollectionPage(collectionPage, collectionQuery.viewMode, entityTypeLabel);
+  return presentCollectionPage(loc.collectionPage, loc.collectionQuery.viewMode, entityTypeLabel);
 }
 
 function entityFromOutlineNode(node: OutlineNode): Entity {
   return (
-    manuscriptOutlineEntities.find((entity) => entity.id === node.id) ??
+    loc.manuscriptOutlineEntities.find((entity) => entity.id === node.id) ??
     entities.find((entity) => entity.id === node.id) ??
-    collectionPage.items.find((entity) => entity.id === node.id) ?? {
+    loc.collectionPage.items.find((entity) => entity.id === node.id) ?? {
       id: node.id,
       name: node.name,
       entity_type: node.entityType,
@@ -3285,178 +2626,49 @@ function entityFromOutlineNode(node: OutlineNode): Entity {
 
 function manuscriptStructureMode() {
   return (
-    section === "writing" &&
-    writingView === "manuscripts" &&
-    collectionQuery.viewMode === "grouped" &&
-    !collectionQuery.textSearch.trim()
+    loc.section === "writing" &&
+    loc.writingView === "manuscripts" &&
+    loc.collectionQuery.viewMode === "grouped" &&
+    !loc.collectionQuery.textSearch.trim()
   );
 }
 
 function manuscriptOutlinePage() {
-  return paginateOutlineRoots(manuscriptOutline, collectionQuery.page, collectionQuery.pageSize);
+  return paginateOutlineRoots(loc.manuscriptOutline, loc.collectionQuery.page, loc.collectionQuery.pageSize);
 }
 
 function collectionIsEmpty() {
   if (manuscriptStructureMode()) {
-    return !manuscriptOutlineLoading && manuscriptOutline.length === 0;
+    return !loc.manuscriptOutlineLoading && loc.manuscriptOutline.length === 0;
   }
   return collectionResult().total === 0;
 }
 
 function collectionHeadingCount() {
-  if (manuscriptStructureMode()) return collectOutlineIds(manuscriptOutline).size;
+  if (manuscriptStructureMode()) return collectOutlineIds(loc.manuscriptOutline).size;
   return collectionResult().total;
 }
 
 function collectionRowSubtitle(entity: Entity) {
   if (
-    section === "houses" &&
+    loc.section === "houses" &&
     ((entity.entity_type ?? "") === HOUSE_TYPE || (entity.entity_type ?? "").endsWith(":house"))
   ) {
-    return formatHouseMemberSummary(houseCollectionSummaries.get(entity.id), {
-      pending: houseSummariesPending && !houseCollectionSummaries.has(entity.id),
+    return formatHouseMemberSummary(loc.houseCollectionSummaries.get(entity.id), {
+      pending: loc.houseSummariesPending && !loc.houseCollectionSummaries.has(entity.id),
     });
   }
-  if (section === "writing" && writingView === "manuscripts" && manuscriptPathLabels[entity.id]) {
-    const path = manuscriptPathLabels[entity.id];
+  if (loc.section === "writing" && loc.writingView === "manuscripts" && loc.manuscriptPathLabels[entity.id]) {
+    const path = loc.manuscriptPathLabels[entity.id];
     if (path && path !== entity.name) return path;
   }
   return entityTypeLabel(entity.entity_type);
 }
 
-function toggleManuscriptOutlineNode(id: string) {
-  const next = new Set(manuscriptExpanded);
-  if (next.has(id)) next.delete(id);
-  else next.add(id);
-  manuscriptExpanded = next;
-}
-
-async function selectSearchResult(entity: Entity) {
-  if (!(await flushAutoSave())) return;
-  const owner = workspaceSectionOrder.find((target) =>
-    manifestForWorkspaceSection(target)?.schemas.some((schema) =>
-      schemaEntityTypeIds(schema).includes(entity.entity_type ?? ""),
-    ),
-  );
-  const nextSection: WorkspaceSection = owner && owner !== "maps" ? owner : "lore";
-  if (section === "language" && nextSection !== "language" && !(await canLeaveLanguageSection())) return;
-  const departure = currentShellLocation();
-  if (!(await leavePluginView())) return;
-  recordShellDeparture(departure);
-  section = nextSection;
-  applyCollectionTabForEntityType(entity.entity_type);
-  projectHomeOpen = false;
-  globalQuery = "";
-  collectionQuery.textSearch = "";
-  await selectEntity(entity, false);
-}
-
-async function switchSection(next: WorkspaceSection) {
-  if (!(await flushAutoSave())) return;
-  if (section === next && !projectHomeOpen && (next !== "maps" || sandboxView?.renderer === "maps") && !showSettings)
-    return;
-  if (section === "language" && next !== "language" && !(await canLeaveLanguageSection())) return;
-  const departure = currentShellLocation();
-  if (!(await dismissSettings())) return;
-  if (!(await leavePluginView())) return;
-  recordShellDeparture(departure);
-  const sectionChanged = section !== next;
-  section = next;
-  queueCollectionScroll(next, collectionScrollBySection[next] ?? 0);
-  projectHomeOpen = false;
-  if (sectionChanged) {
-    clearSelection();
-    collectionQuery.textSearch = "";
-  }
-}
-
-async function openProjectHome() {
-  if (!ready || (projectHomeOpen && !showSettings && !hostView && !sandboxView)) return;
-  if (!(await flushAutoSave())) return;
-  if (section === "language" && !(await canLeaveLanguageSection())) return;
-  const departure = currentShellLocation();
-  if (!(await dismissSettings())) return;
-  if (!(await leavePluginView())) return;
-  recordShellDeparture(departure);
-  projectHomeOpen = true;
-  globalQuery = "";
-}
-
-async function reconcileWorkspaceSection() {
-  if (enabledWorkspaceSections().includes(section)) return;
-  if (!(await flushAutoSave())) return;
-  if (!(await leavePluginView())) return;
-  section = enabledWorkspaceSections()[0] ?? "lore";
-  clearSelection();
-  collectionQuery.textSearch = "";
-  editorFullscreen = false;
-}
-
-async function switchWritingView(next: WritingView) {
-  const tabs = collectionTabsFor("writing");
-  const resolved = tabs.some((tab) => tab.id === next) ? next : (tabs[0]?.id ?? next);
-  if (!(await flushAutoSave())) return;
-  if (writingView === resolved && !projectHomeOpen) return;
-  const departure = currentShellLocation();
-  if (!(await leavePluginView())) return;
-  recordShellDeparture(departure);
-  projectHomeOpen = false;
-  writingView = resolved;
-  clearSelection();
-  collectionQuery.textSearch = "";
-}
-
-async function switchTimelineView(next: TimelineView) {
-  const tabs = collectionTabsFor("timeline");
-  const resolved = tabs.some((tab) => tab.id === next) ? next : (tabs[0]?.id ?? next);
-  if (!(await flushAutoSave())) return;
-  if (timelineView === resolved && !projectHomeOpen && !projectionSandboxOpen()) return;
-  const departure = currentShellLocation();
-  if (!(await leavePluginView())) return;
-  recordShellDeparture(departure);
-  projectHomeOpen = false;
-  timelineView = resolved;
-  clearSelection();
-  collectionQuery.textSearch = "";
-}
-
-async function switchHousesView(next: WorkspaceLocationView) {
-  const allowed: WorkspaceLocationView[] = ["houses", "tree"];
-  const resolved = allowed.includes(next) ? next : "houses";
-  if (!(await flushAutoSave())) return;
-  if (section === "houses" && housesView === resolved && !projectHomeOpen) {
-    if (resolved === "tree" && treeRootId) {
-      recordShellDeparture(currentShellLocation());
-      treeRootId = null;
-      treeSession = null;
-    }
-    return;
-  }
-  const departure = currentShellLocation();
-  if (!(await leavePluginView())) return;
-  recordShellDeparture(departure);
-  projectHomeOpen = false;
-  if (section !== "houses") section = "houses";
-  housesView = resolved;
-}
-
-async function switchLanguagePane(next: LanguagePane) {
-  if (!(await flushAutoSave())) return;
-  if (languagePane === next && !projectHomeOpen && section === "language") return;
-  const departure = currentShellLocation();
-  // The Language pane stays mounted across pane switches, so only a full-surface view needs closing here.
-  if (hostView || sandboxView) {
-    if (!(await leavePluginView())) return;
-  }
-  recordShellDeparture(departure);
-  projectHomeOpen = false;
-  requestLanguagePane(next);
-}
-
 function dismissTransientMenus(): boolean {
   let dismissed = false;
-  if (filterOpen) {
-    filterOpen = false;
+  if (loc.filterOpen) {
+    loc.filterOpen = false;
     dismissed = true;
   }
   if (showProjectMenu) {
@@ -3484,27 +2696,27 @@ function dismissTransientMenus(): boolean {
 }
 
 function sectionLabel() {
-  if (showSettings) {
-    if (settingsSurface === "application") return "Settings";
-    if (projectSection === "data") return "Project · Data & recovery";
-    if (projectSection === "extensions") return "Project · Extensions";
-    if (projectSection === "fields") return "Project · Fields & Types";
-    if (projectSection === "ai") return "Project · AI";
-    if (projectSection === "snapshots") return "Project · Snapshots";
-    if (projectSection === "archive") return "Project · Archive";
-    if (projectSection === "advanced") return "Project · Advanced";
+  if (loc.showSettings) {
+    if (loc.settingsSurface === "application") return "Settings";
+    if (loc.projectSection === "data") return "Project · Data & recovery";
+    if (loc.projectSection === "extensions") return "Project · Extensions";
+    if (loc.projectSection === "fields") return "Project · Fields & Types";
+    if (loc.projectSection === "ai") return "Project · AI";
+    if (loc.projectSection === "snapshots") return "Project · Snapshots";
+    if (loc.projectSection === "archive") return "Project · Archive";
+    if (loc.projectSection === "advanced") return "Project · Advanced";
     return "Project";
   }
-  if (projectHomeOpen) return "Home";
-  return section === "lore"
+  if (loc.projectHomeOpen) return "Home";
+  return loc.section === "lore"
     ? "Lore library"
-    : section === "timeline"
+    : loc.section === "timeline"
       ? "Timeline"
-      : section === "writing"
+      : loc.section === "writing"
         ? "Writing Studio"
-        : section === "language"
+        : loc.section === "language"
           ? "Languages"
-          : section === "houses"
+          : loc.section === "houses"
             ? "Houses"
             : "Maps";
 }
@@ -3512,21 +2724,22 @@ function sectionLabel() {
 function currentTabPresentation(): { title: string; tooltip: string; icon: TabIcon } {
   const tab = activeCollectionTab();
   const tabLabel = tab ? (tab.id === "reference" ? "Reference pages" : tab.label) : null;
-  const owner = selected ? sectionForEntityType(selected.entity_type) : null;
-  const entityBelongs = Boolean(selected) && (!owner || owner === section);
+  const owner = loc.selected ? sectionForEntityType(loc.selected.entity_type) : null;
+  const entityBelongs = Boolean(loc.selected) && (!owner || owner === loc.section);
   const plugin =
-    hostView ??
-    (sandboxView?.view && sandboxView.renderer !== "maps" && !projectionSandboxOpen()
-      ? { plugin: sandboxView.plugin, view: sandboxView.view }
+    loc.hostView ??
+    (loc.sandboxView?.view && loc.sandboxView.renderer !== "maps" && !loc.projectionSandboxOpen()
+      ? { plugin: loc.sandboxView.plugin, view: loc.sandboxView.view }
       : null);
-  const entityName = entityBelongs && !projectHomeOpen && !showSettings && !plugin ? (selected?.name ?? null) : null;
+  const entityName =
+    entityBelongs && !loc.projectHomeOpen && !loc.showSettings && !plugin ? (loc.selected?.name ?? null) : null;
   const specs = shellBreadcrumbs({
-    home: projectHomeOpen && !showSettings,
-    settingsLabel: showSettings ? sectionLabel() : null,
-    sectionLabel: workspaceSectionLabel(section),
+    home: loc.projectHomeOpen && !loc.showSettings,
+    settingsLabel: loc.showSettings ? sectionLabel() : null,
+    sectionLabel: workspaceSectionLabel(loc.section),
     viewLabel: breadcrumbViewLabel({
-      section,
-      view: currentWorkspaceLocationView(),
+      section: loc.section,
+      view: loc.currentWorkspaceLocationView(),
       tabLabel,
     }),
     entityName,
@@ -3538,17 +2751,17 @@ function currentTabPresentation(): { title: string; tooltip: string; icon: TabIc
   });
   const { title, tooltip } = tabTitleFromBreadcrumbs(specs);
   const icon: TabIcon =
-    projectHomeOpen && !showSettings
+    loc.projectHomeOpen && !loc.showSettings
       ? { kind: "home" }
-      : showSettings && settingsSurface === "project"
+      : loc.showSettings && loc.settingsSurface === "project"
         ? { kind: "project" }
-        : showSettings
+        : loc.showSettings
           ? { kind: "settings" }
           : plugin
             ? { kind: "plugin", key: `${plugin.plugin.id}:${plugin.view.id}` }
-            : entityName && selected
-              ? { kind: "entity", section, entityType: selected.entity_type ?? "" }
-              : { kind: "section", section };
+            : entityName && loc.selected
+              ? { kind: "entity", section: loc.section, entityType: loc.selected.entity_type ?? "" }
+              : { kind: "section", section: loc.section };
   return { title, tooltip, icon };
 }
 
@@ -3560,26 +2773,26 @@ function inactiveTabTitle(tab: ShellTab): string {
 }
 
 function workspaceHeadingKicker() {
-  return section === "lore"
+  return loc.section === "lore"
     ? "WORLD BIBLE"
-    : section === "timeline"
+    : loc.section === "timeline"
       ? "CHRONOLOGY"
-      : section === "maps"
+      : loc.section === "maps"
         ? "MAP ATLAS"
-        : section === "houses"
+        : loc.section === "houses"
           ? "HOUSES"
-          : section === "language"
+          : loc.section === "language"
             ? "LANGUAGE WORKSHOP"
             : "DRAFTING DESK";
 }
 
 function workspaceHeadingDescription() {
-  if (section === "lore") return "A living reference for every person, place, and power.";
-  if (section === "maps") return "Keep every map beside its notes, links, and provider source.";
-  if (section === "houses") return "Manage Houses and explore kinship in the family tree.";
-  if (section === "language") return "Words, sounds, writing, and grammar for every language of your world.";
+  if (loc.section === "lore") return "A living reference for every person, place, and power.";
+  if (loc.section === "maps") return "Keep every map beside its notes, links, and provider source.";
+  if (loc.section === "houses") return "Manage Houses and explore kinship in the family tree.";
+  if (loc.section === "language") return "Words, sounds, writing, and grammar for every language of your world.";
   const tab = activeCollectionTab();
-  if (section === "timeline") {
+  if (loc.section === "timeline") {
     if (tab?.id === "calendars") return "Optional ways to name years, months, weeks, and seasons.";
     if (tab?.id === "events" || !tab) return "Events, eras, and the threads that connect them.";
     return `${tab.label} in the chronology of your world.`;
@@ -3592,10 +2805,10 @@ function workspaceHeadingDescription() {
 }
 
 function collectionLabel() {
-  if (section === "lore") return "entries";
-  if (section === "language") return "languages";
-  if (section === "maps") return "maps";
-  if (section === "houses") return "houses";
+  if (loc.section === "lore") return "entries";
+  if (loc.section === "language") return "languages";
+  if (loc.section === "maps") return "maps";
+  if (loc.section === "houses") return "houses";
   const tab = activeCollectionTab();
   if (!tab) return "entries";
   if (tab.id === "reference") return "reference pages";
@@ -3603,22 +2816,22 @@ function collectionLabel() {
 }
 
 function collectionKicker() {
-  if (section === "lore") return "LORE LIBRARY";
-  if (section === "maps") return "MAPS";
-  if (section === "houses") return "HOUSES";
-  if (section === "language") return "LANGUAGES";
+  if (loc.section === "lore") return "LORE LIBRARY";
+  if (loc.section === "maps") return "MAPS";
+  if (loc.section === "houses") return "HOUSES";
+  if (loc.section === "language") return "LANGUAGES";
   const tab = activeCollectionTab();
-  if (section === "timeline" && (tab?.id === "events" || !tab)) return "TIMELINE";
+  if (loc.section === "timeline" && (tab?.id === "events" || !tab)) return "TIMELINE";
   if (!tab) return "ENTRIES";
   if (tab.id === "reference") return "REFERENCE PAGES";
   return tab.label.toUpperCase();
 }
 
 function createLabel() {
-  if (section === "lore") return "entry";
-  if (section === "language") return "language";
-  if (section === "maps") return "map";
-  if (section === "houses") return "house";
+  if (loc.section === "lore") return "entry";
+  if (loc.section === "language") return "language";
+  if (loc.section === "maps") return "map";
+  if (loc.section === "houses") return "house";
   const tab = activeCollectionTab();
   if (!tab) return "entry";
   if (tab.id === "events") return "event";
@@ -3629,9 +2842,9 @@ function createLabel() {
 }
 
 function emptyEditorKicker() {
-  if (section === "lore") return "LORE ENTRY";
-  if (section === "maps") return "MAP";
-  if (section === "houses") return "HOUSE";
+  if (loc.section === "lore") return "LORE ENTRY";
+  if (loc.section === "maps") return "MAP";
+  if (loc.section === "houses") return "HOUSE";
   const tab = activeCollectionTab();
   if (!tab) return "ENTRY";
   if (tab.id === "events") return "TIMELINE EVENT";
@@ -3646,200 +2859,24 @@ function entityTypeLabel(entityType: string | null) {
   return entityTypePresentation(entityType)?.definition.name ?? entityType;
 }
 
-/** Opens the projection for the current section: Chronology in Timeline, otherwise the Lore World graph. */
-async function openProjection() {
-  if (!(await flushAutoSave())) return;
-  const key: ProjectionSandboxKey = section === "timeline" ? "timeline" : "lore";
-  const surface = PROJECTION_SANDBOXES[key];
-  if (!projectHomeOpen && !showSettings && projectionSandboxOpen(key)) return;
-  const departure = currentShellLocation();
-  if (!(await leavePluginView())) return;
-  recordShellDeparture(departure);
-  projectHomeOpen = false;
-  loreWikiOpen = false;
-  loreWikiEntityId = null;
-  if (!adminPlugins) await refreshAdmin();
-  const plugin = adminPlugins?.find((entry) => entry.id === surface.pluginId && entry.enabled) ?? null;
-  if (!plugin) {
-    error = `${surface.moduleName} is disabled, so ${surface.title} cannot open.`;
-    return;
-  }
-  sandboxView = {
-    plugin,
-    // Shell-only id. The webview mounts the package entrypoint with no view
-    // id: validate_plugin_view rejects ids that manifest.views does not list.
-    view: { id: surface.viewId, title: surface.title, renderer: { type: "sandboxed" } },
-    renderer: "webview",
-  };
-}
-
-async function openLoreLibrary() {
-  if (!(await flushAutoSave())) return;
-  if (!projectHomeOpen && !showSettings && !loreWikiOpen && !hostView && !sandboxView) return;
-  const departure = currentShellLocation();
-  if (!(await dismissSettings())) return;
-  if (!(await leavePluginView())) return;
-  recordShellDeparture(departure);
-  projectHomeOpen = false;
-  loreWikiOpen = false;
-  loreWikiEntityId = null;
-}
-
-async function openLoreWiki(entityId?: string) {
-  if (!(await flushAutoSave())) return;
-  const showingWiki = !projectHomeOpen && !showSettings && loreWikiOpen && !hostView && !sandboxView;
-  if (showingWiki && entityId === undefined) return;
-  const departure = currentShellLocation();
-  if (!(await leavePluginView())) return;
-  recordShellDeparture(departure);
-  projectHomeOpen = false;
-  if (entityId === undefined) {
-    loreWikiEntityId =
-      selected?.entity_type && allEntityTypesForSection("lore").has(selected.entity_type) ? selected.id : null;
-  } else {
-    const entity = await restoreShellEntity(entityId);
-    loreWikiEntityId = entity ? entityId : null;
-  }
-  // Remount so an already-open wiki takes the entry this call names.
-  if (loreWikiOpen) {
-    loreWikiOpen = false;
-    await tick();
-  }
-  loreWikiOpen = true;
-}
-
 function allEntityTypesForSection(target: WorkspaceSection) {
   return new Set(manifestForWorkspaceSection(target)?.schemas.flatMap(schemaEntityTypeIds) ?? []);
 }
 
-async function closeLoreWiki() {
-  if (!(await flushAutoSave())) return;
-  const departure = currentShellLocation();
-  recordShellDeparture(departure);
-  loreWikiOpen = false;
-  loreWikiEntityId = null;
-}
-
-async function closeProjectionView() {
-  if (!(await flushAutoSave())) return;
-  const departure = currentShellLocation();
-  recordShellDeparture(departure);
-  if (projectionSandboxOpen()) sandboxView = null;
-}
-
-async function closePluginView() {
-  if (!(await flushAutoSave())) return;
-  const departure = currentShellLocation();
-  if (!(await leavePluginView())) return;
-  recordShellDeparture(departure);
-}
-
-async function openWorkspaceView(view: WorkspaceLocationView) {
-  if (view === "library") return openLoreLibrary();
-  if (view === "wiki") return openLoreWiki();
-  if (view === "graph" || view === "timeline") return openProjection();
-  if (view === "houses" || view === "tree") return switchHousesView(view);
-  if (section === "timeline" && collectionTabsFor("timeline").some((tab) => tab.id === view)) {
-    return switchTimelineView(view);
-  }
-  if (section === "writing" && collectionTabsFor("writing").some((tab) => tab.id === view)) {
-    return switchWritingView(view);
-  }
-  if (section === "houses") return switchHousesView(view);
-}
-
 async function handleLoreGuidePrimary(step: GuideStep) {
-  if (step.action === "library") await openLoreLibrary();
-  if (step.action === "wiki") await openLoreWiki();
-  if (step.action === "graph") await openProjection();
+  if (step.action === "library") await loc.openLoreLibrary();
+  if (step.action === "wiki") await loc.openLoreWiki();
+  if (step.action === "graph") await loc.openProjection();
   if (step.action === "inspector") {
-    await openLoreLibrary();
-    if (!workbenchPaneVisibility.inspector) void toggleWorkbenchPane("inspector");
+    await loc.openLoreLibrary();
+    if (!loc.workbenchPaneVisibility.inspector) void loc.toggleWorkbenchPane("inspector");
   }
 }
 
 async function handleTimelineGuidePrimary(step: GuideStep) {
-  if (step.action === "events") await switchTimelineView("events");
-  if (step.action === "calendars") await switchTimelineView("calendars");
-  if (step.action === "timeline") await openWorkspaceView("timeline");
-}
-
-async function restoreShellEntity(entityId: string | null) {
-  if (!entityId) {
-    if (selected) clearSelection();
-    return null;
-  }
-  let entity = entities.find((candidate) => candidate.id === entityId) ?? null;
-  if (!entity) {
-    try {
-      const loaded = await project.getEntity(entityId);
-      entity = loaded;
-      if (loaded && !entities.some((candidate) => candidate.id === loaded.id)) entities = [...entities, loaded];
-    } catch {
-      entity = null;
-    }
-  }
-  if (!entity || entity.deleted) {
-    if (selected) clearSelection();
-    return null;
-  }
-  await selectEntity(entity, false);
-  return entity;
-}
-
-async function restoreShellLocation(target: ShellLocation): Promise<boolean> {
-  const pluginItem = target.kind === "plugin" ? pluginNavigationItemByKey(target.key) : null;
-  if (target.kind === "plugin" && !pluginItem) return false;
-  shellNavigationRestoring = true;
-  try {
-    if (target.kind === "home") {
-      await openProjectHome();
-    } else if (target.kind === "settings") {
-      await openSettings(target.section);
-    } else if (target.kind === "project") {
-      await openProjectCenter(target.section);
-    } else if (target.kind === "plugin") {
-      await switchSection(target.section);
-      await restoreShellEntity(target.entityId);
-      await openPluginView(pluginItem!);
-      await restoreSpecializedSurfaceScroll(target);
-    } else {
-      await switchSection(target.section);
-      if (target.section === "lore") {
-        await openLoreLibrary();
-      } else if (target.section === "timeline") {
-        await switchTimelineView(target.timelineView);
-      } else if (target.section === "writing") {
-        await switchWritingView(target.writingView);
-      } else if (target.section === "houses") {
-        if (target.view === "tree") {
-          treeRootId = target.entityId;
-          treeRestoreNonce += 1;
-        }
-        restoreModuleState(target.section, target.moduleState);
-        await switchHousesView(target.view);
-      } else if (target.section === "language") {
-        restoreModuleState(target.section, target.moduleState);
-      }
-      await tick();
-      await applyWorkspaceCollectionLocation(target.collection);
-      const restoredEntity =
-        target.section === "houses" && target.view === "tree" ? null : await restoreShellEntity(target.entityId);
-      if (target.view === "wiki" || target.view === "graph" || target.view === "timeline") {
-        await openWorkspaceView(target.view);
-      }
-      await restoreWorkspacePaneDimensions(target.panes);
-      await restoreSpecializedSurfaceScroll(target);
-      const expected =
-        (target.section === "houses" && target.view === "tree") || restoredEntity || !target.entityId
-          ? target
-          : { ...target, entityId: null };
-      return sameShellLocation(currentShellLocation(), expected);
-    }
-    return sameShellLocation(currentShellLocation(), target);
-  } finally {
-    shellNavigationRestoring = false;
-  }
+  if (step.action === "events") await loc.switchTimelineView("events");
+  if (step.action === "calendars") await loc.switchTimelineView("calendars");
+  if (step.action === "timeline") await loc.openWorkspaceView("timeline");
 }
 
 function shellLocationAvailable(target: ShellLocation) {
@@ -3851,7 +2888,7 @@ function shellLocationAvailable(target: ShellLocation) {
 async function navigateShellHistory(direction: "back" | "forward") {
   if (shellNavigationBusy) return;
   if (dismissTransientMenus()) return;
-  const current = currentShellLocation();
+  const current = loc.currentShellLocation();
   let history = shellNavigationHistory;
   let transition = direction === "back" ? shellHistoryBack(history, current) : shellHistoryForward(history, current);
   while (transition && !shellLocationAvailable(transition.target)) {
@@ -3863,11 +2900,11 @@ async function navigateShellHistory(direction: "back" | "forward") {
     transition = direction === "back" ? shellHistoryBack(history, current) : shellHistoryForward(history, current);
   }
   if (!transition) return;
-  if (!(await flushAutoSave())) return;
+  if (!(await loc.flushAutoSave())) return;
   if (current.kind === "workspace" && current.section === "language" && !(await canLeaveLanguageSection())) return;
   shellNavigationBusy = true;
   try {
-    if (await restoreShellLocation(transition.target)) setShellNavigationHistory(transition.history);
+    if (await loc.restoreShellLocation(transition.target)) setShellNavigationHistory(transition.history);
   } finally {
     shellNavigationBusy = false;
   }
@@ -3876,7 +2913,7 @@ async function navigateShellHistory(direction: "back" | "forward") {
 function snapshotActiveTab(state: ShellTabsState = shellTabs): ShellTabsState {
   const presentation = currentTabPresentation();
   return updateTab(state, activeTab(state).id, {
-    location: currentShellLocation(),
+    location: loc.currentShellLocation(),
     title: presentation.title,
     icon: presentation.icon,
   });
@@ -3918,8 +2955,8 @@ async function switchToTab(tabId: string): Promise<boolean> {
   if (!found) return false;
   if (found.group.id === shellTabs.activeGroupId && found.tab.id === activeTab(shellTabs).id) return true;
   dismissTransientMenus();
-  if (!(await flushAutoSave())) return false;
-  const current = currentShellLocation();
+  if (!(await loc.flushAutoSave())) return false;
+  const current = loc.currentShellLocation();
   if (current.kind === "workspace" && current.section === "language" && !(await canLeaveLanguageSection()))
     return false;
   if (!shellLocationAvailable(found.tab.location)) {
@@ -3931,7 +2968,7 @@ async function switchToTab(tabId: string): Promise<boolean> {
   shellTabs = activateTab(snapshotActiveTab(), tabId, Date.now());
   shellNavigationBusy = true;
   try {
-    await restoreShellLocation(target);
+    await loc.restoreShellLocation(target);
   } finally {
     shellTabs = snapshotActiveTab();
     shellNavigationBusy = false;
@@ -3952,20 +2989,20 @@ async function openInNewTab(
 ): Promise<void> {
   if (!ready || shellNavigationBusy) return;
   dismissTransientMenus();
-  if (!(await flushAutoSave())) return;
-  const current = currentShellLocation();
+  if (!(await loc.flushAutoSave())) return;
+  const current = loc.currentShellLocation();
   if (current.kind === "workspace" && current.section === "language" && !(await canLeaveLanguageSection())) return;
   const id = crypto.randomUUID();
   // Where the tab this was opened from stands. Opening that same place in a new tab is a deliberate copy, so
   // the duplicate check below is skipped for it, however many tabs already show it; any other place that is
   // open in another tab still switches there.
   const originId = activeTab(shellTabs).id;
-  const originIdentity = tabIdentity(currentShellLocation());
+  const originIdentity = tabIdentity(loc.currentShellLocation());
   shellNavigationBusy = true;
   try {
     shellTabs = openTab(
       snapshotActiveTab(),
-      { id, location: currentShellLocation(), title: "", icon: currentTabPresentation().icon },
+      { id, location: loc.currentShellLocation(), title: "", icon: currentTabPresentation().icon },
       Date.now(),
       { position: options.position },
     );
@@ -3977,7 +3014,7 @@ async function openInNewTab(
     } finally {
       setShellNavigationHistory(emptyShellNavigationHistory());
     }
-    const identity = tabIdentity(currentShellLocation());
+    const identity = tabIdentity(loc.currentShellLocation());
     const existing =
       options.dedupe === false
         ? null
@@ -3988,7 +3025,7 @@ async function openInNewTab(
       const location = existing.location;
       shellTabs = activateTab(discardTab(shellTabs, id), existing.id, Date.now());
       try {
-        await restoreShellLocation(location);
+        await loc.restoreShellLocation(location);
       } finally {
         shellTabs = snapshotActiveTab();
       }
@@ -4011,14 +3048,14 @@ async function applyTabsChange(change: (state: ShellTabsState) => ShellTabsState
     return true;
   }
   dismissTransientMenus();
-  if (!(await flushAutoSave())) return false;
-  const current = currentShellLocation();
+  if (!(await loc.flushAutoSave())) return false;
+  const current = loc.currentShellLocation();
   if (current.kind === "workspace" && current.section === "language" && !(await canLeaveLanguageSection()))
     return false;
   shellTabs = change(snapshotActiveTab());
   shellNavigationBusy = true;
   try {
-    await restoreShellLocation(activeTab(shellTabs).location);
+    await loc.restoreShellLocation(activeTab(shellTabs).location);
   } finally {
     shellTabs = snapshotActiveTab();
     shellNavigationBusy = false;
@@ -4082,7 +3119,7 @@ function closeTabsForEntity(entityId: string) {
 }
 
 async function openSettingsTab(nextSection?: SettingsSection) {
-  if (!ready || currentShellLocation().kind === "settings") {
+  if (!ready || loc.currentShellLocation().kind === "settings") {
     await openSettings(nextSection ?? "general");
     return;
   }
@@ -4096,7 +3133,7 @@ async function openSettingsTab(nextSection?: SettingsSection) {
 }
 
 async function openProjectCenterTab(nextSection?: ProjectSection) {
-  if (currentShellLocation().kind === "project") {
+  if (loc.currentShellLocation().kind === "project") {
     await openProjectCenter(nextSection ?? "overview");
     return;
   }
@@ -4109,132 +3146,13 @@ async function openProjectCenterTab(nextSection?: ProjectSection) {
   await openInNewTab(() => openProjectCenter(nextSection ?? "overview"));
 }
 
-$effect(() => {
-  void section;
-  if (section !== "lore" && loreWikiOpen) {
-    loreWikiOpen = false;
-    loreWikiEntityId = null;
-  }
-});
-
-function dateForField(key: string) {
-  return parseCalendarDate(fields[key]);
-}
 function selectedCalendarId(key: string): string {
-  return calendarIdForStoredDate(dateForField(key), dateCalendarByField[key]);
+  return calendarIdForStoredDate(loc.dateForField(key), loc.dateCalendarByField[key]);
 }
 function definitionForDateField(key: string): CalendarDefinition | null {
   return calendarDefinitionForId(selectedCalendarId(key));
 }
-function dateFieldRevisionKey(key: string): string | null {
-  const definition = definitions().find((candidate) => candidate.key === key);
-  if (!definition) return null;
-  return fieldRevisionKey(namespaceForField(definition), key);
-}
-function dateFieldHadPersistedValue(key: string): boolean {
-  const revisionKey = dateFieldRevisionKey(key);
-  return revisionKey ? Object.prototype.hasOwnProperty.call(loadedFieldRevisions, revisionKey) : false;
-}
-function updateInspectorDateField(key: string, next: unknown) {
-  fields = { ...fields, [key]: next };
-  scheduleDateFieldDirty(key);
-}
-function setDateCalendar(key: string, calendarId: string) {
-  dateCalendarByField = { ...dateCalendarByField, [key]: calendarId };
-  const previous = dateForField(key);
-  if (!previous) {
-    dateEditorOpen = { ...dateEditorOpen, [key]: true };
-    return;
-  }
-  updateInspectorDateField(key, serializeCalendarDate({ ...previous, calendar: calendarId }));
-}
-function openDateEditor(key: string) {
-  dateEditorOpen = { ...dateEditorOpen, [key]: true };
-  dateCalendarByField = { ...dateCalendarByField, [key]: dateCalendarByField[key] ?? GREGORIAN_CALENDAR_ID };
-}
-function clearDateField(key: string) {
-  cancelDateFieldDirty(key);
-  fields = { ...fields, [key]: "" };
-  dateEditorOpen = { ...dateEditorOpen, [key]: false };
-  const next = { ...dateCalendarByField };
-  delete next[key];
-  dateCalendarByField = next;
-  if (dateFieldHadPersistedValue(key)) markEntryDirty({ fieldKey: key });
-}
 
-function cancelDateFieldDirty(key?: string) {
-  if (key) {
-    const timer = dateFieldDirtyTimers[key];
-    if (timer) {
-      window.clearTimeout(timer);
-      delete dateFieldDirtyTimers[key];
-    }
-    return;
-  }
-  for (const timerKey of Object.keys(dateFieldDirtyTimers)) {
-    window.clearTimeout(dateFieldDirtyTimers[timerKey]);
-    delete dateFieldDirtyTimers[timerKey];
-  }
-}
-function dateFieldDirtyApplies(key: string): boolean {
-  const value = fields[key];
-  return hasMeaningfulDateValue(value) || (dateFieldHadPersistedValue(key) && isEmptyFieldValue(value));
-}
-function scheduleDateFieldDirty(key: string, delay = 500) {
-  cancelDateFieldDirty(key);
-  dateFieldDirtyTimers[key] = window.setTimeout(() => {
-    delete dateFieldDirtyTimers[key];
-    if (dateFieldDirtyApplies(key)) markEntryDirty({ fieldKey: key });
-  }, delay);
-}
-/** Apply pending debounced date edits immediately so navigation and manual saves cannot drop them. */
-function flushDateFieldDirty() {
-  const keys = Object.keys(dateFieldDirtyTimers);
-  if (keys.length === 0) return;
-  cancelDateFieldDirty();
-  for (const key of keys) {
-    if (dateFieldDirtyApplies(key)) markEntryDirty({ fieldKey: key });
-  }
-}
-
-function cancelAutoSave() {
-  if (autoSaveTimer !== null) {
-    window.clearTimeout(autoSaveTimer);
-    autoSaveTimer = null;
-  }
-}
-function scheduleAutoSave(delay = 900) {
-  cancelAutoSave();
-  if (!selected || !sectionEnabled() || documentConflict || projectDiagnostics.length > 0) return;
-  autoSaveTimer = window.setTimeout(() => {
-    autoSaveTimer = null;
-    void saveDocument();
-  }, delay);
-}
-function clearDirtyTracking() {
-  dirtyFieldKeys.clear();
-}
-function markEntryDirty(opts?: { fieldKey?: string; document?: boolean }) {
-  documentRevision += 1;
-  hasUnsavedChanges = true;
-  savedAt = "";
-  autoSaveFailureCount = 0;
-  if (opts?.fieldKey) dirtyFieldKeys.add(opts.fieldKey);
-  scheduleAutoSave();
-}
-function updateDocumentBody(value: string) {
-  if (selectedLoading || selectedLoadError || projectDiagnostics.length > 0) return;
-  documentBody = value;
-  markEntryDirty({ document: true });
-}
-function setEditorFullscreen(value: boolean) {
-  editorFullscreen = value;
-}
-async function setDocumentMode(mode: "read" | "edit") {
-  if (mode === documentMode) return;
-  if (documentMode === "edit" && !(await flushAutoSave())) return;
-  documentMode = mode;
-}
 function updateAiSetting(key: keyof typeof aiProvider, value: string | string[]) {
   const root = projectInfo?.root;
   if (!root) return;
@@ -4491,7 +3409,7 @@ function emptyInspectorDefinitions() {
     if (isMapsProviderField(definition)) return false;
     return definition.type === "relationship"
       ? selectedRelationshipIds(definition).length === 0
-      : isEmptyFieldValue(fields[definition.key]);
+      : isEmptyFieldValue(loc.fields[definition.key]);
   });
 }
 function clearAiFieldListener() {
@@ -4511,7 +3429,7 @@ function closeAiFieldFill() {
   aiFieldSuggestions = {};
 }
 function handleAiFieldFillEvent(payload: AiStreamEvent) {
-  if (aiFieldFillEntityId !== null && selected?.id !== aiFieldFillEntityId) return;
+  if (aiFieldFillEntityId !== null && loc.selected?.id !== aiFieldFillEntityId) return;
   if (payload.sequence <= aiFieldFillLastSequence) return;
   aiFieldFillLastSequence = payload.sequence;
   if (payload.phase === "delta" && payload.delta) aiFieldFillStream += payload.delta;
@@ -4574,7 +3492,7 @@ function handleAiFieldFillEvent(payload: AiStreamEvent) {
   }
 }
 async function fillAiFields() {
-  if (!selected || aiFieldFillBusy) return;
+  if (!loc.selected || aiFieldFillBusy) return;
   if (!projectInfo?.aiEnabled) return;
   const empty = emptyInspectorDefinitions();
   if (empty.length === 0) return;
@@ -4590,12 +3508,12 @@ async function fillAiFields() {
   aiFieldSuggestions = {};
   aiFieldFillLastSequence = -1;
   aiFieldFillStartCancelled = false;
-  aiFieldFillEntityId = selected.id;
+  aiFieldFillEntityId = loc.selected.id;
   const fieldKeys = empty.map((definition) => definition.key);
   const context = JSON.stringify({
-    entity: { name: selected.name, type: selected.entity_type },
-    document: documentBody,
-    populatedFields: Object.fromEntries(Object.entries(fields).filter(([, value]) => !isEmptyFieldValue(value))),
+    entity: { name: loc.selected.name, type: loc.selected.entity_type },
+    document: loc.documentBody,
+    populatedFields: Object.fromEntries(Object.entries(loc.fields).filter(([, value]) => !isEmptyFieldValue(value))),
     emptyFields: empty.map((definition) => ({
       key: definition.key,
       label: definition.label,
@@ -4645,7 +3563,7 @@ async function fillAiFields() {
     additionalProperties: false,
   };
   const retrievalQuery =
-    `${selected.name} ${selected.entity_type ?? ""} ${empty.map((definition) => definition.label).join(" ")}`.slice(
+    `${loc.selected.name} ${loc.selected.entity_type ?? ""} ${empty.map((definition) => definition.label).join(" ")}`.slice(
       0,
       4000,
     );
@@ -4661,7 +3579,7 @@ async function fillAiFields() {
       2,
     );
     startedRequestId = requestId;
-    if (aiFieldFillStartCancelled || selected?.id !== aiFieldFillEntityId) {
+    if (aiFieldFillStartCancelled || loc.selected?.id !== aiFieldFillEntityId) {
       void project.aiCancelText(requestId).catch(() => {});
       return;
     }
@@ -4676,27 +3594,27 @@ async function fillAiFields() {
     clearAiFieldListener();
     aiFieldFillBusy = false;
     aiFieldFillRequestId = null;
-    if (aiFieldFillStartCancelled || selected?.id !== aiFieldFillEntityId) return;
+    if (aiFieldFillStartCancelled || loc.selected?.id !== aiFieldFillEntityId) return;
     error = friendlyError(cause);
   }
 }
 async function acceptAiFieldSuggestion(key: string) {
-  if (selected?.id !== aiFieldFillEntityId) return;
+  if (loc.selected?.id !== aiFieldFillEntityId) return;
   const suggestion = aiFieldSuggestions[key];
   const definition = definitions().find((candidate) => candidate.key === key);
   if (
     !suggestion ||
     (definition?.type === "relationship"
       ? selectedRelationshipIds(definition).length > 0
-      : !isEmptyFieldValue(fields[key]))
+      : !isEmptyFieldValue(loc.fields[key]))
   )
     return;
-  if (definition?.type === "relationship") await updateRelationshipField(definition, suggestion.value as string[]);
-  else fields = { ...fields, [key]: suggestion.value };
+  if (definition?.type === "relationship") await loc.updateRelationshipField(definition, suggestion.value as string[]);
+  else loc.fields = { ...loc.fields, [key]: suggestion.value };
   const remaining = { ...aiFieldSuggestions };
   delete remaining[key];
   aiFieldSuggestions = remaining;
-  markEntryDirty({ fieldKey: key });
+  loc.markEntryDirty({ fieldKey: key });
 }
 async function acceptAllAiFieldSuggestions() {
   for (const key of Object.keys(aiFieldSuggestions)) await acceptAiFieldSuggestion(key);
@@ -4745,7 +3663,7 @@ async function cancelAiRewrite() {
   }
 }
 function handleAiEvent(payload: AiStreamEvent) {
-  if (aiSourceEntityId !== null && selected?.id !== aiSourceEntityId) return;
+  if (aiSourceEntityId !== null && loc.selected?.id !== aiSourceEntityId) return;
   if (payload.sequence <= aiLastSequence) return;
   aiLastSequence = payload.sequence;
   const nextStreamState = reduceTextGenerationEvent(
@@ -4790,15 +3708,15 @@ function handleAiEvent(payload: AiStreamEvent) {
   }
 }
 async function startAiRewrite() {
-  if (!selected || (aiMode === "rewrite" && !aiSourceSelection.trim()) || !aiInstruction.trim() || aiBusy) return;
+  if (!loc.selected || (aiMode === "rewrite" && !aiSourceSelection.trim()) || !aiInstruction.trim() || aiBusy) return;
   const sourceSelection = aiSourceSelection;
   const sourcePlain = aiSourceSelectionPlain;
   const generationContext = aiGenerationContext;
-  if (!(await flushAutoSave())) return;
+  if (!(await loc.flushAutoSave())) return;
   if (aiMode === "rewrite" && !sourceSelection.trim()) return;
-  aiSourceEntityId = selected.id;
-  aiSourceBody = documentBody;
-  aiSourceRevision = loadedDocumentRevision;
+  aiSourceEntityId = loc.selected.id;
+  aiSourceBody = loc.documentBody;
+  aiSourceRevision = loc.loadedDocumentRevision;
   aiStreamText = "";
   aiPreviewOutput = "";
   aiProgressMessage = "Preparing model…";
@@ -4809,8 +3727,8 @@ async function startAiRewrite() {
   let startedRequestId: string | null = null;
   try {
     const sourceText =
-      aiMode === "generate" ? generationContext.trim() || documentBody.trim() || "[CURSOR]" : sourceSelection;
-    const retrievalQuery = [selected?.name, aiInstruction, sourcePlain].filter(Boolean).join(" ").slice(0, 4000);
+      aiMode === "generate" ? generationContext.trim() || loc.documentBody.trim() || "[CURSOR]" : sourceSelection;
+    const retrievalQuery = [loc.selected?.name, aiInstruction, sourcePlain].filter(Boolean).join(" ").slice(0, 4000);
     const requestId = await project.aiGenerateText(
       projectInfo!.root,
       aiInstruction,
@@ -4820,7 +3738,7 @@ async function startAiRewrite() {
       2,
     );
     startedRequestId = requestId;
-    if (aiStartCancelled || selected?.id !== aiSourceEntityId) {
+    if (aiStartCancelled || loc.selected?.id !== aiSourceEntityId) {
       void project.aiCancelText(requestId).catch(() => {});
       return;
     }
@@ -4836,16 +3754,16 @@ async function startAiRewrite() {
     aiBusy = false;
     aiCancelPending = false;
     aiRequestId = null;
-    if (aiStartCancelled || selected?.id !== aiSourceEntityId) return;
+    if (aiStartCancelled || loc.selected?.id !== aiSourceEntityId) return;
     error = friendlyError(cause);
   }
 }
 async function acceptAiRewrite() {
-  if (!selected || !aiPreviewOutput || aiBusy) return;
+  if (!loc.selected || !aiPreviewOutput || aiBusy) return;
   if (
-    selected.id !== aiSourceEntityId ||
-    documentBody !== aiSourceBody ||
-    loadedDocumentRevision !== aiSourceRevision
+    loc.selected.id !== aiSourceEntityId ||
+    loc.documentBody !== aiSourceBody ||
+    loc.loadedDocumentRevision !== aiSourceRevision
   ) {
     error = "The entity or document changed while the rewrite was being prepared. Discard it and try again.";
     return;
@@ -4856,28 +3774,28 @@ async function acceptAiRewrite() {
     return;
   }
   if (aiMode === "generate") {
-    const nextMarkdown = editorRef?.insertAiTextAtRequest(aiPreviewOutput);
+    const nextMarkdown = loc.editorRef?.insertAiTextAtRequest(aiPreviewOutput);
     if (nextMarkdown == null) {
       error = "The editor position is no longer available. Discard it and try again.";
       return;
     }
-    documentBody = nextMarkdown;
-    markEntryDirty({ document: true });
-    if (await saveDocument()) closeAiRewrite();
+    loc.documentBody = nextMarkdown;
+    loc.markEntryDirty({ document: true });
+    if (await loc.saveDocument()) closeAiRewrite();
     return;
   }
-  const nextMarkdown = editorRef?.replaceAiTextWithMarkdown(aiPreviewOutput);
+  const nextMarkdown = loc.editorRef?.replaceAiTextWithMarkdown(aiPreviewOutput);
   if (nextMarkdown === null || nextMarkdown === undefined) {
     error = "The selected text is no longer at the original position. Discard it and try again.";
     return;
   }
-  const bodyBefore = documentBody;
-  documentBody = nextMarkdown;
-  markEntryDirty({ document: true });
-  if (await saveDocument()) {
+  const bodyBefore = loc.documentBody;
+  loc.documentBody = nextMarkdown;
+  loc.markEntryDirty({ document: true });
+  if (await loc.saveDocument()) {
     closeAiRewrite();
   } else {
-    documentBody = bodyBefore;
+    loc.documentBody = bodyBefore;
   }
 }
 async function persistRecentProjects(next: RecentProject[]) {
@@ -5054,30 +3972,6 @@ async function ensureCalendarCache(force = false) {
   syncCalendarCacheState();
 }
 
-function bumpCollectionRefresh() {
-  if (collectionListElement) queueCollectionScroll(section, collectionListElement.scrollTop);
-  collectionRefreshEpoch += 1;
-}
-
-function bumpKinshipRefresh() {
-  kinshipRefreshEpoch += 1;
-  void refreshSelectedKinship();
-}
-
-async function refreshSelectedKinship() {
-  if (!selected || projectDiagnostics.length > 0) return;
-  const entityId = selected.id;
-  const context = contextFor();
-  if (!context.module.capabilities.includes("relationship.read")) return;
-  try {
-    const listed = await context.relationships.list(entityId as UUID);
-    if (selected?.id !== entityId) return;
-    relationships = listed.map((relationship) => toHostRelationship(relationship));
-  } catch {
-    // Keep the prior inspector relationships if the refresh fails.
-  }
-}
-
 function entityAffectsKinshipTree(entity: Entity | null | undefined) {
   if (!entity?.entity_type) return false;
   const type = entity.entity_type;
@@ -5091,7 +3985,7 @@ function upsertEntityInCache(entity: Entity) {
   } else {
     entities = [...entities, entity];
   }
-  if (selected?.id === entity.id) selected = entity;
+  if (loc.selected?.id === entity.id) loc.selected = entity;
 }
 
 function removeEntityFromCache(id: string) {
@@ -5119,13 +4013,13 @@ async function refreshAfterEntityMutation(options?: { entityId?: string; removed
       // Keep the prior cache entry; collection re-query still runs.
     }
   }
-  bumpCollectionRefresh();
-  if (entityAffectsKinshipTree(affectedEntity)) bumpKinshipRefresh();
+  loc.bumpCollectionRefresh();
+  if (entityAffectsKinshipTree(affectedEntity)) loc.bumpKinshipRefresh();
   if (affectedEntity?.entity_type === "daena.timeline:calendar") await ensureCalendarCache(true);
   if (affectedEntity?.entity_type === "daena.timeline:era") {
     eraContextCache.invalidate(affectedEntity.id);
-    if (selected && eraContexts.some((context) => context.id === affectedEntity.id)) {
-      eraContexts = await loadEraContexts(eraContexts.map((context) => context.id));
+    if (loc.selected && loc.eraContexts.some((context) => context.id === affectedEntity.id)) {
+      loc.eraContexts = await loadEraContexts(loc.eraContexts.map((context) => context.id));
     }
   }
   await refreshArchivedCount();
@@ -5191,7 +4085,7 @@ async function refreshArchivedCount() {
 }
 
 async function handleArchiveChanged() {
-  bumpCollectionRefresh();
+  loc.bumpCollectionRefresh();
   await refreshArchivedCount();
 }
 
@@ -5254,10 +4148,10 @@ function openStatusDestination(section: ProjectSection) {
 function statusCenterItems(): StatusCenterItem[] {
   if (!ready || !projectInfo) return [];
   const items: StatusCenterItem[] = [];
-  const saving = saveInFlight !== null;
-  if (selected) {
+  const saving = loc.saveInFlight !== null;
+  if (loc.selected) {
     items.push(
-      documentConflict
+      loc.documentConflict
         ? {
             id: "save",
             label: "Document conflict",
@@ -5266,31 +4160,31 @@ function statusCenterItems(): StatusCenterItem[] {
             actionLabel: "Return to draft",
             onAction: () => (statusCenterOpen = false),
           }
-        : saveError
+        : loc.saveError
           ? {
               id: "save",
               label: "Save paused",
-              detail: saveError,
+              detail: loc.saveError,
               tone: "danger",
               actionLabel: "Retry",
               onAction: () => {
                 statusCenterOpen = false;
-                void saveDocument();
+                void loc.saveDocument();
               },
             }
           : saving
-            ? { id: "save", label: "Saving entry", detail: selected.name, tone: "busy" }
-            : hasUnsavedChanges
+            ? { id: "save", label: "Saving entry", detail: loc.selected.name, tone: "busy" }
+            : loc.hasUnsavedChanges
               ? {
                   id: "save",
                   label: "Unsaved changes",
-                  detail: `${selected.name} is queued for local save.`,
+                  detail: `${loc.selected.name} is queued for local save.`,
                   tone: "warning",
                 }
               : {
                   id: "save",
                   label: "Entry saved",
-                  detail: savedAt ? `Saved locally at ${savedAt}.` : "The open entry has no pending edits.",
+                  detail: loc.savedAt ? `Saved locally at ${loc.savedAt}.` : "The open entry has no pending edits.",
                   tone: "success",
                 },
     );
@@ -5410,7 +4304,7 @@ async function finishOpening(info?: ProjectInfo) {
       error = friendlyError(cause);
     }
   }
-  await reconcileWorkspaceSection();
+  await loc.reconcileWorkspaceSection();
   rememberProject(projectInfo);
   await loadEntities();
   await ensureCalendarCache();
@@ -5418,13 +4312,13 @@ async function finishOpening(info?: ProjectInfo) {
   await refreshGit();
   await refreshAdmin();
   shellTabs = projectInfo ? loadShellTabs(projectInfo) : freshShellTabs();
-  projectHomeOpen = true;
+  loc.projectHomeOpen = true;
   ready = true;
   const restoredTab = activeTab(shellTabs);
   if (restoredTab.location.kind !== "home") {
     shellNavigationBusy = true;
     try {
-      await restoreShellLocation(restoredTab.location);
+      await loc.restoreShellLocation(restoredTab.location);
     } finally {
       shellTabs = snapshotActiveTab();
       shellNavigationBusy = false;
@@ -5466,8 +4360,8 @@ async function pickAndOpenProject(intent: "create" | "open") {
     // Asked before the transition overlay opens, because the overlay hides the Language webview.
     if (!(await canLeaveLanguageSection())) return;
     await runProjectTransition(intent === "create" ? "Creating project…" : "Opening project…", async () => {
-      if (!(await flushAutoSave())) return;
-      if (!(await leavePluginView({ closeWebviews: true }))) return;
+      if (!(await loc.flushAutoSave())) return;
+      if (!(await loc.leavePluginView({ closeWebviews: true }))) return;
       persistShellTabs();
       resetProjectSessionState();
       await project.close();
@@ -5491,8 +4385,8 @@ async function openRecentProject(path: string) {
   showProjectMenu = false;
   if (!(await canLeaveLanguageSection())) return;
   await runProjectTransition("Opening project…", async () => {
-    if (!(await flushAutoSave())) return;
-    if (!(await leavePluginView({ closeWebviews: true }))) return;
+    if (!(await loc.flushAutoSave())) return;
+    if (!(await loc.leavePluginView({ closeWebviews: true }))) return;
     persistShellTabs();
     resetProjectSessionState();
     await project.close();
@@ -5505,138 +4399,12 @@ async function closeProject() {
   showProjectMenu = false;
   if (!(await canLeaveLanguageSection())) return;
   await runProjectTransition("Closing project…", async () => {
-    if (!(await flushAutoSave())) return;
-    if (!(await leavePluginView({ closeWebviews: true }))) return;
+    if (!(await loc.flushAutoSave())) return;
+    if (!(await loc.leavePluginView({ closeWebviews: true }))) return;
     persistShellTabs();
     resetProjectSessionState();
     await project.close();
   });
-}
-
-async function flushAutoSave() {
-  // The Writing webview holds the editor while it is shown, so its unsent text comes first.
-  await flushWritingWebview();
-  editorRef?.flushPendingChanges();
-  flushDateFieldDirty();
-  cancelAutoSave();
-  if (!hasUnsavedChanges) return true;
-  return saveDocument();
-}
-
-async function loadSelectedState(entity: Entity) {
-  const token = ++selectedLoadToken;
-  const entityId = entity.id;
-  const isCurrent = () => token === selectedLoadToken && selected?.id === entityId;
-  selectedLoading = true;
-  selectedLoadError = "";
-  try {
-    closeAiFieldFill();
-    closeAiRewrite();
-    documentBody = "";
-    fields = {};
-    relationships = [];
-    eraContexts = [];
-    metadataDialog = null;
-    assets = [];
-    mapLocations = [];
-    loadedDocumentRevision = "";
-    loadedFieldRevisions = {};
-    loadedStructuredFieldKeys = new Set();
-    clearDirtyTracking();
-    const context = contextFor();
-    const documents = await project.listDocuments(entityId);
-    if (!isCurrent()) return;
-    const document = documents[0];
-    documentBody = normalizeDocument(document?.body ?? "", document?.format);
-    loadedDocumentRevision = document?.revision ?? "";
-    const storedFields = await project.listFields(entityId);
-    if (!isCurrent()) return;
-    const activeNamespaces = new Set(
-      activeManifest()
-        ?.schemas.filter((schema) => !entity.entity_type || schemaEntityTypeIds(schema).includes(entity.entity_type))
-        .map((schema) => schema.namespace) ?? [],
-    );
-    const relevantFields = storedFields.filter(
-      (field) => activeNamespaces.size === 0 || activeNamespaces.has(field.namespace),
-    );
-    const values = Object.fromEntries(relevantFields.map((field) => [field.key, field.value]));
-    loadedFieldRevisions = Object.fromEntries(
-      relevantFields.map((field) => [fieldRevisionKey(field.namespace, field.key), field.revision]),
-    );
-    loadedStructuredFieldKeys = new Set(
-      relevantFields
-        .filter((field) => isStructuredFieldValue(field.value))
-        .map((field) => fieldRevisionKey(field.namespace, field.key)),
-    );
-    dateEditorOpen = {};
-    cancelDateFieldDirty();
-    const nextDateCalendars: Record<string, string> = {};
-    fields = Object.fromEntries(
-      Object.entries(values).map(([key, value]) => {
-        const definition = definitions().find((candidate) => candidate.key === key);
-        if (definition?.type === "date") {
-          const date = parseCalendarDate(value);
-          if (date && !isGregorianCalendarId(date.calendar)) nextDateCalendars[key] = date.calendar;
-          const serialized = date ? serializeCalendarDate(date) : "";
-          if (isSentinelDateValue(serialized) || isSentinelDateValue(date)) return [key, ""];
-          return [key, serialized === "" ? String(value ?? "") : serialized];
-        }
-        if (definition && (definition.type === "number" || definition.type === "boolean" || definition.multiple))
-          return [key, value];
-        return [key, fieldDisplayValue(value)];
-      }),
-    );
-    dateCalendarByField = nextDateCalendars;
-    relationships = context.module.capabilities.includes("relationship.read")
-      ? (await context.relationships.list(entityId as UUID)).map((relationship) => ({
-          id: relationship.id,
-          source_id: relationship.sourceId,
-          target_id: relationship.targetId,
-          relationship_type: relationship.type,
-          metadata: JSON.stringify(relationship.metadata),
-          revision: relationship.revision,
-        }))
-      : [];
-    if (!isCurrent()) return;
-    eraContexts = await loadEraContexts(
-      relationships
-        .filter((relationship) => relationship.relationship_type === "during" && relationship.source_id === entityId)
-        .map((relationship) => relationship.target_id),
-    );
-    if (!isCurrent()) return;
-    hintDateCalendarsFromEras(eraContexts, false);
-    assets = context.module.capabilities.includes("asset.read:self")
-      ? (await context.assets.list(entityId as UUID)).map((asset) => ({
-          id: asset.id,
-          entity_id: asset.entityId,
-          namespace: asset.namespace,
-          filename: asset.filename,
-          content_hash: asset.contentHash,
-          size: asset.size,
-          mime_type: asset.mimeType,
-          path: asset.path,
-          created_at: asset.createdAt,
-          role: asset.role,
-          reference_scope: asset.referenceScope,
-          revision: asset.revision,
-        }))
-      : [];
-    if (!isCurrent()) return;
-    const nextMapLocations = entityId && mapsEnabled() ? await project.listMapLocations(entityId) : [];
-    if (!isCurrent()) return;
-    mapLocations = nextMapLocations;
-    savedAt = "";
-    void refreshWritingAppearanceLabels();
-  } catch (cause) {
-    if (isCurrent()) selectedLoadError = friendlyError(cause);
-    throw cause;
-  } finally {
-    if (isCurrent()) selectedLoading = false;
-  }
-}
-
-async function refreshSelectedMapLocations(entityId = selected?.id) {
-  mapLocations = entityId && mapsEnabled() ? await project.listMapLocations(entityId) : [];
 }
 
 async function openMapLocation(location: MapLocation) {
@@ -5655,15 +4423,15 @@ async function openMapLocation(location: MapLocation) {
 }
 
 async function ensureMapEditorOpen(mapEntityId: string) {
-  const departure = currentShellLocation();
+  const departure = loc.currentShellLocation();
   const map = entities.find((entity) => entity.id === mapEntityId) ?? (await project.getEntity(mapEntityId));
   if (!map) throw new Error("map-unavailable: choose a saved map first");
-  if (!(await flushAutoSave())) throw new Error("Save the current draft before opening the map editor.");
+  if (!(await loc.flushAutoSave())) throw new Error("Save the current draft before opening the map editor.");
   const mapsView = mapsNavigationItem();
-  selected = map;
+  loc.selected = map;
   mapsEditorKey = map.id;
-  await loadSelectedState(map);
-  if (mapsView) await openPluginView(mapsView, departure);
+  await loc.loadSelectedState(map);
+  if (mapsView) await loc.openPluginView(mapsView, departure);
 }
 
 async function beginMapPick(pending: NonNullable<typeof mapPickPending>) {
@@ -5695,35 +4463,35 @@ async function applyMapPick(anchor: unknown) {
         validity: { from: null, to: null },
       };
       await project.upsertMapLocation(entity.id, location);
-      const departure = currentShellLocation();
-      if (!(await leavePluginView())) return;
+      const departure = loc.currentShellLocation();
+      if (!(await loc.leavePluginView())) return;
       recordShellDeparture(departure);
-      section =
+      loc.section =
         entity.entity_type === "daena.timeline:event" ||
         entity.entity_type === "daena.timeline:encounter" ||
         entity.entity_type === "daena.timeline:era" ||
         entity.entity_type === "daena.timeline:calendar"
           ? "timeline"
           : "lore";
-      await selectEntity(entity, false);
-      mapLocations = await project.listMapLocations(entity.id);
+      await loc.selectEntity(entity, false);
+      loc.mapLocations = await project.listMapLocations(entity.id);
     } else {
       await project.upsertMapLocation(pending.entityId, { ...pending.location, anchor });
       const entity =
         entities.find((candidate) => candidate.id === pending.entityId) ?? (await project.getEntity(pending.entityId));
       if (entity) {
-        const departure = currentShellLocation();
-        if (!(await leavePluginView())) return;
+        const departure = loc.currentShellLocation();
+        if (!(await loc.leavePluginView())) return;
         recordShellDeparture(departure);
-        section =
+        loc.section =
           entity.entity_type === "daena.timeline:event" ||
           entity.entity_type === "daena.timeline:encounter" ||
           entity.entity_type === "daena.timeline:era" ||
           entity.entity_type === "daena.timeline:calendar"
             ? "timeline"
             : "lore";
-        await selectEntity(entity, false);
-        mapLocations = await project.listMapLocations(entity.id);
+        await loc.selectEntity(entity, false);
+        loc.mapLocations = await project.listMapLocations(entity.id);
       }
     }
   } catch (cause) {
@@ -5750,11 +4518,11 @@ async function openMapEntityFromLink(entityId: string) {
             entity.entity_type === "daena.timeline:calendar"
           ? "timeline"
           : "lore";
-    const departure = currentShellLocation();
-    if (!(await leavePluginView())) return;
+    const departure = loc.currentShellLocation();
+    if (!(await loc.leavePluginView())) return;
     recordShellDeparture(departure);
-    section = target;
-    await selectEntity(entity, false);
+    loc.section = target;
+    await loc.selectEntity(entity, false);
   } catch (cause) {
     error = friendlyError(cause);
   }
@@ -5762,25 +4530,25 @@ async function openMapEntityFromLink(entityId: string) {
 
 async function unlinkMapLocation(location: MapLocation) {
   if (
-    !selected ||
+    !loc.selected ||
     !(await confirmDialog({
       title: "Unlink this location?",
-      message: `${location.label || "This location"} will be unlinked from ${selected.name}. The entity and map feature will remain.`,
+      message: `${location.label || "This location"} will be unlinked from ${loc.selected.name}. The entity and map feature will remain.`,
       confirmLabel: "Unlink",
       danger: true,
     }))
   )
     return;
   try {
-    await project.unlinkMapLocation(selected.id, location.id);
-    mapLocations = await project.listMapLocations(selected.id);
+    await project.unlinkMapLocation(loc.selected.id, location.id);
+    loc.mapLocations = await project.listMapLocations(loc.selected.id);
   } catch (cause) {
     error = friendlyError(cause);
   }
 }
 
 async function editMapLocation(location: MapLocation) {
-  if (!selected) return;
+  if (!loc.selected) return;
   const role = await promptDialog({
     title: "Edit location role",
     message: "Describe what this location represents for this entity.",
@@ -5792,48 +4560,25 @@ async function editMapLocation(location: MapLocation) {
   const nextRole = role.trim();
   if (!nextRole) return;
   try {
-    await project.upsertMapLocation(selected.id, { ...location, role });
-    mapLocations = await project.listMapLocations(selected.id);
+    await project.upsertMapLocation(loc.selected.id, { ...location, role });
+    loc.mapLocations = await project.listMapLocations(loc.selected.id);
   } catch (cause) {
     error = friendlyError(cause);
   }
 }
 
 async function rebindMapLocation(location: MapLocation) {
-  if (!selected) return;
+  if (!loc.selected) return;
   try {
-    await beginMapPick({ kind: "rebind", entityId: selected.id, location, mapEntityId: location.mapEntityId });
+    await beginMapPick({ kind: "rebind", entityId: loc.selected.id, location, mapEntityId: location.mapEntityId });
   } catch (cause) {
     error = friendlyError(cause);
   }
 }
 
 function openEntityWithIntent(entity: Entity, intent: OpenIntent) {
-  if (intent === "new-tab") void openInNewTab(() => selectEntity(entity));
-  else void selectEntity(entity);
-}
-
-async function selectEntity(entity: Entity, recordHistory = true) {
-  if (selected?.id === entity.id) return;
-  if (!(await flushAutoSave())) return;
-  if (section === "language" && !(await canLeaveLanguageSection())) return;
-  const departure = currentShellLocation();
-  if (section === "maps" && sandboxView?.renderer === "maps" && !(await leavePluginView())) return;
-  if (recordHistory) recordShellDeparture(departure);
-  editorFullscreen = false;
-  selected = entity;
-  applyCollectionTabForEntityType(entity.entity_type);
-  hasUnsavedChanges = false;
-  documentConflict = null;
-  documentRevision = 0;
-  clearDirtyTracking();
-  saveError = "";
-  error = "";
-  try {
-    await loadSelectedState(entity);
-  } catch (cause) {
-    error = friendlyError(cause);
-  }
+  if (intent === "new-tab") void openInNewTab(() => loc.selectEntity(entity));
+  else void loc.selectEntity(entity);
 }
 
 /**
@@ -5854,42 +4599,28 @@ async function openEntityById(entityId: string) {
   if (!entity || entity.deleted) return;
   const target: Entity = entity;
   if (!entities.some((candidate) => candidate.id === target.id)) entities = [...entities, target];
-  if (section === "language") {
-    await selectSearchResult(target);
+  if (loc.section === "language") {
+    await loc.selectSearchResult(target);
     return;
   }
-  await selectEntity(target);
+  await loc.selectEntity(target);
 }
 
 async function openSelectedMapEditor() {
-  if (!selected || selected.entity_type !== "daena.maps:world-map") return;
+  if (!loc.selected || loc.selected.entity_type !== "daena.maps:world-map") return;
   const mapsView = mapsNavigationItem();
   if (!mapsView) {
     error = "The Maps integration is not available.";
     return;
   }
   try {
-    mapsEditorKey = selected.id;
+    mapsEditorKey = loc.selected.id;
     mapFocusLinkId = null;
     mapFocusFeatureId = null;
-    await openPluginView(mapsView);
+    await loc.openPluginView(mapsView);
   } catch (cause) {
     error = friendlyError(cause);
   }
-}
-
-async function reloadSelectedFromDisk() {
-  if (!selected) return;
-  const current = entities.find((entity) => entity.id === selected?.id) ?? selected;
-  selected = current;
-  await loadSelectedState(current);
-  hasUnsavedChanges = false;
-  documentRevision = 0;
-  clearDirtyTracking();
-  documentConflict = null;
-  conflictDiskBody = "";
-  savedAt = "";
-  saveError = "";
 }
 
 function handlePortableFilesChanged(paths: string[]) {
@@ -5899,49 +4630,6 @@ function handlePortableFilesChanged(paths: string[]) {
   ];
 }
 
-async function reloadConflict() {
-  try {
-    await reloadSelectedFromDisk();
-  } catch (cause) {
-    error = friendlyError(cause);
-  }
-}
-
-async function overwriteConflict() {
-  if (!selected) return;
-  try {
-    const [documents, storedFields] = await Promise.all([
-      project.listDocuments(selected.id),
-      project.listFields(selected.id),
-    ]);
-    loadedDocumentRevision = documents[0]?.revision ?? "";
-    loadedFieldRevisions = Object.fromEntries(
-      storedFields.map((field) => [fieldRevisionKey(field.namespace, field.key), field.revision]),
-    );
-    loadedStructuredFieldKeys = new Set(
-      storedFields
-        .filter((field) => isStructuredFieldValue(field.value))
-        .map((field) => fieldRevisionKey(field.namespace, field.key)),
-    );
-    documentConflict = null;
-    conflictDiskBody = "";
-    if (!(await saveDocument()) && !documentConflict && !saveError)
-      documentConflict = { paths: [], diagnostics: ["The draft could not be written as a new revision."] };
-  } catch (cause) {
-    documentConflict = { paths: [], diagnostics: [friendlyError(cause)] };
-  }
-}
-
-async function saveConflictRecoveryCopy() {
-  if (!selected) return;
-  try {
-    const path = await project.saveRecoveryCopy(selected.id, documentBody);
-    error = `Draft saved as ${path}`;
-  } catch (cause) {
-    error = friendlyError(cause);
-  }
-}
-
 async function createWithOption(
   option: CreateOption,
   requestedName: string,
@@ -5949,11 +4637,11 @@ async function createWithOption(
   openingDocument: string,
 ) {
   if (projectDiagnostics.length > 0 || createBusy || !requestedName.trim() || !option.module.enabled) return false;
-  const departure = currentShellLocation();
+  const departure = loc.currentShellLocation();
   createBusy = true;
   try {
     // The new entry changes the section and the selection, so unsent text in the open entry is saved first.
-    if (!(await flushAutoSave())) return false;
+    if (!(await loc.flushAutoSave())) return false;
     const fieldsForCreate: Record<string, unknown> = {};
     const relationshipsForCreate: Record<string, UUID[]> = {};
     for (const { field, required } of createFieldsFor(option)) {
@@ -6012,7 +4700,7 @@ async function createWithOption(
     const isHouse = createdType === HOUSE_TYPE || createdType === "house" || createdType.endsWith(":house");
     const isPerson = createdType === PERSON_TYPE || createdType.endsWith(":person");
     const fromTree = departure.kind === "workspace" && departure.section === "houses" && departure.view === "tree";
-    projectHomeOpen = false;
+    loc.projectHomeOpen = false;
     name = "";
     showCreateForm = false;
     createDialogView = "templates";
@@ -6021,27 +4709,27 @@ async function createWithOption(
     resetCreateFields(null);
     await refreshAfterEntityMutation({ entityId: created.id });
     if (fromTree && (isHouse || isPerson)) {
-      section = "houses";
-      housesView = "tree";
-      treeRootId = created.id;
-      treeSession = {
+      loc.section = "houses";
+      loc.housesView = "tree";
+      loc.treeRootId = created.id;
+      loc.treeSession = {
         expansions: [],
         selectedPersonId: null,
         selectedRelationshipId: null,
         viewport: null,
         houseId: isHouse ? created.id : null,
       };
-      treeRestoreNonce += 1;
-      clearSelection();
+      loc.treeRestoreNonce += 1;
+      loc.clearSelection();
     } else {
-      section =
+      loc.section =
         workspaceSectionOrder.find((target) =>
           manifestForWorkspaceSection(target)?.schemas.some((schema) =>
             schemaEntityTypeIds(schema).includes(option.template.entityType),
           ),
-        ) ?? section;
-      applyCollectionTabForEntityType(option.template.entityType);
-      await selectEntity(
+        ) ?? loc.section;
+      loc.applyCollectionTabForEntityType(option.template.entityType);
+      await loc.selectEntity(
         {
           id: created.id,
           name: created.name,
@@ -6078,7 +4766,7 @@ function closeCreateForm() {
     showCreateForm = false;
     createDialogView = "templates";
     name = "";
-    pendingManuscriptParentId = null;
+    loc.pendingManuscriptParentId = null;
     resetCreateFields(null);
     const returnFocus = createDialogReturnFocus;
     createDialogReturnFocus = null;
@@ -6099,13 +4787,13 @@ function activateCreateOption(option: CreateOption, initialName = "") {
     resetCreateFields(option);
   } else if (initialName) name = initialName;
   if (
-    pendingManuscriptParentId &&
+    loc.pendingManuscriptParentId &&
     (option.template.entityType === "daena.writing:manuscript" ||
       option.template.entityType === "manuscript" ||
       option.template.entityType.endsWith(":manuscript"))
   ) {
-    setCreateRelationshipValues("parent", [pendingManuscriptParentId]);
-    pendingManuscriptParentId = null;
+    setCreateRelationshipValues("parent", [loc.pendingManuscriptParentId]);
+    loc.pendingManuscriptParentId = null;
   }
   createDialogView = "form";
   showCreateForm = true;
@@ -6127,13 +4815,13 @@ function openFocusedCreate(optionKey?: string, initialName = "") {
 }
 
 function openNewManuscriptInSelected() {
-  if (!selected || !isManuscriptType(selected.entity_type)) return;
+  if (!loc.selected || !isManuscriptType(loc.selected.entity_type)) return;
   const key = createOptionKeyForEntityType("daena.writing:manuscript") ?? createOptionKeyForEntityType("manuscript");
   if (!key) {
     error = "Enable Writing Studio with a Manuscript template to create manuscripts.";
     return;
   }
-  pendingManuscriptParentId = selected.id;
+  loc.pendingManuscriptParentId = loc.selected.id;
   openFocusedCreate(key);
 }
 
@@ -6176,7 +4864,7 @@ function openCreationMenu() {
 }
 
 function openContextualCreate() {
-  if (section === "houses" && housesView === "tree") {
+  if (loc.section === "houses" && loc.housesView === "tree") {
     openNewPerson();
     return;
   }
@@ -6367,7 +5055,7 @@ async function selectQuickOpenItem(item: QuickOpenItem, intent: OpenIntent = "cu
   await tick();
   const run = async () => {
     if (action.kind === "entity") {
-      if (matchedEntity) await selectSearchResult(matchedEntity);
+      if (matchedEntity) await loc.selectSearchResult(matchedEntity);
       return;
     }
     if (action.kind === "map-feature") {
@@ -6379,7 +5067,7 @@ async function selectQuickOpenItem(item: QuickOpenItem, intent: OpenIntent = "cu
       return;
     }
     if (action.kind === "destination") {
-      if (action.destination === "home") await openProjectHome();
+      if (action.destination === "home") await loc.openProjectHome();
       else if (action.destination.startsWith("navigation:")) {
         const key = action.destination.slice("navigation:".length);
         const navItem = [...workspaceNavigationItems(), ...pluginViews()].find((candidate) => candidate.key === key);
@@ -6406,202 +5094,28 @@ async function selectQuickOpenItem(item: QuickOpenItem, intent: OpenIntent = "cu
   else await run();
 }
 
-function updateField(definition: FieldDefinition, event: Event) {
-  if (selectedLoading || selectedLoadError || projectDiagnostics.length > 0) return;
-  const target = event.currentTarget as HTMLInputElement | HTMLSelectElement;
-  let value: unknown;
-  if (definition.type === "boolean") {
-    value = (target as HTMLInputElement).checked;
-  } else if (definition.type === "number") {
-    const raw = target.value;
-    value = raw === "" ? "" : Number(raw);
-  } else if (target instanceof HTMLSelectElement && target.multiple) {
-    value = Array.from(target.selectedOptions, (option) => option.value);
-  } else {
-    value = target.value;
-  }
-  fields = { ...fields, [definition.key]: value };
-  markEntryDirty({ fieldKey: definition.key });
-}
-function isRevisionConflict(cause: unknown) {
-  return friendlyError(cause).toLowerCase().includes("revision conflict");
-}
-
-async function persistDocumentSnapshot(): Promise<boolean> {
-  if (
-    !selected ||
-    selectedLoading ||
-    selectedLoadError ||
-    !sectionEnabled() ||
-    documentConflict ||
-    projectDiagnostics.length > 0
-  )
-    return false;
-  const entityId = selected.id;
-  const body = documentBody;
-  const revision = documentRevision;
-  const fieldsSnapshot = { ...fields };
-  const definitionsForSave = definitions().filter((definition) => {
-    if (definition.type === "relationship") return false;
-    if (!dirtyFieldKeys.has(definition.key)) return false;
-    const namespace = namespaceForField(definition);
-    const key = fieldRevisionKey(namespace, definition.key);
-    return shouldPersistFieldValue(
-      fieldsSnapshot[definition.key],
-      Object.prototype.hasOwnProperty.call(loadedFieldRevisions, key),
-    );
-  });
-  try {
-    await project.saveEntry(
-      {
-        document: { entity_id: entityId, body, format: "markdown" },
-        fields: definitionsForSave.map((definition) => {
-          const namespace = namespaceForField(definition);
-          const value = fieldValueForSave(definition, fieldsSnapshot[definition.key] ?? "");
-          const persistedValue =
-            definition.type === "date"
-              ? value
-                ? (parseCalendarDate(value) ?? value)
-                : value
-              : restoreStructuredFieldValue(
-                  value,
-                  loadedStructuredFieldKeys.has(fieldRevisionKey(namespace, definition.key)),
-                  definition.label,
-                );
-          return {
-            entity_id: entityId,
-            namespace,
-            key: definition.key,
-            value: persistedValue,
-            revision: loadedFieldRevisions[fieldRevisionKey(namespace, definition.key)] ?? "",
-          };
-        }),
-      },
-      { expectedRevision: loadedDocumentRevision || undefined },
-    );
-    const [documents, storedFields] = await Promise.all([
-      project.listDocuments(entityId),
-      project.listFields(entityId),
-    ]);
-    if (selected?.id === entityId) {
-      loadedDocumentRevision = documents[0]?.revision ?? "";
-      loadedFieldRevisions = Object.fromEntries(
-        storedFields.map((field) => [fieldRevisionKey(field.namespace, field.key), field.revision]),
-      );
-      loadedStructuredFieldKeys = new Set(
-        storedFields
-          .filter((field) => isStructuredFieldValue(field.value))
-          .map((field) => fieldRevisionKey(field.namespace, field.key)),
-      );
-    }
-    if (selected?.id === entityId && documentRevision === revision) {
-      hasUnsavedChanges = false;
-      clearDirtyTracking();
-      autoSaveFailureCount = 0;
-      saveError = "";
-      savedAt = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-      notifyWritingSaved(entityId);
-      void loadProjectStatus(false);
-      try {
-        const loaded = await project.getEntity(entityId);
-        if (loaded && !loaded.deleted) upsertEntityInCache(loaded);
-      } catch {
-        // Relationship OCC still refetches the source revision at create time.
-      }
-      if (selected.entity_type === "daena.timeline:era") {
-        eraContextCache.invalidate(entityId);
-      }
-      if (definitionsForSave.some((definition) => definition.key === "startsAt")) {
-        notifyProfileTimelineChanged(entityId);
-      }
-      const loadToken = selectedLoadToken;
-      const linkedEraIds = relationships
-        .filter((relationship) => relationship.relationship_type === "during" && relationship.source_id === entityId)
-        .map((relationship) => relationship.target_id);
-      if (linkedEraIds.length > 0) {
-        const nextEraContexts = await loadEraContexts(linkedEraIds);
-        if (loadToken === selectedLoadToken && selected?.id === entityId) eraContexts = nextEraContexts;
-      }
-    }
-    return true;
-  } catch (cause) {
-    if (isRevisionConflict(cause) && selected?.id === entityId) {
-      try {
-        const documents = await project.listDocuments(entityId);
-        conflictDiskBody = normalizeDocument(documents[0]?.body ?? "", documents[0]?.format);
-      } catch {
-        conflictDiskBody = "";
-      }
-      documentConflict = { paths: [], diagnostics: [] };
-      savedAt = "";
-      saveError = "";
-    } else {
-      saveError = friendlyError(cause);
-      autoSaveFailureCount += 1;
-      const retryDelay = Math.min(30_000, 2_000 * 2 ** Math.min(autoSaveFailureCount - 1, 4));
-      scheduleAutoSave(retryDelay);
-    }
-    return false;
-  }
-}
-
-async function saveDocument(): Promise<boolean> {
-  cancelAutoSave();
-  if (saveInFlight) {
-    saveQueued = true;
-    const currentResult = await saveInFlight;
-    if (!currentResult || !hasUnsavedChanges) return currentResult;
-    return saveDocument();
-  }
-  if (!hasUnsavedChanges) return true;
-  isSaving = true;
-  saveQueued = false;
-  const operation = persistDocumentSnapshot();
-  saveInFlight = operation;
-  const result = await operation;
-  if (saveInFlight === operation) saveInFlight = null;
-  isSaving = false;
-  const shouldSaveQueuedChanges = result && saveQueued && hasUnsavedChanges;
-  saveQueued = false;
-  return shouldSaveQueuedChanges ? saveDocument() : result;
-}
-async function openEntityEditDialog(target: Entity | null = selected) {
+async function openEntityEditDialog(target: Entity | null = loc.selected) {
   if (projectDiagnostics.length > 0) return;
   if (!target) return;
-  if (selected?.id === target.id) {
-    if (!(await flushAutoSave())) return;
+  if (loc.selected?.id === target.id) {
+    if (!(await loc.flushAutoSave())) return;
   } else {
-    await selectEntity(target);
-    if (!(await flushAutoSave())) return;
+    await loc.selectEntity(target);
+    if (!(await loc.flushAutoSave())) return;
   }
   try {
     const loaded = await project.getEntity(target.id);
     if (loaded && !loaded.deleted) upsertEntityInCache(loaded);
   } catch {}
-  const current = entities.find((entity) => entity.id === target.id) ?? selected ?? target;
+  const current = entities.find((entity) => entity.id === target.id) ?? loc.selected ?? target;
   entityEditDialog = { entity: current, name: current.name, entityType: current.entity_type, busy: false };
-  entityMutation.reset();
+  loc.entityMutation.reset();
   setTimeout(() => document.getElementById("entity-edit-name")?.focus(), 0);
 }
 function closeEntityEditDialog() {
   entityEditDialog = null;
-  entityMutation.reset();
-  clearSavedMutationTimer();
-}
-
-let savedMutationTimer: ReturnType<typeof setTimeout> | null = null;
-function clearSavedMutationTimer() {
-  if (savedMutationTimer) {
-    clearTimeout(savedMutationTimer);
-    savedMutationTimer = null;
-  }
-}
-function scheduleClearSavedMutation() {
-  clearSavedMutationTimer();
-  savedMutationTimer = setTimeout(() => {
-    savedMutationTimer = null;
-    if (entityMutation.phase === "saved") entityMutation.reset();
-  }, 1800);
+  loc.entityMutation.reset();
+  loc.clearSavedMutationTimer();
 }
 
 async function saveEntityEditDialog() {
@@ -6636,7 +5150,7 @@ async function saveEntityEditDialog() {
   }
   const target = entities.find((e) => e.id === current.id) ?? entityEditDialog.entity;
   entityEditDialog.busy = true;
-  const result = await entityMutation.run(async () => {
+  const result = await loc.entityMutation.run(async () => {
     return project.updateEntity(
       target.id,
       nameChanged ? trimmed : null,
@@ -6650,19 +5164,19 @@ async function saveEntityEditDialog() {
     return;
   }
   const updated = result.value;
-  selected = updated;
+  loc.selected = updated;
   await refreshAfterEntityMutation({ entityId: updated.id });
   if (typeChanged) {
     const newSection = sectionForEntityType(updated.entity_type);
-    if (newSection && newSection !== section) section = newSection;
-    applyCollectionTabForEntityType(updated.entity_type);
-    await loadSelectedState(updated);
+    if (newSection && newSection !== loc.section) loc.section = newSection;
+    loc.applyCollectionTabForEntityType(updated.entity_type);
+    await loc.loadSelectedState(updated);
   } else {
-    await loadSelectedState(updated).catch(() => {});
+    await loc.loadSelectedState(updated).catch(() => {});
   }
   // Keep Saved chrome in the editor footer briefly; cancel path still resets via closeEntityEditDialog.
   entityEditDialog = null;
-  scheduleClearSavedMutation();
+  loc.scheduleClearSavedMutation();
 }
 async function renameSelected() {
   return openEntityEditDialog();
@@ -6670,9 +5184,9 @@ async function renameSelected() {
 
 async function archiveEntity(target: Entity, options?: { skipConfirm?: boolean; returnFocus?: HTMLElement | null }) {
   if (projectDiagnostics.length > 0) return;
-  if (selected?.id === target.id && !(await flushAutoSave())) return;
+  if (loc.selected?.id === target.id && !(await loc.flushAutoSave())) return;
   const owning = contextOwningEntityType(target.entity_type ?? "");
-  const result = await entityMutation.run(async () => {
+  const result = await loc.entityMutation.run(async () => {
     const loaded = await project.getEntity(target.id);
     const current = loaded && !loaded.deleted ? loaded : (entities.find((entity) => entity.id === target.id) ?? target);
     if (!current.revision) throw new Error("The entity revision is unavailable. Reload the project and try again.");
@@ -6685,10 +5199,10 @@ async function archiveEntity(target: Entity, options?: { skipConfirm?: boolean; 
     return;
   }
   // Toast is the success signal for archive; do not leave a lingering Saved chrome.
-  entityMutation.reset();
+  loc.entityMutation.reset();
   if (isTimelineEventEntity(target.entity_type)) notifyProfileTimelineChanged(target.id);
-  const wasSelected = selected?.id === target.id;
-  if (wasSelected) clearSelection();
+  const wasSelected = loc.selected?.id === target.id;
+  if (wasSelected) loc.clearSelection();
   closeTabsForEntity(target.id);
   await refreshAfterEntityMutation({ entityId: target.id, removed: true });
   showLifecycleToast({
@@ -6703,15 +5217,15 @@ async function archiveEntity(target: Entity, options?: { skipConfirm?: boolean; 
   const nextFocus =
     options?.returnFocus && document.contains(options.returnFocus)
       ? options.returnFocus
-      : (collectionListElement?.querySelector<HTMLElement>(".collection-item-main, .row-actions-trigger") ??
-        collectionPaneElement?.querySelector<HTMLElement>("button, [href], input") ??
+      : (loc.collectionListElement?.querySelector<HTMLElement>(".collection-item-main, .row-actions-trigger") ??
+        loc.collectionPaneElement?.querySelector<HTMLElement>("button, [href], input") ??
         null);
   nextFocus?.focus();
 }
 
 async function archiveSelected() {
-  if (!selected) return;
-  return archiveEntity(selected, {
+  if (!loc.selected) return;
+  return archiveEntity(loc.selected, {
     returnFocus: document.activeElement instanceof HTMLElement ? document.activeElement : null,
   });
 }
@@ -6726,14 +5240,14 @@ async function reloadEntityEditFromServer() {
       return;
     }
     entities = entities.map((entity) => (entity.id === loaded.id ? loaded : entity));
-    if (selected?.id === loaded.id) selected = loaded;
+    if (loc.selected?.id === loaded.id) loc.selected = loaded;
     entityEditDialog = {
       entity: loaded,
       name: loaded.name,
       entityType: loaded.entity_type,
       busy: false,
     };
-    entityMutation.reset();
+    loc.entityMutation.reset();
   } catch (cause) {
     error = friendlyError(cause);
   }
@@ -6741,31 +5255,27 @@ async function reloadEntityEditFromServer() {
 
 async function openHouseTree(entity: Entity) {
   if (entity.entity_type !== HOUSE_TYPE) return;
-  if (!(await flushAutoSave())) return;
-  const departure = currentShellLocation();
-  if (!(await leavePluginView())) return;
+  if (!(await loc.flushAutoSave())) return;
+  const departure = loc.currentShellLocation();
+  if (!(await loc.leavePluginView())) return;
   recordShellDeparture(departure);
-  projectHomeOpen = false;
-  section = "houses";
-  housesView = "tree";
-  treeRootId = entity.id;
-  treeSession = {
+  loc.projectHomeOpen = false;
+  loc.section = "houses";
+  loc.housesView = "tree";
+  loc.treeRootId = entity.id;
+  loc.treeSession = {
     expansions: [],
     selectedPersonId: null,
     selectedRelationshipId: null,
     viewport: null,
     houseId: entity.id,
   };
-  treeRestoreNonce += 1;
-  clearSelection();
+  loc.treeRestoreNonce += 1;
+  loc.clearSelection();
 }
 function selectedRelationshipIds(definition: FieldDefinition) {
-  if (!selected || !definition.relationshipType) return [];
-  return counterpartIds(selected.id, relationships, definition);
-}
-function relationshipsForDefinition(definition: FieldDefinition) {
-  if (!selected) return [];
-  return relationshipsForField(selected.id, relationships, definition);
+  if (!loc.selected || !definition.relationshipType) return [];
+  return counterpartIds(loc.selected.id, loc.relationships, definition);
 }
 function relationshipDefinitions() {
   return definitions().filter((candidate) => candidate.type === "relationship");
@@ -6802,7 +5312,7 @@ function hasChronologySection() {
   return Boolean(eraRelationshipDefinition()) || chronologyDateDefinitions().length > 0;
 }
 function hasCalendarEditorSection() {
-  return selected?.entity_type === "daena.timeline:calendar" && Boolean(projectInfo);
+  return loc.selected?.entity_type === "daena.timeline:calendar" && Boolean(projectInfo);
 }
 function hasDetailsSection() {
   return propertyDefinitions().length > 0 || hasChronologySection() || hasCalendarEditorSection();
@@ -6815,55 +5325,38 @@ function relationshipLinkCount() {
 }
 function entityFieldsTabs(): EntityFieldsTab[] {
   const tabs: EntityFieldsTab[] = [{ id: "relationships", label: "Relationships", count: relationshipLinkCount() }];
-  if (selected && (canEditLoreProfile(selected.entity_type) || isTimelineEventEntity(selected.entity_type))) {
+  if (
+    loc.selected &&
+    (canEditLoreProfile(loc.selected.entity_type) || isTimelineEventEntity(loc.selected.entity_type))
+  ) {
     tabs.push({ id: "profile", label: "Profile" });
   }
-  tabs.push({ id: "assets", label: "Assets", count: assets.length });
-  if (mapsEnabled()) tabs.push({ id: "maps", label: "Maps", count: mapLocations.length });
+  tabs.push({ id: "assets", label: "Assets", count: loc.assets.length });
+  if (mapsEnabled()) tabs.push({ id: "maps", label: "Maps", count: loc.mapLocations.length });
   tabs.push({ id: "backlinks", label: "Backlinks", count: backlinkRelationships().length });
   return tabs;
 }
 function openFieldsDialog(tab?: EntityFieldsTabId) {
   const tabs = entityFieldsTabs();
   const next = tab && tabs.some((candidate) => candidate.id === tab) ? tab : (tabs[0]?.id ?? "relationships");
-  fieldsDialogTab = next;
-  fieldsDialogOpen = true;
+  loc.fieldsDialogTab = next;
+  loc.fieldsDialogOpen = true;
 }
 $effect(() => {
-  if (!selected) {
-    if (fieldsDialogOpen) fieldsDialogOpen = false;
+  if (!loc.selected) {
+    if (loc.fieldsDialogOpen) loc.fieldsDialogOpen = false;
     return;
   }
-  if (!fieldsDialogOpen) return;
+  if (!loc.fieldsDialogOpen) return;
   const tabs = entityFieldsTabs();
-  if (!tabs.some((tab) => tab.id === fieldsDialogTab) && tabs[0]) fieldsDialogTab = tabs[0].id;
+  if (!tabs.some((tab) => tab.id === loc.fieldsDialogTab) && tabs[0]) loc.fieldsDialogTab = tabs[0].id;
 });
-const inspectorChronologyWarnings = $derived(
-  chronologyWarnings(
-    chronologyDateDefinitions().map((definition) => ({ label: definition.label, value: fields[definition.key] })),
-    eraContexts,
-    calendarDefinitions,
-  ),
-);
 async function loadEraContexts(eraIds: string[]): Promise<EraContext[]> {
   return eraContextCache.getMany(eraIds, {
     listFields: (entityId) => project.listFields(entityId),
     listRelationships: (entityId) => project.listRelationships(entityId),
     entityName: (entityId) => entities.find((entity) => entity.id === entityId)?.name ?? entityId,
   });
-}
-function hintDateCalendarsFromEras(contexts: EraContext[], persistDates = false) {
-  const calendarId = firstEraCalendarId(contexts);
-  if (!calendarId) return;
-  for (const definition of chronologyDateDefinitions()) {
-    const current = dateForField(definition.key);
-    if (current && !isGregorianCalendarId(current.calendar)) continue;
-    dateCalendarByField = { ...dateCalendarByField, [definition.key]: calendarId };
-    if (persistDates && current) {
-      fields = { ...fields, [definition.key]: serializeCalendarDate({ ...current, calendar: calendarId }) };
-      markEntryDirty({ fieldKey: definition.key });
-    }
-  }
 }
 function hintCreateDateCalendarsFromEras(contexts: EraContext[]) {
   const calendarId = firstEraCalendarId(contexts);
@@ -6876,10 +5369,10 @@ function hintCreateDateCalendarsFromEras(contexts: EraContext[]) {
   }
 }
 function backlinkRelationships() {
-  if (!selected) return [];
-  const covered = coveredRelationshipIds(selected.id, relationships, otherRelationshipDefinitions());
-  return relationships.filter(
-    (relationship) => relationship.target_id === selected!.id && !covered.has(relationship.id),
+  if (!loc.selected) return [];
+  const covered = coveredRelationshipIds(loc.selected.id, loc.relationships, otherRelationshipDefinitions());
+  return loc.relationships.filter(
+    (relationship) => relationship.target_id === loc.selected!.id && !covered.has(relationship.id),
   );
 }
 function relationshipSourceName(relationship: Relationship) {
@@ -6905,10 +5398,10 @@ function definitionForRelationship(relationship: Relationship): FieldDefinition 
   return null;
 }
 function relationshipOtherId(definition: FieldDefinition, relationship: Relationship) {
-  return counterpartId(selected?.id ?? "", relationship, definition) ?? relationship.target_id;
+  return counterpartId(loc.selected?.id ?? "", relationship, definition) ?? relationship.target_id;
 }
 function relationshipTargetName(relationship: Relationship, definition?: FieldDefinition) {
-  const id = definition && selected ? relationshipOtherId(definition, relationship) : relationship.target_id;
+  const id = definition && loc.selected ? relationshipOtherId(definition, relationship) : relationship.target_id;
   return entities.find((entity) => entity.id === id)?.name ?? id;
 }
 function relationshipMetadataSummary(relationship: Relationship, definition: FieldDefinition | null) {
@@ -6941,13 +5434,13 @@ function relationshipMetadataSummary(relationship: Relationship, definition: Fie
     .join(" · ");
 }
 function openRelationshipMetadata(relationship: Relationship) {
-  metadataDialog = { relationship, definition: definitionForRelationship(relationship) };
+  loc.metadataDialog = { relationship, definition: definitionForRelationship(relationship) };
 }
 async function saveRelationshipMetadata(relationship: Relationship, metadata: Record<string, unknown>) {
   const updated = await project.updateRelationship(relationship.id, metadata, {
     expectedRevision: relationship.revision,
   });
-  relationships = relationships.map((current) => (current.id === updated.id ? updated : current));
+  loc.relationships = loc.relationships.map((current) => (current.id === updated.id ? updated : current));
 }
 async function confirmRemoveRelationship(definition: FieldDefinition, relationship: Relationship) {
   const target = relationshipTargetName(relationship, definition);
@@ -6955,14 +5448,14 @@ async function confirmRemoveRelationship(definition: FieldDefinition, relationsh
   if (
     !(await confirmDialog({
       title: `Remove ${label}?`,
-      message: `${target} will be unlinked from ${selected?.name ?? "this entry"}. The relationship can be recreated.`,
+      message: `${target} will be unlinked from ${loc.selected?.name ?? "this entry"}. The relationship can be recreated.`,
       confirmLabel: "Remove",
       danger: true,
     }))
   )
     return;
   const otherId = relationshipOtherId(definition, relationship);
-  await updateRelationshipField(
+  await loc.updateRelationshipField(
     definition,
     selectedRelationshipIds(definition).filter((id) => id !== otherId),
   );
@@ -7007,179 +5500,8 @@ async function createRelationshipTarget(definition: FieldDefinition, name: strin
     return null;
   }
 }
-async function updateRelationshipField(definition: FieldDefinition, targetIds: string[]) {
-  if (projectDiagnostics.length > 0) return;
-  if (!selected || !definition.relationshipType) return;
-  const desired = new Set(targetIds);
-  const current = relationshipsForDefinition(definition);
-  const currentIds = new Set(
-    current
-      .map((relationship) => counterpartId(selected!.id, relationship, definition))
-      .filter((id): id is string => Boolean(id)),
-  );
-  const toRemove = current.filter((relationship) => {
-    const otherId = counterpartId(selected!.id, relationship, definition);
-    return !otherId || !desired.has(otherId);
-  });
-  const toAdd = [...desired].filter((targetId) => !currentIds.has(targetId));
-  if (toRemove.length === 0 && toAdd.length === 0) return;
-  try {
-    const context = contextOwningRelationshipType(definition.relationshipType);
-    const removedIds = new Set<string>();
-    for (const relationship of toRemove) {
-      try {
-        await context.relationships.delete(relationship.id as UUID, relationship.relationship_type, {
-          expectedRevision: relationship.revision,
-        });
-        removedIds.add(relationship.id);
-      } catch (cause) {
-        if (classifyMutationError(cause).code === "relationship.missing") {
-          removedIds.add(relationship.id);
-          continue;
-        }
-        throw cause;
-      }
-    }
-    const created = [];
-    for (const otherId of toAdd) {
-      const endpoints = endpointsForCreate(selected!.id, otherId, definition);
-      const source = await project.getEntity(endpoints.sourceId);
-      const sourceRevision = source?.revision ?? "";
-      if (!sourceRevision) throw new Error("The entity revision is unavailable. Reload the project and try again.");
-      if (source) upsertEntityInCache(source);
-      const createdRelationship = await context.relationships.create(
-        {
-          sourceId: endpoints.sourceId as UUID,
-          targetId: endpoints.targetId as UUID,
-          type: definition.relationshipType!,
-          metadata: defaultRelationshipMetadata(definition),
-        },
-        { expectedRevision: sourceRevision, requestId: crypto.randomUUID() },
-      );
-      created.push(toHostRelationship(createdRelationship));
-    }
-    relationships = [...relationships.filter((relationship) => !removedIds.has(relationship.id)), ...created];
-    await refreshAfterEntityMutation({ entityId: selected.id });
-    if (definition.relationshipType && isKinshipRelationshipType(definition.relationshipType)) {
-      bumpKinshipRefresh();
-    }
-    if (isEraRelationshipField(definition)) {
-      eraContextCache.invalidateMany(targetIds);
-      eraContexts = await loadEraContexts(targetIds);
-      hintDateCalendarsFromEras(eraContexts, true);
-    }
-    void refreshWritingAppearanceLabels();
-  } catch (cause) {
-    error = friendlyError(cause);
-  }
-}
 function canWriteAssets() {
-  return section === "lore" && (activeManifest()?.capabilities.includes("asset.write:self") ?? false);
-}
-async function refreshSelectedAssets() {
-  if (!selected) {
-    assets = [];
-    return;
-  }
-  const namespaces = new Set(activeManifest()?.schemas.map((schema) => schema.namespace) ?? []);
-  assets = (await project.listAssets(selected.id)).filter((asset) => namespaces.has(asset.namespace));
-}
-async function attachAsset() {
-  if (projectDiagnostics.length > 0) return;
-  if (!selected) return;
-  try {
-    const selection = await project.pickFile();
-    const source = typeof selection === "string" ? selection : null;
-    if (!source) return;
-    const filename = source.split(/[\\/]/).pop() ?? "asset";
-    const asset = await project.registerAssetFile({
-      entity_id: selected.id,
-      namespace: primarySchemaNamespace(activeManifest()?.schemas, {
-        entityType: selected.entity_type,
-        fallback: activeModuleId(),
-      }),
-      source_path: source,
-      filename,
-      mime_type: mimeTypeFor(filename),
-    });
-    assets = [...assets, asset];
-  } catch (cause) {
-    error = friendlyError(cause);
-  }
-}
-function openAssetDialog(asset: Asset) {
-  if (projectDiagnostics.length > 0) return;
-  assetDialog = asset;
-}
-async function handleAssetSave(update: {
-  filename?: string;
-  role?: "attachment" | "profile";
-  referenceScope?: "entity" | "project";
-}) {
-  const current = assetDialog;
-  if (!current) return;
-  assetBusyId = current.id;
-  try {
-    await project.updateAssetMetadata(current.id, update, current.revision);
-    await refreshSelectedAssets();
-  } catch (cause) {
-    error = friendlyError(cause);
-    throw cause;
-  } finally {
-    assetBusyId = null;
-  }
-}
-async function handleAssetDelete() {
-  const current = assetDialog;
-  if (!current) return;
-  if (
-    !(await confirmDialog({
-      title: `Delete ${current.filename}?`,
-      message: "This file will be permanently removed from the project and the checkpoint. This cannot be undone.",
-      confirmLabel: "Delete",
-      danger: true,
-    }))
-  )
-    return;
-  assetBusyId = current.id;
-  try {
-    await project.deleteAsset(current.id, current.revision);
-    await refreshSelectedAssets();
-  } catch (cause) {
-    error = friendlyError(cause);
-    throw cause;
-  } finally {
-    assetBusyId = null;
-  }
-}
-async function handleAssetReplace() {
-  const current = assetDialog;
-  if (!current) return;
-  const selection = await project.pickFile();
-  const source = typeof selection === "string" ? selection : null;
-  if (!source) return;
-  const replacementName = source.split(/[\\/]/).pop() ?? "replacement";
-  if (
-    !(await confirmDialog({
-      title: `Replace ${current.filename}?`,
-      message: `Use ${replacementName} as the new content? The attachment name and metadata will stay unchanged.`,
-      confirmLabel: "Replace",
-    }))
-  )
-    return;
-  assetBusyId = current.id;
-  try {
-    await project.replaceAssetFile(current.id, source, mimeTypeFor(replacementName), current.revision);
-    await refreshSelectedAssets();
-    // refresh dialog with new revision
-    const refreshed = assets.find((a) => a.id === current.id) ?? null;
-    if (refreshed) assetDialog = refreshed;
-  } catch (cause) {
-    error = friendlyError(cause);
-    throw cause;
-  } finally {
-    assetBusyId = null;
-  }
+  return loc.section === "lore" && (activeManifest()?.capabilities.includes("asset.write:self") ?? false);
 }
 async function toggleModule(id: ModuleId) {
   const installed = modules.find((module) => module.id === id);
@@ -7192,8 +5514,8 @@ async function toggleModule(id: ModuleId) {
       async (granted) => {
         await project.enableModule(id, granted);
         modules = await project.listModuleManifests();
-        await refreshSelectedMapLocations();
-        await reconcileWorkspaceSection();
+        await loc.refreshSelectedMapLocations();
+        await loc.reconcileWorkspaceSection();
         await refreshAdmin();
       },
       installed.capabilities,
@@ -7204,8 +5526,8 @@ async function toggleModule(id: ModuleId) {
     if (id === "daena.maps" && !(await resolveDirtyMapSession())) return;
     await project.disableModule(id);
     modules = await project.listModuleManifests();
-    await refreshSelectedMapLocations();
-    await reconcileWorkspaceSection();
+    await loc.refreshSelectedMapLocations();
+    await loc.reconcileWorkspaceSection();
     await refreshAdmin();
     if (!selectedCreateOption()) selectedCreateKey = "";
     if (showCreateForm && !selectedCreateOption()) closeCreateForm();
@@ -7251,33 +5573,33 @@ function setAdminPluginEnabled(id: string, enabled: boolean) {
   );
 }
 async function openSettings(nextSection: SettingsSection = "general") {
-  if (!(await flushAutoSave())) return;
-  if (showSettings && settingsSurface === "application" && settingsSection === nextSection) return;
-  if (!showSettings && section === "language" && !(await canLeaveLanguageSection())) return;
-  const departure = currentShellLocation();
-  if (showSettings && !(await beforeAdministrationNavigate())) return;
-  if (!(await leavePluginView())) return;
+  if (!(await loc.flushAutoSave())) return;
+  if (loc.showSettings && loc.settingsSurface === "application" && loc.settingsSection === nextSection) return;
+  if (!loc.showSettings && loc.section === "language" && !(await canLeaveLanguageSection())) return;
+  const departure = loc.currentShellLocation();
+  if (loc.showSettings && !(await beforeAdministrationNavigate())) return;
+  if (!(await loc.leavePluginView())) return;
   recordShellDeparture(departure);
-  showSettings = true;
-  settingsSurface = "application";
-  settingsSection = nextSection;
+  loc.showSettings = true;
+  loc.settingsSurface = "application";
+  loc.settingsSection = nextSection;
   installSummary = null;
   deleteBackupPath = "";
   showProjectMenu = false;
 }
 async function openProjectCenter(nextSection: ProjectSection = "overview") {
-  if (!ready || !(await flushAutoSave())) return;
-  if (showSettings && settingsSurface === "project" && projectSection === nextSection) return;
-  if (!showSettings && section === "language" && !(await canLeaveLanguageSection())) return;
-  const departure = currentShellLocation();
+  if (!ready || !(await loc.flushAutoSave())) return;
+  if (loc.showSettings && loc.settingsSurface === "project" && loc.projectSection === nextSection) return;
+  if (!loc.showSettings && loc.section === "language" && !(await canLeaveLanguageSection())) return;
+  const departure = loc.currentShellLocation();
   const wasEditingFields =
-    showSettings && settingsSurface === "project" && projectSection === "fields" && !!schemaPluginId;
-  if (showSettings && !(await beforeAdministrationNavigate(nextSection))) return;
-  if (!(await leavePluginView())) return;
+    loc.showSettings && loc.settingsSurface === "project" && loc.projectSection === "fields" && !!schemaPluginId;
+  if (loc.showSettings && !(await beforeAdministrationNavigate(nextSection))) return;
+  if (!(await loc.leavePluginView())) return;
   recordShellDeparture(departure);
-  showSettings = true;
-  settingsSurface = "project";
-  projectSection = nextSection;
+  loc.showSettings = true;
+  loc.settingsSurface = "project";
+  loc.projectSection = nextSection;
   installSummary = null;
   deleteBackupPath = "";
   showProjectMenu = false;
@@ -7303,14 +5625,14 @@ async function openProjectCenter(nextSection: ProjectSection = "overview") {
 }
 function closeSettings() {
   recordCurrentShellLocation();
-  showSettings = false;
-  settingsSurface = "application";
-  settingsSection = "general";
-  projectSection = "overview";
+  loc.showSettings = false;
+  loc.settingsSurface = "application";
+  loc.settingsSection = "general";
+  loc.projectSection = "overview";
   statusCenterOpen = false;
 }
 function closeAdministrationTab() {
-  const kind = currentShellLocation().kind;
+  const kind = loc.currentShellLocation().kind;
   const openCount = shellTabs.groups.reduce((count, group) => count + group.tabs.length, 0);
   if (openCount > 1 && (kind === "settings" || kind === "project")) {
     void closeShellTab(activeTab(shellTabs).id);
@@ -7322,16 +5644,16 @@ function setSchemaEditorDirty(dirty: boolean) {
   schemaEditorDirty = dirty;
 }
 async function beforeSettingsNavigate(next: SettingsSection | null): Promise<boolean> {
-  if (next && next !== settingsSection) recordCurrentShellLocation();
+  if (next && next !== loc.settingsSection) recordCurrentShellLocation();
   return true;
 }
 async function beforeProjectNavigate(next: ProjectSection | null): Promise<boolean> {
-  if (projectSection === "fields" && next === "fields") return true;
-  if (projectSection === "fields") {
+  if (loc.projectSection === "fields" && next === "fields") return true;
+  if (loc.projectSection === "fields") {
     if (!(await allowLeaveSchemaEditor())) return false;
     schemaEditorDirty = false;
   }
-  if (next && next !== projectSection) recordCurrentShellLocation();
+  if (next && next !== loc.projectSection) recordCurrentShellLocation();
   return true;
 }
 async function beforeVisibleSettingsNavigate(next: SettingsSection | null): Promise<boolean> {
@@ -7341,13 +5663,13 @@ async function beforeVisibleProjectNavigate(next: ProjectSection | null): Promis
   return beforeProjectNavigate(next);
 }
 async function beforeAdministrationNavigate(nextProjectSection: ProjectSection | null = null): Promise<boolean> {
-  if (!showSettings || settingsSurface === "application") return true;
+  if (!loc.showSettings || loc.settingsSurface === "application") return true;
   return beforeProjectNavigate(nextProjectSection);
 }
 /** Close settings from outside SettingsView (rail, plugin open, etc.). */
 async function dismissSettings(): Promise<boolean> {
   if (!(await beforeAdministrationNavigate())) return false;
-  showSettings = false;
+  loc.showSettings = false;
   return true;
 }
 async function refreshModuleSchemaEditor(moduleId: string) {
@@ -7413,7 +5735,7 @@ async function reassignSchemaEntities(fromTypeId: string, toTypeId: string) {
     offset += page.items.length;
   }
   await refreshSchemaEntityCounts();
-  bumpCollectionRefresh();
+  loc.bumpCollectionRefresh();
   if (moved > 0) {
     moduleSchemaMessage = `Reassigned ${moved} ${moved === 1 ? "entity" : "entities"} to the chosen type.`;
   }
@@ -7519,7 +5841,7 @@ async function saveModuleSchemaOverlay(overlay: ModuleSchemaOverlay, options?: {
   }
 }
 $effect(() => {
-  if (!showSettings || settingsSurface !== "project" || projectSection !== "extensions" || !ready) return;
+  if (!loc.showSettings || loc.settingsSurface !== "project" || loc.projectSection !== "extensions" || !ready) return;
   void refreshAdmin();
 });
 async function installFromPicker() {
@@ -7710,7 +6032,7 @@ async function retryPlugin(plugin: PluginAdminEntry) {
   try {
     await project.retryPlugin(plugin.id);
     modules = await project.listModuleManifests();
-    await reconcileWorkspaceSection();
+    await loc.reconcileWorkspaceSection();
     await refreshAdmin();
     error = `Retried ${plugin.name}.`;
   } catch (cause) {
@@ -7748,8 +6070,8 @@ async function togglePluginEnabled(plugin: PluginAdminEntry) {
         try {
           await project.enableModule(plugin.id, granted);
           modules = await project.listModuleManifests();
-          await refreshSelectedMapLocations();
-          await reconcileWorkspaceSection();
+          await loc.refreshSelectedMapLocations();
+          await loc.reconcileWorkspaceSection();
           await refreshAdmin();
         } finally {
           pluginActionId = null;
@@ -7764,12 +6086,12 @@ async function togglePluginEnabled(plugin: PluginAdminEntry) {
     if (plugin.id === "daena.maps" && !(await resolveDirtyMapSession())) return;
     await project.disableModule(plugin.id);
     modules = await project.listModuleManifests();
-    await refreshSelectedMapLocations();
-    await reconcileWorkspaceSection();
+    await loc.refreshSelectedMapLocations();
+    await loc.reconcileWorkspaceSection();
     setAdminPluginEnabled(plugin.id, false);
     await refreshAdmin();
-    if (hostView?.plugin.id === plugin.id) hostView = null;
-    if (sandboxView?.plugin.id === plugin.id) sandboxView = null;
+    if (loc.hostView?.plugin.id === plugin.id) loc.hostView = null;
+    if (loc.sandboxView?.plugin.id === plugin.id) loc.sandboxView = null;
     pruneUnavailableShellTabs();
   } catch (cause) {
     error = friendlyError(cause);
@@ -7796,55 +6118,35 @@ async function reviewPluginCapabilities(plugin: PluginAdminEntry) {
     plugin.grantedCapabilities,
   );
 }
-function clearSelection() {
-  cancelAutoSave();
-  cancelDateFieldDirty();
-  editorFullscreen = false;
-  hasUnsavedChanges = false;
-  selected = null;
-  selectedLoading = false;
-  selectedLoadError = "";
-  documentBody = "";
-  fields = {};
-  relationships = [];
-  eraContexts = [];
-  createEraContexts = [];
-  metadataDialog = null;
-  assets = [];
-  savedAt = "";
-  saveError = "";
-  loadedDocumentRevision = "";
-  loadedFieldRevisions = {};
-  loadedStructuredFieldKeys = new Set();
-  documentConflict = null;
-  conflictDiskBody = "";
-  projectDiagnostics = [];
-  showCreateForm = false;
-}
 function resetProjectSessionState() {
   try {
     revokeAllResolvedAssetUrls();
   } catch {}
   calendarCache.invalidate();
   eraContextCache.clear();
-  selectedLoadToken += 1;
+  loc.selectedLoadToken += 1;
   closeAiFieldFill();
   closeAiRewrite();
-  clearSelection();
+  loc.clearSelection();
   shellTabs = freshShellTabs();
+  // Callers close every plugin webview (`leavePluginView({ closeWebviews: true })`) before this runs.
+  webviewPool = emptyWebviewPool;
+  writingMountRetained = [];
+  languageMountRetained = [];
+  languageCreatedState.clear();
   shellNavigationBusy = false;
-  collectionScrollBySection = {};
-  pendingCollectionScroll = null;
-  collectionQueryRestoring = false;
-  projectHomeOpen = true;
+  loc.collectionScrollBySection = {};
+  loc.pendingCollectionScroll = null;
+  loc.collectionQueryRestoring = false;
+  loc.projectHomeOpen = true;
   showExternalImport = false;
   projectInfo = null;
   rememberProjectTheme(null);
   projectStatusEpoch += 1;
   modules = [];
   adminPlugins = null;
-  hostView = null;
-  sandboxView = null;
+  loc.hostView = null;
+  loc.sandboxView = null;
   gitStatus = null;
   mapSaveStates = {};
   mapsEditorKey = "welcome";
@@ -7860,11 +6162,11 @@ function resetProjectSessionState() {
   globalQuery = "";
   quickOpenOpen = false;
   quickOpenSearchLoading = false;
-  collectionQuery.textSearch = "";
-  showSettings = false;
-  settingsSurface = "application";
-  settingsSection = "general";
-  projectSection = "overview";
+  loc.collectionQuery.textSearch = "";
+  loc.showSettings = false;
+  loc.settingsSurface = "application";
+  loc.settingsSection = "general";
+  loc.projectSection = "overview";
   statusCenterOpen = false;
   showCreateForm = false;
   createDialogView = "templates";
@@ -7885,14 +6187,14 @@ function resetProjectSessionState() {
 }
 async function openExternalImport() {
   showProjectMenu = false;
-  if (!(await flushAutoSave())) return;
+  if (!(await loc.flushAutoSave())) return;
   showExternalImport = true;
 }
 async function seedExample() {
   try {
-    if (!(await flushAutoSave())) return;
+    if (!(await loc.flushAutoSave())) return;
     await project.seedExample();
-    clearSelection();
+    loc.clearSelection();
     await loadEntities();
     await ensureCalendarCache(true);
     modules = await project.listModuleManifests();
@@ -7919,8 +6221,8 @@ async function rebuildSearchIndex() {
 async function importPortableCheckpoint() {
   if (!(await canLeaveLanguageSection())) return;
   await runProjectTransition("Importing checkpoint…", async () => {
-    if (!(await flushAutoSave())) return;
-    if (!(await leavePluginView({ closeWebviews: true }))) return;
+    if (!(await loc.flushAutoSave())) return;
+    if (!(await loc.leavePluginView({ closeWebviews: true }))) return;
     await project.importCheckpoint();
     persistShellTabs();
     resetProjectSessionState();
@@ -7929,7 +6231,7 @@ async function importPortableCheckpoint() {
   });
 }
 async function createPortableBackup() {
-  if (!(await flushAutoSave())) throw new Error("Save the current draft before creating a backup.");
+  if (!(await loc.flushAutoSave())) throw new Error("Save the current draft before creating a backup.");
   return project.backup();
 }
 async function exportMarkdownProject() {
@@ -7941,7 +6243,7 @@ async function exportMarkdownProject() {
     if (!destination) return;
     let output = "";
     await runProjectTransition("Exporting Markdown…", async () => {
-      if (!(await flushAutoSave())) return;
+      if (!(await loc.flushAutoSave())) return;
       output = await project.exportMarkdown(destination);
     });
     if (output) error = `Markdown export written to ${output}`;
@@ -7950,14 +6252,14 @@ async function exportMarkdownProject() {
   }
 }
 async function createRecoveryBackup() {
-  if (!(await flushAutoSave())) throw new Error("Save the current draft before creating a recovery backup.");
+  if (!(await loc.flushAutoSave())) throw new Error("Save the current draft before creating a recovery backup.");
   return project.recoveryBackup();
 }
 async function restoreRecoveryBackup(path: string) {
   if (!(await canLeaveLanguageSection())) return;
   await runProjectTransition("Restoring recovery backup…", async () => {
-    if (!(await flushAutoSave())) return;
-    if (!(await leavePluginView({ closeWebviews: true }))) return;
+    if (!(await loc.flushAutoSave())) return;
+    if (!(await loc.leavePluginView({ closeWebviews: true }))) return;
     await project.restoreRecoveryBackup(path);
     persistShellTabs();
     resetProjectSessionState();
@@ -7999,8 +6301,8 @@ onMount(() => {
   themeMedia.addEventListener("change", handleSystemThemeChange);
   const handleBeforeUnload = (event: BeforeUnloadEvent) => {
     persistShellTabs();
-    editorRef?.flushPendingChanges();
-    if (!hasUnsavedChanges) return;
+    loc.editorRef?.flushPendingChanges();
+    if (!loc.hasUnsavedChanges) return;
     event.preventDefault();
     event.returnValue = "";
   };
@@ -8040,8 +6342,11 @@ onMount(() => {
   };
   const handleWorkbenchResize = () => {
     workbenchViewportWidth = window.innerWidth;
-    if (restoredWorkspacePaneDimensions)
-      restoredWorkspacePaneDimensions = { ...restoredWorkspacePaneDimensions, viewportWidth: window.innerWidth };
+    if (loc.restoredWorkspacePaneDimensions)
+      loc.restoredWorkspacePaneDimensions = {
+        ...loc.restoredWorkspacePaneDimensions,
+        viewportWidth: window.innerWidth,
+      };
   };
   window.addEventListener("beforeunload", handleBeforeUnload);
   window.addEventListener("keydown", handleHistoryKey);
@@ -8079,7 +6384,7 @@ onMount(() => {
           await project.appCloseConfirm();
           return;
         }
-        if (!(await flushAutoSave())) {
+        if (!(await loc.flushAutoSave())) {
           error = "The window stayed open because the current draft could not be saved.";
           await keepWindowOpen();
           return;
@@ -8088,7 +6393,7 @@ onMount(() => {
           await keepWindowOpen();
           return;
         }
-        if (!(await leavePluginView({ closeWebviews: true }))) {
+        if (!(await loc.leavePluginView({ closeWebviews: true }))) {
           await keepWindowOpen();
           return;
         }
@@ -8133,14 +6438,14 @@ onMount(() => {
       }
       const item = mapsNavigationItem();
       if (!map || !item) throw new Error("map-unavailable: enable the Maps module to open this location");
-      if (!(await flushAutoSave())) return;
+      if (!(await loc.flushAutoSave())) return;
       if (!(await canLeaveLanguageSection())) return;
-      const departure = currentShellLocation();
-      if (!(await leavePluginView())) return;
-      selected = map;
+      const departure = loc.currentShellLocation();
+      if (!(await loc.leavePluginView())) return;
+      loc.selected = map;
       mapsEditorKey = map.id;
-      await loadSelectedState(map);
-      await openPluginView(item, departure);
+      await loc.loadSelectedState(map);
+      await loc.openPluginView(item, departure);
       const linkId = event.payload.linkId ?? null;
       // openPluginView clears focus; also re-assert when already on the same map so
       // the vector editor retries focus after pins load.
@@ -8162,12 +6467,12 @@ onMount(() => {
     const { mapEntityId, status, detail } = event.payload;
     if (status === "fullscreen") {
       const enabled = typeof detail === "object" && detail !== null && "enabled" in detail && detail.enabled === true;
-      editorFullscreen = enabled;
+      loc.editorFullscreen = enabled;
       return;
     }
     if (status === "back") {
-      editorFullscreen = false;
-      void closePluginView();
+      loc.editorFullscreen = false;
+      void loc.closePluginView();
       return;
     }
     if (mapEntityId) mapSaveStates[mapEntityId] = { status, detail };
@@ -8175,8 +6480,8 @@ onMount(() => {
       void refreshAfterEntityMutation({ entityId: mapEntityId }).then(() => {
         const map = entities.find((entity) => entity.id === mapEntityId && !entity.deleted);
         if (map) {
-          selected = map;
-          void loadSelectedState(map).catch(() => {});
+          loc.selected = map;
+          void loc.loadSelectedState(map).catch(() => {});
         }
       });
     }
@@ -8187,11 +6492,11 @@ onMount(() => {
         unresolved > 0
           ? `${unresolved} link${unresolved === 1 ? "" : "s"} on this map are unresolved — the features they pointed to were removed or renumbered.`
           : "";
-      if (selected && mapLocations.length > 0)
+      if (loc.selected && loc.mapLocations.length > 0)
         void project
-          .listMapLocations(selected.id)
+          .listMapLocations(loc.selected.id)
           .then((locations) => {
-            mapLocations = locations;
+            loc.mapLocations = locations;
           })
           .catch(() => {});
     }
@@ -8209,11 +6514,11 @@ onMount(() => {
     }
     if (status === "linked") {
       void refreshAfterEntityMutation(mapEntityId ? { entityId: mapEntityId } : undefined);
-      if (selected)
+      if (loc.selected)
         void project
-          .listMapLocations(selected.id)
+          .listMapLocations(loc.selected.id)
           .then((locations) => {
-            mapLocations = locations;
+            loc.mapLocations = locations;
           })
           .catch(() => {});
     }
@@ -8233,7 +6538,10 @@ onMount(() => {
     .catch(() => {});
   let unlistenLanguageState: (() => void) | undefined;
   void listen<unknown>("language-state", (event) => {
-    if (foreignWebviewInstance(event.payload)) return;
+    if (foreignWebviewInstance(event.payload)) {
+      noteHiddenWebviewReady(LANGUAGE_PLUGIN_ID, event.payload);
+      return;
+    }
     const message = parseLanguageStateEvent(event.payload);
     if (message) handleLanguageStateEvent(message);
   })
@@ -8251,7 +6559,10 @@ onMount(() => {
     .catch(() => {});
   let unlistenWritingState: (() => void) | undefined;
   void listen<unknown>("writing-state", (event) => {
-    if (foreignWebviewInstance(event.payload)) return;
+    if (foreignWebviewInstance(event.payload)) {
+      noteHiddenWebviewReady(WRITING_PLUGIN_ID, event.payload);
+      return;
+    }
     const message = parseWritingStateEvent(event.payload);
     if (message) handleWritingStateEvent(message);
   })
@@ -8269,7 +6580,8 @@ onMount(() => {
     window.removeEventListener("keydown", handleTabKey);
     window.removeEventListener("keydown", handleWritingFullscreenKey);
     window.removeEventListener("resize", handleWorkbenchResize);
-    cancelAutoSave();
+    loc.cancelAutoSave();
+    loc.destroy();
     if (aiModelsMessageTimer !== null) window.clearTimeout(aiModelsMessageTimer);
     unlisten?.();
     unlistenCheckpointExport?.();
@@ -8322,10 +6634,10 @@ onMount(() => {
       ariaLabel: `Open ${item.plugin.name}: ${item.view.title}`,
       active: navigationActive(item),
     }))}
-    homeActive={projectHomeOpen && !showSettings}
+    homeActive={loc.projectHomeOpen && !loc.showSettings}
     createOpen={showCreateForm}
-    projectCenterActive={showSettings && settingsSurface === "project"}
-    settingsActive={showSettings && settingsSurface === "application"}
+    projectCenterActive={loc.showSettings && loc.settingsSurface === "project"}
+    settingsActive={loc.showSettings && loc.settingsSurface === "application"}
     version={displayVersion}
     onCreateProject={createProjectDirectory}
     onOpenProject={openProjectDirectory}
@@ -8346,8 +6658,8 @@ onMount(() => {
     id="shell-tabpanel"
     role="tabpanel"
     aria-labelledby={`shell-tab-${activeTab(shellTabs).id}`}
-    class:sandbox-active={Boolean(sandboxView)}
-    class:map-surface-open={mapSurfaceOpen}
+    class:sandbox-active={Boolean(loc.sandboxView)}
+    class:map-surface-open={loc.mapSurfaceOpen}
     class:language-surface={languagePaneShown}
     class:writing-surface={writingWebviewShown}
     class="app-main">
@@ -8388,7 +6700,7 @@ onMount(() => {
         bind:popoverOpen={tabStripPopoverOpen}
         onActivate={(id) => void switchToTab(id)}
         onClose={(id) => void closeShellTab(id)}
-        onNew={() => void openInNewTab(openProjectHome, { position: "end" })}
+        onNew={() => void openInNewTab(loc.openProjectHome, { position: "end" })}
         onPin={(id, pinned) => void pinShellTab(id, pinned)}
         onMove={(id, toIndex) => void moveShellTab(id, toIndex)}
         onCloseOthers={(id) => void closeOtherShellTabs(id)}
@@ -8770,14 +7082,14 @@ onMount(() => {
     {/if}
     {#snippet workspaceViewSwitcher()}
       <WorkspaceViewNav
-        label={`${section} views`}
+        label={`${loc.section} views`}
         views={workspaceViewNavItems()}
-        activeView={currentWorkspaceLocationView()}
-        onSelect={(view) => void openWorkspaceView(view)} />
+        activeView={loc.currentWorkspaceLocationView()}
+        onSelect={(view) => void loc.openWorkspaceView(view)} />
     {/snippet}
-    {#if showSettings && settingsSurface === "application"}
+    {#if loc.showSettings && loc.settingsSurface === "application"}
       <SettingsView
-        bind:section={settingsSection}
+        bind:section={loc.settingsSection}
         version={displayVersion}
         {recentProjects}
         {themePreference}
@@ -8795,9 +7107,9 @@ onMount(() => {
         onRemoveRecent={removeRecentProject}
         onClose={closeAdministrationTab}
         onBeforeNavigate={beforeVisibleSettingsNavigate} />
-    {:else if showSettings && projectInfo}
+    {:else if loc.showSettings && projectInfo}
       <ProjectCenter
-        bind:section={projectSection}
+        bind:section={loc.projectSection}
         summary={{
           name: projectInfo.name,
           root: projectInfo.root,
@@ -9165,7 +7477,7 @@ onMount(() => {
             aiInstruction={instructionFor(aiPromptTemplates, "git-message")}
             onError={(message) => (error = message)}
             onStatusChange={(status) => (gitStatus = status)}
-            beforeWrite={flushAutoSave} />
+            beforeWrite={loc.flushAutoSave} />
         {/snippet}
       </ProjectCenter>
     {:else if !ready}
@@ -9186,7 +7498,7 @@ onMount(() => {
             >Fragments · 12</small>
         </div>
       </section>
-    {:else if projectHomeOpen}
+    {:else if loc.projectHomeOpen}
       <ProjectHome
         projectName={projectInfo?.name ?? "Your world"}
         activeEntityCount={entities.filter((entity) => !entity.deleted).length}
@@ -9212,61 +7524,62 @@ onMount(() => {
         onSnapshots={() => void openProjectCenterTab("snapshots")}
         onProjectCenter={() => void openProjectCenterTab()}
         onExtensions={() => void openProjectCenterTab("extensions")}
-        onOpenWorkspace={(target) => void switchSection(target)}
-        onOpenEntity={(entity) => void selectSearchResult(entity)} />
-    {:else if hostView}
+        onOpenWorkspace={(target) => void loc.switchSection(target)}
+        onOpenEntity={(entity) => void loc.selectSearchResult(entity)} />
+    {:else if loc.hostView}
       <SpecializedSurface
-        restoreKey={specializedSurfaceKey() ?? "host"}
-        restoreScrollTop={currentSpecializedSurfaceScrollTop()}
-        bind:element={specializedSurfaceElement}
-        onScroll={rememberSpecializedSurfaceScroll}>
+        restoreKey={loc.specializedSurfaceKey() ?? "host"}
+        restoreScrollTop={loc.currentSpecializedSurfaceScrollTop()}
+        bind:element={loc.specializedSurfaceElement}
+        onScroll={loc.rememberSpecializedSurfaceScroll}>
         <div class="host-view-shell">
-          <button class="quiet-button host-view-back" onclick={() => void closePluginView()}>Back to workspace</button
-          ><HostView plugin={hostView.plugin} view={hostView.view} />
+          <button class="quiet-button host-view-back" onclick={() => void loc.closePluginView()}
+            >Back to workspace</button
+          ><HostView plugin={loc.hostView.plugin} view={loc.hostView.view} />
         </div>
       </SpecializedSurface>
-    {:else if loreWikiOpen}
+    {:else if loc.loreWikiOpen}
       <SpecializedSurface
-        restoreKey={specializedSurfaceKey() ?? "wiki"}
-        restoreScrollTop={currentSpecializedSurfaceScrollTop()}
-        bind:element={specializedSurfaceElement}
-        onScroll={rememberSpecializedSurfaceScroll}>
+        restoreKey={loc.specializedSurfaceKey() ?? "wiki"}
+        restoreScrollTop={loc.currentSpecializedSurfaceScrollTop()}
+        bind:element={loc.specializedSurfaceElement}
+        onScroll={loc.rememberSpecializedSurfaceScroll}>
         <WikiView
           isMac={isMac()}
           manifest={manifestForWorkspaceSection("lore")!}
           enabledManifests={modules.filter((module) => module.enabled)}
-          initialEntityId={loreWikiEntityId}
+          initialEntityId={loc.loreWikiEntityId}
           projectId={projectInfo?.root ?? ""}
           aiEnabled={projectInfo?.aiEnabled ?? false}
           imageProvider={aiSettings.imageProvider}
           textProvider={aiProvider}
           promptTemplates={aiPromptTemplates}
-          onClose={() => void closeLoreWiki()}
+          onClose={() => void loc.closeLoreWiki()}
           onSelectEntity={(id) => {
             const ent = entities.find((e) => e.id === id);
-            if (ent) void selectEntity(ent);
+            if (ent) void loc.selectEntity(ent);
           }}
-          onOpenEntityInNewTab={(id) => void openInNewTab(() => openLoreWiki(id))}
+          onOpenEntityInNewTab={(id) => void openInNewTab(() => loc.openLoreWiki(id))}
           nav={workspaceViewNavShown ? workspaceViewSwitcher : undefined} />
       </SpecializedSurface>
-    {:else if section === "houses" && housesView === "tree"}
+    {:else if loc.section === "houses" && loc.housesView === "tree"}
       {#snippet treeAvatar(entityId: string, name: string)}
         <EntityAvatar {entityId} {name} />
       {/snippet}
       <SpecializedSurface
-        restoreKey={specializedSurfaceKey() ?? "workspace:houses:tree"}
-        restoreScrollTop={currentSpecializedSurfaceScrollTop()}
-        bind:element={specializedSurfaceElement}
-        onScroll={rememberSpecializedSurfaceScroll}>
+        restoreKey={loc.specializedSurfaceKey() ?? "workspace:houses:tree"}
+        restoreScrollTop={loc.currentSpecializedSurfaceScrollTop()}
+        bind:element={loc.specializedSurfaceElement}
+        onScroll={loc.rememberSpecializedSurfaceScroll}>
         <TreeSurface
           context={buildModuleContext(housesManifestJson as unknown as ModuleManifest, projectInfo?.root ?? "", {
             availableServices: enabledServices(),
           })}
           projectId={projectInfo?.root ?? ""}
-          initialRootId={treeRootId}
-          initialSession={treeSession}
-          restoreNonce={treeRestoreNonce}
-          {kinshipRefreshEpoch}
+          initialRootId={loc.treeRootId}
+          initialSession={loc.treeSession}
+          restoreNonce={loc.treeRestoreNonce}
+          kinshipRefreshEpoch={loc.kinshipRefreshEpoch}
           avatar={treeAvatar}
           nav={workspaceViewNavShown ? workspaceViewSwitcher : undefined}
           onNewPerson={openNewPerson}
@@ -9276,11 +7589,11 @@ onMount(() => {
               const entity = await project.getEntity(houseId);
               if (!entity) return;
               upsertEntityInCache(entity);
-              section = "houses";
-              housesView = "houses";
-              treeRootId = null;
-              treeSession = null;
-              await selectEntity(entity);
+              loc.section = "houses";
+              loc.housesView = "houses";
+              loc.treeRootId = null;
+              loc.treeSession = null;
+              await loc.selectEntity(entity);
             })();
           }}
           onArchiveHouse={(houseId) => {
@@ -9288,8 +7601,8 @@ onMount(() => {
               const entity = entities.find((item) => item.id === houseId) ?? (await project.getEntity(houseId));
               if (!entity) return;
               await archiveEntity(entity, { skipConfirm: true });
-              treeRootId = null;
-              treeSession = null;
+              loc.treeRootId = null;
+              loc.treeSession = null;
             })();
           }}
           onRenameHouse={async (houseId, name) => {
@@ -9302,22 +7615,22 @@ onMount(() => {
             await refreshAfterEntityMutation({ entityId: updated.id });
           }}
           onRootChange={(id) => {
-            if (id === treeRootId) return;
-            recordShellDeparture(currentShellLocation());
-            treeRootId = id;
-            treeSession = null;
+            if (id === loc.treeRootId) return;
+            recordShellDeparture(loc.currentShellLocation());
+            loc.treeRootId = id;
+            loc.treeSession = null;
           }}
           onSessionChange={(session) => {
-            if (sameTreeSession(treeSession, session)) return;
-            const historyChanged = treeHistoryKey(treeSession) !== treeHistoryKey(session);
-            if (historyChanged && treeRootId && treeSession) {
-              recordShellDeparture(currentShellLocation());
+            if (sameTreeSession(loc.treeSession, session)) return;
+            const historyChanged = treeHistoryKey(loc.treeSession) !== treeHistoryKey(session);
+            if (historyChanged && loc.treeRootId && loc.treeSession) {
+              recordShellDeparture(loc.currentShellLocation());
             }
-            treeSession = session;
+            loc.treeSession = session;
           }}
           onOpenEntity={(entityId) => void openTreePerson(entityId)}
-          onMembershipChanged={() => bumpCollectionRefresh()}
-          onKinshipChanged={() => void refreshSelectedKinship()}
+          onMembershipChanged={() => loc.bumpCollectionRefresh()}
+          onKinshipChanged={() => void loc.refreshSelectedKinship()}
           onEditPersonIdentity={(personId) => {
             void (async () => {
               const entity = entities.find((item) => item.id === personId) ?? (await project.getEntity(personId));
@@ -9334,56 +7647,58 @@ onMount(() => {
             })();
           }}
           onBack={() => {
-            const current = currentShellLocation();
+            const current = loc.currentShellLocation();
             const transition = shellHistoryBack(shellNavigationHistory, current);
             if (transition && shellLocationAvailable(transition.target)) {
               void navigateShellHistory("back");
               return;
             }
-            treeRootId = null;
-            treeSession = null;
-            treeRestoreNonce += 1;
+            loc.treeRootId = null;
+            loc.treeSession = null;
+            loc.treeRestoreNonce += 1;
           }} />
       </SpecializedSurface>
-    {:else if projectionSandboxKey()}
-      {@const projection = PROJECTION_SANDBOXES[projectionSandboxKey()!]}
+    {:else if loc.projectionSandboxKey()}
+      {@const projection = PROJECTION_SANDBOXES[loc.projectionSandboxKey()!]}
       <SpecializedSurface
-        restoreKey={specializedSurfaceKey() ?? projection.surfaceKey}
-        restoreScrollTop={currentSpecializedSurfaceScrollTop()}
-        bind:element={specializedSurfaceElement}
-        onScroll={rememberSpecializedSurfaceScroll}>
+        restoreKey={loc.specializedSurfaceKey() ?? projection.surfaceKey}
+        restoreScrollTop={loc.currentSpecializedSurfaceScrollTop()}
+        bind:element={loc.specializedSurfaceElement}
+        onScroll={loc.rememberSpecializedSurfaceScroll}>
         <section class="projection-sandbox-shell" aria-label={projection.title}>
           <WorkspaceTopbar
             title={projection.title}
             subtitle={projection.subtitle}
-            icon={projection.icon}
+            icon={PROJECTION_ICONS[loc.projectionSandboxKey()!]}
             nav={workspaceViewNavShown ? workspaceViewSwitcher : undefined}
-            onBack={() => void closeProjectionView()} />
+            onBack={() => void loc.closeProjectionView()} />
           {#key `${projection.pluginId}:${projection.viewId}`}
             {#key shownWebviewInstance}
               <SandboxView
                 pluginId={projection.pluginId}
                 instanceId={shownWebviewInstance}
                 holdMount={shellNavigationBusy}
-                title={projection.title} />
+                title={projection.title}
+                prepareMount={prepareUnpooledMount} />
             {/key}
           {/key}
         </section>
       </SpecializedSurface>
-    {:else if sandboxView && sandboxView.renderer !== "maps"}
+    {:else if loc.sandboxView && loc.sandboxView.renderer !== "maps"}
       <SpecializedSurface
-        restoreKey={specializedSurfaceKey() ?? "sandbox"}
-        restoreScrollTop={currentSpecializedSurfaceScrollTop()}
-        bind:element={specializedSurfaceElement}
-        onScroll={rememberSpecializedSurfaceScroll}>
-        {#key `${sandboxView.plugin.id}:${sandboxView.view?.id ?? "default"}`}
+        restoreKey={loc.specializedSurfaceKey() ?? "sandbox"}
+        restoreScrollTop={loc.currentSpecializedSurfaceScrollTop()}
+        bind:element={loc.specializedSurfaceElement}
+        onScroll={loc.rememberSpecializedSurfaceScroll}>
+        {#key `${loc.sandboxView.plugin.id}:${loc.sandboxView.view?.id ?? "default"}`}
           {#key shownWebviewInstance}
             <SandboxView
-              pluginId={sandboxView.plugin.id}
+              pluginId={loc.sandboxView.plugin.id}
               instanceId={shownWebviewInstance}
               holdMount={shellNavigationBusy}
-              viewId={sandboxView.view?.id}
-              title={sandboxView.plugin.name} />
+              viewId={loc.sandboxView.view?.id}
+              title={loc.sandboxView.plugin.name}
+              prepareMount={prepareUnpooledMount} />
           {/key}
         {/key}
       </SpecializedSurface>
@@ -9404,9 +7719,9 @@ onMount(() => {
             class="quiet-button"
             onclick={() => void importPortableCheckpoint()}>Import checkpoint</button>
         </div>{/if}
-      {#if !mapSurfaceOpen}
+      {#if !loc.mapSurfaceOpen}
         {#snippet workspaceHeaderActions()}
-          {#if section === "maps"}<div class="map-provider-create">
+          {#if loc.section === "maps"}<div class="map-provider-create">
               <button
                 class="primary-button"
                 type="button"
@@ -9447,7 +7762,7 @@ onMount(() => {
                   </div>
                 </div>{/if}
             </div>
-          {:else if section === "writing" && writingView === "manuscripts"}
+          {:else if loc.section === "writing" && loc.writingView === "manuscripts"}
             <div class="heading-create-group" role="group" aria-label="Create">
               <button
                 class="primary-button"
@@ -9457,7 +7772,7 @@ onMount(() => {
                 ><span style="display:inline-flex;vertical-align:middle" aria-hidden="true"
                   ><Plus size={14} strokeWidth={1.8} /></span>
                 {ENTITY_ACTIONS.new}</button>
-              {#if selected && isManuscriptType(selected.entity_type)}
+              {#if loc.selected && isManuscriptType(loc.selected.entity_type)}
                 <button
                   class="quiet-button"
                   type="button"
@@ -9465,7 +7780,7 @@ onMount(() => {
                   onclick={openNewManuscriptInSelected}>{ENTITY_ACTIONS.newInManuscript}</button>
               {/if}
             </div>
-          {:else if section === "houses"}
+          {:else if loc.section === "houses"}
             <div class="heading-create-group" role="group" aria-label="Create">
               <button class="primary-button" type="button" aria-label={ENTITY_ACTIONS.newHouse} onclick={openNewHouse}
                 >{ENTITY_ACTIONS.newHouse}</button>
@@ -9486,25 +7801,25 @@ onMount(() => {
           <div class="workbench-pane-toggles" role="group" aria-label="Workbench panes">
             <button
               type="button"
-              aria-pressed={workbenchPaneVisibility.collection}
+              aria-pressed={loc.workbenchPaneVisibility.collection}
               aria-label="Show collection pane"
               title="Show collection pane"
-              onclick={() => void toggleWorkbenchPane("collection")}
+              onclick={() => void loc.toggleWorkbenchPane("collection")}
               ><PanelLeft size={15} strokeWidth={1.8} aria-hidden="true" /></button>
             <button
               type="button"
-              aria-pressed={workbenchPaneVisibility.content}
+              aria-pressed={loc.workbenchPaneVisibility.content}
               aria-label="Show content pane"
               title="Show content pane"
-              onclick={() => void toggleWorkbenchPane("content")}
+              onclick={() => void loc.toggleWorkbenchPane("content")}
               ><Square size={15} strokeWidth={1.8} aria-hidden="true" /></button>
             {#if workbenchSupportsInspector()}
               <button
                 type="button"
-                aria-pressed={workbenchPaneVisibility.inspector}
+                aria-pressed={loc.workbenchPaneVisibility.inspector}
                 aria-label="Show inspector pane"
                 title="Show inspector pane"
-                onclick={() => void toggleWorkbenchPane("inspector")}
+                onclick={() => void loc.toggleWorkbenchPane("inspector")}
                 ><PanelRight size={15} strokeWidth={1.8} aria-hidden="true" /></button>
             {/if}
           </div>
@@ -9516,21 +7831,21 @@ onMount(() => {
           nav={workspaceViewNavShown ? workspaceViewSwitcher : undefined}
           layout={workbenchPaneToggles}
           actions={workspaceHeaderActions}
-          onGuide={section === "lore"
-            ? () => (loreGuideHint += 1)
-            : section === "timeline"
-              ? () => (timelineGuideHint += 1)
+          onGuide={loc.section === "lore"
+            ? () => (loc.loreGuideHint += 1)
+            : loc.section === "timeline"
+              ? () => (loc.timelineGuideHint += 1)
               : undefined}
-          guideLabel={section === "lore"
+          guideLabel={loc.section === "lore"
             ? "Show lore guide"
-            : section === "timeline"
+            : loc.section === "timeline"
               ? "Show timeline guide"
               : "Show guide"} />
       {/if}
       <section
-        class:maps-workspace={section === "maps" && sandboxView?.renderer === "maps"}
-        class:map-surface-expanded={mapSurfaceOpen}
-        class:workspace-grid-no-inspector={section === "language"}
+        class:maps-workspace={loc.section === "maps" && loc.sandboxView?.renderer === "maps"}
+        class:map-surface-expanded={loc.mapSurfaceOpen}
+        class:workspace-grid-no-inspector={loc.section === "language"}
         class:language-surface={languagePaneShown}
         class:writing-surface={writingWebviewShown}
         class="workspace-grid"
@@ -9539,13 +7854,13 @@ onMount(() => {
           <div class="collection-search">
             <span><Search size={16} strokeWidth={1.8} aria-hidden="true" /></span><input
               aria-label={`Search ${collectionLabel()}`}
-              bind:value={collectionQuery.textSearch}
+              bind:value={loc.collectionQuery.textSearch}
               placeholder={`Search ${collectionLabel()}`} /><button
               class="filter-toggle"
-              class:active={filterOpen}
+              class:active={loc.filterOpen}
               aria-label="Filters"
-              onclick={() => (filterOpen = !filterOpen)}>⫶</button>
-            {#if filterOpen}<div class="filter-popover" role="dialog" aria-label="Collection filters">
+              onclick={() => (loc.filterOpen = !loc.filterOpen)}>⫶</button>
+            {#if loc.filterOpen}<div class="filter-popover" role="dialog" aria-label="Collection filters">
                 <fieldset class="filter-section">
                   <legend>Sort by</legend>
                   <div class="filter-row">
@@ -9554,27 +7869,28 @@ onMount(() => {
                         type="radio"
                         name="sortField"
                         value="name"
-                        checked={collectionQuery.sortField === "name"}
-                        onchange={() => (collectionQuery.sortField = "name")} /> Name</label
+                        checked={loc.collectionQuery.sortField === "name"}
+                        onchange={() => (loc.collectionQuery.sortField = "name")} /> Name</label
                     ><label
                       ><input
                         type="radio"
                         name="sortField"
                         value="created_at"
-                        checked={collectionQuery.sortField === "created_at"}
-                        onchange={() => (collectionQuery.sortField = "created_at")} /> Created</label
+                        checked={loc.collectionQuery.sortField === "created_at"}
+                        onchange={() => (loc.collectionQuery.sortField = "created_at")} /> Created</label
                     ><label
                       ><input
                         type="radio"
                         name="sortField"
                         value="updated_at"
-                        checked={collectionQuery.sortField === "updated_at"}
-                        onchange={() => (collectionQuery.sortField = "updated_at")} /> Updated</label
+                        checked={loc.collectionQuery.sortField === "updated_at"}
+                        onchange={() => (loc.collectionQuery.sortField = "updated_at")} /> Updated</label
                     ><button
                       class="sort-dir-toggle"
-                      aria-label={collectionQuery.sortDir === "asc" ? "Ascending" : "Descending"}
-                      onclick={() => (collectionQuery.sortDir = collectionQuery.sortDir === "asc" ? "desc" : "asc")}
-                      >{collectionQuery.sortDir === "asc" ? "↑" : "↓"}</button>
+                      aria-label={loc.collectionQuery.sortDir === "asc" ? "Ascending" : "Descending"}
+                      onclick={() =>
+                        (loc.collectionQuery.sortDir = loc.collectionQuery.sortDir === "asc" ? "desc" : "asc")}
+                      >{loc.collectionQuery.sortDir === "asc" ? "↑" : "↓"}</button>
                   </div>
                 </fieldset>
                 <fieldset class="filter-section">
@@ -9585,10 +7901,10 @@ onMount(() => {
                           type="radio"
                           name="pageSize"
                           value={size}
-                          checked={collectionQuery.pageSize === size}
+                          checked={loc.collectionQuery.pageSize === size}
                           onchange={() => {
-                            collectionQuery.pageSize = size;
-                            collectionQuery.page = 0;
+                            loc.collectionQuery.pageSize = size;
+                            loc.collectionQuery.page = 0;
                           }} />
                         {size}</label
                       >{/each}
@@ -9600,7 +7916,7 @@ onMount(() => {
                     {#each sectionEntityTypes() as type}<label
                         ><input
                           type="checkbox"
-                          checked={!collectionQuery.excludedTypes.includes(type)}
+                          checked={!loc.collectionQuery.excludedTypes.includes(type)}
                           onchange={() => toggleTypeFilter(type)} />
                         {entityTypeLabel(type)}</label
                       >{/each}
@@ -9610,22 +7926,22 @@ onMount(() => {
           </div>
         {/snippet}
         {#snippet collectionItems()}
-          {#if collectionError}<p class="collection-error" role="alert">{collectionError}</p>{/if}
-          {#if collectionLoading && collectionPage.items.length === 0 && !manuscriptStructureMode()}<div
+          {#if loc.collectionError}<p class="collection-error" role="alert">{loc.collectionError}</p>{/if}
+          {#if loc.collectionLoading && loc.collectionPage.items.length === 0 && !manuscriptStructureMode()}<div
               class="collection-loading"
               role="status">
               Loading {collectionLabel()}…
-            </div>{:else if manuscriptStructureMode() && manuscriptOutlineLoading && manuscriptOutline.length === 0}<div
+            </div>{:else if manuscriptStructureMode() && loc.manuscriptOutlineLoading && loc.manuscriptOutline.length === 0}<div
               class="collection-loading"
               role="status">
               Loading {collectionLabel()}…
             </div>{:else if collectionIsEmpty()}
-            {#if section === "maps"}
+            {#if loc.section === "maps"}
               <EntityEmptyState
-                title={collectionQuery.textSearch
+                title={loc.collectionQuery.textSearch
                   ? `No ${collectionLabel()} match that search.`
                   : `No ${collectionLabel()} yet.`}
-                message={collectionQuery.textSearch
+                message={loc.collectionQuery.textSearch
                   ? "Try another search or create something new."
                   : "Create a map through an installed map integration."}
                 maps>
@@ -9678,24 +7994,24 @@ onMount(() => {
               </EntityEmptyState>
             {:else}
               <EntityEmptyState
-                title={collectionQuery.textSearch
+                title={loc.collectionQuery.textSearch
                   ? `No ${collectionLabel()} match that search.`
                   : `No ${collectionLabel()} yet.`}
-                message={collectionQuery.textSearch
+                message={loc.collectionQuery.textSearch
                   ? "Try another search or create something new."
                   : `Create your first ${createLabel()} to begin building this collection.`}
                 createLabel={createLabel()}
                 onCreate={openContextualCreate} />
             {/if}{:else if manuscriptStructureMode()}
-            {#if manuscriptOutlineTruncated}<p class="collection-loading" role="status">
+            {#if loc.manuscriptOutlineTruncated}<p class="collection-loading" role="status">
                 Outline includes the first {MANUSCRIPT_OUTLINE_CAP} manuscripts.
               </p>{/if}
             {#snippet manuscriptCollectionRow(node: OutlineNode, depth: number, hasParent: boolean)}
               {@const entity = entityFromOutlineNode(node)}
               {@const rowIcon = iconForEntityType(entity.entity_type)}
-              {@const expanded = manuscriptExpanded.has(node.id)}
+              {@const expanded = loc.manuscriptExpanded.has(node.id)}
               <div
-                class:selected={selected?.id === entity.id}
+                class:selected={loc.selected?.id === entity.id}
                 class="collection-item"
                 style={`--outline-depth: ${depth}`}>
                 {#if node.children.length > 0}<button
@@ -9703,7 +8019,7 @@ onMount(() => {
                     class="outline-toggle"
                     aria-expanded={expanded}
                     aria-label={expanded ? `Collapse ${entity.name}` : `Expand ${entity.name}`}
-                    onclick={() => toggleManuscriptOutlineNode(node.id)}
+                    onclick={() => loc.toggleManuscriptOutlineNode(node.id)}
                     >{#if expanded}<ChevronDown size={16} strokeWidth={1.8} aria-hidden="true" />{:else}<ChevronRight
                         size={16}
                         strokeWidth={1.8}
@@ -9729,7 +8045,7 @@ onMount(() => {
                 </button>
                 <EntityRowActions
                   entityName={entity.name}
-                  onOpen={() => void selectEntity(entity)}
+                  onOpen={() => void loc.selectEntity(entity)}
                   onOpenInNewTab={() => openEntityWithIntent(entity, "new-tab")}
                   onEditIdentity={() => void openEntityEditDialog(entity)}
                   onArchive={() => void archiveEntity(entity)}
@@ -9739,18 +8055,18 @@ onMount(() => {
             {#snippet manuscriptOutlineTree(nodes: OutlineNode[], depth: number, hasParent: boolean)}
               {#each nodes as node (node.id)}
                 {@render manuscriptCollectionRow(node, depth, hasParent)}
-                {#if node.children.length > 0 && manuscriptExpanded.has(node.id)}
+                {#if node.children.length > 0 && loc.manuscriptExpanded.has(node.id)}
                   {@render manuscriptOutlineTree(node.children, depth + 1, true)}
                 {/if}
               {/each}
             {/snippet}
             {@render manuscriptOutlineTree(manuscriptOutlinePage().items, 0, false)}
-          {:else if collectionQuery.viewMode === "grouped"}{#each collectionResult().groups ?? [] as group}{@const groupIcon =
+          {:else if loc.collectionQuery.viewMode === "grouped"}{#each collectionResult().groups ?? [] as group}{@const groupIcon =
                 iconForEntityType(group.type === "__uncategorized" ? null : group.type)}
               <div class="collection-group">
-                <button type="button" class="collection-group-header" onclick={() => toggleGroup(group.type)}
+                <button type="button" class="collection-group-header" onclick={() => loc.toggleGroup(group.type)}
                   ><span class="group-chevron"
-                    >{#if expandedGroups.has(group.type)}<ChevronDown
+                    >{#if loc.expandedGroups.has(group.type)}<ChevronDown
                         size={16}
                         strokeWidth={1.8}
                         aria-hidden="true" />{:else}<ChevronRight
@@ -9763,9 +8079,9 @@ onMount(() => {
                     pluginId={groupIcon.pluginId}
                     size={16}
                     box={22} /><strong>{group.label}</strong><small>{group.count}</small></button
-                >{#if expandedGroups.has(group.type)}{#each group.entities as entity}{@const rowIcon =
+                >{#if loc.expandedGroups.has(group.type)}{#each group.entities as entity}{@const rowIcon =
                       iconForEntityType(entity.entity_type)}
-                    <div class:selected={selected?.id === entity.id} class="collection-item">
+                    <div class:selected={loc.selected?.id === entity.id} class="collection-item">
                       <button
                         type="button"
                         class="collection-item-main"
@@ -9786,8 +8102,8 @@ onMount(() => {
                       </button>
                       <EntityRowActions
                         entityName={entity.name}
-                        openTree={section === "houses" && entity.entity_type === HOUSE_TYPE}
-                        onOpen={() => void selectEntity(entity)}
+                        openTree={loc.section === "houses" && entity.entity_type === HOUSE_TYPE}
+                        onOpen={() => void loc.selectEntity(entity)}
                         onOpenInNewTab={() => openEntityWithIntent(entity, "new-tab")}
                         onEditIdentity={() => void openEntityEditDialog(entity)}
                         onArchive={() => void archiveEntity(entity)}
@@ -9797,7 +8113,7 @@ onMount(() => {
               </div>{/each}{:else}{#each collectionResult().entities as entity}{@const rowIcon = iconForEntityType(
                 entity.entity_type,
               )}
-              <div class:selected={selected?.id === entity.id} class="collection-item">
+              <div class:selected={loc.selected?.id === entity.id} class="collection-item">
                 <button
                   type="button"
                   class="collection-item-main"
@@ -9818,8 +8134,8 @@ onMount(() => {
                 </button>
                 <EntityRowActions
                   entityName={entity.name}
-                  openTree={section === "houses" && entity.entity_type === HOUSE_TYPE}
-                  onOpen={() => void selectEntity(entity)}
+                  openTree={loc.section === "houses" && entity.entity_type === HOUSE_TYPE}
+                  onOpen={() => void loc.selectEntity(entity)}
                   onOpenInNewTab={() => openEntityWithIntent(entity, "new-tab")}
                   onEditIdentity={() => void openEntityEditDialog(entity)}
                   onArchive={() => void archiveEntity(entity)}
@@ -9833,8 +8149,8 @@ onMount(() => {
               aria-label="Collection pages">
               <button
                 type="button"
-                disabled={collectionQuery.page === 0 || manuscriptOutlineLoading}
-                onclick={() => (collectionQuery.page = Math.max(0, collectionQuery.page - 1))}>Previous</button
+                disabled={loc.collectionQuery.page === 0 || loc.manuscriptOutlineLoading}
+                onclick={() => (loc.collectionQuery.page = Math.max(0, loc.collectionQuery.page - 1))}>Previous</button
               ><span
                 >{manuscriptOutlinePage().offset + 1}–{Math.min(
                   manuscriptOutlinePage().offset + manuscriptOutlinePage().items.length,
@@ -9842,53 +8158,53 @@ onMount(() => {
                 )} of {manuscriptOutlinePage().total}</span
               ><button
                 type="button"
-                disabled={!manuscriptOutlinePage().hasMore || manuscriptOutlineLoading}
-                onclick={() => (collectionQuery.page += 1)}>Next</button>
+                disabled={!manuscriptOutlinePage().hasMore || loc.manuscriptOutlineLoading}
+                onclick={() => (loc.collectionQuery.page += 1)}>Next</button>
             </nav>{:else if collectionResult().total > 0}<nav
               class="collection-pagination"
               aria-label="Collection pages">
               <button
                 type="button"
-                disabled={collectionQuery.page === 0 || collectionLoading}
-                onclick={() => (collectionQuery.page = Math.max(0, collectionQuery.page - 1))}>Previous</button
+                disabled={loc.collectionQuery.page === 0 || loc.collectionLoading}
+                onclick={() => (loc.collectionQuery.page = Math.max(0, loc.collectionQuery.page - 1))}>Previous</button
               ><span
-                >{collectionPage.offset + 1}–{Math.min(
-                  collectionPage.offset + collectionPage.items.length,
-                  collectionPage.total,
-                )} of {collectionPage.total}</span
+                >{loc.collectionPage.offset + 1}–{Math.min(
+                  loc.collectionPage.offset + loc.collectionPage.items.length,
+                  loc.collectionPage.total,
+                )} of {loc.collectionPage.total}</span
               ><button
                 type="button"
-                disabled={!collectionPage.has_more || collectionLoading}
-                onclick={() => (collectionQuery.page += 1)}>Next</button>
+                disabled={!loc.collectionPage.has_more || loc.collectionLoading}
+                onclick={() => (loc.collectionQuery.page += 1)}>Next</button>
             </nav>{/if}
         {/snippet}
-        {#if workbenchPaneVisibility.collection}<CollectionPane
+        {#if loc.workbenchPaneVisibility.collection}<CollectionPane
             kicker={collectionKicker()}
             count={collectionHeadingCount()}
             label={collectionLabel()}
-            viewMode={collectionQuery.viewMode}
-            groupedAriaLabel={section === "writing" && writingView === "manuscripts"
+            viewMode={loc.collectionQuery.viewMode}
+            groupedAriaLabel={loc.section === "writing" && loc.writingView === "manuscripts"
               ? "Grouped by structure"
               : "Grouped by type"}
             allowOverflow={collectionIsEmpty()}
             controls={collectionControls}
             children={collectionItems}
             footer={collectionFooter}
-            hidden={mapSurfaceOpen}
-            bind:element={collectionPaneElement}
-            bind:listElement={collectionListElement}
-            onViewModeChange={(mode) => (collectionQuery.viewMode = mode)}
-            onScroll={rememberCollectionScroll} />{/if}
-        {#if !mapSurfaceOpen && workbenchPaneVisibility.collection && workbenchPaneVisibility.content}<PaneResizeHandle
+            hidden={loc.mapSurfaceOpen}
+            bind:element={loc.collectionPaneElement}
+            bind:listElement={loc.collectionListElement}
+            onViewModeChange={(mode) => (loc.collectionQuery.viewMode = mode)}
+            onScroll={loc.rememberCollectionScroll} />{/if}
+        {#if !loc.mapSurfaceOpen && loc.workbenchPaneVisibility.collection && loc.workbenchPaneVisibility.content}<PaneResizeHandle
             label="Resize collection pane"
-            value={activePaneDimensions().collectionWidth}
+            value={loc.activePaneDimensions().collectionWidth}
             min={collectionPaneMin}
             max={collectionPaneMax}
-            onResize={(delta) => resizeWorkbenchPane("collection", delta)}
-            onReset={() => resetWorkbenchPane("collection")} />{/if}
+            onResize={(delta) => loc.resizeWorkbenchPane("collection", delta)}
+            onReset={() => loc.resetWorkbenchPane("collection")} />{/if}
 
         {#if languagePaneShown}
-          {#key selected?.id ?? "language"}
+          {#key loc.selected?.id ?? "language"}
             {#key shownWebviewInstance}
               <div class="language-mount" {@attach trackLanguageMount}>
                 <SandboxView
@@ -9897,8 +8213,11 @@ onMount(() => {
                   holdMount={shellNavigationBusy}
                   viewId="language-workspace"
                   title="Language"
-                  entityId={selected?.id}
-                  moduleState={{ pane: languagePane }} />
+                  entityId={loc.selected?.id}
+                  moduleState={languageMountState(shownWebviewInstance)}
+                  pooled
+                  prepareMount={beginPooledLanguageMount}
+                  onmounted={languageMounted} />
               </div>
             {/key}
           {/key}
@@ -9925,15 +8244,18 @@ onMount(() => {
                   instanceId={shownWebviewInstance}
                   holdMount={shellNavigationBusy}
                   viewId="writing-workspace"
-                  title="Writing" />
+                  title="Writing"
+                  pooled
+                  prepareMount={beginPooledWritingMount}
+                  onmounted={writingMounted} />
               </div>
             {/key}
           </div>
-        {:else if workbenchPaneVisibility.content && !writingEntrySelected}
+        {:else if loc.workbenchPaneVisibility.content && !loc.writingEntrySelected}
           <!-- A manuscript or reference page never gets the shell editor: it is the webview's, or nothing (see `writingEntrySelected`). -->
           {#snippet contentPaneBody()}
-            {#if section === "maps" && sandboxView?.renderer === "maps" && sandboxView.view}
-              {@const mapId = selected?.entity_type === "daena.maps:world-map" ? selected.id : null}
+            {#if loc.section === "maps" && loc.sandboxView?.renderer === "maps" && loc.sandboxView.view}
+              {@const mapId = loc.selected?.entity_type === "daena.maps:world-map" ? loc.selected.id : null}
               {@const mapState = mapId ? (mapSaveStates[mapId] ?? null) : null}
               {@const mapDetail = mapConflictDetail(mapState?.detail)}
               <div class="map-editor-shell">
@@ -9970,13 +8292,13 @@ onMount(() => {
                         oncreated={async (map) => {
                           entities = [...entities.filter((entity) => entity.id !== map.id), map];
                           savedMapsCache = null;
-                          selected = map;
+                          loc.selected = map;
                           mapsEditorKey = map.id;
                           mapsEditorMode = "vector";
-                          await loadSelectedState(map);
+                          await loc.loadSelectedState(map);
                         }}
                         oncancel={() => {
-                          void leavePluginView();
+                          void loc.leavePluginView();
                         }} />
                     {/key}
                   {:else if mapsEditorMode === "vector"}
@@ -9991,7 +8313,7 @@ onMount(() => {
                         onopen={(entityId) => void openMapEntityFromLink(entityId)}
                         onstate={(status, detail) => {
                           if (status === "fullscreen") {
-                            editorFullscreen =
+                            loc.editorFullscreen =
                               typeof detail === "object" &&
                               detail !== null &&
                               "enabled" in detail &&
@@ -9999,7 +8321,7 @@ onMount(() => {
                             return;
                           }
                           if (status === "back") {
-                            void leavePluginView();
+                            void loc.leavePluginView();
                             return;
                           }
                           if (!mapId) return;
@@ -10008,13 +8330,13 @@ onMount(() => {
                         oncreated={async (map) => {
                           entities = [...entities.filter((entity) => entity.id !== map.id), map];
                           savedMapsCache = null;
-                          selected = map;
+                          loc.selected = map;
                           mapsEditorKey = map.id;
                           mapsEditorMode = "vector";
-                          await loadSelectedState(map);
+                          await loc.loadSelectedState(map);
                         }}
                         oncancel={() => {
-                          void leavePluginView();
+                          void loc.leavePluginView();
                         }} />
                     {/key}
                   {/if}
@@ -10024,27 +8346,29 @@ onMount(() => {
               <div class="editor-header">
                 <div class="editor-title">
                   <span class="panel-kicker"
-                    >{selected ? entityTypeLabel(selected.entity_type).toUpperCase() : emptyEditorKicker()}</span>
+                    >{loc.selected
+                      ? entityTypeLabel(loc.selected.entity_type).toUpperCase()
+                      : emptyEditorKicker()}</span>
                   <div class="editor-title-row">
                     <h2
                       ondblclick={() => {
-                        if (selected) void openEntityEditDialog();
+                        if (loc.selected) void openEntityEditDialog();
                       }}
-                      title={selected ? "Double-click to edit" : undefined}
-                      style={selected ? "cursor:text" : undefined}>
-                      {selected?.name ?? (section === "maps" ? "Choose a map" : "Choose an entry")}
+                      title={loc.selected ? "Double-click to edit" : undefined}
+                      style={loc.selected ? "cursor:text" : undefined}>
+                      {loc.selected?.name ?? (loc.section === "maps" ? "Choose a map" : "Choose an entry")}
                     </h2>
-                    {#if selected}
+                    {#if loc.selected}
                       <div class="editor-title-actions">
                         <button
                           class="quiet-button editor-title-icon"
                           type="button"
-                          aria-label={`${ENTITY_ACTIONS.editIdentity} for ${selected.name}`}
+                          aria-label={`${ENTITY_ACTIONS.editIdentity} for ${loc.selected.name}`}
                           title={ENTITY_ACTIONS.editIdentity}
                           onclick={() => void openEntityEditDialog()}
                           ><Pencil size={15} strokeWidth={1.8} aria-hidden="true" /></button>
-                        {#if section === "houses" && selected.entity_type === HOUSE_TYPE}
-                          {@const houseEntity = selected}
+                        {#if loc.section === "houses" && loc.selected.entity_type === HOUSE_TYPE}
+                          {@const houseEntity = loc.selected}
                           <button
                             class="quiet-button editor-title-icon"
                             type="button"
@@ -10058,73 +8382,73 @@ onMount(() => {
                   </div>
                 </div>
                 {#snippet editorStatusActions()}
-                  {#if section === "maps"}<button
+                  {#if loc.section === "maps"}<button
                       class="quiet-button"
                       type="button"
                       onclick={() => void openSelectedMapEditor()}>Open map editor</button
                     >{/if}
                 {/snippet}
                 <div class="editor-header-controls">
-                  {#if selected}<div class="document-mode-toggle" aria-label="Document mode">
+                  {#if loc.selected}<div class="document-mode-toggle" aria-label="Document mode">
                       <button
                         type="button"
-                        class:active={documentMode === "read"}
-                        aria-pressed={documentMode === "read"}
-                        disabled={selectedLoading || Boolean(selectedLoadError)}
-                        onclick={() => void setDocumentMode("read")}>Article</button
+                        class:active={loc.documentMode === "read"}
+                        aria-pressed={loc.documentMode === "read"}
+                        disabled={loc.selectedLoading || Boolean(loc.selectedLoadError)}
+                        onclick={() => void loc.setDocumentMode("read")}>Article</button
                       ><button
                         type="button"
-                        class:active={documentMode === "edit"}
-                        aria-pressed={documentMode === "edit"}
-                        disabled={selectedLoading || Boolean(selectedLoadError)}
-                        onclick={() => void setDocumentMode("edit")}>Edit</button>
+                        class:active={loc.documentMode === "edit"}
+                        aria-pressed={loc.documentMode === "edit"}
+                        disabled={loc.selectedLoading || Boolean(loc.selectedLoadError)}
+                        onclick={() => void loc.setDocumentMode("edit")}>Edit</button>
                     </div>{/if}
                   <StatusSummary
-                    visible={Boolean(selected)}
-                    loading={selectedLoading}
-                    loadError={selectedLoadError}
-                    saving={isSaving}
-                    {saveError}
-                    dirty={hasUnsavedChanges}
-                    {savedAt}
+                    visible={Boolean(loc.selected)}
+                    loading={loc.selectedLoading}
+                    loadError={loc.selectedLoadError}
+                    saving={loc.isSaving}
+                    saveError={loc.saveError}
+                    dirty={loc.hasUnsavedChanges}
+                    savedAt={loc.savedAt}
                     actions={editorStatusActions}
-                    onRetryLoad={() => void reloadSelectedFromDisk()}
-                    onRetrySave={() => void flushAutoSave()} />
+                    onRetryLoad={() => void loc.reloadSelectedFromDisk()}
+                    onRetrySave={() => void loc.flushAutoSave()} />
                 </div>
               </div>
-              {#if selected}
-                {#if selectedLoading}
+              {#if loc.selected}
+                {#if loc.selectedLoading}
                   <WorkbenchState
                     kind="loading"
                     title="Loading entry"
                     message="Reading the document, details, relationships, and assets." />
-                {:else if selectedLoadError}
+                {:else if loc.selectedLoadError}
                   {#snippet retrySelectedLoad()}<button
                       class="quiet-button"
                       type="button"
-                      onclick={() => void reloadSelectedFromDisk()}>Retry</button
+                      onclick={() => void loc.reloadSelectedFromDisk()}>Retry</button
                     >{/snippet}
                   <WorkbenchState
                     kind="error"
                     title="Entry unavailable"
-                    message={selectedLoadError}
+                    message={loc.selectedLoadError}
                     actions={retrySelectedLoad} />
                 {:else}
-                  {@const activeConflict = documentConflict}
+                  {@const activeConflict = loc.documentConflict}
                   {#if activeConflict}
                     {#snippet conflictResolutionActions()}<div class="conflict-workbench-actions">
                         {#if !activeConflict.diagnostics.length}<details class="conflict-compare">
                             <summary>Compare with the currently saved document</summary>
-                            <pre>{conflictDiskBody}</pre>
+                            <pre>{loc.conflictDiskBody}</pre>
                           </details>{/if}
                         <div class="conflict-actions">
-                          <button class="quiet-button" type="button" onclick={reloadConflict}>Reload disk</button
+                          <button class="quiet-button" type="button" onclick={loc.reloadConflict}>Reload disk</button
                           ><button
                             class="quiet-button"
                             type="button"
-                            onclick={overwriteConflict}
+                            onclick={loc.overwriteConflict}
                             disabled={activeConflict.diagnostics.length > 0}>Overwrite as new revision</button
-                          ><button class="quiet-button" type="button" onclick={saveConflictRecoveryCopy}
+                          ><button class="quiet-button" type="button" onclick={loc.saveConflictRecoveryCopy}
                             >Save recovery copy</button>
                         </div>
                       </div>{/snippet}
@@ -10213,62 +8537,62 @@ onMount(() => {
                       </div>
                     </div>
                   {/if}
-                  {#if documentMode === "read"}
+                  {#if loc.documentMode === "read"}
                     <MarkdownArticle
-                      markdown={documentBody}
+                      markdown={loc.documentBody}
                       {entities}
                       onOpenEntity={(id, intent) => {
                         const target = entities.find((entity) => entity.id === id && !entity.deleted);
                         if (target) void openEntityWithIntent(target, intent ?? "current");
                       }} />
                   {:else}
-                    {#key selected?.id}
+                    {#key loc.selected?.id}
                       <RichTextEditor
-                        bind:this={editorRef}
-                        value={documentBody}
+                        bind:this={loc.editorRef}
+                        value={loc.documentBody}
                         {entities}
                         searchEntities={searchEntitiesPaged()}
-                        entityId={selected?.id ?? null}
+                        entityId={loc.selected?.id ?? null}
                         defaultNamespace={primarySchemaNamespace(activeManifest()?.schemas, {
-                          entityType: selected?.entity_type,
+                          entityType: loc.selected?.entity_type,
                           fallback: activeModuleId(),
                         })}
-                        editable={!selectedLoading &&
-                          !selectedLoadError &&
+                        editable={!loc.selectedLoading &&
+                          !loc.selectedLoadError &&
                           projectDiagnostics.length === 0 &&
                           !aiBusy &&
                           !aiRewriteOpen}
-                        fullscreen={editorFullscreen}
+                        fullscreen={loc.editorFullscreen}
                         aiEnabled={projectInfo?.aiEnabled ?? false}
                         aiTemplates={aiPromptTemplates.filter((template) => template.kind === "editor")}
-                        onChange={updateDocumentBody}
+                        onChange={loc.updateDocumentBody}
                         onSelectionChange={setAiSelection}
                         onAiRequest={openAiAction}
-                        onSaveRequest={() => void flushAutoSave()}
-                        onFullscreenChange={setEditorFullscreen}
-                        placeholder={section === "writing"
+                        onSaveRequest={() => void loc.flushAutoSave()}
+                        onFullscreenChange={loc.setEditorFullscreen}
+                        placeholder={loc.section === "writing"
                           ? `Write this ${createLabel()}…`
-                          : section === "maps"
+                          : loc.section === "maps"
                             ? "Describe this map and the world it contains…"
                             : "Write the canonical story of this entry…"} />
                     {/key}
                   {/if}
                   <div class="editor-footer">
                     <div>
-                      {#if entityMutation.phase !== "idle"}
+                      {#if loc.entityMutation.phase !== "idle"}
                         <MutationStatus
-                          snapshot={entityMutation.snapshot}
+                          snapshot={loc.entityMutation.snapshot}
                           onRetry={() => void archiveSelected()}
                           onReload={() => void reloadEntityEditFromServer()}
-                          onReviewDraft={() => entityMutation.reset()} />
+                          onReviewDraft={() => loc.entityMutation.reset()} />
                       {/if}
                     </div>
                     <div>
-                      {#if selected}
+                      {#if loc.selected}
                         <EntityArchiveAction
-                          entityName={selected.name}
-                          busy={entityMutation.busy}
-                          disabled={selectedLoading || projectDiagnostics.length > 0}
+                          entityName={loc.selected.name}
+                          busy={loc.entityMutation.busy}
+                          disabled={loc.selectedLoading || projectDiagnostics.length > 0}
                           onArchive={() => void archiveSelected()} />
                       {/if}
                     </div>
@@ -10277,39 +8601,41 @@ onMount(() => {
               {:else}
                 <WorkbenchState
                   kind="empty"
-                  title={section === "maps"
+                  title={loc.section === "maps"
                     ? "Your map notes are waiting."
-                    : section === "writing"
-                      ? writingView === "manuscripts"
+                    : loc.section === "writing"
+                      ? loc.writingView === "manuscripts"
                         ? "Your draft is waiting."
-                        : writingView === "reference"
+                        : loc.writingView === "reference"
                           ? "Your reference desk is waiting."
                           : "Your canvas is waiting."
                       : "Your canvas is waiting."}
-                  message={section === "maps"
+                  message={loc.section === "maps"
                     ? "Select a map from the atlas, or create one with a map integration."
                     : "Select an entry from the collection, or create something new to begin writing."} />
               {/if}
             {/if}
           {/snippet}
           <ContentPane
-            fullscreen={editorFullscreen}
-            mapEditorActive={section === "maps" && sandboxView?.renderer === "maps" && Boolean(sandboxView.view)}
-            bind:element={contentPaneElement}
+            fullscreen={loc.editorFullscreen}
+            mapEditorActive={loc.section === "maps" &&
+              loc.sandboxView?.renderer === "maps" &&
+              Boolean(loc.sandboxView.view)}
+            bind:element={loc.contentPaneElement}
             children={contentPaneBody} />
         {/if}
 
-        {#if !mapSurfaceOpen && workbenchPaneVisibility.content && workbenchPaneVisibility.inspector && workbenchSupportsInspector()}<PaneResizeHandle
+        {#if !loc.mapSurfaceOpen && loc.workbenchPaneVisibility.content && loc.workbenchPaneVisibility.inspector && workbenchSupportsInspector()}<PaneResizeHandle
             label="Resize inspector pane"
-            value={activePaneDimensions().inspectorWidth}
+            value={loc.activePaneDimensions().inspectorWidth}
             min={inspectorPaneMin}
             max={inspectorPaneMax}
             direction={-1}
-            onResize={(delta) => resizeWorkbenchPane("inspector", delta)}
-            onReset={() => resetWorkbenchPane("inspector")} />{/if}
+            onResize={(delta) => loc.resizeWorkbenchPane("inspector", delta)}
+            onReset={() => loc.resetWorkbenchPane("inspector")} />{/if}
 
-        {#if workbenchPaneVisibility.inspector && workbenchSupportsInspector() && selected}
-          {@const inspectedEntity = selected}
+        {#if loc.workbenchPaneVisibility.inspector && workbenchSupportsInspector() && loc.selected}
+          {@const inspectedEntity = loc.selected}
           {#snippet inspectorBody()}
             <InspectorOverview
               typeLabel={entityTypeLabel(inspectedEntity.entity_type)}
@@ -10383,27 +8709,27 @@ onMount(() => {
                           resolveSelected={resolveSelectedEntities}
                           selectedIds={selectedRelationshipIds(eraField)}
                           placeholder="Search eras…"
-                          onChange={(ids) => void updateRelationshipField(eraField, ids)} />
+                          onChange={(ids) => void loc.updateRelationshipField(eraField, ids)} />
                       </div>
                     {/if}
-                    {#each inspectorChronologyWarnings as warning}
+                    {#each loc.inspectorChronologyWarnings as warning}
                       <p class="chronology-warning" role="status">{warning}</p>
                     {/each}
                     {#each chronologyDateDefinitions() as definition}
                       <InspectorDateField
                         label={definition.label}
                         fieldKey={definition.key}
-                        value={fields[definition.key]}
-                        editorOpen={Boolean(dateEditorOpen[definition.key])}
-                        editorKey={`${selected?.id ?? ""}:${definition.key}`}
+                        value={loc.fields[definition.key]}
+                        editorOpen={Boolean(loc.dateEditorOpen[definition.key])}
+                        editorKey={`${loc.selected?.id ?? ""}:${definition.key}`}
                         calendar={definitionForDateField(definition.key)}
                         calendars={worldCalendars() as any}
                         selectedCalendarId={selectedCalendarId(definition.key)}
                         required={Boolean(definition.required)}
-                        onChange={(next) => updateInspectorDateField(definition.key, next)}
-                        onClear={() => clearDateField(definition.key)}
-                        onSelectCalendar={(id) => setDateCalendar(definition.key, id)}
-                        onOpen={() => openDateEditor(definition.key)} />
+                        onChange={(next) => loc.updateInspectorDateField(definition.key, next)}
+                        onClear={() => loc.clearDateField(definition.key)}
+                        onSelectCalendar={(id) => loc.setDateCalendar(definition.key, id)}
+                        onOpen={() => loc.openDateEditor(definition.key)} />
                     {/each}
                   </section>
                 {/if}
@@ -10413,48 +8739,48 @@ onMount(() => {
                     {#each propertyDefinitions() as definition}{#if definition.type === "date"}<InspectorDateField
                           label={definition.label}
                           fieldKey={definition.key}
-                          value={fields[definition.key]}
-                          editorOpen={Boolean(dateEditorOpen[definition.key])}
-                          editorKey={`${selected?.id ?? ""}:${definition.key}`}
+                          value={loc.fields[definition.key]}
+                          editorOpen={Boolean(loc.dateEditorOpen[definition.key])}
+                          editorKey={`${loc.selected?.id ?? ""}:${definition.key}`}
                           calendar={definitionForDateField(definition.key)}
                           calendars={worldCalendars() as any}
                           selectedCalendarId={selectedCalendarId(definition.key)}
                           required={Boolean(definition.required)}
-                          onChange={(next) => updateInspectorDateField(definition.key, next)}
-                          onClear={() => clearDateField(definition.key)}
-                          onSelectCalendar={(id) => setDateCalendar(definition.key, id)}
-                          onOpen={() => openDateEditor(definition.key)} />{:else}<div class="property-field">
+                          onChange={(next) => loc.updateInspectorDateField(definition.key, next)}
+                          onClear={() => loc.clearDateField(definition.key)}
+                          onSelectCalendar={(id) => loc.setDateCalendar(definition.key, id)}
+                          onOpen={() => loc.openDateEditor(definition.key)} />{:else}<div class="property-field">
                           <span
                             >{definition.label}{#if definition.required}<b>*</b>{/if}</span
                           >{#if definition.type === "boolean"}<input
                               type="checkbox"
                               aria-label={definition.label}
-                              checked={fieldInputValue(definition, fields[definition.key]) === true}
+                              checked={fieldInputValue(definition, loc.fields[definition.key]) === true}
                               onchange={(event) =>
-                                updateField(definition, event)} />{:else if definition.type === "number"}<input
+                                loc.updateField(definition, event)} />{:else if definition.type === "number"}<input
                               type="number"
                               aria-label={definition.label}
-                              value={fieldInputValue(definition, fields[definition.key])}
+                              value={fieldInputValue(definition, loc.fields[definition.key])}
                               placeholder="Add {definition.label.toLowerCase()}"
                               onchange={(event) =>
-                                updateField(
+                                loc.updateField(
                                   definition,
                                   event,
                                 )} />{:else if definition.type === "enum" && definition.options?.length}<select
                               aria-label={definition.label}
                               multiple={definition.multiple ?? false}
                               value={definition.multiple
-                                ? Array.isArray(fields[definition.key])
-                                  ? fields[definition.key]
+                                ? Array.isArray(loc.fields[definition.key])
+                                  ? loc.fields[definition.key]
                                   : []
-                                : String(fields[definition.key] ?? "")}
-                              onchange={(event) => updateField(definition, event)}
+                                : String(loc.fields[definition.key] ?? "")}
+                              onchange={(event) => loc.updateField(definition, event)}
                               >{#each definition.options ?? [] as option}<option value={option}>{option}</option
                                 >{/each}</select
                             >{:else if (definition as any).type === "oneof"}<select
                               aria-label={definition.label}
-                              value={String(fields[definition.key] ?? "")}
-                              onchange={(event) => updateField(definition, event)}
+                              value={String(loc.fields[definition.key] ?? "")}
+                              onchange={(event) => loc.updateField(definition, event)}
                               ><option value="">Choose {definition.label.toLowerCase()}</option
                               >{#each definition.options ?? [] as option}<option value={option}>{option}</option>{/each}
                               {#each (definition as any).oneOf ?? [] as variant}
@@ -10463,9 +8789,9 @@ onMount(() => {
                               {/each}</select
                             >{:else}<input
                               type="text"
-                              value={fieldInputValue(definition, fields[definition.key])}
+                              value={fieldInputValue(definition, loc.fields[definition.key])}
                               placeholder="Add {definition.label.toLowerCase()}"
-                              oninput={(event) => updateField(definition, event)} />{/if}
+                              oninput={(event) => loc.updateField(definition, event)} />{/if}
                         </div>{/if}{/each}
                   </section>
                 {/if}
@@ -10475,18 +8801,18 @@ onMount(() => {
                       context={contextFor("timeline")}
                       entityId={inspectedEntity.id as UUID}
                       onsaved={(definition) => {
-                        if (selected) {
-                          calendarCache.setDefinition(selected.id, definition);
+                        if (loc.selected) {
+                          calendarCache.setDefinition(loc.selected.id, definition);
                           syncCalendarCacheState();
                         }
                       }}
                       onOpenEra={(eraId) => {
                         const entity = entities.find((candidate) => candidate.id === eraId);
-                        if (entity) void selectEntity(entity);
+                        if (entity) void loc.selectEntity(entity);
                       }}
                       onEraCreated={(created) => {
                         void refreshAfterEntityMutation({ entityId: created.id }).then(() =>
-                          selectEntity({
+                          loc.selectEntity({
                             id: created.id,
                             name: created.name,
                             entity_type: created.type,
@@ -10518,14 +8844,14 @@ onMount(() => {
                       resolveSelected={resolveSelectedEntities}
                       selectedIds={selectedRelationshipIds(definition)}
                       hideChips
-                      onChange={(ids) => void updateRelationshipField(definition, ids)}
+                      onChange={(ids) => void loc.updateRelationshipField(definition, ids)}
                       onCreate={definition.relationshipType === "family_member_of"
                         ? (name) => createRelationshipTarget(definition, name)
                         : undefined} />
-                    {#if relationshipsForDefinition(definition).length > 0}<div
+                    {#if loc.relationshipsForDefinition(definition).length > 0}<div
                         class="relationship-detail-list"
                         aria-label={`${definition.label} details`}>
-                        {#each relationshipsForDefinition(definition) as relationship (relationship.id)}
+                        {#each loc.relationshipsForDefinition(definition) as relationship (relationship.id)}
                           {@const relDefinition = definitionForRelationship(relationship) ?? definition}
                           {@const summary = relationshipMetadataSummary(relationship, relDefinition)}
                           <div class="relationship-detail-row">
@@ -10574,22 +8900,22 @@ onMount(() => {
           {/snippet}
           {#snippet fieldsProfile()}
             <div class="fields-tab">
-              {#if selected && canEditLoreProfile(selected.entity_type) && projectInfo?.root}
+              {#if loc.selected && canEditLoreProfile(loc.selected.entity_type) && projectInfo?.root}
                 <ProfileEditor
                   projectId={projectInfo.root}
-                  entityId={selected.id}
-                  entityName={selected.name}
-                  entityType={selected.entity_type}
+                  entityId={loc.selected.id}
+                  entityName={loc.selected.name}
+                  entityType={loc.selected.entity_type}
                   entityTypeOptions={loreProfileEntityTypeOptions()}
-                  bind:open={profileEditorOpen} />
+                  bind:open={loc.profileEditorOpen} />
               {/if}
-              {#if selected && isTimelineEventEntity(selected.entity_type) && projectInfo?.root}
+              {#if loc.selected && isTimelineEventEntity(loc.selected.entity_type) && projectInfo?.root}
                 <section class="inspector-section inspector-section-plain">
                   <h3>Profile Changes</h3>
                   <ProfileEventChanges
                     projectId={projectInfo.root}
-                    eventId={selected.id}
-                    eventDate={fields.startsAt}
+                    eventId={loc.selected.id}
+                    eventDate={loc.fields.startsAt}
                     ownerTypes={loreProfileOwnerTypes()}
                     search={searchEntitiesPaged()} />
                 </section>
@@ -10601,17 +8927,17 @@ onMount(() => {
               <section class="inspector-section inspector-section-plain">
                 <div class="section-title">
                   <h3>Attached files</h3>
-                  <span>{assets.length}</span>
+                  <span>{loc.assets.length}</span>
                 </div>
-                <button class="drop-zone" type="button" onclick={attachAsset}
+                <button class="drop-zone" type="button" onclick={loc.attachAsset}
                   ><span><Plus size={16} strokeWidth={1.8} aria-hidden="true" /></span><strong>Attach a file</strong
                   ><small>Copied into this project</small></button
-                >{#each assets as asset (asset.id)}<button
+                >{#each loc.assets as asset (asset.id)}<button
                     type="button"
                     class:asset-main={asset.role === "profile"}
                     class="asset-row asset-row-button"
-                    onclick={() => openAssetDialog(asset)}
-                    disabled={assetBusyId === asset.id}
+                    onclick={() => loc.openAssetDialog(asset)}
+                    disabled={loc.assetBusyId === asset.id}
                     aria-label={`Edit ${asset.filename}`}>
                     <span class="asset-icon" aria-hidden="true">{asset.role === "profile" ? "◆" : "□"}</span>
                     <div class="asset-details">
@@ -10653,10 +8979,10 @@ onMount(() => {
                 aria-label="Maps contribution">
                 <div class="section-title">
                   <h3>Maps</h3>
-                  <span>{mapLocations.length}</span>
+                  <span>{loc.mapLocations.length}</span>
                 </div>
-                {#if mapLocations.length === 0}<small>No map links yet.</small
-                  >{:else}{#each mapLocations as location (location.id)}<div class="map-location-row">
+                {#if loc.mapLocations.length === 0}<small>No map links yet.</small
+                  >{:else}{#each loc.mapLocations as location (location.id)}<div class="map-location-row">
                       <div>
                         <strong>{location.label || location.role}</strong><small
                           >{location.role} · {location.mapEntityId.slice(
@@ -10688,26 +9014,26 @@ onMount(() => {
             </div>
           {/snippet}
           <InspectorPane
-            loading={selectedLoading}
-            error={selectedLoadError}
-            bind:element={inspectorPaneElement}
+            loading={loc.selectedLoading}
+            error={loc.selectedLoadError}
+            bind:element={loc.inspectorPaneElement}
             children={inspectorBody}
-            onRetry={() => void reloadSelectedFromDisk()} />
-          {#if fieldsDialogOpen}
+            onRetry={() => void loc.reloadSelectedFromDisk()} />
+          {#if loc.fieldsDialogOpen}
             <EntityFieldsDialog
               title={inspectedEntity.name}
               subtitle={entityTypeLabel(inspectedEntity.entity_type)}
               tabs={entityFieldsTabs()}
-              bind:activeTab={fieldsDialogTab}
+              bind:activeTab={loc.fieldsDialogTab}
               relationships={fieldsRelationships}
               profile={fieldsProfile}
               assets={fieldsAssets}
               maps={fieldsMaps}
               backlinks={fieldsBacklinks}
-              onClose={() => (fieldsDialogOpen = false)} />
+              onClose={() => (loc.fieldsDialogOpen = false)} />
           {/if}
-        {:else if workbenchPaneVisibility.inspector && workbenchSupportsInspector()}
-          <InspectorPane bind:element={inspectorPaneElement} empty />
+        {:else if loc.workbenchPaneVisibility.inspector && workbenchSupportsInspector()}
+          <InspectorPane bind:element={loc.inspectorPaneElement} empty />
         {/if}
       </section>
     {/if}
@@ -10744,31 +9070,31 @@ onMount(() => {
       onclick={openContextualCreate}><Plus size={18} strokeWidth={1.8} aria-hidden="true" /></button
     >{/if}
 </main>
-{#if metadataDialog}
-  {@const dialog = metadataDialog}
+{#if loc.metadataDialog}
+  {@const dialog = loc.metadataDialog}
   <RelationshipMetadataDialog
     relationship={dialog.relationship}
     definition={dialog.definition}
     {entities}
     {calendarDefinitions}
     onSave={(metadata) => saveRelationshipMetadata(dialog.relationship, metadata)}
-    onClose={() => (metadataDialog = null)} />
+    onClose={() => (loc.metadataDialog = null)} />
 {/if}
-{#if assetDialog}
+{#if loc.assetDialog}
   <AssetDialog
-    asset={assetDialog}
+    asset={loc.assetDialog}
     editable={canWriteAssets()}
-    onSave={handleAssetSave}
-    onDelete={handleAssetDelete}
-    onReplace={handleAssetReplace}
-    onClose={() => (assetDialog = null)} />
+    onSave={loc.handleAssetSave}
+    onDelete={loc.handleAssetDelete}
+    onReplace={loc.handleAssetReplace}
+    onClose={() => (loc.assetDialog = null)} />
 {/if}
 {#if showExternalImport}
   <ExternalImportDialog
     {modules}
     {entities}
     onCommitted={async () => {
-      clearSelection();
+      loc.clearSelection();
       await loadEntities();
       await ensureCalendarCache(true);
     }}
@@ -10788,17 +9114,17 @@ onMount(() => {
       return type ? "Other" : "Uncategorized";
     }}
     warning={editTypeWarning()}
-    busy={entityEditDialog.busy || entityMutation.busy}
+    busy={entityEditDialog.busy || loc.entityMutation.busy}
     allowUncategorized={entityEditDialog.entity.entity_type == null}
     onSave={() => void saveEntityEditDialog()}
     onClose={closeEntityEditDialog}>
     {#snippet mutation()}
-      {#if entityMutation.phase === "conflict" || entityMutation.phase === "failed" || entityMutation.phase === "saving"}
+      {#if loc.entityMutation.phase === "conflict" || loc.entityMutation.phase === "failed" || loc.entityMutation.phase === "saving"}
         <MutationStatus
-          snapshot={entityMutation.snapshot}
+          snapshot={loc.entityMutation.snapshot}
           onRetry={() => void saveEntityEditDialog()}
           onReload={() => void reloadEntityEditFromServer()}
-          onReviewDraft={() => entityMutation.reset()} />
+          onReviewDraft={() => loc.entityMutation.reset()} />
       {/if}
     {/snippet}
   </EntityIdentityDialog>
@@ -10806,26 +9132,26 @@ onMount(() => {
 {#if ready}
   <HostGuide
     guideId={LORE_GUIDE_ID}
-    active={section === "lore" && !showSettings && !projectHomeOpen}
-    resumeToken={selected?.id ?? ""}
-    hintNonce={loreGuideHint}
+    active={loc.section === "lore" && !loc.showSettings && !loc.projectHomeOpen}
+    resumeToken={loc.selected?.id ?? ""}
+    hintNonce={loc.loreGuideHint}
     stepsFor={(mode) =>
       loreGuideSteps({
         hasCollection: !collectionIsEmpty(),
-        hasSelection: Boolean(selected),
-        view: currentWorkspaceLocationView(),
+        hasSelection: Boolean(loc.selected),
+        view: loc.currentWorkspaceLocationView(),
         mode,
       })}
     onPrimary={handleLoreGuidePrimary} />
   <HostGuide
     guideId={TIMELINE_GUIDE_ID}
-    active={section === "timeline" && !showSettings && !projectHomeOpen}
-    resumeToken={selected?.id ?? ""}
-    hintNonce={timelineGuideHint}
+    active={loc.section === "timeline" && !loc.showSettings && !loc.projectHomeOpen}
+    resumeToken={loc.selected?.id ?? ""}
+    hintNonce={loc.timelineGuideHint}
     stepsFor={(mode) =>
       timelineGuideSteps({
         hasCollection: !collectionIsEmpty(),
-        view: currentWorkspaceLocationView(),
+        view: loc.currentWorkspaceLocationView(),
         mode,
       })}
     onPrimary={handleTimelineGuidePrimary} />

@@ -746,6 +746,7 @@ pub fn run() {
             plugin_webview_post,
             plugin_take_text_transfer,
             plugin_set_webview_visible,
+            plugin_suspend_webview,
             plugin_resize_webview,
             plugin_unmount_webview,
             plugin_host_view_data,

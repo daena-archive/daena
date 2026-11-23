@@ -26,6 +26,8 @@ for (const path of componentPaths) {
 }
 
 const shell = await read("src/routes/+page.svelte");
+// The mutation controller (rename, archive) moved into the location store; the page reads it as `loc.entityMutation`.
+const locationStore = await read("src/lib/location/location-store.svelte.ts");
 const overview = await read("packages/modules/language/src/panes/Overview.svelte");
 const archivePanel = await read("src/lib/ArchivedDocumentsPanel.svelte");
 const sidebar = await read("src/lib/shell/AppSidebar.svelte");
@@ -83,12 +85,13 @@ for (const needle of [
   "openCreationMenu",
   "archiveEntity",
   "reloadEntityEditFromServer",
-  "createMutationController",
   "lifecycleToast",
 ]) {
   assert.match(shell, new RegExp(needle), `shell wires ${needle}`);
 }
 
+assert.match(locationStore, /createMutationController/, "the location store wires createMutationController");
+assert.match(shell, /loc\.entityMutation\./, "the shell reads the store's mutation controller");
 assert.match(shell, /openCreationMenu\(\)/);
 assert.match(shell, /onclick=\{openContextualCreate\}/);
 assert.match(shell, /entityMutation\.phase !== "idle"/);

@@ -146,10 +146,13 @@ scroll, pane widths, surface scroll and module state, and
 `restoreShellLocation` already rebuilds from it. Tabs reuse both; restore is
 not rewritten.
 
-Cost: returning to a Writing, Language, graph or chronology tab reloads its
-webview, as navigation does today. Undo history inside the webview and its
-in-editor scroll are lost; drafts are not, because leaving flushes them. If the
-reload feels slow, a keep-alive pool (below) is the fix.
+Cost: returning to a graph or chronology tab reloads its webview, as
+navigation does today. Writing and Language webviews are kept alive in a pool
+of up to three (`docs/plans/keep-alive-webviews.md`): returning to a Writing
+tab keeps the editor and its undo history when the document has not changed
+meanwhile, and a Language tab reads its data again on return. Only a Writing or
+Language webview pushed out of the pool, or whose document changed elsewhere,
+reloads. Drafts are never lost, because leaving flushes them.
 
 ### Data model
 
@@ -280,11 +283,12 @@ The World graph and Chronology webviews forward the same chords as a
 
 ### Later
 
-- **Keep-alive webviews.** Keep the last few plugin webviews hidden instead of
-  closing them, so returning to a Writing or Language tab is instant and keeps
-  its undo history. Needs per-instance labels (`plugin:<id>:<instance>`) in
-  `plugin_webview.rs`, host messages addressed to an instance, and an LRU that
-  flushes before evicting. Broker sessions are already per origin.
+- **Keep-alive webviews.** Done (`docs/plans/keep-alive-webviews.md`). The last
+  three Writing and Language webviews stay hidden instead of closing, so
+  returning to a Writing or Language tab is instant and keeps the editor's undo
+  history. Per-instance labels (`plugin:<id>:<instance>`), host messages
+  addressed to an instance, and an LRU pool that suspends on hide. Broker
+  sessions are per origin.
 - **Side-by-side.** Two tab groups visible at once, each with its own strip.
   Needs more than one live location, so the selected entity, fields, autosave
   and document state come out of `+page.svelte` into per-location stores.

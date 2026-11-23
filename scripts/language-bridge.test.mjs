@@ -3,6 +3,7 @@ import {
   LANGUAGE_LEAVE_PENDING_TIMEOUT_MS,
   LanguageLeaveTracker,
   isLanguagePane,
+  languageResumeMessage,
   openableLinkHref,
   parseLanguageStateEvent,
 } from "../src/lib/modules/language-bridge.ts";
@@ -283,6 +284,21 @@ assert.equal(LANGUAGE_LEAVE_PENDING_TIMEOUT_MS, 1500);
   clock.advance(LANGUAGE_LEAVE_PENDING_TIMEOUT_MS);
   await flush();
   assert.equal(second.value, true, "the other request still times out on its own clock");
+}
+
+// The resume message the shell posts when a kept webview is shown again.
+{
+  assert.deepEqual(languageResumeMessage("lang-1", "lexicon"), {
+    type: "language.resume",
+    entityId: "lang-1",
+    pane: "lexicon",
+  });
+  // The webview's parser accepts exactly what the shell builds.
+  const { parseLanguageHostMessage } = await import("../packages/modules/language/src/plugin-protocol.ts");
+  assert.deepEqual(
+    parseLanguageHostMessage(languageResumeMessage("lang-1", "samples")),
+    languageResumeMessage("lang-1", "samples"),
+  );
 }
 
 console.log("language bridge checks passed");

@@ -1376,6 +1376,16 @@ them with the history metrics.
    - `ΔI_ice = I_eq(t) − I_eq(0)`;
    - `E(t) = thermal_expansion_volume(I_ref, T(t), forcing)`;
    - `ΔE = E(t) − E(0)`.
+   - **Defaults for new maps (2026-11-22).** The climate run amplifies the
+     offset 2.5–4× through snow and ice albedo, and the old defaults froze
+     40–65% of epochs (global mean below 0 °C, sea level −240 to −420 m).
+     `default_for_seed` now draws amplitudes of 0.80–1.15, 0.35–0.60 and
+     0.20–0.30 °C, land ice of 6–9.5% of the inventory, a 1.1–1.6 °C ice
+     transition and 90–150 ppm/°C thermal expansion. A 12-seed sweep at
+     n=256 (−200 ka to +20 ka, 5 ka steps) has no frozen epoch, the coldest
+     epoch 4–13 °C below the present (typically about 6.5 °C) and the lowest
+     sea level −53 to −146 m. Existing maps keep their stored forcing, so
+     their epochs are unchanged.
 4. Solve the epoch sea level `S` on the cube grid for the target
    `I_epoch = clamp(I_ref − ΔI_ice + ΔE, 0, maximum ocean volume)`:
    `V(S) = Σ area_m2(cell) · max(0, (S − elevation_mm[cell]) / 1000)`. Choose
@@ -1424,6 +1434,31 @@ holds the reference elevation in `elevations_mm` and sets `sea_level_mm = S`.
 All other epoch products are derived from `h_epoch_m`. This preserves the
 meaning of every existing consumer that compares elevation with sea level and
 avoids shifting the canonical source.
+
+**What an epoch models today, and what is left for later (2026-11-22).**
+Epochs are deterministic, not random per epoch. The world seed fixes the
+three cycle amplitudes, periods (100–150 ka, 41–50 ka and 23–28 ka, like
+Earth's orbital cycles) and phases. The offset at any year is their sum, so
+the same year always gives the same climate. An epoch changes only:
+
+- a global temperature offset, run through the full climate model;
+- sea level, from land-ice volume (lagged) and thermal expansion.
+
+Not modelled yet, and intended later:
+
+- **Continental drift.** Plates, crust and elevation are the present ones
+  at every epoch, back to the 10 Ma playback limit. Only the coastline moves,
+  with sea level.
+- **Ice sheets as geography.** Land ice is a volume for the sea-level budget.
+  The climate's own glaciers grow and shrink, but no ice sheet is built at a
+  place with thickness that lowers the sea and loads the crust.
+- **Slow climate drivers:** greenhouse changes over millions of years,
+  mountain building and ocean gateways.
+- **Response calibration.** The climate run amplifies the offset 2.5–4×,
+  so a stored offset is not the global change. Existing maps whose stored
+  forcing came from the pre-2026-11-22 defaults can still freeze. Either
+  solve for the forcing that gives the stated global change, or migrate old
+  forcing.
 
 #### Progress and cancellation
 

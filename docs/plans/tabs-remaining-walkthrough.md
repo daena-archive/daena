@@ -10,7 +10,8 @@ Read this whole file before you start. Where it disagrees with an older plan
 document, this file wins. Update the older document to match what you build.
 
 **Progress:** keep-alive slices 3 and 4 and side-by-side sub-steps 5.1a to
-5.1c are done and merged into `main`. Resume at 5.1d. The "Branch report" at
+5.1c are done and merged into `main`; 5.1d is done on `tabs-remaining`.
+Resume at 5.1e. The "Branch report" at
 the end of this file says what was built, what changed from this plan, and
 what to watch for.
 
@@ -707,6 +708,7 @@ suite re-run. Nothing on this branch has been run in the desktop app yet.
 | `eb4c1a5` | 5.1a | `LocationStore` created: selection, document, fields, revisions, dirty tracking, autosave, save queue, conflicts, selection dialogs, mutation controller. |
 | `30ca781` | 5.1b | Collection, paging, scroll, panes, manuscript outline and houses summaries in the store, with five effects. |
 | `e60f503` | 5.1c | Section, view flags, surfaces, home and settings flags, Houses tree location, `currentShellLocation` / `restoreShellLocation`, the view switches, seven more effects. |
+| `0320b52` | 5.1d | Writing and Language bridge state, functions and six Writing effects in the store; four context bridges removed. Done by grok, reviewed. Not yet merged into `main`. |
 
 `30ca781` fails `test:unit` (`houses-management.test.mjs` still looked for
 moved code on the page). The suite used then did not run `test:unit`;
@@ -715,9 +717,9 @@ moved code on the page). The suite used then did not run `test:unit`;
 
 ### Where to resume
 
-Next is **5.1d**, then **5.1e**, then 5.2 to 5.6 as written above.
+Next is **5.1e**, then 5.2 to 5.6 as written above.
 
-- **5.1d, Writing and Language bridges.** Move `languagePaneRequest`,
+- **5.1d, Writing and Language bridges (done).** Moved `languagePaneRequest`,
   `languageWebview`, `languageLeave`, `writingWebview`, `writingReadyCount`,
   `writingFullscreen`, `writingFullscreenInstance`, `writingLoadKey`,
   `writingLoad`, `writingFlush`, `writingDraftQueue`,
@@ -734,6 +736,16 @@ Next is **5.1d**, then **5.1e**, then 5.2 to 5.6 as written above.
   `languageCreatedState`, the prune effect) is shell-global: in 5.5 it keeps
   every store's shown instance, so it stays on the page.
   `shownWebviewInstance` stays on the page until 5.4 makes it per store.
+  As built: the pool wrappers (`beginPooledWritingMount`, `writingMounted`
+  and the Language pair) stay on the page and write the moved fields as
+  `loc.*`; `writingEditable` stays a page `$derived` (it reads the AI
+  dialog state) and the store reads it through the context. The bridges'
+  calls out to the shell go through new context callbacks:
+  `markShownWebviewReady`, `openExternal`, `openEntityFromWebview`,
+  `runShellShortcut`, `openEntityEditDialog`, `confirmWritingArchive`.
+  Ordering found: when Writing reports ready, the load and AI-state posts
+  now start before the visibility effect shows the webview; both are
+  independent IPC calls, so the end state is the same.
 - **5.1e, map editor session and selection AI.** Move the inventory's "Map
   editor session" and "AI dialog bound to the selection" state and
   functions. Then delete the temporary context bridges listed below.
@@ -818,7 +830,7 @@ Side-by-side 5.1:
 
 Temporary context bridges, to remove when their state moves:
 
-- 5.1d: `canLeaveLanguageSection`, `flushWritingWebview`,
+- 5.1d (removed in 5.1d): `canLeaveLanguageSection`, `flushWritingWebview`,
   `requestLanguagePane`, `notifyWritingSaved`.
 - 5.1e: `resolveDirtyMapSession`, `currentMapId`, `setMapsEditorMode`,
   `setMapsEditorKey`, `clearMapFocus`, `closeAiRewrite`, `closeAiFieldFill`.

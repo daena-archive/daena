@@ -11,7 +11,9 @@ import Point from "ol/geom/Point.js";
 import Graticule from "ol/layer/Graticule.js";
 import TileLayer from "ol/layer/Tile.js";
 import VectorLayer from "ol/layer/Vector.js";
+import VectorTileLayer from "ol/layer/VectorTile.js";
 import VectorSource from "ol/source/Vector.js";
+import VectorTileSource from "ol/source/VectorTile.js";
 import XYZ from "ol/source/XYZ.js";
 import CircleStyle from "ol/style/Circle.js";
 import Fill from "ol/style/Fill.js";
@@ -21,6 +23,7 @@ import Text from "ol/style/Text.js";
 import Draw from "ol/interaction/Draw.js";
 import { defaults as defaultInteractions } from "ol/interaction/defaults.js";
 import GeoJSON from "ol/format/GeoJSON.js";
+import { createXYZ } from "ol/tilegrid.js";
 import { fromLonLat, toLonLat, transformExtent } from "ol/proj.js";
 import "ol/ol.css";
 import {
@@ -76,13 +79,14 @@ import { createAtlasRenderCompletionTracker } from "./render-completion.ts";
 import MapLayerVisibilityList from "../MapLayerVisibilityList.svelte";
 import { ATLAS_DETAIL_ALGORITHM_VERSION, atlasStyleLabel, isAtlasLayerEnabledByDefault } from "./constants.ts";
 import {
-  coastStyle,
-  hydroKind,
+  coastVectorStyle,
+  contourVectorStyle,
   isTerrainStyle,
-  lakeStyle,
-  riverStyle,
+  lakeVectorStyle,
+  riverVectorStyle,
   TERRAIN_IMAGERY_STYLE_ID,
   TERRAIN_RELIEF_STYLE_ID,
+  type TerrainVectorLayerId,
 } from "./terrain-vectors.ts";
 import AtlasOverlayPanel from "./AtlasOverlayPanel.svelte";
 import { simplifyFreehandGeometry } from "../native-vector/geometry.ts";
@@ -160,13 +164,10 @@ let cursor = $state("—");
 let loading = $state(true);
 let styleId = $state(TERRAIN_IMAGERY_STYLE_ID);
 let coastOn = $state(false);
-let riversOn = $state(false);
+let riversOn = $state(true);
 let lakesOn = $state(false);
+let contoursOn = $state(false);
 let graticuleOn = $state(false);
-let hydroHas = $state({ coast: false, river: false, lake: false });
-let hydroRequest = 0;
-/** `mapId:offsetYears` of the hydro features in the current sources. */
-let hydroLoadedKey = "";
 let offsetYears = $state(0);
 let timeKind = $state<"physical-offset-year" | "calendar-year">("physical-offset-year");
 let authoredYear = $state(1);
@@ -265,12 +266,16 @@ let routeRequest = 0;
 let unlisten: UnlistenFn | undefined;
 let map: Map | null = null;
 let tileSource: XYZ | null = null;
-let coastSource: VectorSource | null = null;
-let coastLayer: VectorLayer | null = null;
-let riverSource: VectorSource | null = null;
-let riverLayer: VectorLayer | null = null;
-let lakeSource: VectorSource | null = null;
-let lakeLayer: VectorLayer | null = null;
+type TerrainVectorSource = VectorTileSource<Feature>;
+type TerrainVectorLayer = VectorTileLayer<TerrainVectorSource>;
+let coastSource: TerrainVectorSource | null = null;
+let coastLayer: TerrainVectorLayer | null = null;
+let riverSource: TerrainVectorSource | null = null;
+let riverLayer: TerrainVectorLayer | null = null;
+let lakeSource: TerrainVectorSource | null = null;
+let lakeLayer: TerrainVectorLayer | null = null;
+let contourSource: TerrainVectorSource | null = null;
+let contourLayer: TerrainVectorLayer | null = null;
 let graticuleLayer: Graticule | null = null;
 let findPlaceSource: VectorSource | null = null;
 let findPlaceLayer: VectorLayer | null = null;
@@ -525,18 +530,13 @@ const studioLayerBook = $derived.by(() => {
     },
   ];
   if (terrain) {
-    const vectors: StudioLayer[] = [];
-    // Derived GeoJSON has no river or lake geometry yet; show only what it carries.
-    if (hydroHas.coast) {
-      vectors.push({ id: "terrain:coast", name: "Coastline", enabled: coastOn });
-    }
-    if (hydroHas.river) {
-      vectors.push({ id: "terrain:rivers", name: "Rivers", enabled: riversOn });
-    }
-    if (hydroHas.lake) {
-      vectors.push({ id: "terrain:lakes", name: "Lake outlines", enabled: lakesOn });
-    }
-    vectors.push({ id: "terrain:graticule", name: "Graticule", enabled: graticuleOn });
+    const vectors: StudioLayer[] = [
+      { id: "terrain:rivers", name: "Rivers", enabled: riversOn },
+      { id: "terrain:coast", name: "Coastline", enabled: coastOn },
+      { id: "terrain:lakes", name: "Lakes", enabled: lakesOn },
+      { id: "terrain:contours", name: "Contours", enabled: contoursOn },
+      { id: "terrain:graticule", name: "Graticule", enabled: graticuleOn },
+    ];
     groups.push({ id: "terrain", label: "Terrain · zoom 12", layers: vectors });
   }
   if (physical.length > 0) groups.push({ id: "physical", label: "Physical", layers: physical });
@@ -629,12 +629,18 @@ async function openSession() {
       mapLifecycle = undefined;
       map = null;
       tileSource = null;
+      riverSource?.dispose();
+      coastSource?.dispose();
+      lakeSource?.dispose();
+      contourSource?.dispose();
       coastSource = null;
       coastLayer = null;
       riverSource = null;
       riverLayer = null;
       lakeSource = null;
       lakeLayer = null;
+      contourSource = null;
+      contourLayer = null;
       graticuleLayer = null;
       findPlaceLayer = null;
       findPlaceSource = null;
@@ -647,7 +653,6 @@ async function openSession() {
       const zoom = Math.min(keepZoom ?? overview, next.maxZoom);
       mountMap(next, { center, zoom });
     }
-    void loadTerrainHydro(next);
     if (previous && previous.sessionToken !== next.sessionToken) {
       void project.atlasStudioClose(previous.sessionToken).catch(() => undefined);
     }
@@ -670,78 +675,83 @@ function scheduleSession() {
 function applyTerrainDefaults(previous: AtlasStudioSessionStatus | null, next: AtlasStudioSessionStatus) {
   if (next.kind !== "terrain") return;
   if (previous?.kind === "terrain" && previous.styleId === next.styleId) return;
-  const on = next.styleId === TERRAIN_RELIEF_STYLE_ID;
-  coastOn = on;
-  riversOn = on;
-  lakesOn = on;
+  const relief = next.styleId === TERRAIN_RELIEF_STYLE_ID;
+  riversOn = true;
+  coastOn = relief;
+  lakesOn = relief;
+  contoursOn = relief;
   graticuleOn = false;
 }
 
 function syncTerrainVisibility() {
   const terrain = session?.kind === "terrain";
-  coastLayer?.setVisible(Boolean(terrain && coastOn && hydroHas.coast));
-  riverLayer?.setVisible(Boolean(terrain && riversOn && hydroHas.river));
-  lakeLayer?.setVisible(Boolean(terrain && lakesOn && hydroHas.lake));
+  coastLayer?.setVisible(Boolean(terrain && coastOn));
+  riverLayer?.setVisible(Boolean(terrain && riversOn));
+  lakeLayer?.setVisible(Boolean(terrain && lakesOn));
+  contourLayer?.setVisible(Boolean(terrain && contoursOn));
   graticuleLayer?.setVisible(Boolean(terrain && graticuleOn));
 }
 
-function applyHydroFeatures(features: Feature[]) {
-  const coasts: Feature[] = [];
-  const rivers: Feature[] = [];
-  const lakes: Feature[] = [];
-  for (const feature of features) {
-    const kind = hydroKind(feature);
-    if (kind === "coast") coasts.push(feature);
-    else if (kind === "river") rivers.push(feature);
-    else if (kind === "lake") lakes.push(feature);
-  }
-  coastSource?.clear();
-  riverSource?.clear();
-  lakeSource?.clear();
-  if (coasts.length > 0) coastSource?.addFeatures(coasts);
-  if (rivers.length > 0) riverSource?.addFeatures(rivers);
-  if (lakes.length > 0) lakeSource?.addFeatures(lakes);
-  hydroHas = { coast: coasts.length > 0, river: rivers.length > 0, lake: lakes.length > 0 };
-  syncTerrainVisibility();
+function zoomForResolution(resolution: number) {
+  return map?.getView().getZoomForResolution(resolution) ?? 0;
 }
 
-async function loadTerrainHydro(status: AtlasStudioSessionStatus) {
-  const request = ++hydroRequest;
-  const key = `${mapId}:${status.offsetYears}`;
-  if (status.kind === "terrain" && key === hydroLoadedKey) {
-    syncTerrainVisibility();
-    return;
+function riverLabel(id: string) {
+  if (!id) return "";
+  const pin = namedWaterPins.find((entry) => entry.featureId === id);
+  return pin?.label?.trim() ?? "";
+}
+
+function syncTerrainStyles() {
+  const relief = session?.styleId === TERRAIN_RELIEF_STYLE_ID;
+  riverLayer?.setStyle(riverVectorStyle(relief, zoomForResolution, riverLabel));
+  coastLayer?.setStyle(coastVectorStyle());
+  lakeLayer?.setStyle(lakeVectorStyle());
+  contourLayer?.setStyle(contourVectorStyle(zoomForResolution));
+}
+
+function vectorUrlFunction(status: AtlasStudioSessionStatus, layer: TerrainVectorLayerId) {
+  return (tileCoordinate: number[] | null) => {
+    const template = status.vectorUrlTemplate;
+    if (!template || status.kind !== "terrain" || !tileCoordinate) return undefined;
+    const [z, x, y] = tileCoordinate;
+    const width = 2 ** z;
+    const wrappedX = ((x % width) + width) % width;
+    const url = template
+      .replace("{z}", String(z))
+      .replace("{x}", String(wrappedX))
+      .replace("{y}", String(y))
+      .replace("{layer}", layer);
+    return tileUrlAllowed(url, status.sessionToken) ? url : undefined;
+  };
+}
+
+function makeVectorSource(status: AtlasStudioSessionStatus, layer: TerrainVectorLayerId): TerrainVectorSource {
+  const source = new VectorTileSource<Feature>({
+    format: new GeoJSON({ dataProjection: "EPSG:4326", featureProjection: "EPSG:3857" }),
+    projection: "EPSG:3857",
+    tileGrid: createXYZ({ minZoom: 0, maxZoom: status.maxZoom, tileSize: status.tileSize }),
+    wrapX: true,
+    transition: 0,
+    overlaps: true,
+  });
+  source.setTileUrlFunction(vectorUrlFunction(status, layer));
+  return source;
+}
+
+function bindVectorSource(
+  current: TerrainVectorSource | null,
+  status: AtlasStudioSessionStatus,
+  layer: TerrainVectorLayerId,
+): TerrainVectorSource {
+  const maxZoom = current?.getTileGrid()?.getMaxZoom();
+  if (current && maxZoom === status.maxZoom) {
+    current.setTileUrlFunction(vectorUrlFunction(status, layer));
+    current.refresh();
+    return current;
   }
-  hydroLoadedKey = "";
-  if (status.kind !== "terrain") {
-    hydroHas = { coast: false, river: false, lake: false };
-    coastSource?.clear();
-    riverSource?.clear();
-    lakeSource?.clear();
-    syncTerrainVisibility();
-    return;
-  }
-  try {
-    const text =
-      status.offsetYears === 0
-        ? await project.physicalMapDerivedGeoJson(mapId)
-        : (await project.physicalMapDerivedEpoch(mapId, status.offsetYears)).geojson;
-    if (request !== hydroRequest || session?.sessionToken !== status.sessionToken) return;
-    const format = new GeoJSON();
-    const features = format.readFeatures(text, {
-      dataProjection: "EPSG:4326",
-      featureProjection: "EPSG:3857",
-    }) as Feature[];
-    applyHydroFeatures(features);
-    hydroLoadedKey = key;
-  } catch {
-    if (request !== hydroRequest) return;
-    hydroHas = { coast: false, river: false, lake: false };
-    coastSource?.clear();
-    riverSource?.clear();
-    lakeSource?.clear();
-    syncTerrainVisibility();
-  }
+  current?.dispose();
+  return makeVectorSource(status, layer);
 }
 
 function applySessionView(status: AtlasStudioSessionStatus) {
@@ -769,6 +779,16 @@ function applySessionView(status: AtlasStudioSessionStatus) {
   } else {
     configureTileSource(tileSource, status);
   }
+  riverSource = bindVectorSource(riverSource, status, "rivers");
+  coastSource = bindVectorSource(coastSource, status, "coastline");
+  lakeSource = bindVectorSource(lakeSource, status, "lakes");
+  contourSource = bindVectorSource(contourSource, status, "contours");
+  riverLayer?.setSource(riverSource);
+  coastLayer?.setSource(coastSource);
+  lakeLayer?.setSource(lakeSource);
+  contourLayer?.setSource(contourSource);
+  syncTerrainStyles();
+  syncTerrainVisibility();
 }
 
 function configureTileSource(source: XYZ, status: AtlasStudioSessionStatus) {
@@ -814,27 +834,52 @@ function mountMap(status: AtlasStudioSessionStatus, initial?: { center: [number,
     wrapX: true,
   });
   configureTileSource(tileSource, status);
-  hydroLoadedKey = "";
-  coastSource = new VectorSource();
-  riverSource = new VectorSource();
-  lakeSource = new VectorSource();
-  coastLayer = new VectorLayer({ source: coastSource, style: coastStyle, visible: false });
-  riverLayer = new VectorLayer({ source: riverSource, style: riverStyle, visible: false });
-  lakeLayer = new VectorLayer({ source: lakeSource, style: lakeStyle, visible: false });
+  const rivers = makeVectorSource(status, "rivers");
+  const coasts = makeVectorSource(status, "coastline");
+  const lakes = makeVectorSource(status, "lakes");
+  const contours = makeVectorSource(status, "contours");
+  riverSource = rivers;
+  coastSource = coasts;
+  lakeSource = lakes;
+  contourSource = contours;
+  const terrain = status.kind === "terrain";
+  riverLayer = new VectorTileLayer({
+    source: rivers,
+    visible: terrain && riversOn,
+    zIndex: 5,
+  });
+  coastLayer = new VectorTileLayer({
+    source: coasts,
+    visible: terrain && coastOn,
+    zIndex: 4,
+  });
+  lakeLayer = new VectorTileLayer({
+    source: lakes,
+    visible: terrain && lakesOn,
+    zIndex: 3,
+  });
+  contourLayer = new VectorTileLayer({
+    source: contours,
+    visible: terrain && contoursOn,
+    zIndex: 2,
+  });
+  syncTerrainStyles();
   graticuleLayer = new Graticule({
     strokeStyle: new Stroke({ color: "rgba(80, 88, 96, 0.55)", width: 1 }),
     showLabels: false,
     visible: false,
     wrapX: true,
+    zIndex: 6,
   });
   try {
     map = new Map({
       target: container,
       layers: [
         new TileLayer({ source: tileSource, preload: 1 }),
+        contourLayer,
+        lakeLayer,
         coastLayer,
         riverLayer,
-        lakeLayer,
         graticuleLayer,
         authoredOverlayLayer(),
         landmassSelectionLayer(),
@@ -966,6 +1011,48 @@ function prefetchRing(status: AtlasStudioSessionStatus) {
       void fetch(url).catch(() => undefined);
       requested += 1;
       if (requested >= 8) return;
+    }
+  }
+  prefetchVectorRing(status, z, minX, maxX, minY, maxY, visibleMinX, visibleMaxX, visibleMinY, visibleMaxY, n);
+}
+
+function prefetchVectorRing(
+  status: AtlasStudioSessionStatus,
+  z: number,
+  minX: number,
+  maxX: number,
+  minY: number,
+  maxY: number,
+  visibleMinX: number,
+  visibleMaxX: number,
+  visibleMinY: number,
+  visibleMaxY: number,
+  n: number,
+) {
+  const template = status.vectorUrlTemplate;
+  if (!template || status.kind !== "terrain") return;
+  const layers = [
+    riversOn ? "rivers" : "",
+    coastOn ? "coastline" : "",
+    lakesOn ? "lakes" : "",
+    contoursOn ? "contours" : "",
+  ].filter((layer) => layer.length > 0);
+  let requested = 0;
+  for (const layer of layers) {
+    for (let x = minX; x <= maxX; x += 1) {
+      const wrapped = ((x % n) + n) % n;
+      for (let y = minY; y <= maxY; y += 1) {
+        if (x >= visibleMinX && x <= visibleMaxX && y >= visibleMinY && y <= visibleMaxY) continue;
+        const url = `${template
+          .replace("{z}", String(z))
+          .replace("{x}", String(wrapped))
+          .replace("{y}", String(y))
+          .replace("{layer}", layer)}?priority=prefetch`;
+        if (!tileUrlAllowed(url, status.sessionToken)) continue;
+        void fetch(url).catch(() => undefined);
+        requested += 1;
+        if (requested >= 8) return;
+      }
     }
   }
 }
@@ -1440,6 +1527,7 @@ async function syncNamedWater() {
     });
     namedWaterSource.addFeature(feature);
   }
+  riverLayer?.changed();
 }
 
 function closeLinkPanel(focusMap = false) {
@@ -2412,8 +2500,20 @@ onDestroy(() => {
   mapLifecycle?.dispose();
   mapLifecycle = undefined;
   clearOverlayDraw();
+  riverSource?.dispose();
+  coastSource?.dispose();
+  lakeSource?.dispose();
+  contourSource?.dispose();
   map = null;
   tileSource = null;
+  riverSource = null;
+  coastSource = null;
+  lakeSource = null;
+  contourSource = null;
+  riverLayer = null;
+  coastLayer = null;
+  lakeLayer = null;
+  contourLayer = null;
   findPlaceLayer = null;
   findPlaceSource = null;
   namedWaterLayer = null;
@@ -2681,6 +2781,11 @@ onDestroy(() => {
                 }
                 if (id === "terrain:lakes") {
                   lakesOn = !lakesOn;
+                  syncTerrainVisibility();
+                  return;
+                }
+                if (id === "terrain:contours") {
+                  contoursOn = !contoursOn;
                   syncTerrainVisibility();
                   return;
                 }

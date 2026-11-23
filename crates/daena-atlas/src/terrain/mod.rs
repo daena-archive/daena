@@ -10,6 +10,7 @@ mod noise;
 mod palette;
 mod render;
 mod tile;
+mod vectors;
 
 use std::sync::Arc;
 
@@ -20,6 +21,7 @@ use rayon::prelude::*;
 pub use imagery::render_imagery_pixels;
 pub use render::{ground_metres_per_pixel, lon_lat_to_tile, render_pixels};
 pub use tile::{render_terrain_tile_png, terrain_style_for, TerrainStyle, TERRAIN_MAX_ZOOM};
+pub use vectors::{render_terrain_vector_tile, TerrainVectorLayer, TerrainVectors};
 
 use noise::{
     build_octaves, domain_seed, sample_octave, sample_octave_with_gradient, terrain_seed, Octave,
@@ -317,6 +319,42 @@ impl AtlasTerrain {
     #[must_use]
     pub fn radius_m(&self) -> f64 {
         self.radius_m
+    }
+
+    /// Lake level, metres, of the wet lake `classify` consults first.
+    ///
+    /// `None` when no wet-lake cell in the bilinear stencil clears [`WEIGHT_EPS`].
+    /// The metres value is the same `f32` the raster compares against.
+    pub(super) fn dominant_lake_level_m(&self, direction: [f64; 3]) -> Option<f64> {
+        let p = unit(direction);
+        let nearest = self.surface.cell_at_direction(p) as usize;
+        let nearest_id = if self.wet.get(nearest).copied().unwrap_or(0) != 0 {
+            Some(self.lake_id[nearest])
+        } else {
+            None
+        };
+        let (cells, weights) = self.surface.bilinear_stencil(p);
+        let mut best: Option<(u8, u32, f64)> = None;
+        for slot in 0..4 {
+            if weights[slot] <= WEIGHT_EPS {
+                continue;
+            }
+            let cell = cells[slot] as usize;
+            if self.wet.get(cell).copied().unwrap_or(0) == 0 {
+                continue;
+            }
+            let id = self.lake_id[cell];
+            let priority = u8::from(Some(id) != nearest_id);
+            let level = f64::from(self.lake_level_m[cell]);
+            let replace = match best {
+                None => true,
+                Some((best_priority, best_id, _)) => (priority, id) < (best_priority, best_id),
+            };
+            if replace {
+                best = Some((priority, id, level));
+            }
+        }
+        best.map(|(_, _, level)| level)
     }
 
     /// Detailed elevation in metres at unit direction `p`.
@@ -1229,6 +1267,11 @@ fn unit(p: [f64; 3]) -> [f64; 3] {
     } else {
         [p[0] / len, p[1] / len, p[2] / len]
     }
+}
+
+#[cfg(test)]
+pub(crate) fn terrain_fixture() -> &'static AtlasTerrain {
+    tests::fixture()
 }
 
 #[cfg(test)]

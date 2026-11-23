@@ -19,7 +19,8 @@ use daena_atlas::studio::{
     STUDIO_TILE_SIZE,
 };
 use daena_atlas::terrain::{
-    render_terrain_tile_png, terrain_style_for, AtlasTerrain, TerrainStyle, TERRAIN_MAX_ZOOM,
+    render_terrain_tile_png, render_terrain_vector_tile, terrain_style_for, AtlasTerrain,
+    TerrainStyle, TerrainVectorLayer, TerrainVectors, TERRAIN_MAX_ZOOM,
 };
 use daena_atlas::{
     prepare_from_source_with_structure, AtlasError, AtlasPhase, AtlasPreparedScene, AtlasProgress,
@@ -42,10 +43,16 @@ const MAX_TERRAINS: usize = 2;
 const MAX_WAITING_TILES: u32 = 24;
 const MAX_PREFETCH_WAITING: u32 = 8;
 const MAX_CONCURRENT_TILE_RENDERS: u32 = 2;
+/// Vector tiles take a few milliseconds and have their own queue, so up to
+/// four layers per tile position never crowd out the raster tiles.
+const MAX_WAITING_VECTOR_TILES: u32 = 128;
+const MAX_PREFETCH_WAITING_VECTOR: u32 = 16;
+const MAX_CONCURRENT_VECTOR_RENDERS: u32 = 4;
 const MAX_TILE_PNG_BYTES: usize = 2 * 1024 * 1024;
 const MAX_TILE_CACHE_ENTRIES: usize = 64;
 const MAX_TILE_CACHE_BYTES: usize = 32 * 1024 * 1024;
 static WAITING_TILES: AtomicU32 = AtomicU32::new(0);
+static WAITING_VECTOR_TILES: AtomicU32 = AtomicU32::new(0);
 
 #[derive(Default)]
 struct TileGate {
@@ -58,7 +65,11 @@ struct TilePermit {
 }
 
 impl TileGate {
-    fn acquire(self: &Arc<Self>, prefetch: bool) -> Result<TilePermit, AtlasError> {
+    fn acquire(
+        self: &Arc<Self>,
+        prefetch: bool,
+        max_active: u32,
+    ) -> Result<TilePermit, AtlasError> {
         let mut active = self.active.lock().map_err(|_| {
             AtlasError::new(CODE_STUDIO_TILE_FAILED, "atlas studio tile gate poisoned")
         })?;
@@ -70,7 +81,7 @@ impl TileGate {
                 ));
             }
         } else {
-            while *active >= MAX_CONCURRENT_TILE_RENDERS {
+            while *active >= max_active {
                 active = self.changed.wait(active).map_err(|_| {
                     AtlasError::new(CODE_STUDIO_TILE_FAILED, "atlas studio tile gate poisoned")
                 })?;
@@ -96,6 +107,8 @@ pub struct AtlasStudioSessionStatus {
     pub session_token: String,
     pub map_entity_id: String,
     pub tile_url_template: String,
+    /// `None` on legacy sessions. Terrain sessions end in `{z}/{x}/{y}.{layer}.json`.
+    pub vector_url_template: Option<String>,
     pub max_zoom: u32,
     /// `"terrain"` or `"legacy"`.
     pub kind: String,
@@ -180,6 +193,7 @@ struct TerrainKey {
 
 struct CachedTerrain {
     terrain: Arc<AtlasTerrain>,
+    vectors: Arc<TerrainVectors>,
     last_used: Instant,
 }
 
@@ -191,9 +205,12 @@ enum SessionBody {
     },
     Terrain {
         terrain: Arc<AtlasTerrain>,
+        vectors: Arc<TerrainVectors>,
         style: TerrainStyle,
     },
 }
+
+type StudioTileCache = BTreeMap<(u32, u32, u32, u8), (Instant, Vec<u8>)>;
 
 struct StudioSession {
     token: String,
@@ -211,7 +228,7 @@ struct StudioSession {
     time_kind: String,
     authored_year: Option<i64>,
     overlays: Arc<Vec<AuthoredFeature>>,
-    tile_cache: BTreeMap<(u32, u32, u32), (Instant, Vec<u8>)>,
+    tile_cache: StudioTileCache,
     tile_cache_bytes: usize,
 }
 
@@ -268,6 +285,7 @@ pub struct AtlasStudioManager {
     structures: BTreeMap<StructureKey, CachedStructure>,
     terrains: BTreeMap<TerrainKey, CachedTerrain>,
     tile_gate: Arc<TileGate>,
+    vector_gate: Arc<TileGate>,
 }
 
 impl AtlasStudioManager {
@@ -404,13 +422,18 @@ impl AtlasStudioManager {
         );
     }
 
-    fn terrain(&mut self, key: &TerrainKey) -> Option<Arc<AtlasTerrain>> {
+    fn terrain(&mut self, key: &TerrainKey) -> Option<(Arc<AtlasTerrain>, Arc<TerrainVectors>)> {
         let cached = self.terrains.get_mut(key)?;
         cached.last_used = Instant::now();
-        Some(cached.terrain.clone())
+        Some((cached.terrain.clone(), cached.vectors.clone()))
     }
 
-    fn remember_terrain(&mut self, key: TerrainKey, terrain: Arc<AtlasTerrain>) {
+    fn remember_terrain(
+        &mut self,
+        key: TerrainKey,
+        terrain: Arc<AtlasTerrain>,
+        vectors: Arc<TerrainVectors>,
+    ) {
         if let Some(cached) = self.terrains.get_mut(&key) {
             cached.last_used = Instant::now();
             return;
@@ -430,6 +453,7 @@ impl AtlasStudioManager {
             key,
             CachedTerrain {
                 terrain,
+                vectors,
                 last_used: Instant::now(),
             },
         );
@@ -476,22 +500,29 @@ impl AtlasStudioManager {
         Ok(status_from(session, None))
     }
 
-    fn tile_from_cache(&mut self, token: &str, z: u32, x: u32, y: u32) -> Option<Vec<u8>> {
+    fn tile_from_cache(
+        &mut self,
+        token: &str,
+        z: u32,
+        x: u32,
+        y: u32,
+        kind: u8,
+    ) -> Option<Vec<u8>> {
         let session = self.sessions.get_mut(token)?;
-        let entry = session.tile_cache.get_mut(&(z, x, y))?;
+        let entry = session.tile_cache.get_mut(&(z, x, y, kind))?;
         entry.0 = Instant::now();
         session.last_used = Instant::now();
         Some(entry.1.clone())
     }
 
-    fn remember_tile(&mut self, token: &str, z: u32, x: u32, y: u32, png: Vec<u8>) {
+    fn remember_tile(&mut self, token: &str, z: u32, x: u32, y: u32, kind: u8, png: Vec<u8>) {
         let Some(session) = self.sessions.get_mut(token) else {
             return;
         };
         if png.len() > MAX_TILE_PNG_BYTES {
             return;
         }
-        if let Some((_, old)) = session.tile_cache.remove(&(z, x, y)) {
+        if let Some((_, old)) = session.tile_cache.remove(&(z, x, y, kind)) {
             session.tile_cache_bytes = session.tile_cache_bytes.saturating_sub(old.len());
         }
         while session.tile_cache.len() >= MAX_TILE_CACHE_ENTRIES
@@ -510,7 +541,9 @@ impl AtlasStudioManager {
             }
         }
         session.tile_cache_bytes = session.tile_cache_bytes.saturating_add(png.len());
-        session.tile_cache.insert((z, x, y), (Instant::now(), png));
+        session
+            .tile_cache
+            .insert((z, x, y, kind), (Instant::now(), png));
         session.last_used = Instant::now();
     }
 
@@ -544,6 +577,8 @@ fn status_from(
         session_token: session.token.clone(),
         map_entity_id: session.map_entity_id.clone(),
         tile_url_template: tile_url_template(&session.token, session.device_scale),
+        vector_url_template: (session.kind_name() == "terrain")
+            .then(|| vector_url_template(&session.token)),
         max_zoom: session.max_zoom(),
         kind: session.kind_name().to_string(),
         tile_size: STUDIO_TILE_SIZE,
@@ -573,6 +608,17 @@ pub fn tile_url_template(token: &str, device_scale: u32) -> String {
     }
 }
 
+pub fn vector_url_template(token: &str) -> String {
+    #[cfg(windows)]
+    {
+        format!("http://atlas-studio.localhost/{token}/{{z}}/{{x}}/{{y}}.{{layer}}.json")
+    }
+    #[cfg(not(windows))]
+    {
+        format!("atlas-studio://localhost/{token}/{{z}}/{{x}}/{{y}}.{{layer}}.json")
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParsedStudioTile {
     pub token: String,
@@ -581,6 +627,8 @@ pub struct ParsedStudioTile {
     pub y: u32,
     pub device_scale: u32,
     pub prefetch: bool,
+    /// `None` is a PNG tile. `Some` is `y.<layer>.json`.
+    pub layer: Option<TerrainVectorLayer>,
 }
 
 pub fn parse_studio_tile_request(
@@ -616,12 +664,7 @@ pub fn parse_studio_tile_request(
             "atlas studio protocol refused extra path segments",
         ));
     }
-    let y = y_png
-        .strip_suffix(".png")
-        .ok_or_else(|| protocol_denied("atlas studio protocol serves PNG tiles only"))?;
-    let y = y
-        .parse::<u32>()
-        .map_err(|_| studio_tile_invalid("atlas studio tile y is invalid"))?;
+    let (y, layer) = parse_y_and_layer(y_png)?;
     let mut device_scale = 1;
     let mut prefetch = false;
     if let Some(query) = request.uri().query() {
@@ -657,7 +700,49 @@ pub fn parse_studio_tile_request(
         y,
         device_scale,
         prefetch,
+        layer,
     })
+}
+
+fn parse_y_and_layer(part: &str) -> Result<(u32, Option<TerrainVectorLayer>), AtlasError> {
+    if let Some(y) = part.strip_suffix(".png") {
+        let y = y
+            .parse::<u32>()
+            .map_err(|_| studio_tile_invalid("atlas studio tile y is invalid"))?;
+        return Ok((y, None));
+    }
+    if let Some(stem) = part.strip_suffix(".json") {
+        let (y, layer_id) = stem
+            .rsplit_once('.')
+            .ok_or_else(|| studio_tile_invalid("atlas studio vector tile name is invalid"))?;
+        let y = y
+            .parse::<u32>()
+            .map_err(|_| studio_tile_invalid("atlas studio tile y is invalid"))?;
+        let layer = TerrainVectorLayer::from_id(layer_id)
+            .ok_or_else(|| studio_tile_invalid("atlas studio vector layer is invalid"))?;
+        return Ok((y, Some(layer)));
+    }
+    Err(protocol_denied(
+        "atlas studio protocol serves PNG tiles only",
+    ))
+}
+
+fn tile_cache_kind(layer: Option<TerrainVectorLayer>) -> u8 {
+    match layer {
+        None => 0,
+        Some(TerrainVectorLayer::Coastline) => 1,
+        Some(TerrainVectorLayer::Lakes) => 2,
+        Some(TerrainVectorLayer::Rivers) => 3,
+        Some(TerrainVectorLayer::Contours) => 4,
+    }
+}
+
+fn tile_content_type(layer: Option<TerrainVectorLayer>) -> &'static str {
+    if layer.is_some() {
+        "application/geo+json"
+    } else {
+        "image/png"
+    }
 }
 
 fn parse_tile_part(part: Option<&str>, label: &str) -> Result<u32, AtlasError> {
@@ -705,13 +790,13 @@ pub fn protocol_response(
             .unwrap_or_else(|_| error_response(CODE_STUDIO_TILE_FAILED, 500));
     }
     match serve_studio_tile(studio, core, request) {
-        Ok(png) => apply_cors(tauri::http::Response::builder())
+        Ok(tile) => apply_cors(tauri::http::Response::builder())
             .status(200)
-            .header("Content-Type", "image/png")
-            .header("Content-Length", png.len().to_string())
+            .header("Content-Type", tile.content_type)
+            .header("Content-Length", tile.bytes.len().to_string())
             .header("X-Content-Type-Options", "nosniff")
             .header("Cache-Control", "no-store")
-            .body(png)
+            .body(tile.bytes)
             .unwrap_or_else(|_| error_response(CODE_STUDIO_TILE_FAILED, 500)),
         Err(error) => {
             let status = match error.code {
@@ -766,6 +851,11 @@ fn error_response_message(
         .unwrap_or_else(|_| tauri::http::Response::new(format!("{code}: {message}\n").into_bytes()))
 }
 
+struct ServedTile {
+    bytes: Vec<u8>,
+    content_type: &'static str,
+}
+
 enum TileWork {
     Legacy {
         prepared: Arc<AtlasPreparedScene>,
@@ -778,9 +868,11 @@ enum TileWork {
     },
     Terrain {
         terrain: Arc<AtlasTerrain>,
+        vectors: Arc<TerrainVectors>,
         style: TerrainStyle,
         cancel: Arc<CancelFlag>,
         device_scale: u32,
+        layer: Option<TerrainVectorLayer>,
     },
 }
 
@@ -796,7 +888,20 @@ fn reject_session_tile(
     session: &StudioSession,
     parsed: &ParsedStudioTile,
 ) -> Result<(), AtlasError> {
-    if parsed.z > session.max_zoom() {
+    reject_studio_tile_for_kind(session.kind_name(), parsed)
+}
+
+/// Shared by the session gate and the protocol tests.
+pub(crate) fn reject_studio_tile_for_kind(
+    kind: &str,
+    parsed: &ParsedStudioTile,
+) -> Result<(), AtlasError> {
+    if parsed.layer.is_some() && kind != "terrain" {
+        return Err(studio_tile_invalid(
+            "atlas studio vector tiles require a terrain session",
+        ));
+    }
+    if parsed.z > session_max_zoom(kind) {
         return Err(studio_tile_invalid(
             "atlas studio zoom exceeds the locked maximum",
         ));
@@ -818,7 +923,7 @@ fn serve_studio_tile(
     studio: &Arc<Mutex<AtlasStudioManager>>,
     core: &SharedCore,
     request: &tauri::http::Request<Vec<u8>>,
-) -> Result<Vec<u8>, AtlasError> {
+) -> Result<ServedTile, AtlasError> {
     let parsed = parse_studio_tile_request(request)?;
     {
         let mut manager = studio
@@ -828,26 +933,51 @@ fn serve_studio_tile(
         if let Some(session) = manager.sessions.get(&parsed.token) {
             reject_session_tile(session, &parsed)?;
         }
-        if let Some(png) = manager.tile_from_cache(&parsed.token, parsed.z, parsed.x, parsed.y) {
-            return Ok(png);
+        if let Some(bytes) = manager.tile_from_cache(
+            &parsed.token,
+            parsed.z,
+            parsed.x,
+            parsed.y,
+            tile_cache_kind(parsed.layer),
+        ) {
+            return Ok(ServedTile {
+                bytes,
+                content_type: tile_content_type(parsed.layer),
+            });
         }
     }
-    if parsed.prefetch && WAITING_TILES.load(Ordering::SeqCst) >= MAX_PREFETCH_WAITING {
+    let vector = parsed.layer.is_some();
+    let (counter, max_waiting, max_prefetch_waiting, max_active) = if vector {
+        (
+            &WAITING_VECTOR_TILES,
+            MAX_WAITING_VECTOR_TILES,
+            MAX_PREFETCH_WAITING_VECTOR,
+            MAX_CONCURRENT_VECTOR_RENDERS,
+        )
+    } else {
+        (
+            &WAITING_TILES,
+            MAX_WAITING_TILES,
+            MAX_PREFETCH_WAITING,
+            MAX_CONCURRENT_TILE_RENDERS,
+        )
+    };
+    if parsed.prefetch && counter.load(Ordering::SeqCst) >= max_prefetch_waiting {
         return Err(AtlasError::new(
             CODE_STUDIO_RESOURCE_LIMIT,
             "atlas studio prefetch deferred",
         ));
     }
-    struct WaitingTileGuard;
+    struct WaitingTileGuard(&'static AtomicU32);
     impl Drop for WaitingTileGuard {
         fn drop(&mut self) {
-            WAITING_TILES.fetch_sub(1, Ordering::SeqCst);
+            self.0.fetch_sub(1, Ordering::SeqCst);
         }
     }
 
-    let waiting = WAITING_TILES.fetch_add(1, Ordering::SeqCst) + 1;
-    let waiting_guard = WaitingTileGuard;
-    if waiting > MAX_WAITING_TILES || (parsed.prefetch && waiting > MAX_PREFETCH_WAITING) {
+    let waiting = counter.fetch_add(1, Ordering::SeqCst) + 1;
+    let waiting_guard = WaitingTileGuard(counter);
+    if waiting > max_waiting || (parsed.prefetch && waiting > max_prefetch_waiting) {
         return Err(AtlasError::new(
             CODE_STUDIO_RESOURCE_LIMIT,
             "atlas studio tile queue is full",
@@ -857,9 +987,13 @@ fn serve_studio_tile(
         let manager = studio
             .lock()
             .map_err(|_| AtlasError::new(CODE_STUDIO_TILE_FAILED, "atlas studio lock poisoned"))?;
-        manager.tile_gate.clone()
+        if vector {
+            manager.vector_gate.clone()
+        } else {
+            manager.tile_gate.clone()
+        }
     };
-    let permit = tile_gate.acquire(parsed.prefetch);
+    let permit = tile_gate.acquire(parsed.prefetch, max_active);
     drop(waiting_guard);
     let _permit = permit?;
     let current_project = current_info(core)
@@ -872,8 +1006,17 @@ fn serve_studio_tile(
             .lock()
             .map_err(|_| AtlasError::new(CODE_STUDIO_TILE_FAILED, "atlas studio lock poisoned"))?;
         manager.reap();
-        if let Some(png) = manager.tile_from_cache(&parsed.token, parsed.z, parsed.x, parsed.y) {
-            return Ok(png);
+        if let Some(bytes) = manager.tile_from_cache(
+            &parsed.token,
+            parsed.z,
+            parsed.x,
+            parsed.y,
+            tile_cache_kind(parsed.layer),
+        ) {
+            return Ok(ServedTile {
+                bytes,
+                content_type: tile_content_type(parsed.layer),
+            });
         }
         let session = manager
             .sessions
@@ -890,7 +1033,7 @@ fn serve_studio_tile(
                 "atlas studio session expired",
             ));
         }
-        if parsed.device_scale != session.device_scale {
+        if parsed.layer.is_none() && parsed.device_scale != session.device_scale {
             return Err(studio_tile_invalid(
                 "atlas studio device scale does not match the session",
             ));
@@ -911,11 +1054,17 @@ fn serve_studio_tile(
                 cancel: session.cancel.clone(),
                 device_scale: session.device_scale,
             },
-            SessionBody::Terrain { terrain, style } => TileWork::Terrain {
+            SessionBody::Terrain {
+                terrain,
+                vectors,
+                style,
+            } => TileWork::Terrain {
                 terrain: terrain.clone(),
+                vectors: vectors.clone(),
                 style: *style,
                 cancel: session.cancel.clone(),
                 device_scale: session.device_scale,
+                layer: parsed.layer,
             },
         }
     };
@@ -979,18 +1128,17 @@ fn serve_studio_tile(
         }
         TileWork::Terrain {
             terrain,
+            vectors,
             style,
             cancel,
             device_scale,
+            layer,
         } => {
-            let png = render_terrain_tile_png(
-                &terrain,
-                style,
-                parsed.z,
-                parsed.x,
-                parsed.y,
-                device_scale,
-            )
+            let bytes = if let Some(layer) = layer {
+                render_terrain_vector_tile(&terrain, &vectors, layer, parsed.z, parsed.x, parsed.y)
+            } else {
+                render_terrain_tile_png(&terrain, style, parsed.z, parsed.x, parsed.y, device_scale)
+            }
             .map_err(|error| {
                 if error.code == daena_atlas::CODE_REQUEST_INVALID {
                     studio_tile_invalid(error.message)
@@ -1004,7 +1152,7 @@ fn serve_studio_tile(
                     "atlas studio cancelled",
                 ));
             }
-            png
+            bytes
         }
     };
     if rendered_png.len() > MAX_TILE_PNG_BYTES {
@@ -1013,11 +1161,21 @@ fn serve_studio_tile(
             "atlas studio tile exceeded the encoded-byte budget",
         ));
     }
-    let png = rendered_png;
+    let bytes = rendered_png;
     if let Ok(mut manager) = studio.lock() {
-        manager.remember_tile(&parsed.token, parsed.z, parsed.x, parsed.y, png.clone());
+        manager.remember_tile(
+            &parsed.token,
+            parsed.z,
+            parsed.x,
+            parsed.y,
+            tile_cache_kind(parsed.layer),
+            bytes.clone(),
+        );
     }
-    Ok(png)
+    Ok(ServedTile {
+        bytes,
+        content_type: tile_content_type(parsed.layer),
+    })
 }
 
 struct SessionProgress {
@@ -1125,9 +1283,9 @@ pub async fn project_atlas_studio_open(
             .lock()
             .map_err(|_| "atlas studio state is unavailable".to_string())?
             .terrain(&terrain_key);
-        let terrain = if let Some(terrain) = cached {
+        let (terrain, vectors) = if let Some(cached) = cached {
             emit_terrain_progress(&app, &token, &capture.session.map_entity_id, 1, 1);
-            terrain
+            cached
         } else {
             emit_terrain_progress(&app, &token, &capture.session.map_entity_id, 0, 1);
             let source_bytes = std::mem::take(&mut capture.snapshot.source_bytes);
@@ -1146,10 +1304,9 @@ pub async fn project_atlas_studio_open(
                     &generation,
                     offset_years,
                 )?;
-                Ok(Arc::new(AtlasTerrain::new(
-                    surface,
-                    validated.identity.as_bytes(),
-                )))
+                let terrain = Arc::new(AtlasTerrain::new(surface, validated.identity.as_bytes()));
+                let vectors = Arc::new(TerrainVectors::new(&terrain));
+                Ok((terrain, vectors))
             })
             .await
             .map_err(|error| format!("{CODE_STUDIO_TILE_FAILED}: {error}"))??;
@@ -1157,11 +1314,12 @@ pub async fn project_atlas_studio_open(
             let mut studio = studio
                 .lock()
                 .map_err(|_| "atlas studio state is unavailable".to_string())?;
-            studio.remember_terrain(terrain_key, built.clone());
+            studio.remember_terrain(terrain_key, built.0.clone(), built.1.clone());
             built
         };
         SessionBody::Terrain {
             terrain,
+            vectors,
             style: terrain_style,
         }
     } else {
@@ -1645,18 +1803,24 @@ mod tests {
     #[test]
     fn tile_gate_parallelizes_visible_tiles_and_defers_prefetch() {
         let gate = Arc::new(TileGate::default());
-        let first = gate.acquire(false).unwrap();
-        let second = gate.acquire(false).unwrap();
+        let first = gate.acquire(false, MAX_CONCURRENT_TILE_RENDERS).unwrap();
+        let second = gate.acquire(false, MAX_CONCURRENT_TILE_RENDERS).unwrap();
         assert_eq!(*gate.active.lock().unwrap(), 2);
         assert_eq!(
-            gate.acquire(true).err().unwrap().code,
+            gate.acquire(true, MAX_CONCURRENT_TILE_RENDERS)
+                .err()
+                .unwrap()
+                .code,
             CODE_STUDIO_RESOURCE_LIMIT
         );
         drop(first);
         drop(second);
-        let prefetch = gate.acquire(true).unwrap();
+        let prefetch = gate.acquire(true, MAX_CONCURRENT_TILE_RENDERS).unwrap();
         assert_eq!(
-            gate.acquire(true).err().unwrap().code,
+            gate.acquire(true, MAX_CONCURRENT_TILE_RENDERS)
+                .err()
+                .unwrap()
+                .code,
             CODE_STUDIO_RESOURCE_LIMIT
         );
         drop(prefetch);
@@ -1777,13 +1941,17 @@ mod tests {
         assert!(!manager
             .adopt_overlay_snapshot(&overlay_token, "other-world", 0, Vec::new(), 3)
             .unwrap());
-        manager.remember_tile(&overlay_token, 3, 1, 2, vec![9, 8, 7]);
+        manager.remember_tile(&overlay_token, 3, 1, 2, 0, vec![9, 8, 7]);
         assert_eq!(
-            manager.tile_from_cache(&overlay_token, 3, 1, 2).as_deref(),
+            manager
+                .tile_from_cache(&overlay_token, 3, 1, 2, 0)
+                .as_deref(),
             Some([9_u8, 8, 7].as_slice())
         );
         assert_eq!(
-            manager.tile_from_cache(&overlay_token, 3, 1, 2).as_deref(),
+            manager
+                .tile_from_cache(&overlay_token, 3, 1, 2, 0)
+                .as_deref(),
             Some([9_u8, 8, 7].as_slice())
         );
         let legacy = manager.sessions.values().next().unwrap();
@@ -1799,6 +1967,24 @@ mod tests {
                     y: 0,
                     device_scale: 1,
                     prefetch: false,
+                    layer: None,
+                },
+            )
+            .unwrap_err()
+            .code,
+            CODE_STUDIO_TILE_INVALID
+        );
+        assert_eq!(
+            reject_session_tile(
+                legacy,
+                &ParsedStudioTile {
+                    token: legacy.token.clone(),
+                    z: 2,
+                    x: 0,
+                    y: 1,
+                    device_scale: 1,
+                    prefetch: false,
+                    layer: Some(TerrainVectorLayer::Rivers),
                 },
             )
             .unwrap_err()

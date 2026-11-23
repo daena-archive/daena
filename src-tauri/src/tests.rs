@@ -6303,3 +6303,40 @@ fn atlas_studio_legacy_zoom_stops_at_eight_and_terrain_styles_select_terrain() {
     assert!(crate::atlas_studio::studio_zoom_allowed("terrain", 12));
     assert!(!crate::atlas_studio::studio_zoom_allowed("terrain", 13));
 }
+
+#[test]
+fn atlas_studio_parses_vector_tiles_and_legacy_rejects_them() {
+    let token = "00000000-0000-4000-8000-0000000000ab";
+    let rivers = crate::atlas_studio::parse_studio_tile_request(&atlas_studio_get(&format!(
+        "atlas-studio://localhost/{token}/4/1/2.rivers.json"
+    )))
+    .unwrap();
+    assert_eq!(rivers.z, 4);
+    assert_eq!(rivers.x, 1);
+    assert_eq!(rivers.y, 2);
+    assert_eq!(
+        rivers.layer,
+        Some(daena_atlas::terrain::TerrainVectorLayer::Rivers)
+    );
+    assert_eq!(rivers.device_scale, 1);
+    assert!(!rivers.prefetch);
+    let contours = crate::atlas_studio::parse_studio_tile_request(&atlas_studio_get(&format!(
+        "atlas-studio://localhost/{token}/12/3/4.contours.json?priority=prefetch"
+    )))
+    .unwrap();
+    assert_eq!(contours.z, 12);
+    assert_eq!(contours.x, 3);
+    assert_eq!(contours.y, 4);
+    assert_eq!(
+        contours.layer,
+        Some(daena_atlas::terrain::TerrainVectorLayer::Contours)
+    );
+    assert!(contours.prefetch);
+    let foo = crate::atlas_studio::parse_studio_tile_request(&atlas_studio_get(&format!(
+        "atlas-studio://localhost/{token}/1/0/0.foo.json"
+    )))
+    .unwrap_err();
+    assert_eq!(foo.code, daena_atlas::studio::CODE_STUDIO_TILE_INVALID);
+    let rejected = crate::atlas_studio::reject_studio_tile_for_kind("legacy", &rivers).unwrap_err();
+    assert_eq!(rejected.code, daena_atlas::studio::CODE_STUDIO_TILE_INVALID);
+}

@@ -306,10 +306,10 @@ served by the terrain renderer up to zoom 12. A Studio session is either
 - **Inspect and region proposal** read the terrain's `ToolSurface`. The
   inspect readout shows the detailed elevation and the cell's climate. It
   has no winds, seasonal climate, storms, tributaries or orometry.
-- **Vectors** come from OpenLayers: the coastline from the derived GeoJSON,
-  and a graticule. The derived GeoJSON has no river or lake geometry, so
-  those toggles stay hidden. Phase 3b should emit them from the
-  `ToolSurface` rivers and lakes.
+- **Vectors** are the phase 3b tiles: coastline, lakes, rivers and contours,
+  plus the existing graticule. Imagery turns rivers on. Elevation also turns
+  on coastline, lakes and contours. The graticule stays off. Toggles do not
+  reopen the session.
 - **Not on terrain styles yet:**
   - labels;
   - authored lines and points drawn by the server (the frontend still draws
@@ -321,6 +321,23 @@ served by the terrain renderer up to zoom 12. A Studio session is either
   - export, which renders "Imagery" with the relief palette.
   - Capabilities still report `studio_max_zoom` 8. The view reads the
     session's `max_zoom` instead.
+
+**Phase 3b (vector tiles).** Terrain sessions serve
+`/{z}/{x}/{y}.{layer}.json` for `coastline`, `lakes`, `rivers` and `contours`.
+Each tile is a GeoJSON `FeatureCollection` in lon/lat. Coast, lakes and
+contours are marching squares on a lattice of one node every two scale-1
+pixels, with a one-node halo, sampled the same way as the raster. Rivers are
+smoothed canonical centre-lines from `ToolSurface`, not yet carved into
+`h(p)` (phase 2), so at high zoom they can cross small detailed ridges.
+Rivers end on the centre of the first ocean or lake cell, so they reach the
+water. Vector tiles have their own render gate and queue, 4 renders and 128
+waiting, so they never crowd out the raster tiles. Neither queue retries a
+rejected tile yet.
+Legacy sessions reject the vector URL. On a release n=512 world, z12 median
+tile time was 2.1 ms for the coastline, 0.7 ms for lakes, 0.004 ms for rivers
+and 5.4 ms for contours (3.3 ms at the highest land site), all under the
+15 ms budget. `TerrainVectors::new`
+was 2.2 ms at n=512 (2.6 MiB) and 3.7 ms at n=1024 (4.5 MiB).
 
 ## Open questions
 

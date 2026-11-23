@@ -172,6 +172,9 @@ function createFixture(overrides = {}) {
     saveRecoveryCopy: async (id, body) => `/recovery/${id}.md`,
     postPluginWebviewMessage: async () => true,
     takePluginTextTransfer: async () => "",
+    aiCancelText: async () => {},
+    aiGenerateText: async () => "request",
+    aiPollText: async () => [],
     ...overrides.project,
   };
   const ctx = {
@@ -206,14 +209,6 @@ function createFixture(overrides = {}) {
     closeNativePluginWebviews: async () => {
       calls.push(["closeNativePluginWebviews"]);
     },
-    resolveDirtyMapSession: async () => {
-      calls.push(["resolveDirtyMapSession"]);
-      return true;
-    },
-    currentMapId: () => null,
-    setMapsEditorMode: record("setMapsEditorMode"),
-    setMapsEditorKey: record("setMapsEditorKey"),
-    clearMapFocus: record("clearMapFocus"),
     dismissSettings: async () => {
       calls.push(["dismissSettings"]);
       store.showSettings = false;
@@ -247,8 +242,11 @@ function createFixture(overrides = {}) {
     sectionForEntityType: (entityType) => state.sectionByType[entityType] ?? null,
     collectionResult: () => ({ entities: state.collectionEntities }),
     housesModuleContext: () => ({}),
-    closeAiFieldFill: record("closeAiFieldFill"),
-    closeAiRewrite: record("closeAiRewrite"),
+    mapsNavigationItem: () => null,
+    emptyInspectorDefinitions: () => [],
+    selectedRelationshipIds: () => [],
+    listenAiStream: async () => () => {},
+    nativeVectorSession: () => null,
     contextFor: () => ({
       module: { capabilities: [] },
       relationships: { list: async () => [] },
@@ -271,7 +269,6 @@ function createFixture(overrides = {}) {
     loadProjectStatus: async () => {},
     shownWebviewInstance: "shown",
     writingWebviewShown: false,
-    writingEditable: true,
     aiProvider: { name: "" },
     aiPromptTemplates: [],
     markShownWebviewReady: record("markShownWebviewReady"),
@@ -285,7 +282,15 @@ function createFixture(overrides = {}) {
   const store = new LocationStore(ctx);
   // The leave bridges used to be context callbacks. They are store methods now; record them the same way, in front
   // of the real method, so the leave-sequence checks still see the order.
-  for (const name of ["flushWritingWebview", "canLeaveLanguageSection", "requestLanguagePane", "notifyWritingSaved"]) {
+  for (const name of [
+    "flushWritingWebview",
+    "canLeaveLanguageSection",
+    "requestLanguagePane",
+    "notifyWritingSaved",
+    "resolveDirtyMapSession",
+    "closeAiRewrite",
+    "closeAiFieldFill",
+  ]) {
     const original = store[name].bind(store);
     store[name] = (...args) => {
       calls.push([name, ...args]);
@@ -1850,7 +1855,7 @@ async function openEntry(fixture, id = "a") {
     [
       "the map session guard",
       async (fixture) => {
-        fixture.ctx.resolveDirtyMapSession = async () => {
+        fixture.store.resolveDirtyMapSession = async () => {
           fixture.calls.push(["resolveDirtyMapSession"]);
           return false;
         };
@@ -1982,6 +1987,181 @@ async function openEntry(fixture, id = "a") {
   await fixture.store.postWritingMessage({ type: "writing.editable", editable: false });
   assert.deepEqual(posts, ["later-tab"]);
   fixture.store.destroy();
+}
+
+// ---- Map session and selection AI --------------------------------------------------------------------------------
+{
+  const worldMap = () => entity("m", { entity_type: "daena.maps:world-map" });
+  const openMap = (store) => {
+    store.selected = worldMap();
+    store.sandboxView = { renderer: "maps" };
+    store.mapsEditorMode = "vector";
+    store.mapSaveStates = { m: { status: "dirty", detail: null } };
+  };
+
+  // No map open: allow the leave, and do not ask.
+  {
+    const fixture = createFixture();
+    const asked = [];
+    fixture.ctx.confirmDialog = async (dialog) => {
+      asked.push(dialog.title);
+      return false;
+    };
+    assert.equal(await fixture.store.resolveDirtyMapSession(), true);
+    assert.deepEqual(asked, []);
+    fixture.store.destroy();
+  }
+
+  // Dirty map, and the user declines the save and the discard.
+  {
+    const fixture = createFixture();
+    const { store } = fixture;
+    openMap(store);
+    const asked = [];
+    fixture.ctx.confirmDialog = async (dialog) => {
+      asked.push(dialog.title);
+      return false;
+    };
+    assert.equal(await store.resolveDirtyMapSession(), false);
+    assert.deepEqual(asked, ["Save changes to this map before leaving?", "Discard unsaved map edits?"]);
+    store.destroy();
+  }
+
+  // Dirty map, and the user saves. save() clears the dirty flag the way the editor's maps-state event does
+  // while the native session saves. This function itself does not clear mapSaveStates.
+  {
+    const fixture = createFixture();
+    const { store } = fixture;
+    openMap(store);
+    const saves = [];
+    let dirty = true;
+    fixture.ctx.confirmDialog = async () => true;
+    fixture.ctx.nativeVectorSession = () => ({
+      save: async () => {
+        saves.push("save");
+        dirty = false;
+        store.mapSaveStates = { m: { status: "saved", detail: null } };
+      },
+      isDirty: () => dirty,
+    });
+    assert.equal(await store.resolveDirtyMapSession(), true);
+    assert.deepEqual(saves, ["save"]);
+    store.destroy();
+  }
+
+  // A selection event for another map does not change the selection.
+  {
+    const fixture = createFixture();
+    const { store } = fixture;
+    store.selected = worldMap();
+    store.handleMapsSelection({ mapEntityId: "other", anchor: { kind: "point" } });
+    assert.equal(store.mapSelection, null);
+    store.handleMapsSelection({ mapEntityId: "m", anchor: { kind: "point" } });
+    assert.deepEqual(store.mapSelection, { kind: "point" });
+    store.destroy();
+  }
+
+  // closeAiRewrite while listenAiStream is still pending sets the start-cancelled flag.
+  // The unlisten does not exist yet, so it is not called. When listen later resolves, the
+  // function is stored and the poll still runs. The source does not call that unlisten.
+  {
+    const fixture = createFixture();
+    const { store } = fixture;
+    fixture.state.projectInfo = { root: "/project" };
+    store.selected = entity("a");
+    store.aiSourceSelection = "selected prose";
+    store.aiInstruction = "Rewrite it.";
+    const cancelled = [];
+    fixture.project.aiCancelText = async (id) => {
+      cancelled.push(id);
+    };
+    fixture.project.aiGenerateText = async () => "req-1";
+    const polls = [];
+    fixture.project.aiPollText = async (id) => {
+      polls.push(id);
+      return [];
+    };
+    let releaseListen;
+    let markListening;
+    const listening = new Promise((resolve) => {
+      markListening = resolve;
+    });
+    let unlistenCalls = 0;
+    const unlisten = () => {
+      unlistenCalls += 1;
+    };
+    const heard = [];
+    fixture.ctx.listenAiStream = (requestId) => {
+      heard.push(requestId);
+      markListening();
+      return new Promise((resolve) => {
+        releaseListen = () => resolve(unlisten);
+      });
+    };
+    const pending = store.startAiRewrite();
+    const reached = await Promise.race([listening.then(() => "listen"), pending.then(() => "done")]);
+    assert.equal(reached, "listen");
+    assert.equal(store.aiRequestId, "req-1");
+    assert.equal(store.aiStartCancelled, false);
+    store.closeAiRewrite();
+    assert.equal(store.aiStartCancelled, true);
+    assert.equal(unlistenCalls, 0);
+    releaseListen();
+    await pending;
+    assert.equal(unlistenCalls, 0, "the resolved unlisten is stored, not called");
+    assert.equal(store.aiUnlisten, unlisten);
+    assert.deepEqual(heard, ["req-1"]);
+    assert.deepEqual(cancelled, ["req-1"]);
+    assert.deepEqual(polls, ["req-1"], "the poll still runs after the late listen");
+    store.destroy();
+  }
+
+  // Drops an out-of-order sequence, and an event whose entity is no longer selected.
+  // A stale request id is a different `ai-stream:<requestId>` channel: listenAiStream receives the
+  // id, and the handler does not compare payload.requestId.
+  {
+    const fixture = createFixture();
+    const { store } = fixture;
+    store.selected = entity("a");
+    store.aiSourceEntityId = "a";
+    const event = (sequence, delta, requestId = "req-1") => ({
+      sequence,
+      requestId,
+      phase: "delta",
+      delta,
+      output: null,
+      error: null,
+    });
+    store.handleAiEvent(event(1, "hi"));
+    assert.equal(store.aiStreamText, "hi");
+    assert.equal(store.aiLastSequence, 1);
+    store.handleAiEvent(event(1, "NO"));
+    store.handleAiEvent(event(0, "NO"));
+    assert.equal(store.aiStreamText, "hi", "an old or equal sequence is dropped");
+    assert.equal(store.aiLastSequence, 1);
+    store.selected = entity("b");
+    store.handleAiEvent(event(2, "NO"));
+    assert.equal(store.aiStreamText, "hi", "an event for an entity that is no longer selected is dropped");
+    assert.equal(store.aiLastSequence, 1);
+    store.destroy();
+  }
+
+  // The rewrite dialog and a running generation both block Writing edits.
+  {
+    const { store } = createFixture();
+    assert.equal(store.writingEditable, true);
+    store.aiRewriteOpen = true;
+    flushSync();
+    assert.equal(store.writingEditable, false);
+    store.aiRewriteOpen = false;
+    store.aiBusy = true;
+    flushSync();
+    assert.equal(store.writingEditable, false);
+    store.aiBusy = false;
+    flushSync();
+    assert.equal(store.writingEditable, true);
+    store.destroy();
+  }
 }
 
 // ---- Teardown ---------------------------------------------------------------------------------------------------

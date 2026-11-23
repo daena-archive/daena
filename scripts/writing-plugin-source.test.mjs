@@ -955,17 +955,24 @@ assert.deepEqual(entityIdsInMarkdown("[bad](daena://entity/%E0%A4%A)"), [], "a m
   assert.equal(aiCanStart("generate", "", "Write a haiku."), true);
   assert.deepEqual(aiActionRequest([{ id: "mine" }], "mine", "", "", "ctx"), generate("ctx"), "a user's own template");
   assert.deepEqual(aiActionRequest([], "unknown", "x", "x", "ctx"), rewrite("x", "x"));
-  for (const source of [
-    fs.readFileSync("src/routes/+page.svelte", "utf8"),
-    fs.readFileSync("packages/modules/writing/src/WritingWorkspace.svelte", "utf8"),
-  ]) {
-    const open = source.slice(source.indexOf("function openAiAction"), source.indexOf("function openAiAction") + 600);
-    assert.match(
-      open,
-      /aiActionRequest\((aiPromptTemplates|aiState\.templates), action, markdown, plainText, context\)/,
-    );
-    assert.doesNotMatch(open, /action === "generate"/, "the mode comes from the shared rule");
-  }
+  const workspace = fs.readFileSync("packages/modules/writing/src/WritingWorkspace.svelte", "utf8");
+  const workspaceOpen = workspace.slice(
+    workspace.indexOf("function openAiAction"),
+    workspace.indexOf("function openAiAction") + 600,
+  );
+  assert.match(
+    workspaceOpen,
+    /aiActionRequest\((aiPromptTemplates|aiState\.templates), action, markdown, plainText, context\)/,
+  );
+  assert.doesNotMatch(workspaceOpen, /action === "generate"/, "the mode comes from the shared rule");
+  const shellStore = fs.readFileSync("src/lib/location/location-store.svelte.ts", "utf8");
+  const shellOpen = shellStore.slice(shellStore.indexOf("openAiAction ="), shellStore.indexOf("openAiAction =") + 700);
+  assert.match(
+    shellOpen,
+    /aiActionRequest\(this\.ctx\.aiPromptTemplates, action, markdown, plainText, context\)/,
+    "the shell editor uses the shared request",
+  );
+  assert.doesNotMatch(shellOpen, /action === "generate"/, "the mode comes from the shared rule");
 }
 
 // AI flow: what the webview asks the broker, mapped from the shell's own request.
@@ -1101,8 +1108,14 @@ assert.deepEqual(entityIdsInMarkdown("[bad](daena://entity/%E0%A4%A)"), [], "a m
   assert.match(validateAiProposal("- item"), /block-level Markdown/);
   assert.match(validateAiProposal("text <b>bold</b>"), /HTML markup/);
   const page = fs.readFileSync("src/routes/+page.svelte", "utf8");
-  assert.match(page, /import \{ validateAiProposal \} from "\$lib\/ai\/proposal"/, "the shell uses the shared rule");
+  const proposalStore = fs.readFileSync("src/lib/location/location-store.svelte.ts", "utf8");
+  assert.match(
+    proposalStore,
+    /import \{ validateAiProposal \} from "\$lib\/ai\/proposal"/,
+    "the shell uses the shared rule",
+  );
   assert.doesNotMatch(page, /function validateAiProposal/, "and no longer keeps its own copy");
+  assert.doesNotMatch(proposalStore, /function validateAiProposal/, "and no longer keeps its own copy");
 
   // Events: a poll repeats the buffer, so applied sequences are skipped; the stream builds the proposal.
   const event = (sequence, phase, extra = {}) => ({

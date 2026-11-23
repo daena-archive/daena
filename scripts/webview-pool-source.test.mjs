@@ -128,7 +128,7 @@ assert.match(
   "pruned instances are unmounted",
 );
 assert.match(prune, /\bliveTabIdKey\b/, "the effect depends on the open tab ids");
-const reset = between(page, "function resetProjectSessionState() {", "mapsEditorKey = ");
+const reset = between(page, "function resetProjectSessionState() {", "shellNavigationBusy = false");
 assert.match(reset, /webviewPool = emptyWebviewPool;/, "a project switch clears the pool");
 
 // Only the shown instance is ever shown by the visibility effect, and a suspended Writing or Language one waits

@@ -111,8 +111,7 @@ const mapsState = listener(
   "let unlistenMapsSelection",
 );
 assert.ok(
-  mapsState.indexOf("foreignWebviewInstance(event.payload)") <
-    mapsState.indexOf("const { mapEntityId, status, detail }"),
+  mapsState.indexOf("foreignWebviewInstance(event.payload)") < mapsState.indexOf("handleMapsState("),
   "maps-state reads instanceId before it uses the payload",
 );
 const mapsSelection = listener(
@@ -121,7 +120,7 @@ const mapsSelection = listener(
   "let unlistenLanguageState",
 );
 assert.ok(
-  mapsSelection.indexOf("foreignWebviewInstance(event.payload)") < mapsSelection.indexOf("event.payload.mapEntityId"),
+  mapsSelection.indexOf("foreignWebviewInstance(event.payload)") < mapsSelection.indexOf("handleMapsSelection("),
   "maps-selection reads instanceId before it uses the payload",
 );
 const languageState = listener(shell, 'listen<unknown>("language-state"', "let unlistenShellShortcut");

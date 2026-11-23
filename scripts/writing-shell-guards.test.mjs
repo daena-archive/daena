@@ -68,8 +68,8 @@ const flushesBeforeNavigating = [
   ["closeProjectionView", /sandboxView = null/, "store"],
   ["closePluginView", /leavePluginView\(\)/, "store"],
   ["openProjection", /leavePluginView\(\)/, "store"],
-  ["createMap", /leavePluginView\(\)/],
-  ["ensureMapEditorOpen", /loc\.selected = map;/],
+  ["createMap", /leavePluginView\(\)/, "store"],
+  ["ensureMapEditorOpen", /this\.selected = map;/, "store"],
   ["archiveEntity", /clearSelection\(\)|entities\.delete\(/],
   ["openExternalImport", /showExternalImport = true/],
   ["seedExample", /clearSelection\(\)/],
@@ -102,21 +102,19 @@ const navigatesThroughGuardedPath = [
   ["openEntityById", /selectSearchResult\(target\)[\s\S]*selectEntity\(target\)/],
   ["selectQuickOpenItem", /selectSearchResult\(matchedEntity\)[\s\S]*openProjectHome\(\)/],
   ["archiveSelected", /archiveEntity\(loc\.selected/],
-  ["openSelectedMapEditor", /openPluginView\(mapsView\)/],
+  ["openSelectedMapEditor", /openPluginView\(mapsView\)/, "store"],
   ["confirmWritingArchive", /archiveSelected\(\)/],
 ];
-for (const [name, through] of navigatesThroughGuardedPath) {
-  assert.match(functionBody(name), through, `${name} goes through a path that saves first`);
+for (const [name, through, owner] of navigatesThroughGuardedPath) {
+  const body = owner === "store" ? storeMethodBody(name) : functionBody(name);
+  assert.match(body, through, `${name} goes through a path that saves first`);
 }
 
 // The maps navigation listener and the window close handshake save before they leave.
 {
-  const mapsListener = between(
-    'listen<{ mapEntityId: string; linkId?: string }>("maps-navigation"',
-    "let unlistenMapsState",
-  );
+  const mapsNavigation = storeMethodBody("handleMapsNavigation");
   assert.ok(
-    mapsListener.indexOf("flushAutoSave()") < mapsListener.indexOf("leavePluginView()"),
+    mapsNavigation.indexOf("flushAutoSave()") < mapsNavigation.indexOf("leavePluginView()"),
     "maps navigation saves first",
   );
   const closeRequested = between(".onCloseRequested(async (event) => {", ".then((cleanup) => {");

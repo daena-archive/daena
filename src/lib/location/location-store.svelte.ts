@@ -3,8 +3,8 @@
  * tracking, the autosave timer and the save queue, and the conflict state; and the collection beside it: its query,
  * fetched page, open groups, manuscript outline, scroll positions and pane layout, with the effects that reload and
  * fetch them, and which surface the location shows (section, views, wiki, projection or plugin surface, home,
- * settings) with the functions that switch, capture and restore it, and the Writing and Language webview bridges.
- * The effects run in the store's own
+ * settings) with the functions that switch, capture and restore it, the Writing and Language webview bridges, the map
+ * editor session, and the selection AI dialogs. The effects run in the store's own
  * `$effect.root` and key off `section`.
  *
  * `+page.svelte` builds exactly one store today (side-by-side will build one per visible group). The store never
@@ -13,6 +13,7 @@
  */
 import { tick, untrack } from "svelte";
 import type {
+  AiStreamEvent,
   Asset,
   Entity,
   EntityPage,
@@ -22,6 +23,10 @@ import type {
   Relationship,
   project,
 } from "$lib/project/client";
+import { aiActionRequest, instructionFor, type PromptTemplate } from "$lib/ai/promptTemplates";
+import { validateAiProposal } from "$lib/ai/proposal";
+import { reduceTextGenerationEvent } from "$lib/ai/stream";
+import { aiJsonValueSchema, coerceAiFieldValue } from "$lib/fields/values";
 import type { FieldDefinition, ModuleContext, ModuleManifest, UUID } from "../../../packages/module-api/src/index";
 import type { CalendarDefinition } from "../../../packages/modules/timeline/src/calendar";
 import type { confirmDialog } from "$lib/dialogs.svelte";
@@ -147,6 +152,12 @@ export type PluginNavigationItem = {
 type ProjectClient = typeof project;
 type ConfirmOptions = Parameters<typeof confirmDialog>[0];
 
+type MapPickPending =
+  | { kind: "link"; entityId: string; role: string; mapEntityId: string }
+  | { kind: "rebind"; entityId: string; location: MapLocation; mapEntityId: string };
+
+type AiFieldSuggestion = { value: unknown; rationale: string; confidence: string };
+
 /**
  * What the store needs from the page. Reads are getters, so the store always sees the page's current value;
  * callbacks reach page functions that have not moved into the store yet.
@@ -181,13 +192,6 @@ export interface LocationContext {
   setShellNavigationRestoring(restoring: boolean): void;
   /** Closes every native plugin webview. Best effort. */
   closeNativePluginWebviews(): Promise<void>;
-  /** The map editor's own leave guard: asks to save a dirty map. Map editor state moves in a later step. */
-  resolveDirtyMapSession(): Promise<boolean>;
-  /** The id of the map open in the editor, if the selection is a map. */
-  currentMapId(): string | null;
-  setMapsEditorMode(mode: "vector" | "physical"): void;
-  setMapsEditorKey(key: string): void;
-  clearMapFocus(): void;
   /** Closes the settings or project surface; false if the administration view refuses to leave. */
   dismissSettings(): Promise<boolean>;
   openSettings(section: SettingsSection): Promise<void>;
@@ -198,10 +202,6 @@ export interface LocationContext {
   pluginNavigationItemByKey(key: string): PluginNavigationItem | null;
   /** Adds an entity the shell has not cached yet. */
   appendEntityToCache(entity: Entity): void;
-
-  // Selection AI dialogs.
-  closeAiFieldFill(): void;
-  closeAiRewrite(): void;
 
   // Module and schema lookups for the location's section.
   contextFor(section?: WorkspaceSection): ModuleContext;
@@ -244,10 +244,8 @@ export interface LocationContext {
   readonly shownWebviewInstance: string;
   /** The Writing webview is the content column's editor. */
   readonly writingWebviewShown: boolean;
-  /** Whether the Writing webview may edit. Reads diagnostics and the shell's AI state, so it stays on the page. */
-  readonly writingEditable: boolean;
-  /** The AI provider the Writing webview is told about. The bridge reads `name`. */
-  readonly aiProvider: { readonly name: string };
+  /** The AI provider. The Writing bridge reads `name`; the selection dialog also reads `endpoint` and `model`. */
+  readonly aiProvider: { readonly name: string; readonly endpoint: string; readonly model: string };
   /** The editor prompt templates the Writing webview is told about. */
   readonly aiPromptTemplates: WritingAiStateSource["templates"];
 
@@ -263,6 +261,20 @@ export interface LocationContext {
   openEntityEditDialog(entity: Entity): void;
   /** Confirms and archives the entry the Writing webview named. */
   confirmWritingArchive(entityId: string): void;
+
+  /** The Maps plugin view, for opening the editor. */
+  mapsNavigationItem(): PluginNavigationItem | null;
+  /** Empty inspector fields the selection AI may fill. The template reads this too, so it stays on the page. */
+  emptyInspectorDefinitions(): FieldDefinition[];
+  /** Relationship targets already chosen for a definition. */
+  selectedRelationshipIds(definition: FieldDefinition): string[];
+  /**
+   * Subscribes to `ai-stream:<requestId>`. The page unwraps the Tauri event and passes the payload.
+   * Resolves to the unlisten function.
+   */
+  listenAiStream(requestId: string, handler: (payload: AiStreamEvent) => void): Promise<() => void>;
+  /** The mounted native vector map session, or null when no editor has registered one. */
+  nativeVectorSession(): { save: () => Promise<void>; isDirty: () => boolean } | null;
 }
 
 export function isRevisionConflict(cause: unknown) {
@@ -528,6 +540,67 @@ export class LocationStore {
   writingDraftQueue: Promise<unknown> = Promise.resolve();
   /** The last `writing.editable` value the webview was told, so only changes are posted. */
   writingEditablePosted: boolean | null = null;
+
+  // Map editor session. The project-wide saved-map list stays on the page.
+  mapsEditorMode = $state<"vector" | "physical">("vector");
+  mapsVectorStart = $state<"import" | "geojson">("geojson");
+  mapProviderMenuOpen = $state<"header" | "empty" | null>(null);
+  mapsEditorKey = $state("welcome");
+  mapReloadCounter = $state(0);
+  mapSaveStates = $state<Record<string, { status: string; detail: unknown }>>({});
+  mapRecoveryBusy = $state(false);
+  mapFocusLinkId = $state<string | null>(null);
+  mapFocusFeatureId = $state<string | null>(null);
+  mapSelection = $state<unknown | null>(null);
+  mapPickPending = $state<MapPickPending | null>(null);
+  mapPickNotice = $state("");
+  mapReconcileNotice = $state("");
+
+  // Selection AI. Settings AI (provider, models, index) stays on the page.
+  aiRewriteOpen = $state(false);
+  aiBusy = $state(false);
+  aiCancelPending = $state(false);
+  aiMode = $state<"rewrite" | "generate">("rewrite");
+  aiRequestId = $state<string | null>(null);
+  aiInstruction = $state("Rewrite this to be more vivid while preserving the meaning.");
+  aiStreamText = $state("");
+  aiPreviewOutput = $state("");
+  aiProgressMessage = $state("Preparing model…");
+  aiSourceSelection = $state("");
+  aiSourceSelectionPlain = $state("");
+  aiGenerationContext = $state("");
+  aiSourceBody = $state("");
+  aiSourceRevision = $state("");
+  aiLastSequence = $state(-1);
+  /** Plain: the unlisten for `ai-stream:<requestId>`. Not reactive on purpose. */
+  aiUnlisten: (() => void) | null = null;
+  aiStartCancelled = $state(false);
+  aiSourceEntityId = $state<string | null>(null);
+  aiUsage = $state<{ inputTokens: number; outputTokens: number; totalTokens: number } | null>(null);
+  aiFieldFillBusy = $state(false);
+  aiFieldFillOpen = $state(false);
+  aiFieldFillRequestId = $state<string | null>(null);
+  aiFieldFillStream = $state("");
+  aiFieldSuggestions = $state<Record<string, AiFieldSuggestion>>({});
+  /** Plain: the unlisten for the field-fill stream. Not reactive on purpose. */
+  aiFieldUnlisten: (() => void) | null = null;
+  aiFieldFillStartCancelled = $state(false);
+  aiFieldFillEntityId = $state<string | null>(null);
+  aiFieldFillLastSequence = $state(-1);
+
+  /**
+   * Whether the Writing webview may edit: not while an entry loads or fails to load, diagnostics block saving,
+   * AI works or a conflict waits.
+   */
+  readonly writingEditable = $derived.by(
+    () =>
+      !this.selectedLoading &&
+      !this.selectedLoadError &&
+      this.ctx.projectDiagnostics.length === 0 &&
+      !this.aiBusy &&
+      !this.aiRewriteOpen &&
+      !this.documentConflict,
+  );
 
   constructor(ctx: LocationContext) {
     this.ctx = ctx;
@@ -899,7 +972,7 @@ export class LocationStore {
       $effect(() => {
         // Editability follows the shell's state (loading, conflict, AI). The load message carries the value at its
         // posting time; this posts the changes after it.
-        const editable = this.ctx.writingEditable;
+        const editable = this.writingEditable;
         if (!this.writingWebview.ready || this.writingLoad === null || this.writingLoad.entityId !== this.selected?.id)
           return;
         if (editable === this.writingEditablePosted) return;
@@ -1287,8 +1360,8 @@ export class LocationStore {
     this.selectedLoading = true;
     this.selectedLoadError = "";
     try {
-      this.ctx.closeAiFieldFill();
-      this.ctx.closeAiRewrite();
+      this.closeAiFieldFill();
+      this.closeAiRewrite();
       this.documentBody = "";
       this.fields = {};
       this.relationships = [];
@@ -1995,7 +2068,7 @@ export class LocationStore {
    * closes it when it unmounts, so closing every webview here would blank a pane that stays.
    */
   async leavePluginView(options: { closeWebviews?: boolean } = {}): Promise<boolean> {
-    if (!(await this.ctx.resolveDirtyMapSession())) return false;
+    if (!(await this.resolveDirtyMapSession())) return false;
     const fullSurfaceOpen = this.hostView !== null || this.sandboxView !== null;
     this.editorFullscreen = false;
     this.hostView = null;
@@ -2130,7 +2203,7 @@ export class LocationStore {
     if (this.section === "language" && !(await this.canLeaveLanguageSection())) return;
     if (item.renderer === "maps") {
       if (!(await this.ctx.dismissSettings())) return;
-      const mapId = this.ctx.currentMapId();
+      const mapId = this.currentMapId();
       if (this.sandboxView?.renderer === "maps") {
         const mapsWelcome = this.sandboxView.view === null;
         if ((mapId === null && mapsWelcome) || (mapId !== null && !mapsWelcome)) return;
@@ -2140,9 +2213,9 @@ export class LocationStore {
           (field) => field.namespace === "maps" && field.key === "map",
         );
         const descriptor = mapField?.value as { provider?: { id?: string } } | undefined;
-        this.ctx.setMapsEditorMode("vector");
+        this.mapsEditorMode = "vector";
       }
-      this.ctx.clearMapFocus();
+      this.clearMapFocus();
       if (!(await this.leavePluginView())) return;
       this.ctx.recordShellDeparture(departure);
       this.projectHomeOpen = false;
@@ -2151,8 +2224,8 @@ export class LocationStore {
       this.sandboxView = mapId
         ? { plugin: item.plugin, view: item.view, renderer: "maps" }
         : { plugin: item.plugin, view: null, renderer: "maps" };
-      if (mapId) this.ctx.setMapsEditorKey(mapId);
-      else if (!this.sandboxView.view) this.ctx.setMapsEditorKey("welcome");
+      if (mapId) this.mapsEditorKey = mapId;
+      else if (!this.sandboxView.view) this.mapsEditorKey = "welcome";
       return;
     }
     if (item.renderer === "host") {
@@ -2712,10 +2785,10 @@ export class LocationStore {
     if (this.writingLoadKey !== key) return;
     const load: WritingLoad = { entityId, token: crypto.randomUUID() };
     this.writingLoad = load;
-    this.writingEditablePosted = this.ctx.writingEditable;
+    this.writingEditablePosted = this.writingEditable;
     const sent = await this.postWritingMessage(
       writingLoadMessage(entityId, load.token, this.loadedDocumentRevision, {
-        editable: this.ctx.writingEditable,
+        editable: this.writingEditable,
         placeholder: this.writingPlaceholder(),
         mode: this.documentMode,
       }),
@@ -2825,6 +2898,800 @@ export class LocationStore {
         return;
       default:
         return;
+    }
+  }
+
+  // ---- Map editor session ------------------------------------------------------------------------------------
+
+  /**
+   * Asks before leaving a dirty vector map. No map, a clean map, or a physical map leaves without asking.
+   * Saving goes through the native vector session; declining the save asks whether to discard.
+   */
+  async resolveDirtyMapSession(): Promise<boolean> {
+    const mapId = this.currentMapId();
+    if (!mapId || this.sandboxView?.renderer !== "maps" || this.mapSaveStates[mapId]?.status !== "dirty") return true;
+    if (this.mapsEditorMode === "physical") return true;
+    if (
+      await this.ctx.confirmDialog({
+        title: "Save changes to this map before leaving?",
+        message: "Your map has unsaved edits.",
+        confirmLabel: "Save",
+      })
+    ) {
+      try {
+        await this.ctx.nativeVectorSession()?.save();
+        return this.ctx.nativeVectorSession()?.isDirty() !== true && this.mapSaveStates[mapId]?.status !== "dirty";
+      } catch (cause) {
+        this.ctx.setError(friendlyError(cause));
+        return false;
+      }
+    }
+    return this.ctx.confirmDialog({
+      title: "Discard unsaved map edits?",
+      message: "Choose Cancel to remain in the editor.",
+      confirmLabel: "Discard",
+      danger: true,
+    });
+  }
+
+  currentMapId() {
+    return this.selected?.entity_type === "daena.maps:world-map" ? this.selected.id : null;
+  }
+
+  clearMapFocus() {
+    this.mapFocusLinkId = null;
+    this.mapFocusFeatureId = null;
+  }
+
+  /** Clears the map session. `resetProjectSessionState` on the page calls this. Modes and the provider menu stay. */
+  resetMapEditorSession() {
+    this.mapSaveStates = {};
+    this.mapsEditorKey = "welcome";
+    this.mapReloadCounter = 0;
+    this.mapRecoveryBusy = false;
+    this.mapFocusLinkId = null;
+    this.mapFocusFeatureId = null;
+    this.mapSelection = null;
+    this.mapPickPending = null;
+    this.mapReconcileNotice = "";
+    this.mapPickNotice = "";
+  }
+
+  async createMap(provider: "image" | "vector" | "physical" = "physical") {
+    if (this.ctx.projectDiagnostics.length > 0) return;
+    try {
+      if (!(await this.flushAutoSave())) return;
+      const departure = this.currentShellLocation();
+      this.mapProviderMenuOpen = null;
+      const mapView = this.ctx.mapsNavigationItem();
+      if (!mapView) throw new Error("The Maps plugin view is not available");
+      if (!(await this.ctx.dismissSettings())) return;
+      if (!(await this.leavePluginView())) return;
+      this.ctx.recordShellDeparture(departure);
+      this.selected = null;
+      this.fields = {};
+      this.relationships = [];
+      this.assets = [];
+      this.mapLocations = [];
+      this.mapFocusLinkId = null;
+      this.mapFocusFeatureId = null;
+      this.projectHomeOpen = false;
+      this.loreWikiOpen = false;
+      this.section = "maps";
+      // Draft editor: no map entity until the native editor accepts/creates one.
+      this.mapsEditorMode = provider === "physical" ? "physical" : "vector";
+      this.mapsVectorStart = provider === "image" ? "import" : "geojson";
+      this.mapsEditorKey = `draft-${Date.now()}`;
+      this.sandboxView = { plugin: mapView.plugin, view: mapView.view, renderer: "maps" };
+    } catch (cause) {
+      this.ctx.setError(friendlyError(cause));
+    }
+  }
+
+  /** Passed bare to the conflict banner's click handler. */
+  reloadMapOriginal = () => {
+    if (!this.currentMapId()) return;
+    this.mapReloadCounter += 1;
+  };
+
+  /** Passed bare to the conflict banner's click handler. */
+  restoreMapDraft = async () => {
+    const mapId = this.currentMapId();
+    if (!mapId || this.mapRecoveryBusy) return;
+    this.mapRecoveryBusy = true;
+    try {
+      const copies = await this.ctx.project.mapsRecoveryList(mapId);
+      if (copies.length === 0) throw new Error("No recovery copy was found for this map.");
+      await this.ctx.project.mapsRecoveryRestore(mapId, copies[0].fileName);
+      this.mapSaveStates[mapId] = { status: "restoring", detail: null };
+      this.mapReloadCounter += 1;
+    } catch (cause) {
+      this.ctx.setError(friendlyError(cause));
+    } finally {
+      this.mapRecoveryBusy = false;
+    }
+  };
+
+  async openMapLocation(location: MapLocation) {
+    try {
+      const mapEntityId = location.mapEntityId;
+      if (!mapEntityId) throw new Error("map-unavailable: this location is missing its map id");
+      await this.ctx.project.mapsNavigation("openMap", { mapEntityId, linkId: location.id });
+    } catch (cause) {
+      const message = friendlyError(cause);
+      if (message.includes("link-unresolved")) {
+        this.mapReconcileNotice = `This link is unresolved — the map feature it pointed to was removed or renumbered.`;
+        return;
+      }
+      this.ctx.setError(message);
+    }
+  }
+
+  async ensureMapEditorOpen(mapEntityId: string) {
+    const departure = this.currentShellLocation();
+    const map =
+      this.ctx.entities.find((entity) => entity.id === mapEntityId) ?? (await this.ctx.project.getEntity(mapEntityId));
+    if (!map) throw new Error("map-unavailable: choose a saved map first");
+    if (!(await this.flushAutoSave())) throw new Error("Save the current draft before opening the map editor.");
+    const mapsView = this.ctx.mapsNavigationItem();
+    this.selected = map;
+    this.mapsEditorKey = map.id;
+    await this.loadSelectedState(map);
+    if (mapsView) await this.openPluginView(mapsView, departure);
+  }
+
+  async beginMapPick(pending: MapPickPending) {
+    this.mapPickPending = pending;
+    this.mapPickNotice =
+      pending.kind === "rebind"
+        ? "Click the map to rebind this location."
+        : "Click for a point, or use Path/Area to draw a route or region.";
+    await this.ensureMapEditorOpen(pending.mapEntityId);
+    if (this.mapsEditorMode === "vector") return;
+  }
+
+  async applyMapPick(anchor: unknown) {
+    const pending = this.mapPickPending;
+    this.mapPickPending = null;
+    this.mapPickNotice = "";
+    if (!pending || !anchor) return;
+    try {
+      if (pending.kind === "link") {
+        const entity =
+          this.ctx.entities.find((candidate) => candidate.id === pending.entityId) ??
+          (await this.ctx.project.getEntity(pending.entityId));
+        if (!entity) throw new Error("Choose an entity to link.");
+        const location: MapLocation = {
+          id: crypto.randomUUID(),
+          mapEntityId: pending.mapEntityId,
+          role: pending.role,
+          label: entity.name,
+          anchor,
+          validity: { from: null, to: null },
+        };
+        await this.ctx.project.upsertMapLocation(entity.id, location);
+        const departure = this.currentShellLocation();
+        if (!(await this.leavePluginView())) return;
+        this.ctx.recordShellDeparture(departure);
+        this.section =
+          entity.entity_type === "daena.timeline:event" ||
+          entity.entity_type === "daena.timeline:encounter" ||
+          entity.entity_type === "daena.timeline:era" ||
+          entity.entity_type === "daena.timeline:calendar"
+            ? "timeline"
+            : "lore";
+        await this.selectEntity(entity, false);
+        this.mapLocations = await this.ctx.project.listMapLocations(entity.id);
+      } else {
+        await this.ctx.project.upsertMapLocation(pending.entityId, { ...pending.location, anchor });
+        const entity =
+          this.ctx.entities.find((candidate) => candidate.id === pending.entityId) ??
+          (await this.ctx.project.getEntity(pending.entityId));
+        if (entity) {
+          const departure = this.currentShellLocation();
+          if (!(await this.leavePluginView())) return;
+          this.ctx.recordShellDeparture(departure);
+          this.section =
+            entity.entity_type === "daena.timeline:event" ||
+            entity.entity_type === "daena.timeline:encounter" ||
+            entity.entity_type === "daena.timeline:era" ||
+            entity.entity_type === "daena.timeline:calendar"
+              ? "timeline"
+              : "lore";
+          await this.selectEntity(entity, false);
+          this.mapLocations = await this.ctx.project.listMapLocations(entity.id);
+        }
+      }
+    } catch (cause) {
+      this.ctx.setError(friendlyError(cause));
+    }
+  }
+
+  async openMapEntityFromLink(entityId: string) {
+    try {
+      const entity = await this.ctx.project.getEntity(entityId);
+      if (!entity) throw new Error("Linked entity was not found.");
+      if (!this.ctx.entities.some((candidate) => candidate.id === entity.id)) this.ctx.appendEntityToCache(entity);
+      const target =
+        entity.entity_type === "daena.lore:person" ||
+        entity.entity_type === "daena.lore:place" ||
+        entity.entity_type === "daena.lore:faction" ||
+        entity.entity_type === "daena.lore:artifact" ||
+        entity.entity_type === "daena.lore:culture"
+          ? "lore"
+          : entity.entity_type?.startsWith("timeline") ||
+              entity.entity_type === "daena.timeline:event" ||
+              entity.entity_type === "daena.timeline:encounter" ||
+              entity.entity_type === "daena.timeline:era" ||
+              entity.entity_type === "daena.timeline:calendar"
+            ? "timeline"
+            : "lore";
+      const departure = this.currentShellLocation();
+      if (!(await this.leavePluginView())) return;
+      this.ctx.recordShellDeparture(departure);
+      this.section = target;
+      await this.selectEntity(entity, false);
+    } catch (cause) {
+      this.ctx.setError(friendlyError(cause));
+    }
+  }
+
+  async openSelectedMapEditor() {
+    if (!this.selected || this.selected.entity_type !== "daena.maps:world-map") return;
+    const mapsView = this.ctx.mapsNavigationItem();
+    if (!mapsView) {
+      this.ctx.setError("The Maps integration is not available.");
+      return;
+    }
+    try {
+      this.mapsEditorKey = this.selected.id;
+      this.mapFocusLinkId = null;
+      this.mapFocusFeatureId = null;
+      await this.openPluginView(mapsView);
+    } catch (cause) {
+      this.ctx.setError(friendlyError(cause));
+    }
+  }
+
+  /** Body of the page's `maps-navigation` listener. The listener itself stays on the page. */
+  async handleMapsNavigation(payload: { mapEntityId: string; linkId?: string }) {
+    try {
+      let map = this.ctx.entities.find((entity) => entity.id === payload.mapEntityId && !entity.deleted) ?? null;
+      if (!map) {
+        const loaded = await this.ctx.project.getEntity(payload.mapEntityId);
+        if (loaded && !loaded.deleted) {
+          this.ctx.upsertEntityInCache(loaded);
+          map = loaded;
+        }
+      }
+      const item = this.ctx.mapsNavigationItem();
+      if (!map || !item) throw new Error("map-unavailable: enable the Maps module to open this location");
+      if (!(await this.flushAutoSave())) return;
+      if (!(await this.canLeaveLanguageSection())) return;
+      const departure = this.currentShellLocation();
+      if (!(await this.leavePluginView())) return;
+      this.selected = map;
+      this.mapsEditorKey = map.id;
+      await this.loadSelectedState(map);
+      await this.openPluginView(item, departure);
+      const linkId = payload.linkId ?? null;
+      // openPluginView clears focus; also re-assert when already on the same map so
+      // the vector editor retries focus after pins load.
+      this.mapFocusLinkId = null;
+      this.mapFocusFeatureId = null;
+      await tick();
+      this.mapFocusLinkId = linkId;
+    } catch (cause) {
+      this.ctx.setError(friendlyError(cause));
+    }
+  }
+
+  /** Body of the page's `maps-state` listener, after the foreign-instance check. */
+  handleMapsState(payload: { mapEntityId: string; status: string; detail: unknown; instanceId?: unknown }) {
+    const { mapEntityId, status, detail } = payload;
+    if (status === "fullscreen") {
+      const enabled = typeof detail === "object" && detail !== null && "enabled" in detail && detail.enabled === true;
+      this.editorFullscreen = enabled;
+      return;
+    }
+    if (status === "back") {
+      this.editorFullscreen = false;
+      void this.closePluginView();
+      return;
+    }
+    if (mapEntityId) this.mapSaveStates[mapEntityId] = { status, detail };
+    if (status === "saved" && mapEntityId) {
+      void this.ctx.refreshAfterEntityMutation({ entityId: mapEntityId }).then(() => {
+        const map = this.ctx.entities.find((entity) => entity.id === mapEntityId && !entity.deleted);
+        if (map) {
+          this.selected = map;
+          void this.loadSelectedState(map).catch(() => {});
+        }
+      });
+    }
+    if (status === "reconcile") {
+      const reconcileDetail = detail as { unresolved?: unknown } | null;
+      const unresolved = Array.isArray(reconcileDetail?.unresolved) ? reconcileDetail.unresolved.length : 0;
+      this.mapReconcileNotice =
+        unresolved > 0
+          ? `${unresolved} link${unresolved === 1 ? "" : "s"} on this map are unresolved — the features they pointed to were removed or renumbered.`
+          : "";
+      if (this.selected && this.mapLocations.length > 0)
+        void this.ctx.project
+          .listMapLocations(this.selected.id)
+          .then((locations) => {
+            this.mapLocations = locations;
+          })
+          .catch(() => {});
+    }
+    if (status === "pick-complete") {
+      const pickDetail = detail as { anchor?: unknown } | null;
+      void this.applyMapPick(pickDetail?.anchor ?? null);
+    }
+    if (status === "pick-cancelled") {
+      this.mapPickPending = null;
+      this.mapPickNotice = "";
+    }
+    if (status === "open-entity") {
+      const openDetail = detail as { entityId?: string } | null;
+      if (openDetail?.entityId) void this.openMapEntityFromLink(openDetail.entityId);
+    }
+    if (status === "linked") {
+      void this.ctx.refreshAfterEntityMutation(mapEntityId ? { entityId: mapEntityId } : undefined);
+      if (this.selected)
+        void this.ctx.project
+          .listMapLocations(this.selected.id)
+          .then((locations) => {
+            this.mapLocations = locations;
+          })
+          .catch(() => {});
+    }
+  }
+
+  /** Body of the page's `maps-selection` listener, after the foreign-instance check. */
+  handleMapsSelection(payload: { mapEntityId: string; anchor: unknown; instanceId?: unknown }) {
+    if (payload.mapEntityId === this.currentMapId()) this.mapSelection = payload.anchor;
+  }
+
+  // ---- Selection AI ------------------------------------------------------------------------------------------
+
+  /** Passed bare to the shell editor's selection callback. */
+  setAiSelection = (markdown: string, plainText: string) => {
+    if (this.aiRewriteOpen || this.aiBusy || this.aiPreviewOutput) return;
+    this.aiSourceSelection = markdown;
+    this.aiSourceSelectionPlain = plainText;
+  };
+
+  /** Passed bare to the shell editor's AI menu callback. */
+  openAiAction = (action: string, markdown: string, plainText: string, context: string) => {
+    if (!this.ctx.projectInfo?.aiEnabled) return;
+    const request = aiActionRequest(this.ctx.aiPromptTemplates, action, markdown, plainText, context);
+    if (!request) return;
+    this.aiSourceSelection = request.selectionMarkdown;
+    this.aiSourceSelectionPlain = request.selectionPlain;
+    this.aiGenerationContext = request.generationContext;
+    this.aiMode = request.mode;
+    this.aiInstruction = instructionFor(this.ctx.aiPromptTemplates as PromptTemplate[], action);
+    this.aiRewriteOpen = true;
+  };
+
+  clearAiFieldListener() {
+    this.aiFieldUnlisten?.();
+    this.aiFieldUnlisten = null;
+  }
+
+  /** Passed bare to the field-fill panel's close button. */
+  closeAiFieldFill = () => {
+    if (this.aiFieldFillRequestId) void this.ctx.project.aiCancelText(this.aiFieldFillRequestId).catch(() => {});
+    this.aiFieldFillStartCancelled = true;
+    this.clearAiFieldListener();
+    this.aiFieldFillOpen = false;
+    this.aiFieldFillBusy = false;
+    this.aiFieldFillRequestId = null;
+    this.aiFieldFillEntityId = null;
+    this.aiFieldFillLastSequence = -1;
+    this.aiFieldFillStream = "";
+    this.aiFieldSuggestions = {};
+  };
+
+  handleAiFieldFillEvent(payload: AiStreamEvent) {
+    if (this.aiFieldFillEntityId !== null && this.selected?.id !== this.aiFieldFillEntityId) return;
+    if (payload.sequence <= this.aiFieldFillLastSequence) return;
+    this.aiFieldFillLastSequence = payload.sequence;
+    if (payload.phase === "delta" && payload.delta) this.aiFieldFillStream += payload.delta;
+    if (payload.phase === "failed") {
+      this.clearAiFieldListener();
+      this.aiFieldFillBusy = false;
+      this.aiFieldFillRequestId = null;
+      this.ctx.setError(payload.error ?? "AI field suggestions failed");
+    } else if (payload.phase === "cancelled" || payload.phase === "deadline_exceeded") {
+      this.clearAiFieldListener();
+      this.aiFieldFillBusy = false;
+      this.aiFieldFillRequestId = null;
+      if (payload.phase === "deadline_exceeded") {
+        this.ctx.setError("AI field generation reached its time limit before returning complete suggestions.");
+      }
+    } else if (payload.phase === "completed") {
+      this.clearAiFieldListener();
+      this.aiFieldFillBusy = false;
+      this.aiFieldFillRequestId = null;
+      try {
+        const parsed = JSON.parse(payload.output ?? this.aiFieldFillStream) as {
+          suggestions?: Record<
+            string,
+            { value?: unknown; values?: unknown; rationale?: unknown; confidence?: unknown }
+          >;
+        };
+        const allowed = new Set(this.ctx.emptyInspectorDefinitions().map((definition) => definition.key));
+        const suggestions: Record<string, AiFieldSuggestion> = {};
+        for (const [key, value] of Object.entries(parsed.suggestions ?? {})) {
+          const definition = this.ctx.definitions().find((candidate) => candidate.key === key);
+          if (!definition || !allowed.has(key)) continue;
+          const rawValue = definition.multiple || definition.type === "relationship" ? value?.values : value?.value;
+          const normalizedValue = coerceAiFieldValue(definition, rawValue);
+          if (normalizedValue === null) continue;
+          if (definition?.type === "relationship") {
+            const allowedIds = new Set(
+              this.ctx.entities
+                .filter(
+                  (entity) =>
+                    !entity.deleted &&
+                    (!definition.targetEntityTypes?.length ||
+                      definition.targetEntityTypes.includes(entity.entity_type ?? "")),
+                )
+                .map((entity) => entity.id),
+            );
+            if (!(normalizedValue as string[]).every((id) => allowedIds.has(id))) continue;
+          }
+          suggestions[key] = {
+            value: normalizedValue,
+            rationale: typeof value.rationale === "string" ? value.rationale.trim() : "",
+            confidence: String(value.confidence ?? "unknown"),
+          };
+        }
+        this.aiFieldSuggestions = suggestions;
+        if (Object.keys(suggestions).length === 0) {
+          this.aiFieldFillOpen = false;
+          this.ctx.setError("AI found no supported suggestions for the empty fields.");
+        }
+      } catch {
+        this.aiFieldFillOpen = false;
+        this.ctx.setError("AI returned invalid field suggestions.");
+      }
+    }
+  }
+
+  async fillAiFields() {
+    if (!this.selected || this.aiFieldFillBusy) return;
+    if (!this.ctx.projectInfo?.aiEnabled) return;
+    const empty = this.ctx.emptyInspectorDefinitions();
+    if (empty.length === 0) return;
+    const endpoint = this.ctx.aiProvider.endpoint.trim();
+    const model = this.ctx.aiProvider.model.trim();
+    if (!endpoint || !model) {
+      this.ctx.setError("Configure the active provider endpoint and model before filling fields.");
+      return;
+    }
+    this.aiFieldFillOpen = true;
+    this.aiFieldFillBusy = true;
+    this.aiFieldFillStream = "";
+    this.aiFieldSuggestions = {};
+    this.aiFieldFillLastSequence = -1;
+    this.aiFieldFillStartCancelled = false;
+    this.aiFieldFillEntityId = this.selected.id;
+    const fieldKeys = empty.map((definition) => definition.key);
+    const context = JSON.stringify({
+      entity: { name: this.selected.name, type: this.selected.entity_type },
+      document: this.documentBody,
+      populatedFields: Object.fromEntries(Object.entries(this.fields).filter(([, value]) => !isEmptyFieldValue(value))),
+      emptyFields: empty.map((definition) => ({
+        key: definition.key,
+        label: definition.label,
+        type: definition.type,
+        multiple: definition.multiple ?? definition.type === "relationship",
+        options: definition.options ?? [],
+        allowedEntities:
+          definition.type === "relationship"
+            ? this.ctx.entities
+                .filter(
+                  (entity) =>
+                    !entity.deleted &&
+                    (!definition.targetEntityTypes?.length ||
+                      definition.targetEntityTypes.includes(entity.entity_type ?? "")),
+                )
+                .map((entity) => ({ id: entity.id, name: entity.name, type: entity.entity_type }))
+            : [],
+      })),
+    });
+    const suggestionProperties = Object.fromEntries(
+      empty.map((definition) => [
+        definition.key,
+        {
+          type: "object",
+          properties: {
+            ...(definition.multiple || definition.type === "relationship"
+              ? { values: aiJsonValueSchema(definition) }
+              : { value: aiJsonValueSchema(definition) }),
+            rationale: { type: "string", maxLength: 1000 },
+            confidence: { type: "string", maxLength: 32 },
+          },
+          required: [definition.multiple || definition.type === "relationship" ? "values" : "value"],
+          additionalProperties: false,
+        },
+      ]),
+    );
+    const outputContract = {
+      type: "object",
+      properties: {
+        suggestions: {
+          type: "object",
+          properties: suggestionProperties,
+          additionalProperties: false,
+        },
+      },
+      required: ["suggestions"],
+      additionalProperties: false,
+    };
+    const retrievalQuery =
+      `${this.selected.name} ${this.selected.entity_type ?? ""} ${empty.map((definition) => definition.label).join(" ")}`.slice(
+        0,
+        4000,
+      );
+    let startedRequestId: string | null = null;
+    try {
+      const requestId = await this.ctx.project.aiGenerateStructured(
+        this.ctx.projectInfo!.root,
+        `Fill only these empty fields: ${fieldKeys.join(", ")}. For multi-select and relationship fields, return up to five distinct values in the values array. For relationship fields, use only allowed entity IDs from the context. Use only configured options when options are provided. Return evidence-backed suggestions. Do not invent facts.`,
+        context,
+        outputContract,
+        this.aiFieldFillEntityId!,
+        retrievalQuery,
+        2,
+      );
+      startedRequestId = requestId;
+      if (this.aiFieldFillStartCancelled || this.selected?.id !== this.aiFieldFillEntityId) {
+        void this.ctx.project.aiCancelText(requestId).catch(() => {});
+        return;
+      }
+      this.aiFieldFillRequestId = requestId;
+      this.aiFieldUnlisten = await this.ctx.listenAiStream(requestId, (payload) =>
+        this.handleAiFieldFillEvent(payload),
+      );
+      const buffered = await this.ctx.project.aiPollText(requestId);
+      for (const event of buffered) this.handleAiFieldFillEvent(event);
+    } catch (cause) {
+      if (startedRequestId) void this.ctx.project.aiCancelText(startedRequestId).catch(() => {});
+      this.clearAiFieldListener();
+      this.aiFieldFillBusy = false;
+      this.aiFieldFillRequestId = null;
+      if (this.aiFieldFillStartCancelled || this.selected?.id !== this.aiFieldFillEntityId) return;
+      this.ctx.setError(friendlyError(cause));
+    }
+  }
+
+  async acceptAiFieldSuggestion(key: string) {
+    if (this.selected?.id !== this.aiFieldFillEntityId) return;
+    const suggestion = this.aiFieldSuggestions[key];
+    const definition = this.ctx.definitions().find((candidate) => candidate.key === key);
+    if (
+      !suggestion ||
+      (definition?.type === "relationship"
+        ? this.ctx.selectedRelationshipIds(definition).length > 0
+        : !isEmptyFieldValue(this.fields[key]))
+    )
+      return;
+    if (definition?.type === "relationship")
+      await this.updateRelationshipField(definition, suggestion.value as string[]);
+    else this.fields = { ...this.fields, [key]: suggestion.value };
+    const remaining = { ...this.aiFieldSuggestions };
+    delete remaining[key];
+    this.aiFieldSuggestions = remaining;
+    this.markEntryDirty({ fieldKey: key });
+  }
+
+  async acceptAllAiFieldSuggestions() {
+    for (const key of Object.keys(this.aiFieldSuggestions)) await this.acceptAiFieldSuggestion(key);
+    if (Object.keys(this.aiFieldSuggestions).length === 0) this.closeAiFieldFill();
+  }
+
+  discardAiFieldSuggestion(key: string) {
+    const remaining = { ...this.aiFieldSuggestions };
+    delete remaining[key];
+    this.aiFieldSuggestions = remaining;
+  }
+
+  clearAiStreamListener() {
+    this.aiUnlisten?.();
+    this.aiUnlisten = null;
+  }
+
+  /** Passed bare to the rewrite dialog's discard and cancel buttons. */
+  closeAiRewrite = () => {
+    if (this.aiRequestId) void this.ctx.project.aiCancelText(this.aiRequestId).catch(() => {});
+    this.aiStartCancelled = true;
+    this.clearAiStreamListener();
+    this.aiRewriteOpen = false;
+    this.aiBusy = false;
+    this.aiCancelPending = false;
+    this.aiRequestId = null;
+    this.aiSourceEntityId = null;
+    this.aiStreamText = "";
+    this.aiPreviewOutput = "";
+    this.aiProgressMessage = "Preparing model…";
+    this.aiUsage = null;
+    this.aiSourceSelection = "";
+    this.aiSourceSelectionPlain = "";
+    this.aiGenerationContext = "";
+    this.aiLastSequence = -1;
+    this.aiMode = "rewrite";
+  };
+
+  async cancelAiRewrite() {
+    if (!this.aiBusy || this.aiCancelPending) return;
+    if (!this.aiRequestId) {
+      this.closeAiRewrite();
+      return;
+    }
+    this.aiCancelPending = true;
+    try {
+      await this.ctx.project.aiCancelText(this.aiRequestId);
+    } catch (cause) {
+      this.aiCancelPending = false;
+      this.ctx.setError(friendlyError(cause));
+    }
+  }
+
+  handleAiEvent(payload: AiStreamEvent) {
+    if (this.aiSourceEntityId !== null && this.selected?.id !== this.aiSourceEntityId) return;
+    if (payload.sequence <= this.aiLastSequence) return;
+    this.aiLastSequence = payload.sequence;
+    const nextStreamState = reduceTextGenerationEvent(
+      {
+        streamText: this.aiStreamText,
+        proposal: this.aiPreviewOutput,
+        progressMessage: this.aiProgressMessage,
+      },
+      payload,
+    );
+    this.aiStreamText = nextStreamState.streamText;
+    this.aiPreviewOutput = nextStreamState.proposal;
+    this.aiProgressMessage = nextStreamState.progressMessage;
+    if (payload.phase === "usage" && payload.output) {
+      try {
+        this.aiUsage = JSON.parse(payload.output);
+      } catch (_) {
+        this.aiUsage = null;
+      }
+    }
+    if (payload.phase === "completed") {
+      this.aiBusy = false;
+      this.aiCancelPending = false;
+      this.aiRequestId = null;
+      this.clearAiStreamListener();
+    } else if (payload.phase === "cancelled" || payload.phase === "deadline_exceeded") {
+      this.aiBusy = false;
+      this.aiCancelPending = false;
+      this.aiRequestId = null;
+      this.clearAiStreamListener();
+      if (payload.phase === "deadline_exceeded") {
+        this.ctx.setError(
+          this.aiPreviewOutput
+            ? "AI generation reached its time limit. The partial proposal is preserved below."
+            : "AI generation reached its time limit before producing a proposal.",
+        );
+      }
+    } else if (payload.phase === "failed") {
+      this.aiBusy = false;
+      this.aiCancelPending = false;
+      this.aiRequestId = null;
+      this.clearAiStreamListener();
+      this.ctx.setError(payload.error ?? "The AI provider could not generate a proposal");
+    }
+  }
+
+  async startAiRewrite() {
+    if (
+      !this.selected ||
+      (this.aiMode === "rewrite" && !this.aiSourceSelection.trim()) ||
+      !this.aiInstruction.trim() ||
+      this.aiBusy
+    )
+      return;
+    const sourceSelection = this.aiSourceSelection;
+    const sourcePlain = this.aiSourceSelectionPlain;
+    const generationContext = this.aiGenerationContext;
+    if (!(await this.flushAutoSave())) return;
+    if (this.aiMode === "rewrite" && !sourceSelection.trim()) return;
+    this.aiSourceEntityId = this.selected.id;
+    this.aiSourceBody = this.documentBody;
+    this.aiSourceRevision = this.loadedDocumentRevision;
+    this.aiStreamText = "";
+    this.aiPreviewOutput = "";
+    this.aiProgressMessage = "Preparing model…";
+    this.aiLastSequence = -1;
+    this.aiStartCancelled = false;
+    this.aiBusy = true;
+    this.aiCancelPending = false;
+    let startedRequestId: string | null = null;
+    try {
+      const sourceText =
+        this.aiMode === "generate"
+          ? generationContext.trim() || this.documentBody.trim() || "[CURSOR]"
+          : sourceSelection;
+      const retrievalQuery = [this.selected?.name, this.aiInstruction, sourcePlain]
+        .filter(Boolean)
+        .join(" ")
+        .slice(0, 4000);
+      const requestId = await this.ctx.project.aiGenerateText(
+        this.ctx.projectInfo!.root,
+        this.aiInstruction,
+        sourceText,
+        this.aiSourceEntityId,
+        retrievalQuery,
+        2,
+      );
+      startedRequestId = requestId;
+      if (this.aiStartCancelled || this.selected?.id !== this.aiSourceEntityId) {
+        void this.ctx.project.aiCancelText(requestId).catch(() => {});
+        return;
+      }
+      this.aiRequestId = requestId;
+      this.aiUnlisten = await this.ctx.listenAiStream(requestId, (payload) => {
+        this.handleAiEvent(payload);
+      });
+      const buffered = await this.ctx.project.aiPollText(requestId);
+      for (const event of buffered) this.handleAiEvent(event);
+    } catch (cause) {
+      if (startedRequestId) void this.ctx.project.aiCancelText(startedRequestId).catch(() => {});
+      this.clearAiStreamListener();
+      this.aiBusy = false;
+      this.aiCancelPending = false;
+      this.aiRequestId = null;
+      if (this.aiStartCancelled || this.selected?.id !== this.aiSourceEntityId) return;
+      this.ctx.setError(friendlyError(cause));
+    }
+  }
+
+  async acceptAiRewrite() {
+    if (!this.selected || !this.aiPreviewOutput || this.aiBusy) return;
+    if (
+      this.selected.id !== this.aiSourceEntityId ||
+      this.documentBody !== this.aiSourceBody ||
+      this.loadedDocumentRevision !== this.aiSourceRevision
+    ) {
+      this.ctx.setError(
+        "The entity or document changed while the rewrite was being prepared. Discard it and try again.",
+      );
+      return;
+    }
+    const validationError = validateAiProposal(this.aiPreviewOutput);
+    if (validationError) {
+      this.ctx.setError(validationError);
+      return;
+    }
+    if (this.aiMode === "generate") {
+      const nextMarkdown = this.editorRef?.insertAiTextAtRequest(this.aiPreviewOutput);
+      if (nextMarkdown == null) {
+        this.ctx.setError("The editor position is no longer available. Discard it and try again.");
+        return;
+      }
+      this.documentBody = nextMarkdown;
+      this.markEntryDirty({ document: true });
+      if (await this.saveDocument()) this.closeAiRewrite();
+      return;
+    }
+    const nextMarkdown = this.editorRef?.replaceAiTextWithMarkdown(this.aiPreviewOutput);
+    if (nextMarkdown === null || nextMarkdown === undefined) {
+      this.ctx.setError("The selected text is no longer at the original position. Discard it and try again.");
+      return;
+    }
+    const bodyBefore = this.documentBody;
+    this.documentBody = nextMarkdown;
+    this.markEntryDirty({ document: true });
+    if (await this.saveDocument()) {
+      this.closeAiRewrite();
+    } else {
+      this.documentBody = bodyBefore;
     }
   }
 }

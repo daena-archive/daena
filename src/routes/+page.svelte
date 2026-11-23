@@ -166,7 +166,6 @@ import ProjectHome from "$lib/shell/ProjectHome.svelte";
 import ProjectCenter from "$lib/ProjectCenter.svelte";
 import ProjectAiSettingsPanel from "$lib/ai/ProjectAiSettingsPanel.svelte";
 import {
-  aiActionRequest,
   emptyAiProvider,
   instructionFor,
   mergePromptTemplates,
@@ -287,8 +286,6 @@ import { WRITING_PLUGIN_ID, parseWritingStateEvent, type WritingBridgeShortcut }
 import RichTextEditor from "$lib/editor/RichTextEditor.svelte";
 import MarkdownArticle from "$lib/markdown/MarkdownArticle.svelte";
 import AiProposalPreview from "$lib/ai/AiProposalPreview.svelte";
-import { validateAiProposal } from "$lib/ai/proposal";
-import { reduceTextGenerationEvent } from "$lib/ai/stream";
 import { htmlToMarkdown } from "$lib/markdown";
 import {
   applyThemePreference,
@@ -320,9 +317,6 @@ import {
 } from "$lib/date";
 import { isEmptyFieldValue } from "$lib/fields/persistence";
 import {
-  aiJsonValueSchema,
-  aiScalarValue,
-  coerceAiFieldValue,
   fieldDisplayValue,
   fieldInputValue,
   suggestionConfidenceLabel,
@@ -465,18 +459,6 @@ const loc: LocationStore = new LocationStore({
     shellNavigationRestoring = restoring;
   },
   closeNativePluginWebviews: () => closeNativePluginWebviews(),
-  resolveDirtyMapSession: () => resolveDirtyMapSession(),
-  currentMapId: () => currentMapId(),
-  setMapsEditorMode: (mode) => {
-    mapsEditorMode = mode;
-  },
-  setMapsEditorKey: (key) => {
-    mapsEditorKey = key;
-  },
-  clearMapFocus: () => {
-    mapFocusLinkId = null;
-    mapFocusFeatureId = null;
-  },
   dismissSettings: () => dismissSettings(),
   openSettings: (nextSection) => openSettings(nextSection),
   openProjectCenter: (nextSection) => openProjectCenter(nextSection),
@@ -488,8 +470,6 @@ const loc: LocationStore = new LocationStore({
   appendEntityToCache: (entity) => {
     entities = [...entities, entity];
   },
-  closeAiFieldFill: () => closeAiFieldFill(),
-  closeAiRewrite: () => closeAiRewrite(),
   contextFor: (target) => contextFor(target),
   contextOwningRelationshipType: (relationshipType) => contextOwningRelationshipType(relationshipType),
   activeManifest: () => activeManifest(),
@@ -522,9 +502,6 @@ const loc: LocationStore = new LocationStore({
   get writingWebviewShown() {
     return writingWebviewShown;
   },
-  get writingEditable() {
-    return writingEditable;
-  },
   get aiProvider() {
     return aiProvider;
   },
@@ -548,6 +525,12 @@ const loc: LocationStore = new LocationStore({
   confirmWritingArchive: (entityId) => {
     void confirmWritingArchive(entityId);
   },
+  mapsNavigationItem: () => mapsNavigationItem(),
+  emptyInspectorDefinitions: () => emptyInspectorDefinitions(),
+  selectedRelationshipIds: (definition) => selectedRelationshipIds(definition),
+  listenAiStream: (requestId, handler) =>
+    listen<AiStreamEvent>(`ai-stream:${requestId}`, (event) => handler(event.payload)),
+  nativeVectorSession: () => nativeVectorSession(),
 });
 type LifecycleToast = { message: string; actionLabel?: string; onAction?: () => void };
 let lifecycleToast = $state<LifecycleToast | null>(null);
@@ -566,20 +549,6 @@ let createDateCalendarByField = $state<Record<string, string>>({});
 let createDocumentBody = $state("");
 let showDiscardPrompt = $state(false);
 let pendingCreateDiscard = $state<(() => void) | null>(null);
-let mapSaveStates = $state<Record<string, { status: string; detail: unknown }>>({});
-let mapReloadCounter = $state(0);
-let mapsEditorKey = $state("welcome");
-let mapRecoveryBusy = $state(false);
-let mapFocusLinkId = $state<string | null>(null);
-let mapFocusFeatureId = $state<string | null>(null);
-let mapSelection = $state<unknown | null>(null);
-let mapPickPending = $state<
-  | null
-  | { kind: "link"; entityId: string; role: string; mapEntityId: string }
-  | { kind: "rebind"; entityId: string; location: MapLocation; mapEntityId: string }
->(null);
-let mapReconcileNotice = $state("");
-let mapPickNotice = $state("");
 let projectDiagnostics = $state<string[]>([]);
 let archivedCount = $state(0);
 let statusCenterOpen = $state(false);
@@ -722,34 +691,6 @@ let aiIndexMessage = $state("");
 let aiIndexMessageTimer: number | null = null;
 let aiIndexStatusMessageTimer: number | null = null;
 let remoteCredential = $state<{ provider: string; configured: boolean } | null>(null);
-let aiUsage = $state<{ inputTokens: number; outputTokens: number; totalTokens: number } | null>(null);
-let aiRewriteOpen = $state(false);
-let aiBusy = $state(false);
-let aiCancelPending = $state(false);
-let aiMode = $state<"rewrite" | "generate">("rewrite");
-let aiRequestId = $state<string | null>(null);
-let aiInstruction = $state("Rewrite this to be more vivid while preserving the meaning.");
-let aiStreamText = $state("");
-let aiPreviewOutput = $state("");
-let aiProgressMessage = $state("Preparing model…");
-let aiSourceSelection = $state("");
-let aiSourceSelectionPlain = $state("");
-let aiGenerationContext = $state("");
-let aiSourceBody = $state("");
-let aiSourceRevision = $state("");
-let aiLastSequence = $state(-1);
-let aiUnlisten: (() => void) | null = null;
-let aiFieldFillBusy = $state(false);
-let aiFieldFillOpen = $state(false);
-let aiFieldFillRequestId = $state<string | null>(null);
-let aiFieldFillStream = $state("");
-let aiFieldSuggestions = $state<Record<string, AiFieldSuggestion>>({});
-let aiFieldUnlisten: (() => void) | null = null;
-let aiStartCancelled = $state(false);
-let aiFieldFillStartCancelled = $state(false);
-let aiSourceEntityId = $state<string | null>(null);
-let aiFieldFillEntityId = $state<string | null>(null);
-let aiFieldFillLastSequence = $state(-1);
 let adminPlugins = $state<PluginAdminEntry[] | null>(null);
 let adminBusy = $state(false);
 let pluginActionId = $state<string | null>(null);
@@ -822,7 +763,7 @@ $effect(() => {
   const modalOpen =
     quickOpenOpen ||
     showCreateForm ||
-    aiRewriteOpen ||
+    loc.aiRewriteOpen ||
     loc.editorFullscreen ||
     upgradePreview !== null ||
     confirmAction !== null ||
@@ -870,9 +811,9 @@ $effect(() => {
     } else if (confirmAction) {
       event.preventDefault();
       confirmAction = null;
-    } else if (aiRewriteOpen) {
+    } else if (loc.aiRewriteOpen) {
       event.preventDefault();
-      closeAiRewrite();
+      loc.closeAiRewrite();
     } else if (loc.metadataDialog) {
       event.preventDefault();
       loc.metadataDialog = null;
@@ -1364,33 +1305,6 @@ async function closeNativePluginWebviews() {
   }
 }
 
-async function resolveDirtyMapSession(): Promise<boolean> {
-  const mapId = currentMapId();
-  if (!mapId || loc.sandboxView?.renderer !== "maps" || mapSaveStates[mapId]?.status !== "dirty") return true;
-  if (mapsEditorMode === "physical") return true;
-  if (
-    await confirmDialog({
-      title: "Save changes to this map before leaving?",
-      message: "Your map has unsaved edits.",
-      confirmLabel: "Save",
-    })
-  ) {
-    try {
-      await nativeVectorSession()?.save();
-      return nativeVectorSession()?.isDirty() !== true && mapSaveStates[mapId]?.status !== "dirty";
-    } catch (cause) {
-      error = friendlyError(cause);
-      return false;
-    }
-  }
-  return confirmDialog({
-    title: "Discard unsaved map edits?",
-    message: "Choose Cancel to remain in the editor.",
-    confirmLabel: "Discard",
-    danger: true,
-  });
-}
-
 /** The Language workspace is an isolated webview drawn in the content column of the Languages section. */
 const languagePaneShown = $derived(
   ready &&
@@ -1445,7 +1359,7 @@ const modalOverlayOpen = $derived(
     showDiscardPrompt ||
     projectTransitionBusy ||
     loc.editorFullscreen ||
-    aiRewriteOpen ||
+    loc.aiRewriteOpen ||
     upgradePreview !== null ||
     confirmAction !== null ||
     deleteTarget !== null ||
@@ -1719,16 +1633,6 @@ function noteHiddenWebviewReady(pluginId: string, payload: unknown) {
   if (event?.kind === "ready") webviewPool = markReady(webviewPool, { pluginId, instanceId }, true);
 }
 
-/** Whether the webview may edit: not while an entry loads or fails to load, diagnostics block saving, AI works or a conflict waits. */
-const writingEditable = $derived(
-  !loc.selectedLoading &&
-    !loc.selectedLoadError &&
-    projectDiagnostics.length === 0 &&
-    !aiBusy &&
-    !aiRewriteOpen &&
-    !loc.documentConflict,
-);
-
 /** Moves among the tabs of the active group. A missing index does nothing. One tab does not cycle. */
 function runTabShortcut(shortcut: TabShortcut) {
   if (shortcut === "tab-new") {
@@ -1987,50 +1891,12 @@ function updateRailCollapsed(collapsed: boolean) {
   localStorage.setItem("daena:rail-collapsed", String(collapsed));
 }
 
-let mapsEditorMode = $state<"vector" | "physical">("vector");
-let mapsVectorStart = $state<"import" | "geojson">("geojson");
-let mapProviderMenuOpen = $state<"header" | "empty" | null>(null);
-async function createMap(provider: "image" | "vector" | "physical" = "physical") {
-  if (projectDiagnostics.length > 0) return;
-  try {
-    if (!(await loc.flushAutoSave())) return;
-    const departure = loc.currentShellLocation();
-    mapProviderMenuOpen = null;
-    const mapView = mapsNavigationItem();
-    if (!mapView) throw new Error("The Maps plugin view is not available");
-    if (!(await dismissSettings())) return;
-    if (!(await loc.leavePluginView())) return;
-    recordShellDeparture(departure);
-    loc.selected = null;
-    loc.fields = {};
-    loc.relationships = [];
-    loc.assets = [];
-    loc.mapLocations = [];
-    mapFocusLinkId = null;
-    mapFocusFeatureId = null;
-    loc.projectHomeOpen = false;
-    loc.loreWikiOpen = false;
-    loc.section = "maps";
-    // Draft editor: no map entity until the native editor accepts/creates one.
-    mapsEditorMode = provider === "physical" ? "physical" : "vector";
-    mapsVectorStart = provider === "image" ? "import" : "geojson";
-    mapsEditorKey = `draft-${Date.now()}`;
-    loc.sandboxView = { plugin: mapView.plugin, view: mapView.view, renderer: "maps" };
-  } catch (cause) {
-    error = friendlyError(cause);
-  }
-}
-
-function currentMapId() {
-  return loc.selected?.entity_type === "daena.maps:world-map" ? loc.selected.id : null;
-}
-
 $effect(() => {
-  if (!mapProviderMenuOpen) return;
+  if (!loc.mapProviderMenuOpen) return;
   const handlePointerDown = (event: PointerEvent) => {
     const target = event.target as Element | null;
     if (target?.closest(".map-provider-menu") || target?.closest('[aria-haspopup="menu"]')) return;
-    mapProviderMenuOpen = null;
+    loc.mapProviderMenuOpen = null;
   };
   document.addEventListener("pointerdown", handlePointerDown, true);
   return () => document.removeEventListener("pointerdown", handlePointerDown, true);
@@ -2104,39 +1970,17 @@ function savedMaps() {
 
 async function saveCurrentMap() {
   try {
-    if (mapsEditorMode === "physical") return;
+    if (loc.mapsEditorMode === "physical") return;
     await nativeVectorSession()?.save();
   } catch (cause) {
     error = friendlyError(cause);
   }
 }
 
-function reloadMapOriginal() {
-  if (!currentMapId()) return;
-  mapReloadCounter += 1;
-}
-
-async function restoreMapDraft() {
-  const mapId = currentMapId();
-  if (!mapId || mapRecoveryBusy) return;
-  mapRecoveryBusy = true;
-  try {
-    const copies = await project.mapsRecoveryList(mapId);
-    if (copies.length === 0) throw new Error("No recovery copy was found for this map.");
-    await project.mapsRecoveryRestore(mapId, copies[0].fileName);
-    mapSaveStates[mapId] = { status: "restoring", detail: null };
-    mapReloadCounter += 1;
-  } catch (cause) {
-    error = friendlyError(cause);
-  } finally {
-    mapRecoveryBusy = false;
-  }
-}
-
 function dismissMapConflict() {
-  const mapId = currentMapId();
+  const mapId = loc.currentMapId();
   if (!mapId) return;
-  mapSaveStates[mapId] = { status: "clean", detail: null };
+  loc.mapSaveStates[mapId] = { status: "clean", detail: null };
 }
 
 function mapConflictDetail(detail: unknown): { path?: string } {
@@ -2953,22 +2797,6 @@ async function cancelAiIndex() {
     showAiIndexMessage(friendlyError(cause));
   }
 }
-function setAiSelection(markdown: string, plainText: string) {
-  if (aiRewriteOpen || aiBusy || aiPreviewOutput) return;
-  aiSourceSelection = markdown;
-  aiSourceSelectionPlain = plainText;
-}
-function openAiAction(action: string, markdown: string, plainText: string, context: string) {
-  if (!projectInfo?.aiEnabled) return;
-  const request = aiActionRequest(aiPromptTemplates, action, markdown, plainText, context);
-  if (!request) return;
-  aiSourceSelection = request.selectionMarkdown;
-  aiSourceSelectionPlain = request.selectionPlain;
-  aiGenerationContext = request.generationContext;
-  aiMode = request.mode;
-  aiInstruction = instructionFor(aiPromptTemplates, action);
-  aiRewriteOpen = true;
-}
 function emptyInspectorDefinitions() {
   return definitions().filter((definition) => {
     if (isMapsProviderField(definition)) return false;
@@ -2976,392 +2804,6 @@ function emptyInspectorDefinitions() {
       ? selectedRelationshipIds(definition).length === 0
       : isEmptyFieldValue(loc.fields[definition.key]);
   });
-}
-function clearAiFieldListener() {
-  aiFieldUnlisten?.();
-  aiFieldUnlisten = null;
-}
-function closeAiFieldFill() {
-  if (aiFieldFillRequestId) void project.aiCancelText(aiFieldFillRequestId).catch(() => {});
-  aiFieldFillStartCancelled = true;
-  clearAiFieldListener();
-  aiFieldFillOpen = false;
-  aiFieldFillBusy = false;
-  aiFieldFillRequestId = null;
-  aiFieldFillEntityId = null;
-  aiFieldFillLastSequence = -1;
-  aiFieldFillStream = "";
-  aiFieldSuggestions = {};
-}
-function handleAiFieldFillEvent(payload: AiStreamEvent) {
-  if (aiFieldFillEntityId !== null && loc.selected?.id !== aiFieldFillEntityId) return;
-  if (payload.sequence <= aiFieldFillLastSequence) return;
-  aiFieldFillLastSequence = payload.sequence;
-  if (payload.phase === "delta" && payload.delta) aiFieldFillStream += payload.delta;
-  if (payload.phase === "failed") {
-    clearAiFieldListener();
-    aiFieldFillBusy = false;
-    aiFieldFillRequestId = null;
-    error = payload.error ?? "AI field suggestions failed";
-  } else if (payload.phase === "cancelled" || payload.phase === "deadline_exceeded") {
-    clearAiFieldListener();
-    aiFieldFillBusy = false;
-    aiFieldFillRequestId = null;
-    if (payload.phase === "deadline_exceeded") {
-      error = "AI field generation reached its time limit before returning complete suggestions.";
-    }
-  } else if (payload.phase === "completed") {
-    clearAiFieldListener();
-    aiFieldFillBusy = false;
-    aiFieldFillRequestId = null;
-    try {
-      const parsed = JSON.parse(payload.output ?? aiFieldFillStream) as {
-        suggestions?: Record<string, { value?: unknown; values?: unknown; rationale?: unknown; confidence?: unknown }>;
-      };
-      const allowed = new Set(emptyInspectorDefinitions().map((definition) => definition.key));
-      const suggestions: Record<string, AiFieldSuggestion> = {};
-      for (const [key, value] of Object.entries(parsed.suggestions ?? {})) {
-        const definition = definitions().find((candidate) => candidate.key === key);
-        if (!definition || !allowed.has(key)) continue;
-        const rawValue = definition.multiple || definition.type === "relationship" ? value?.values : value?.value;
-        const normalizedValue = coerceAiFieldValue(definition, rawValue);
-        if (normalizedValue === null) continue;
-        if (definition?.type === "relationship") {
-          const allowedIds = new Set(
-            entities
-              .filter(
-                (entity) =>
-                  !entity.deleted &&
-                  (!definition.targetEntityTypes?.length ||
-                    definition.targetEntityTypes.includes(entity.entity_type ?? "")),
-              )
-              .map((entity) => entity.id),
-          );
-          if (!(normalizedValue as string[]).every((id) => allowedIds.has(id))) continue;
-        }
-        suggestions[key] = {
-          value: normalizedValue,
-          rationale: typeof value.rationale === "string" ? value.rationale.trim() : "",
-          confidence: String(value.confidence ?? "unknown"),
-        };
-      }
-      aiFieldSuggestions = suggestions;
-      if (Object.keys(suggestions).length === 0) {
-        aiFieldFillOpen = false;
-        error = "AI found no supported suggestions for the empty fields.";
-      }
-    } catch {
-      aiFieldFillOpen = false;
-      error = "AI returned invalid field suggestions.";
-    }
-  }
-}
-async function fillAiFields() {
-  if (!loc.selected || aiFieldFillBusy) return;
-  if (!projectInfo?.aiEnabled) return;
-  const empty = emptyInspectorDefinitions();
-  if (empty.length === 0) return;
-  const endpoint = aiProvider.endpoint.trim();
-  const model = aiProvider.model.trim();
-  if (!endpoint || !model) {
-    error = "Configure the active provider endpoint and model before filling fields.";
-    return;
-  }
-  aiFieldFillOpen = true;
-  aiFieldFillBusy = true;
-  aiFieldFillStream = "";
-  aiFieldSuggestions = {};
-  aiFieldFillLastSequence = -1;
-  aiFieldFillStartCancelled = false;
-  aiFieldFillEntityId = loc.selected.id;
-  const fieldKeys = empty.map((definition) => definition.key);
-  const context = JSON.stringify({
-    entity: { name: loc.selected.name, type: loc.selected.entity_type },
-    document: loc.documentBody,
-    populatedFields: Object.fromEntries(Object.entries(loc.fields).filter(([, value]) => !isEmptyFieldValue(value))),
-    emptyFields: empty.map((definition) => ({
-      key: definition.key,
-      label: definition.label,
-      type: definition.type,
-      multiple: definition.multiple ?? definition.type === "relationship",
-      options: definition.options ?? [],
-      allowedEntities:
-        definition.type === "relationship"
-          ? entities
-              .filter(
-                (entity) =>
-                  !entity.deleted &&
-                  (!definition.targetEntityTypes?.length ||
-                    definition.targetEntityTypes.includes(entity.entity_type ?? "")),
-              )
-              .map((entity) => ({ id: entity.id, name: entity.name, type: entity.entity_type }))
-          : [],
-    })),
-  });
-  const suggestionProperties = Object.fromEntries(
-    empty.map((definition) => [
-      definition.key,
-      {
-        type: "object",
-        properties: {
-          ...(definition.multiple || definition.type === "relationship"
-            ? { values: aiJsonValueSchema(definition) }
-            : { value: aiJsonValueSchema(definition) }),
-          rationale: { type: "string", maxLength: 1000 },
-          confidence: { type: "string", maxLength: 32 },
-        },
-        required: [definition.multiple || definition.type === "relationship" ? "values" : "value"],
-        additionalProperties: false,
-      },
-    ]),
-  );
-  const outputContract = {
-    type: "object",
-    properties: {
-      suggestions: {
-        type: "object",
-        properties: suggestionProperties,
-        additionalProperties: false,
-      },
-    },
-    required: ["suggestions"],
-    additionalProperties: false,
-  };
-  const retrievalQuery =
-    `${loc.selected.name} ${loc.selected.entity_type ?? ""} ${empty.map((definition) => definition.label).join(" ")}`.slice(
-      0,
-      4000,
-    );
-  let startedRequestId: string | null = null;
-  try {
-    const requestId = await project.aiGenerateStructured(
-      projectInfo!.root,
-      `Fill only these empty fields: ${fieldKeys.join(", ")}. For multi-select and relationship fields, return up to five distinct values in the values array. For relationship fields, use only allowed entity IDs from the context. Use only configured options when options are provided. Return evidence-backed suggestions. Do not invent facts.`,
-      context,
-      outputContract,
-      aiFieldFillEntityId!,
-      retrievalQuery,
-      2,
-    );
-    startedRequestId = requestId;
-    if (aiFieldFillStartCancelled || loc.selected?.id !== aiFieldFillEntityId) {
-      void project.aiCancelText(requestId).catch(() => {});
-      return;
-    }
-    aiFieldFillRequestId = requestId;
-    aiFieldUnlisten = await listen<AiStreamEvent>(`ai-stream:${requestId}`, (event) =>
-      handleAiFieldFillEvent(event.payload),
-    );
-    const buffered = await project.aiPollText(requestId);
-    for (const event of buffered) handleAiFieldFillEvent(event);
-  } catch (cause) {
-    if (startedRequestId) void project.aiCancelText(startedRequestId).catch(() => {});
-    clearAiFieldListener();
-    aiFieldFillBusy = false;
-    aiFieldFillRequestId = null;
-    if (aiFieldFillStartCancelled || loc.selected?.id !== aiFieldFillEntityId) return;
-    error = friendlyError(cause);
-  }
-}
-async function acceptAiFieldSuggestion(key: string) {
-  if (loc.selected?.id !== aiFieldFillEntityId) return;
-  const suggestion = aiFieldSuggestions[key];
-  const definition = definitions().find((candidate) => candidate.key === key);
-  if (
-    !suggestion ||
-    (definition?.type === "relationship"
-      ? selectedRelationshipIds(definition).length > 0
-      : !isEmptyFieldValue(loc.fields[key]))
-  )
-    return;
-  if (definition?.type === "relationship") await loc.updateRelationshipField(definition, suggestion.value as string[]);
-  else loc.fields = { ...loc.fields, [key]: suggestion.value };
-  const remaining = { ...aiFieldSuggestions };
-  delete remaining[key];
-  aiFieldSuggestions = remaining;
-  loc.markEntryDirty({ fieldKey: key });
-}
-async function acceptAllAiFieldSuggestions() {
-  for (const key of Object.keys(aiFieldSuggestions)) await acceptAiFieldSuggestion(key);
-  if (Object.keys(aiFieldSuggestions).length === 0) closeAiFieldFill();
-}
-function discardAiFieldSuggestion(key: string) {
-  const remaining = { ...aiFieldSuggestions };
-  delete remaining[key];
-  aiFieldSuggestions = remaining;
-}
-function clearAiStreamListener() {
-  aiUnlisten?.();
-  aiUnlisten = null;
-}
-function closeAiRewrite() {
-  if (aiRequestId) void project.aiCancelText(aiRequestId).catch(() => {});
-  aiStartCancelled = true;
-  clearAiStreamListener();
-  aiRewriteOpen = false;
-  aiBusy = false;
-  aiCancelPending = false;
-  aiRequestId = null;
-  aiSourceEntityId = null;
-  aiStreamText = "";
-  aiPreviewOutput = "";
-  aiProgressMessage = "Preparing model…";
-  aiUsage = null;
-  aiSourceSelection = "";
-  aiSourceSelectionPlain = "";
-  aiGenerationContext = "";
-  aiLastSequence = -1;
-  aiMode = "rewrite";
-}
-async function cancelAiRewrite() {
-  if (!aiBusy || aiCancelPending) return;
-  if (!aiRequestId) {
-    closeAiRewrite();
-    return;
-  }
-  aiCancelPending = true;
-  try {
-    await project.aiCancelText(aiRequestId);
-  } catch (cause) {
-    aiCancelPending = false;
-    error = friendlyError(cause);
-  }
-}
-function handleAiEvent(payload: AiStreamEvent) {
-  if (aiSourceEntityId !== null && loc.selected?.id !== aiSourceEntityId) return;
-  if (payload.sequence <= aiLastSequence) return;
-  aiLastSequence = payload.sequence;
-  const nextStreamState = reduceTextGenerationEvent(
-    {
-      streamText: aiStreamText,
-      proposal: aiPreviewOutput,
-      progressMessage: aiProgressMessage,
-    },
-    payload,
-  );
-  aiStreamText = nextStreamState.streamText;
-  aiPreviewOutput = nextStreamState.proposal;
-  aiProgressMessage = nextStreamState.progressMessage;
-  if (payload.phase === "usage" && payload.output) {
-    try {
-      aiUsage = JSON.parse(payload.output);
-    } catch (_) {
-      aiUsage = null;
-    }
-  }
-  if (payload.phase === "completed") {
-    aiBusy = false;
-    aiCancelPending = false;
-    aiRequestId = null;
-    clearAiStreamListener();
-  } else if (payload.phase === "cancelled" || payload.phase === "deadline_exceeded") {
-    aiBusy = false;
-    aiCancelPending = false;
-    aiRequestId = null;
-    clearAiStreamListener();
-    if (payload.phase === "deadline_exceeded") {
-      error = aiPreviewOutput
-        ? "AI generation reached its time limit. The partial proposal is preserved below."
-        : "AI generation reached its time limit before producing a proposal.";
-    }
-  } else if (payload.phase === "failed") {
-    aiBusy = false;
-    aiCancelPending = false;
-    aiRequestId = null;
-    clearAiStreamListener();
-    error = payload.error ?? "The AI provider could not generate a proposal";
-  }
-}
-async function startAiRewrite() {
-  if (!loc.selected || (aiMode === "rewrite" && !aiSourceSelection.trim()) || !aiInstruction.trim() || aiBusy) return;
-  const sourceSelection = aiSourceSelection;
-  const sourcePlain = aiSourceSelectionPlain;
-  const generationContext = aiGenerationContext;
-  if (!(await loc.flushAutoSave())) return;
-  if (aiMode === "rewrite" && !sourceSelection.trim()) return;
-  aiSourceEntityId = loc.selected.id;
-  aiSourceBody = loc.documentBody;
-  aiSourceRevision = loc.loadedDocumentRevision;
-  aiStreamText = "";
-  aiPreviewOutput = "";
-  aiProgressMessage = "Preparing model…";
-  aiLastSequence = -1;
-  aiStartCancelled = false;
-  aiBusy = true;
-  aiCancelPending = false;
-  let startedRequestId: string | null = null;
-  try {
-    const sourceText =
-      aiMode === "generate" ? generationContext.trim() || loc.documentBody.trim() || "[CURSOR]" : sourceSelection;
-    const retrievalQuery = [loc.selected?.name, aiInstruction, sourcePlain].filter(Boolean).join(" ").slice(0, 4000);
-    const requestId = await project.aiGenerateText(
-      projectInfo!.root,
-      aiInstruction,
-      sourceText,
-      aiSourceEntityId,
-      retrievalQuery,
-      2,
-    );
-    startedRequestId = requestId;
-    if (aiStartCancelled || loc.selected?.id !== aiSourceEntityId) {
-      void project.aiCancelText(requestId).catch(() => {});
-      return;
-    }
-    aiRequestId = requestId;
-    aiUnlisten = await listen<AiStreamEvent>(`ai-stream:${requestId}`, (event) => {
-      handleAiEvent(event.payload);
-    });
-    const buffered = await project.aiPollText(requestId);
-    for (const event of buffered) handleAiEvent(event);
-  } catch (cause) {
-    if (startedRequestId) void project.aiCancelText(startedRequestId).catch(() => {});
-    clearAiStreamListener();
-    aiBusy = false;
-    aiCancelPending = false;
-    aiRequestId = null;
-    if (aiStartCancelled || loc.selected?.id !== aiSourceEntityId) return;
-    error = friendlyError(cause);
-  }
-}
-async function acceptAiRewrite() {
-  if (!loc.selected || !aiPreviewOutput || aiBusy) return;
-  if (
-    loc.selected.id !== aiSourceEntityId ||
-    loc.documentBody !== aiSourceBody ||
-    loc.loadedDocumentRevision !== aiSourceRevision
-  ) {
-    error = "The entity or document changed while the rewrite was being prepared. Discard it and try again.";
-    return;
-  }
-  const validationError = validateAiProposal(aiPreviewOutput);
-  if (validationError) {
-    error = validationError;
-    return;
-  }
-  if (aiMode === "generate") {
-    const nextMarkdown = loc.editorRef?.insertAiTextAtRequest(aiPreviewOutput);
-    if (nextMarkdown == null) {
-      error = "The editor position is no longer available. Discard it and try again.";
-      return;
-    }
-    loc.documentBody = nextMarkdown;
-    loc.markEntryDirty({ document: true });
-    if (await loc.saveDocument()) closeAiRewrite();
-    return;
-  }
-  const nextMarkdown = loc.editorRef?.replaceAiTextWithMarkdown(aiPreviewOutput);
-  if (nextMarkdown === null || nextMarkdown === undefined) {
-    error = "The selected text is no longer at the original position. Discard it and try again.";
-    return;
-  }
-  const bodyBefore = loc.documentBody;
-  loc.documentBody = nextMarkdown;
-  loc.markEntryDirty({ document: true });
-  if (await loc.saveDocument()) {
-    closeAiRewrite();
-  } else {
-    loc.documentBody = bodyBefore;
-  }
 }
 async function persistRecentProjects(next: RecentProject[]) {
   recentProjects = next;
@@ -3796,7 +3238,7 @@ function statusCenterItems(): StatusCenterItem[] {
     onAction: () => openStatusDestination("snapshots"),
   });
 
-  const mapStates = Object.values(mapSaveStates).map((state) => state.status);
+  const mapStates = Object.values(loc.mapSaveStates).map((state) => state.status);
   const backgroundBusy =
     projectTransitionBusy ||
     aiIndexBusy ||
@@ -3972,127 +3414,6 @@ async function closeProject() {
   });
 }
 
-async function openMapLocation(location: MapLocation) {
-  try {
-    const mapEntityId = location.mapEntityId;
-    if (!mapEntityId) throw new Error("map-unavailable: this location is missing its map id");
-    await project.mapsNavigation("openMap", { mapEntityId, linkId: location.id });
-  } catch (cause) {
-    const message = friendlyError(cause);
-    if (message.includes("link-unresolved")) {
-      mapReconcileNotice = `This link is unresolved — the map feature it pointed to was removed or renumbered.`;
-      return;
-    }
-    error = message;
-  }
-}
-
-async function ensureMapEditorOpen(mapEntityId: string) {
-  const departure = loc.currentShellLocation();
-  const map = entities.find((entity) => entity.id === mapEntityId) ?? (await project.getEntity(mapEntityId));
-  if (!map) throw new Error("map-unavailable: choose a saved map first");
-  if (!(await loc.flushAutoSave())) throw new Error("Save the current draft before opening the map editor.");
-  const mapsView = mapsNavigationItem();
-  loc.selected = map;
-  mapsEditorKey = map.id;
-  await loc.loadSelectedState(map);
-  if (mapsView) await loc.openPluginView(mapsView, departure);
-}
-
-async function beginMapPick(pending: NonNullable<typeof mapPickPending>) {
-  mapPickPending = pending;
-  mapPickNotice =
-    pending.kind === "rebind"
-      ? "Click the map to rebind this location."
-      : "Click for a point, or use Path/Area to draw a route or region.";
-  await ensureMapEditorOpen(pending.mapEntityId);
-  if (mapsEditorMode === "vector") return;
-}
-
-async function applyMapPick(anchor: unknown) {
-  const pending = mapPickPending;
-  mapPickPending = null;
-  mapPickNotice = "";
-  if (!pending || !anchor) return;
-  try {
-    if (pending.kind === "link") {
-      const entity =
-        entities.find((candidate) => candidate.id === pending.entityId) ?? (await project.getEntity(pending.entityId));
-      if (!entity) throw new Error("Choose an entity to link.");
-      const location: MapLocation = {
-        id: crypto.randomUUID(),
-        mapEntityId: pending.mapEntityId,
-        role: pending.role,
-        label: entity.name,
-        anchor,
-        validity: { from: null, to: null },
-      };
-      await project.upsertMapLocation(entity.id, location);
-      const departure = loc.currentShellLocation();
-      if (!(await loc.leavePluginView())) return;
-      recordShellDeparture(departure);
-      loc.section =
-        entity.entity_type === "daena.timeline:event" ||
-        entity.entity_type === "daena.timeline:encounter" ||
-        entity.entity_type === "daena.timeline:era" ||
-        entity.entity_type === "daena.timeline:calendar"
-          ? "timeline"
-          : "lore";
-      await loc.selectEntity(entity, false);
-      loc.mapLocations = await project.listMapLocations(entity.id);
-    } else {
-      await project.upsertMapLocation(pending.entityId, { ...pending.location, anchor });
-      const entity =
-        entities.find((candidate) => candidate.id === pending.entityId) ?? (await project.getEntity(pending.entityId));
-      if (entity) {
-        const departure = loc.currentShellLocation();
-        if (!(await loc.leavePluginView())) return;
-        recordShellDeparture(departure);
-        loc.section =
-          entity.entity_type === "daena.timeline:event" ||
-          entity.entity_type === "daena.timeline:encounter" ||
-          entity.entity_type === "daena.timeline:era" ||
-          entity.entity_type === "daena.timeline:calendar"
-            ? "timeline"
-            : "lore";
-        await loc.selectEntity(entity, false);
-        loc.mapLocations = await project.listMapLocations(entity.id);
-      }
-    }
-  } catch (cause) {
-    error = friendlyError(cause);
-  }
-}
-
-async function openMapEntityFromLink(entityId: string) {
-  try {
-    const entity = await project.getEntity(entityId);
-    if (!entity) throw new Error("Linked entity was not found.");
-    if (!entities.some((candidate) => candidate.id === entity.id)) entities = [...entities, entity];
-    const target =
-      entity.entity_type === "daena.lore:person" ||
-      entity.entity_type === "daena.lore:place" ||
-      entity.entity_type === "daena.lore:faction" ||
-      entity.entity_type === "daena.lore:artifact" ||
-      entity.entity_type === "daena.lore:culture"
-        ? "lore"
-        : entity.entity_type?.startsWith("timeline") ||
-            entity.entity_type === "daena.timeline:event" ||
-            entity.entity_type === "daena.timeline:encounter" ||
-            entity.entity_type === "daena.timeline:era" ||
-            entity.entity_type === "daena.timeline:calendar"
-          ? "timeline"
-          : "lore";
-    const departure = loc.currentShellLocation();
-    if (!(await loc.leavePluginView())) return;
-    recordShellDeparture(departure);
-    loc.section = target;
-    await loc.selectEntity(entity, false);
-  } catch (cause) {
-    error = friendlyError(cause);
-  }
-}
-
 async function unlinkMapLocation(location: MapLocation) {
   if (
     !loc.selected ||
@@ -4135,7 +3456,7 @@ async function editMapLocation(location: MapLocation) {
 async function rebindMapLocation(location: MapLocation) {
   if (!loc.selected) return;
   try {
-    await beginMapPick({ kind: "rebind", entityId: loc.selected.id, location, mapEntityId: location.mapEntityId });
+    await loc.beginMapPick({ kind: "rebind", entityId: loc.selected.id, location, mapEntityId: location.mapEntityId });
   } catch (cause) {
     error = friendlyError(cause);
   }
@@ -4169,23 +3490,6 @@ async function openEntityById(entityId: string) {
     return;
   }
   await loc.selectEntity(target);
-}
-
-async function openSelectedMapEditor() {
-  if (!loc.selected || loc.selected.entity_type !== "daena.maps:world-map") return;
-  const mapsView = mapsNavigationItem();
-  if (!mapsView) {
-    error = "The Maps integration is not available.";
-    return;
-  }
-  try {
-    mapsEditorKey = loc.selected.id;
-    mapFocusLinkId = null;
-    mapFocusFeatureId = null;
-    await loc.openPluginView(mapsView);
-  } catch (cause) {
-    error = friendlyError(cause);
-  }
 }
 
 function handlePortableFilesChanged(paths: string[]) {
@@ -4624,11 +3928,11 @@ async function selectQuickOpenItem(item: QuickOpenItem, intent: OpenIntent = "cu
       return;
     }
     if (action.kind === "map-feature") {
-      await ensureMapEditorOpen(action.mapEntityId);
-      mapFocusLinkId = null;
-      mapFocusFeatureId = null;
+      await loc.ensureMapEditorOpen(action.mapEntityId);
+      loc.mapFocusLinkId = null;
+      loc.mapFocusFeatureId = null;
       await tick();
-      mapFocusFeatureId = action.featureId;
+      loc.mapFocusFeatureId = action.featureId;
       return;
     }
     if (action.kind === "destination") {
@@ -5088,7 +4392,7 @@ async function toggleModule(id: ModuleId) {
     return;
   }
   try {
-    if (id === "daena.maps" && !(await resolveDirtyMapSession())) return;
+    if (id === "daena.maps" && !(await loc.resolveDirtyMapSession())) return;
     await project.disableModule(id);
     modules = await project.listModuleManifests();
     await loc.refreshSelectedMapLocations();
@@ -5648,7 +4952,7 @@ async function togglePluginEnabled(plugin: PluginAdminEntry) {
   }
   pluginActionId = plugin.id;
   try {
-    if (plugin.id === "daena.maps" && !(await resolveDirtyMapSession())) return;
+    if (plugin.id === "daena.maps" && !(await loc.resolveDirtyMapSession())) return;
     await project.disableModule(plugin.id);
     modules = await project.listModuleManifests();
     await loc.refreshSelectedMapLocations();
@@ -5690,8 +4994,8 @@ function resetProjectSessionState() {
   calendarCache.invalidate();
   eraContextCache.clear();
   loc.selectedLoadToken += 1;
-  closeAiFieldFill();
-  closeAiRewrite();
+  loc.closeAiFieldFill();
+  loc.closeAiRewrite();
   loc.clearSelection();
   shellTabs = freshShellTabs();
   // Callers close every plugin webview (`leavePluginView({ closeWebviews: true })`) before this runs.
@@ -5713,16 +5017,7 @@ function resetProjectSessionState() {
   loc.hostView = null;
   loc.sandboxView = null;
   gitStatus = null;
-  mapSaveStates = {};
-  mapsEditorKey = "welcome";
-  mapReloadCounter = 0;
-  mapRecoveryBusy = false;
-  mapFocusLinkId = null;
-  mapFocusFeatureId = null;
-  mapSelection = null;
-  mapPickPending = null;
-  mapReconcileNotice = "";
-  mapPickNotice = "";
+  loc.resetMapEditorSession();
   searchMatches = null;
   globalQuery = "";
   quickOpenOpen = false;
@@ -5991,36 +5286,8 @@ onMount(() => {
     })
     .catch(() => {});
   let unlistenMaps: (() => void) | undefined;
-  void listen<{ mapEntityId: string; linkId?: string }>("maps-navigation", async (event) => {
-    try {
-      let map = entities.find((entity) => entity.id === event.payload.mapEntityId && !entity.deleted) ?? null;
-      if (!map) {
-        const loaded = await project.getEntity(event.payload.mapEntityId);
-        if (loaded && !loaded.deleted) {
-          upsertEntityInCache(loaded);
-          map = loaded;
-        }
-      }
-      const item = mapsNavigationItem();
-      if (!map || !item) throw new Error("map-unavailable: enable the Maps module to open this location");
-      if (!(await loc.flushAutoSave())) return;
-      if (!(await loc.canLeaveLanguageSection())) return;
-      const departure = loc.currentShellLocation();
-      if (!(await loc.leavePluginView())) return;
-      loc.selected = map;
-      mapsEditorKey = map.id;
-      await loc.loadSelectedState(map);
-      await loc.openPluginView(item, departure);
-      const linkId = event.payload.linkId ?? null;
-      // openPluginView clears focus; also re-assert when already on the same map so
-      // the vector editor retries focus after pins load.
-      mapFocusLinkId = null;
-      mapFocusFeatureId = null;
-      await tick();
-      mapFocusLinkId = linkId;
-    } catch (cause) {
-      error = friendlyError(cause);
-    }
+  void listen<{ mapEntityId: string; linkId?: string }>("maps-navigation", (event) => {
+    void loc.handleMapsNavigation(event.payload);
   })
     .then((cleanup) => {
       unlistenMaps = cleanup;
@@ -6029,64 +5296,7 @@ onMount(() => {
   let unlistenMapsState: (() => void) | undefined;
   void listen<{ mapEntityId: string; status: string; detail: unknown; instanceId?: unknown }>("maps-state", (event) => {
     if (foreignWebviewInstance(event.payload)) return;
-    const { mapEntityId, status, detail } = event.payload;
-    if (status === "fullscreen") {
-      const enabled = typeof detail === "object" && detail !== null && "enabled" in detail && detail.enabled === true;
-      loc.editorFullscreen = enabled;
-      return;
-    }
-    if (status === "back") {
-      loc.editorFullscreen = false;
-      void loc.closePluginView();
-      return;
-    }
-    if (mapEntityId) mapSaveStates[mapEntityId] = { status, detail };
-    if (status === "saved" && mapEntityId) {
-      void refreshAfterEntityMutation({ entityId: mapEntityId }).then(() => {
-        const map = entities.find((entity) => entity.id === mapEntityId && !entity.deleted);
-        if (map) {
-          loc.selected = map;
-          void loc.loadSelectedState(map).catch(() => {});
-        }
-      });
-    }
-    if (status === "reconcile") {
-      const reconcileDetail = detail as { unresolved?: unknown } | null;
-      const unresolved = Array.isArray(reconcileDetail?.unresolved) ? reconcileDetail.unresolved.length : 0;
-      mapReconcileNotice =
-        unresolved > 0
-          ? `${unresolved} link${unresolved === 1 ? "" : "s"} on this map are unresolved — the features they pointed to were removed or renumbered.`
-          : "";
-      if (loc.selected && loc.mapLocations.length > 0)
-        void project
-          .listMapLocations(loc.selected.id)
-          .then((locations) => {
-            loc.mapLocations = locations;
-          })
-          .catch(() => {});
-    }
-    if (status === "pick-complete") {
-      const pickDetail = detail as { anchor?: unknown } | null;
-      void applyMapPick(pickDetail?.anchor ?? null);
-    }
-    if (status === "pick-cancelled") {
-      mapPickPending = null;
-      mapPickNotice = "";
-    }
-    if (status === "open-entity") {
-      const openDetail = detail as { entityId?: string } | null;
-      if (openDetail?.entityId) void openMapEntityFromLink(openDetail.entityId);
-    }
-    if (status === "linked") {
-      void refreshAfterEntityMutation(mapEntityId ? { entityId: mapEntityId } : undefined);
-      if (loc.selected)
-        void project
-          .listMapLocations(loc.selected.id)
-          .then((locations) => {
-            loc.mapLocations = locations;
-          })
-          .catch(() => {});
-    }
+    loc.handleMapsState(event.payload);
   })
     .then((cleanup) => {
       unlistenMapsState = cleanup;
@@ -6095,7 +5305,7 @@ onMount(() => {
   let unlistenMapsSelection: (() => void) | undefined;
   void listen<{ mapEntityId: string; anchor: unknown; instanceId?: unknown }>("maps-selection", (event) => {
     if (foreignWebviewInstance(event.payload)) return;
-    if (event.payload.mapEntityId === currentMapId()) mapSelection = event.payload.anchor;
+    loc.handleMapsSelection(event.payload);
   })
     .then((cleanup) => {
       unlistenMapsSelection = cleanup;
@@ -6150,10 +5360,10 @@ onMount(() => {
     if (aiModelsMessageTimer !== null) window.clearTimeout(aiModelsMessageTimer);
     unlisten?.();
     unlistenCheckpointExport?.();
-    if (aiRequestId) void project.aiCancelText(aiRequestId).catch(() => {});
-    if (aiFieldFillRequestId) void project.aiCancelText(aiFieldFillRequestId).catch(() => {});
-    clearAiStreamListener();
-    clearAiFieldListener();
+    if (loc.aiRequestId) void project.aiCancelText(loc.aiRequestId).catch(() => {});
+    if (loc.aiFieldFillRequestId) void project.aiCancelText(loc.aiFieldFillRequestId).catch(() => {});
+    loc.clearAiStreamListener();
+    loc.clearAiFieldListener();
     unlistenMaps?.();
     unlistenMapsState?.();
     unlistenMapsSelection?.();
@@ -7291,12 +6501,12 @@ onMount(() => {
                 class="primary-button"
                 type="button"
                 aria-haspopup="menu"
-                aria-expanded={mapProviderMenuOpen === "header"}
-                onclick={() => (mapProviderMenuOpen = mapProviderMenuOpen === "header" ? null : "header")}
+                aria-expanded={loc.mapProviderMenuOpen === "header"}
+                onclick={() => (loc.mapProviderMenuOpen = loc.mapProviderMenuOpen === "header" ? null : "header")}
                 >Create map</button>
-              {#if mapProviderMenuOpen === "header"}<div class="map-provider-menu" role="menu">
+              {#if loc.mapProviderMenuOpen === "header"}<div class="map-provider-menu" role="menu">
                   <div class="map-provider-row">
-                    <button type="button" role="menuitem" onclick={() => void createMap("physical")}
+                    <button type="button" role="menuitem" onclick={() => void loc.createMap("physical")}
                       >Generate physical world</button
                     ><span class="map-help-wrapper"
                       ><button type="button" class="map-help" aria-label="Help for Generate physical world">?</button
@@ -7306,7 +6516,7 @@ onMount(() => {
                       ></span>
                   </div>
                   <div class="map-provider-row">
-                    <button type="button" role="menuitem" onclick={() => void createMap("vector")}
+                    <button type="button" role="menuitem" onclick={() => void loc.createMap("vector")}
                       >Import vector map</button
                     ><span class="map-help-wrapper"
                       ><button type="button" class="map-help" aria-label="Help for Import vector map">?</button><span
@@ -7316,7 +6526,7 @@ onMount(() => {
                       ></span>
                   </div>
                   <div class="map-provider-row">
-                    <button type="button" role="menuitem" onclick={() => void createMap("image")}
+                    <button type="button" role="menuitem" onclick={() => void loc.createMap("image")}
                       >Import image map</button
                     ><span class="map-help-wrapper"
                       ><button type="button" class="map-help" aria-label="Help for Import image map">?</button><span
@@ -7516,15 +6726,15 @@ onMount(() => {
                       class="empty-create"
                       type="button"
                       aria-haspopup="menu"
-                      aria-expanded={mapProviderMenuOpen === "empty"}
-                      onclick={() => (mapProviderMenuOpen = mapProviderMenuOpen === "empty" ? null : "empty")}
+                      aria-expanded={loc.mapProviderMenuOpen === "empty"}
+                      onclick={() => (loc.mapProviderMenuOpen = loc.mapProviderMenuOpen === "empty" ? null : "empty")}
                       ><span style="display:inline-flex;vertical-align:middle" aria-hidden="true"
                         ><Plus size={16} strokeWidth={1.8} aria-hidden="true" /></span> Create map</button>
-                    {#if mapProviderMenuOpen === "empty"}<div
+                    {#if loc.mapProviderMenuOpen === "empty"}<div
                         class="map-provider-menu empty-map-provider-menu"
                         role="menu">
                         <div class="map-provider-row">
-                          <button type="button" role="menuitem" onclick={() => void createMap("physical")}
+                          <button type="button" role="menuitem" onclick={() => void loc.createMap("physical")}
                             >Generate physical world</button
                           ><span class="map-help-wrapper"
                             ><button type="button" class="map-help" aria-label="Help for Generate physical world"
@@ -7536,7 +6746,7 @@ onMount(() => {
                             ></span>
                         </div>
                         <div class="map-provider-row">
-                          <button type="button" role="menuitem" onclick={() => void createMap("vector")}
+                          <button type="button" role="menuitem" onclick={() => void loc.createMap("vector")}
                             >Import vector map</button
                           ><span class="map-help-wrapper"
                             ><button type="button" class="map-help" aria-label="Help for Import vector map">?</button
@@ -7545,7 +6755,7 @@ onMount(() => {
                             ></span>
                         </div>
                         <div class="map-provider-row">
-                          <button type="button" role="menuitem" onclick={() => void createMap("image")}
+                          <button type="button" role="menuitem" onclick={() => void loc.createMap("image")}
                             >Import image map</button
                           ><span class="map-help-wrapper"
                             ><button type="button" class="map-help" aria-label="Help for Import image map">?</button
@@ -7821,13 +7031,13 @@ onMount(() => {
           {#snippet contentPaneBody()}
             {#if loc.section === "maps" && loc.sandboxView?.renderer === "maps" && loc.sandboxView.view}
               {@const mapId = loc.selected?.entity_type === "daena.maps:world-map" ? loc.selected.id : null}
-              {@const mapState = mapId ? (mapSaveStates[mapId] ?? null) : null}
+              {@const mapState = mapId ? (loc.mapSaveStates[mapId] ?? null) : null}
               {@const mapDetail = mapConflictDetail(mapState?.detail)}
               <div class="map-editor-shell">
-                {#if mapReconcileNotice || mapPickNotice}
+                {#if loc.mapReconcileNotice || loc.mapPickNotice}
                   <div class="map-editor-notices">
-                    {#if mapReconcileNotice}<span class="map-reconcile-notice">{mapReconcileNotice}</span>{/if}
-                    {#if mapPickNotice}<span class="map-reconcile-notice">{mapPickNotice}</span>{/if}
+                    {#if loc.mapReconcileNotice}<span class="map-reconcile-notice">{loc.mapReconcileNotice}</span>{/if}
+                    {#if loc.mapPickNotice}<span class="map-reconcile-notice">{loc.mapPickNotice}</span>{/if}
                   </div>
                 {/if}
                 {#if mapState?.status === "conflict"}
@@ -7838,44 +7048,48 @@ onMount(() => {
                       {#if mapDetail.path}<code>{mapDetail.path}</code>{/if}
                     </div>
                     <div class="map-conflict-actions">
-                      <button class="primary-button" type="button" disabled={mapRecoveryBusy} onclick={restoreMapDraft}
-                        >{mapRecoveryBusy ? "Restoring…" : "Restore draft"}</button
-                      ><button class="quiet-button" type="button" onclick={reloadMapOriginal}>Reload original</button
+                      <button
+                        class="primary-button"
+                        type="button"
+                        disabled={loc.mapRecoveryBusy}
+                        onclick={loc.restoreMapDraft}>{loc.mapRecoveryBusy ? "Restoring…" : "Restore draft"}</button
+                      ><button class="quiet-button" type="button" onclick={loc.reloadMapOriginal}
+                        >Reload original</button
                       ><button class="quiet-button" type="button" onclick={dismissMapConflict}>Keep editing</button>
                     </div>
                   </div>
                 {/if}
                 <div class="map-surface">
-                  {#if mapsEditorMode === "physical"}
-                    {#key `${mapsEditorKey}:${mapReloadCounter}`}
+                  {#if loc.mapsEditorMode === "physical"}
+                    {#key `${loc.mapsEditorKey}:${loc.mapReloadCounter}`}
                       <PhysicalMapEditor
-                        mapId={mapsEditorKey.startsWith("draft-") ? undefined : (mapId ?? undefined)}
+                        mapId={loc.mapsEditorKey.startsWith("draft-") ? undefined : (mapId ?? undefined)}
                         onstate={(status, detail) => {
                           if (!mapId) return;
-                          mapSaveStates[mapId] = { status, detail };
+                          loc.mapSaveStates[mapId] = { status, detail };
                         }}
                         oncreated={async (map) => {
                           entities = [...entities.filter((entity) => entity.id !== map.id), map];
                           savedMapsCache = null;
                           loc.selected = map;
-                          mapsEditorKey = map.id;
-                          mapsEditorMode = "vector";
+                          loc.mapsEditorKey = map.id;
+                          loc.mapsEditorMode = "vector";
                           await loc.loadSelectedState(map);
                         }}
                         oncancel={() => {
                           void loc.leavePluginView();
                         }} />
                     {/key}
-                  {:else if mapsEditorMode === "vector"}
-                    {#key `${mapsEditorKey}:${mapReloadCounter}`}
+                  {:else if loc.mapsEditorMode === "vector"}
+                    {#key `${loc.mapsEditorKey}:${loc.mapReloadCounter}`}
                       <NativeVectorMapEditor
-                        mapId={mapsEditorKey.startsWith("draft-") ? undefined : (mapId ?? undefined)}
-                        picking={Boolean(mapPickPending)}
-                        start={mapsEditorKey.startsWith("draft-") ? mapsVectorStart : "geojson"}
-                        focusLinkId={mapFocusLinkId ?? undefined}
-                        focusFeatureId={mapFocusFeatureId ?? undefined}
-                        onpick={(anchor) => void applyMapPick(anchor)}
-                        onopen={(entityId) => void openMapEntityFromLink(entityId)}
+                        mapId={loc.mapsEditorKey.startsWith("draft-") ? undefined : (mapId ?? undefined)}
+                        picking={Boolean(loc.mapPickPending)}
+                        start={loc.mapsEditorKey.startsWith("draft-") ? loc.mapsVectorStart : "geojson"}
+                        focusLinkId={loc.mapFocusLinkId ?? undefined}
+                        focusFeatureId={loc.mapFocusFeatureId ?? undefined}
+                        onpick={(anchor) => void loc.applyMapPick(anchor)}
+                        onopen={(entityId) => void loc.openMapEntityFromLink(entityId)}
                         onstate={(status, detail) => {
                           if (status === "fullscreen") {
                             loc.editorFullscreen =
@@ -7890,14 +7104,14 @@ onMount(() => {
                             return;
                           }
                           if (!mapId) return;
-                          mapSaveStates[mapId] = { status, detail };
+                          loc.mapSaveStates[mapId] = { status, detail };
                         }}
                         oncreated={async (map) => {
                           entities = [...entities.filter((entity) => entity.id !== map.id), map];
                           savedMapsCache = null;
                           loc.selected = map;
-                          mapsEditorKey = map.id;
-                          mapsEditorMode = "vector";
+                          loc.mapsEditorKey = map.id;
+                          loc.mapsEditorMode = "vector";
                           await loc.loadSelectedState(map);
                         }}
                         oncancel={() => {
@@ -7950,7 +7164,7 @@ onMount(() => {
                   {#if loc.section === "maps"}<button
                       class="quiet-button"
                       type="button"
-                      onclick={() => void openSelectedMapEditor()}>Open map editor</button
+                      onclick={() => void loc.openSelectedMapEditor()}>Open map editor</button
                     >{/if}
                 {/snippet}
                 <div class="editor-header-controls">
@@ -8028,7 +7242,7 @@ onMount(() => {
                         : "Your unsaved document and details are preserved. Choose how to reconcile them before saving."}
                       actions={conflictResolutionActions} />
                   {/if}
-                  {#if aiRewriteOpen}
+                  {#if loc.aiRewriteOpen}
                     <div class="ai-rewrite-modal-backdrop">
                       <div
                         class="ai-rewrite-panel"
@@ -8037,67 +7251,68 @@ onMount(() => {
                         aria-labelledby="ai-rewrite-title"
                         tabindex="-1"
                         onkeydown={(event) => {
-                          if (event.key === "Escape" && !aiBusy) closeAiRewrite();
+                          if (event.key === "Escape" && !loc.aiBusy) loc.closeAiRewrite();
                         }}>
                         <div class="ai-rewrite-heading">
                           <div>
                             <span class="panel-kicker">{aiProvider.name || "AI provider"}</span><strong
                               id="ai-rewrite-title"
-                              >{aiCancelPending
+                              >{loc.aiCancelPending
                                 ? "Cancelling request…"
-                                : aiBusy
-                                  ? aiMode === "generate"
+                                : loc.aiBusy
+                                  ? loc.aiMode === "generate"
                                     ? "Generating text…"
                                     : "Rewriting selection…"
-                                  : aiPreviewOutput
-                                    ? aiMode === "generate"
+                                  : loc.aiPreviewOutput
+                                    ? loc.aiMode === "generate"
                                       ? "Review generated text"
                                       : "Review rewrite"
-                                    : aiMode === "generate"
+                                    : loc.aiMode === "generate"
                                       ? "Generate text"
                                       : "Rewrite selection"}</strong>
                           </div>
                         </div>
-                        {#if !aiBusy}<label class="ai-instruction"
+                        {#if !loc.aiBusy}<label class="ai-instruction"
                             >Instruction<textarea
                               rows="2"
-                              bind:value={aiInstruction}
-                              disabled={aiBusy}
-                              placeholder={`Tell ${aiProvider.name || "the AI provider"} ${aiMode === "generate" ? "what to write at the cursor" : "how to rewrite the selection"}`}
+                              bind:value={loc.aiInstruction}
+                              disabled={loc.aiBusy}
+                              placeholder={`Tell ${aiProvider.name || "the AI provider"} ${loc.aiMode === "generate" ? "what to write at the cursor" : "how to rewrite the selection"}`}
                             ></textarea
                             ></label
                           >{/if}
                         <AiProposalPreview
-                          original={aiSourceSelectionPlain}
-                          bind:proposal={aiPreviewOutput}
-                          streamText={aiStreamText}
-                          progressMessage={aiProgressMessage}
-                          busy={aiBusy}
-                          cancelling={aiCancelPending}
-                          onCancel={() => void cancelAiRewrite()}
-                          onDiscard={closeAiRewrite}
-                          onAccept={() => void acceptAiRewrite()} />
-                        {#if aiUsage}<p class="muted-note">
-                            Provider usage: {aiUsage.inputTokens} input + {aiUsage.outputTokens} output tokens.
+                          original={loc.aiSourceSelectionPlain}
+                          bind:proposal={loc.aiPreviewOutput}
+                          streamText={loc.aiStreamText}
+                          progressMessage={loc.aiProgressMessage}
+                          busy={loc.aiBusy}
+                          cancelling={loc.aiCancelPending}
+                          onCancel={() => void loc.cancelAiRewrite()}
+                          onDiscard={loc.closeAiRewrite}
+                          onAccept={() => void loc.acceptAiRewrite()} />
+                        {#if loc.aiUsage}<p class="muted-note">
+                            Provider usage: {loc.aiUsage.inputTokens} input + {loc.aiUsage.outputTokens} output tokens.
                           </p>{/if}
-                        {#if !aiBusy && aiPreviewOutput}<div class="ai-rewrite-actions">
-                            <button class="primary-button" type="button" onclick={() => void acceptAiRewrite()}
+                        {#if !loc.aiBusy && loc.aiPreviewOutput}<div class="ai-rewrite-actions">
+                            <button class="primary-button" type="button" onclick={() => void loc.acceptAiRewrite()}
                               >Accept proposal</button>
                             <button
                               class="quiet-button ai-retry-button"
                               type="button"
-                              onclick={() => void startAiRewrite()}>Retry</button>
-                            <button class="quiet-button ai-discard-button" type="button" onclick={closeAiRewrite}
+                              onclick={() => void loc.startAiRewrite()}>Retry</button>
+                            <button class="quiet-button ai-discard-button" type="button" onclick={loc.closeAiRewrite}
                               >Discard</button>
                           </div>
-                        {:else if !aiBusy}<div class="ai-rewrite-actions">
+                        {:else if !loc.aiBusy}<div class="ai-rewrite-actions">
                             <button
                               class="primary-button"
                               type="button"
-                              disabled={(aiMode === "rewrite" && !aiSourceSelection.trim()) || !aiInstruction.trim()}
-                              onclick={() => void startAiRewrite()}
-                              >{aiMode === "generate" ? "Generate text" : "Generate rewrite"}</button>
-                            <button class="quiet-button" type="button" onclick={closeAiRewrite}>Cancel</button>
+                              disabled={(loc.aiMode === "rewrite" && !loc.aiSourceSelection.trim()) ||
+                                !loc.aiInstruction.trim()}
+                              onclick={() => void loc.startAiRewrite()}
+                              >{loc.aiMode === "generate" ? "Generate text" : "Generate rewrite"}</button>
+                            <button class="quiet-button" type="button" onclick={loc.closeAiRewrite}>Cancel</button>
                           </div>{/if}
                       </div>
                     </div>
@@ -8125,14 +7340,14 @@ onMount(() => {
                         editable={!loc.selectedLoading &&
                           !loc.selectedLoadError &&
                           projectDiagnostics.length === 0 &&
-                          !aiBusy &&
-                          !aiRewriteOpen}
+                          !loc.aiBusy &&
+                          !loc.aiRewriteOpen}
                         fullscreen={loc.editorFullscreen}
                         aiEnabled={projectInfo?.aiEnabled ?? false}
                         aiTemplates={aiPromptTemplates.filter((template) => template.kind === "editor")}
                         onChange={loc.updateDocumentBody}
-                        onSelectionChange={setAiSelection}
-                        onAiRequest={openAiAction}
+                        onSelectionChange={loc.setAiSelection}
+                        onAiRequest={loc.openAiAction}
                         onSaveRequest={() => void loc.flushAutoSave()}
                         onFullscreenChange={loc.setEditorFullscreen}
                         placeholder={loc.section === "writing"
@@ -8207,25 +7422,24 @@ onMount(() => {
               entityName={inspectedEntity.name}
               chips={entityFieldsTabs()}
               aiEnabled={Boolean(projectInfo?.aiEnabled && emptyInspectorDefinitions().length)}
-              aiBusy={aiFieldFillBusy}
-              onFillAi={() => void fillAiFields()}
+              aiBusy={loc.aiFieldFillBusy}
+              onFillAi={() => void loc.fillAiFields()}
               onOpenTab={openFieldsDialog}
               notice={fieldsNotice}
               details={inspectorDetails} />
           {/snippet}
           {#snippet fieldsNotice()}
-            {#if aiFieldFillOpen}<section class="inspector-ai-fill">
+            {#if loc.aiFieldFillOpen}<section class="inspector-ai-fill">
                 <div class="inspector-ai-fill-heading">
-                  <strong>{aiFieldFillBusy ? "Finding field suggestions…" : "Review field suggestions"}</strong><button
-                    class="quiet-button"
-                    type="button"
-                    onclick={closeAiFieldFill}>{aiFieldFillBusy ? "Cancel" : "Close"}</button>
+                  <strong>{loc.aiFieldFillBusy ? "Finding field suggestions…" : "Review field suggestions"}</strong
+                  ><button class="quiet-button" type="button" onclick={loc.closeAiFieldFill}
+                    >{loc.aiFieldFillBusy ? "Cancel" : "Close"}</button>
                 </div>
-                {#if aiFieldFillBusy}<p>
+                {#if loc.aiFieldFillBusy}<p>
                     Using this entry and related project context.
-                  </p>{:else if Object.keys(aiFieldSuggestions).length === 0}<p>
+                  </p>{:else if Object.keys(loc.aiFieldSuggestions).length === 0}<p>
                     No suggestions are available.
-                  </p>{:else}{#each Object.entries(aiFieldSuggestions) as [key, suggestion]}{@const definition =
+                  </p>{:else}{#each Object.entries(loc.aiFieldSuggestions) as [key, suggestion]}{@const definition =
                       definitions().find((candidate) => candidate.key === key)}
                     <div class="inspector-ai-suggestion">
                       <div class="inspector-ai-suggestion-heading">
@@ -8240,19 +7454,20 @@ onMount(() => {
                       </div>
                       <span>{suggestionDisplayValue(key, suggestion)}</span>
                       <div>
-                        <button class="quiet-button" type="button" onclick={() => acceptAiFieldSuggestion(key)}
+                        <button class="quiet-button" type="button" onclick={() => loc.acceptAiFieldSuggestion(key)}
                           >Accept</button
-                        ><button class="quiet-button" type="button" onclick={() => discardAiFieldSuggestion(key)}
+                        ><button class="quiet-button" type="button" onclick={() => loc.discardAiFieldSuggestion(key)}
                           >Discard</button>
                       </div>
                     </div>{/each}{/if}
-                {#if !aiFieldFillBusy}<div class="inspector-ai-fill-actions">
-                    {#if Object.keys(aiFieldSuggestions).length > 0}<button
+                {#if !loc.aiFieldFillBusy}<div class="inspector-ai-fill-actions">
+                    {#if Object.keys(loc.aiFieldSuggestions).length > 0}<button
                         class="primary-button"
                         type="button"
-                        onclick={() => void acceptAllAiFieldSuggestions()}>Accept all</button
-                      >{/if}<button class="quiet-button" type="button" onclick={() => void fillAiFields()}>Retry</button
-                    ><button class="quiet-button" type="button" onclick={closeAiFieldFill}>Close</button>
+                        onclick={() => void loc.acceptAllAiFieldSuggestions()}>Accept all</button
+                      >{/if}<button class="quiet-button" type="button" onclick={() => void loc.fillAiFields()}
+                      >Retry</button
+                    ><button class="quiet-button" type="button" onclick={loc.closeAiFieldFill}>Close</button>
                   </div>{/if}
               </section>{/if}
           {/snippet}
@@ -8564,7 +7779,7 @@ onMount(() => {
                           >{:else}<button
                             class="quiet-button"
                             type="button"
-                            onclick={() => void openMapLocation(location)}>Show on map</button
+                            onclick={() => void loc.openMapLocation(location)}>Show on map</button
                           >{/if}<button
                           class="quiet-button"
                           type="button"

@@ -532,8 +532,17 @@ assert.deepEqual(writingConflictMessage("e1", { diagnostics: ["Portable files ch
     /writingMessageCurrent\(draft, this\.selected\?\.id, this\.writingLoad\)/,
     "entity and token are checked",
   );
-  const writingRegion = between("/** Whether the webview may edit", "function pluginViewLabel");
+  const writingRegion = between("/** Moves among the tabs of the active group.", "function pluginViewLabel");
   assert.doesNotMatch(writingRegion, /project\.save\w*\(|persistDocumentSnapshot\(/, "no second save path");
+  // The Writing bridge itself moved into the location store (5.1d): it must not save either. A draft reaches the
+  // save path only through `updateDocumentBody` and the store's one autosave.
+  const storeWritingRegion = betweenIn(store, "// ---- Writing webview", "// ---- Map editor session");
+  assert.match(storeWritingRegion, /handleWritingStateEvent\(/, "the region holds the Writing bridge");
+  assert.doesNotMatch(
+    storeWritingRegion,
+    /project\.save\w*\(|persistDocumentSnapshot\(|saveDocument\(/,
+    "no second save path in the Writing bridge",
+  );
   const conflict = betweenIn(store, "handleWritingConflictAction(", "Writing state from the webview");
   assert.match(conflict, /writingMessageCurrent\(event, this\.selected\?\.id, this\.writingLoad\)/);
   assert.match(conflict, /reloadConflict\(\)/);
@@ -559,7 +568,7 @@ assert.deepEqual(writingConflictMessage("e1", { diagnostics: ["Portable files ch
   // The webview's dialog is its own: nothing in the overlay logic reads it, and the shell's dialog stays for the old editor.
   const overlay = between("const modalOverlayOpen = $derived(", "const anchoredPopoverOpen");
   assert.doesNotMatch(overlay, /writingAi|aiDialog|ai-state/);
-  assert.match(page, /\{#if aiRewriteOpen\}/, "the shell's own dialog is still there for the old editor");
+  assert.match(page, /\{#if loc\.aiRewriteOpen\}/, "the shell's own dialog is still there for the old editor");
   // Closing the window flushes through the same path.
   const closeRequested = between(".onCloseRequested(async (event) => {", ".then((cleanup) => {");
   assert.match(closeRequested, /await loc\.flushAutoSave\(\)/);

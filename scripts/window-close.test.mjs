@@ -88,7 +88,7 @@ for (const name of ["pickAndOpenProject", "openRecentProject", "closeProject"]) 
   );
 }
 assert.match(
-  between(page, "function resetProjectSessionState() {", "mapsEditorKey = "),
+  between(page, "function resetProjectSessionState() {", "shellNavigationBusy = false"),
   /webviewPool = emptyWebviewPool;/,
   "resetProjectSessionState clears the webview pool",
 );

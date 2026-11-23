@@ -52,6 +52,10 @@ impl HistoricalForcingParameters {
         Self::from_random(derive_subsystem_seed64(seed, SeedDomain::HistoricalClimate))
     }
 
+    /// Defaults for new maps. The climate run amplifies the offset 2.5–4×
+    /// through snow and ice albedo, so the forcing stays small: a 12-seed
+    /// sweep puts the coldest epoch 4–13 °C below the present and the lowest
+    /// sea level at −53 to −146 m, with no frozen epoch.
     fn from_random(random: u64) -> Self {
         let period_0 = 100_000 + ((random >> 8) % 50_001) as i64;
         let period_1 = 41_000 + ((random >> 24) % 9_001) as i64;
@@ -60,27 +64,27 @@ impl HistoricalForcingParameters {
             version: HISTORICAL_DERIVATION_VERSION,
             components: [
                 ForcingComponent {
-                    amplitude_centi_c: 420 + (random % 181) as i32,
+                    amplitude_centi_c: 80 + (random % 36) as i32,
                     period_years: period_0,
                     phase_offset_years: 0,
                 },
                 ForcingComponent {
-                    amplitude_centi_c: 180 + ((random >> 16) % 121) as i32,
+                    amplitude_centi_c: 35 + ((random >> 16) % 26) as i32,
                     period_years: period_1,
                     phase_offset_years: ((random >> 32) as i64).rem_euclid(period_1),
                 },
                 ForcingComponent {
-                    amplitude_centi_c: 70 + ((random >> 40) % 61) as i32,
+                    amplitude_centi_c: 20 + ((random >> 40) % 11) as i32,
                     period_years: period_2,
                     phase_offset_years: ((random >> 10) as i64).rem_euclid(period_2),
                 },
             ],
             sensitivity_ppm: 1_000_000,
-            land_ice_amplitude_ppm: 90_000 + ((random >> 20) % 70_001) as u32,
+            land_ice_amplitude_ppm: 60_000 + ((random >> 20) % 35_001) as u32,
             ice_response_years: 8_000 + ((random >> 36) % 12_001) as i64,
             ice_midpoint_centi_c: 0,
-            ice_transition_width_centi_c: 320 + ((random >> 12) % 161) as i32,
-            thermal_expansion_ppm_per_degree_c: 1_500 + ((random >> 44) % 1_001) as u32,
+            ice_transition_width_centi_c: 110 + ((random >> 12) % 51) as i32,
+            thermal_expansion_ppm_per_degree_c: 90 + ((random >> 44) % 61) as u32,
         }
     }
 
